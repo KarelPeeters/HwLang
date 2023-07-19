@@ -1,0 +1,301 @@
+// types
+u[N]
+i[N]
+b[N]
+int, uint for infinite-bit compile time integers
+
+// u16, i16, b16 are aliases for the array ones
+
+// general vector representation:
+T[N]
+// structs, tuples, enums, ...
+// types work both at compiletime and runtime
+
+type Index[C: uint] = u[ceil_log(C)];
+
+struct Vec[T: type, C: uint] {
+    values: T[C],
+    len: Index[C],
+}
+
+// literals:
+0b100101000
+0x0f0daed05
+5046
+// hex and binary support _ for wildcards
+
+// concatenation and array building, spreading
+// the same syntax works on the LHS of assignments!
+let a, b, c: u8;
+let d: u8[2];
+let r_flat: u[8*5] = {a, b, c, *d};
+let r_array: u8[5] = [a, c, c, *d];
+
+
+// u32, i32 are aliases with N=32
+// u1, bool are the same thing?
+
+// ranges:
+// max is used to reduce operation output bits count!
+// this is important to get the + operator to chain nicely without having to do fancy stuff
+u16[min=5, max=16]
+u[16, min=5, max=16]
+
+// enums:
+// can leave compiler free to choose representation, or do it ourself
+// onehot?
+enum State: u2 {
+    A, B, C = 0b11,
+}
+
+// array type syntax? T[N] or [T; N]?
+// the latter is probably better for parsing, but the first is more familiar to C devs
+// nested arrays are terrible, the order is wrong compared to C!
+* (u[N])[M]    [u[N]; M]
+* u[M][N]
+* this interacts badly with integers as scalars
+
+// do operations return the full result by default? is there automatic truncation?
+// is there zero-extension?
+// does an expression like "a + b + c + d" add only the bits required when everything is max?
+// should u/int allow defining custom ranges?
+// maybe drop "truncate" and only use array slicing, to explictly indicate how many bits are dropped
+let a: i32
+let b: i32
+let c: i32 = truncate(a * b)
+
+// casts: only explicit, no "as" business!
+// TODO should signed->unsigned and the other one add a bit to ensure the value stays the same?
+let cast_u: u32 = cast_unsigned(a);
+let cast_i: i32 = cast_signed(cast_u);
+let to_u: u33 = to_unsigned(a);
+let to_i: i33 = to_signed(a);
+
+let e: u64 = zero_extend(cast_u);
+let e: i64 = sign_extend(cast_i);
+
+// slicing
+// what about signedness? do slices inherit it? or does slicing only work for unsigned?
+// maybe it just always returns unsigned?
+let b:
+
+// mutability?
+// let has to have both a name and expression?
+// assign sets non-let bindings (eg. IO)?
+// is there a way to define new bindings? we need it to instantiate things!
+
+// adder example:
+wire x, y, z: u32;
+wire c_in, c_out: u1;
+
+my_adder = adder[N=32](x=x, y=y, c_in=c_in, z=z, c_out=c_out);
+
+// can also use my_adder.x?
+
+// optional IO pins depending on params?
+// allow omitting implementation
+mod adder[
+    N: uint,
+    CARRY: bool,
+](
+    in x: u[N],
+    in y: u[N],
+    out z: u[N],
+
+    if CARRY {
+        in c_in: u1,
+        out c_out: u1,
+    }
+) {
+    // from scratch impl:
+    comb {
+        u8 c = CARRY ? c_in : 0;
+        for i in 0..N {
+            z[i] = x ^ y ^ c;
+            c = x & y | y & c | c & x;
+        }
+        if CARRY {
+            assign c_out = c;
+        }
+    }
+
+    // using "+" operator:
+    if carry {
+        // this checks that the bit sizes match exactly!
+        // the compiler hopefully knows that the addition only generates one extra bit
+        // also checks that left/right either match sign or are a boolean component
+        assign {c_out, z} = x + y + c_in;
+    } else {
+        // drop the last bit
+        assign z = (x + y)[:-1];
+    }
+}
+
+// example code: mux
+let values: T[16];
+let index: u[4];
+let result: T;
+mux(values, index, result);
+
+mod mux[T: type, N: uint](
+    in values: T[N],
+    in index: u[ceil_log(N)],
+    out result: T,
+) {
+    assign result = values[index];
+}
+
+// example code: priority decoder, default N+1
+mod decoder[N: uint](
+    in values: bool[N],
+    out index: u[ceil_log(N+1)],
+) {
+    comb {
+        let result = N+1;
+        for i in 0..N {
+            if values[i] {
+                result = i;
+                break;
+            }
+        }
+        assign index = result;
+    }
+}
+
+// basic combinatorial functions, run fully in both compile time and runtime:
+// params can be annotated with static, means they must be known at compile time
+// params with compiletime only types _must_ be marked static
+fn derp(static x: int, y: u32) -> u32 {
+    let r = 0;
+    for _ in 0..x {
+        r += y;
+    }
+    return r;
+}
+
+fn popcount(u32) -> u[ceil_log(32)];
+fn popcount(uint) -> uint;
+// no int version, could have infinite ones!
+
+// operators:
+// int,uint,uN,iN: + - * / % & | ^ ! -
+
+
+// match:
+
+fn foo(x: u32) -> bool {
+    match x {
+        4 => true,
+        0b____010101__ => false,
+        _ => false,
+    }
+}
+
+// example: counter
+mod counter(
+    in clk: bool,
+    in inc: bool,
+    in dec: bool,
+    out count: u32,
+) {
+    init {
+        count = 0;
+    }
+
+    reg(clk) {
+        if inc {
+            count = count + 1;
+        }
+        if dec {
+            count = count - 1;
+        }
+    }
+}
+
+// example: cyclic counter
+mod count_cycle(
+    in clk: bool,
+    in start: bool,
+    in stop: bool,
+    out state: u32,
+) {
+    init {
+        state = 0;
+    }
+
+    reg(clk) {
+        if stop {
+            state = 0;
+        } else {
+            state = match state {
+                0 => start ? 1 : 0;
+                1..10 => state + 1;
+                _ => 0;
+            };
+        }
+    }
+}
+
+// example: state machine
+enum Color { Green, Orange, Red, }
+const TIME_GREEN: uint = 20;
+const TIME_ORANGE: uint = 5;
+const TIME_RED: uint = 20;
+
+mod light(
+    in clk,
+    in button: bool,
+    out color: Color,
+) {
+    let state: Color = .Green;
+    let time: u32 = 0;
+    let green_button: bool = false;
+
+    reg(clk) {
+        time = min(20, time + 1);
+
+        let old_state = state;
+        match state {
+            .Green => {
+                green_button |= button;
+                if green_button && time >= TIME_GREEN {
+                    state = .Orange;
+                    green_button = false;
+                }
+            }
+            .Orange if time >= TIME_ORANGE => {
+                state = .Red;
+            }
+            .Red if time >= TIME_RED => {
+                state = .Green;
+            }
+        };
+
+        if state != old_state {
+            time = 0;
+        }
+    }
+}
+
+
+// example: parallel adder
+mod adder[N: uint](x: u[N], y: u[N], z: n[N]);
+
+mod par_adder[N: uint, M: uint](x: (u[N])[M], y: (u[N])[M], z: (u[N])[M]) {
+    for i in 0..M {
+        adder[N=N](x=x[i], y=y[i], z=z[i]);
+    }
+}
+
+
+// should types be first-class or not? eg. should something like this be allowed?
+struct Foo {
+    ty: type,
+    x: u32,
+}
+
+// random system-level functions:
+// allow string formatting like rust?
+// add VM string type?
+warn("warning!")
+error("error!")

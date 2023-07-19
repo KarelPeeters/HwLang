@@ -1,0 +1,44 @@
+// types
+type Foo = Bar;
+type Foo = (Bar, Baz);
+type Foo = (b32, u32, i32);
+type Foo = (b[32], u[32], i[32]);
+type Derp = [T; 64];
+type Index[C: uint] = u[ceil_log(C)];
+
+// use
+use foo::bar;
+use foo::bar as baz;
+
+// functions
+fn foo() {}
+fn foo(x: u32) -> u32 {}
+fn foo[T, N: uint](array: [T; N]) {}
+fn foo(_: u32) {}
+
+// blocks
+fn foo() {
+    x;
+    { x }
+    if true { return x; }
+    x
+}
+
+// struct
+struct Vec[T, C: uint] {
+    values: [T; C],
+    len: Index[C],
+}
+
+// literals
+const x: u32 = 1346546;
+const x: u32 = 0b01010101..;
+const x: u32 = 0x0fac04324..;
+
+// call
+const x: u32 = f();
+const x: u32 = f(5, 6, 7);
+
+// slice and concat
+// TODO concat syntax?
+//const y: u16 = x[0..8, 16..32, 5];
