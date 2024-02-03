@@ -1,0 +1,42 @@
+// TODO allow signature declarations for everything, even types!
+
+// Basic types
+type bool;
+
+// TODO do we need bits? or will arrays be convenient enough?
+// TODO support both named and unnamed parameters for types
+type bits;
+type bits(uint);
+
+// Signature overloading, even for types!
+type int;
+type uint;
+type int(Range(int));
+type uint(Range(uint));
+type int(n: Int) = int(-2**(n-1) .. 2**(n-1));
+type uint(n: Int) = int(-2**(n-1) .. 2**(n-1));
+
+// Containers
+type List(T: type);
+type Array(T: type, uint, *uint);
+
+// Utility
+// TODO convert between these for unbounded types, eg. int/uint
+struct Range(type T) { min: T, max: T }
+struct RangeInc(type T) { min: T, max_inc: T }
+
+enum Option(type T) {
+    None,
+    Some(T),
+}
+
+// Operators
+// TODO move operators to different file
+// TODO operator bodies? implement in std or in compiler?
+// TODO allow multiline calculations for output type?
+// operator "+"(
+//     left: integer(left_range),
+//     right: integer(right_range),
+// ) -> integer() {
+//
+// }
