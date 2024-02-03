@@ -2,6 +2,11 @@
 type Foo = Bar;
 type Foo = (Bar, Baz);
 type Foo = (b32, u32, i32);
+// TODO this is a bad idea, now we can't use b,u,i as variables! maybe require uppercase? but that doesn't match vars :(
+// maybe do $instead?
+
+type Foo = (b$32, b$(N+1));
+
 type Foo = (b[32], u[32], i[32]);
 type Derp = [T; 64];
 type Index[C: uint] = u[ceil_log(C)];
@@ -42,3 +47,12 @@ const x: u32 = f(5, 6, 7);
 // slice and concat
 // TODO concat syntax?
 //const y: u16 = x[0..8, 16..32, 5];
+
+// interface
+// TODO direction
+interface
+
+// modules
+mod add[N: uint](in x: u[N], in y: u[N], out z: U[N]) {
+    assign z = x + y;
+}

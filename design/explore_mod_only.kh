@@ -1,0 +1,11 @@
+mod comb_adder(in x: U[N], in y: U[N], out z: U[N+1]) {
+    z = x + y;
+}
+
+mod ff_adder(in clk: clock, in x: U[N], in y: U[N], out z: U[N+1]) {
+    z = delay(x + y, clk);
+
+    ff(clk) {
+        z = x + y;
+    }
+}

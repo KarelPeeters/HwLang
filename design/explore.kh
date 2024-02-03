@@ -162,6 +162,7 @@ mod decoder[N: uint](
     }
 }
 
+// TODO use const keyword instead
 // basic combinatorial functions, run fully in both compile time and runtime:
 // params can be annotated with static, means they must be known at compile time
 // params with compiletime only types _must_ be marked static
