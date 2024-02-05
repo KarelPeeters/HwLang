@@ -73,6 +73,10 @@ Do we want types to be first-class? Probably best, so we can just pass them as o
 
 Allow type and function declarations everywhere.
 
+Utility types:
+* `Option(T)` like Rust
+* `TriState(T)`: should it _actually_ be tristate, or just have a  
+
 ### Parameters
 
 Parameters in this language are a unification of generics and normal parameters in other languages. They're used for both types and functions. (and modules if we decide to add them)
@@ -87,6 +91,83 @@ Goals:
 Example:
 `(A: type, b: A, c: uint, d: Array(A, c))`
 `(enable: bool, if enable { c: int }, d: u8`
+
+### Functions
+
+Distinction between functions and procedures:
+* functions
+  * only compute values
+  * are combinatorial/compile time
+  * specific `pure` class of function that _only_ depends on args and no rng state, outside io, ...?
+* procedures
+  * can use time, clock, registers, ...
+  * have inout/out parameters!
+* Both 
+  * can return values!
+  * input arguments
+
+
+### Interop
+
+#### RTL
+
+The top-level compilation generates standard VHDL and verilog.
+Modules that only use supported features can also be converted to VHDL and Verilog.
+
+We can import and use _all_ existing VHDL and (System)Verilog modules.
+* We'll need a VHDL/SystemVerilog parser and type mapping for this.
+* What about differing `Z`, `X`, ... support? Eg. do we always assume their values are tristate?
+
+#### Simulators
+
+#### Programming
+
+Ideally we'd have an easy python/C++ interface for both the compiler itself and and runtime.
+
+Compiler sketch:
+```python
+project = Project()
+project.add_module_path("name", "path")
+project.add_module_source("name", "src")
+project.compile_top()
+```
+
+also expose incremental stuff for easy interop with other build systems. Ideally even `Make` just works decently out of the box.
+
+Runtime simulation sketch:
+```python
+sim = Simulation()
+sim.module["my_module"].send_inputs("b", np.array([1, 2, 3]))
+result = sim.module["my_module"].get_outputs("a")
+assert result == [...]
+```
+
+The rough idea is then that drivers and monitors are implemented in RTL, while python/C++/Rust is used for stimulus generation and output checking. Ideally drivers are written in such a way that the outside language is not _in_ the loop, since that can slow things down. It's still _possible_ to do so for maximum flexibility. Also none of this driver/monitor stuff is hardcoded in the language, it's just a semi-std library.
+
+### Undefined/Impedance
+
+Do we want `Z`, `X`, `H`, `L`? For all values or only special types? Eg. `TriState[T]`.
+
+Probably undefined for everything to detect startup bugs.
+
+### Interfaces
+
+* Interfaces need to be super easy so we can avoid any tooling that needs to generate entity instantiations.
+* We want at least bidirectional, do we need more?
+* Give users the freedom to pick their own names (slave/master, parent/child, controller/controlled, ...)?
+* What syntax do we use for port directions that switch? Or does everything switch?
+* Can interfaces have built-in asserts/drivers/monitors? How do we turn them on or off?
+
+### Port directions
+
+Is `in`, `out`, `inout` fine? Do we want more? Or no `inout`? Do we want a separate type for tristate? Or will a handle type fully handle that.
+
+Maybe have `inteface` as a separate port "direction"? That nicely maps to the direction being _inside_ the interface!
+Convention: the name used means that _we_ are that name. Eg. a slave could have this signature:
+`my_axi_slave(clk, axi: interface Axi4Lite.Slave)`
+
+Do we want `clk` and `reset` to be types or port "direction"s?
+
 
 ### Garbage collection
 
@@ -216,6 +297,26 @@ Capitalization:
 
 * Allow cycles!
 * Mostly implicit from file system with option to create additional nested namespaces in a file?
+* private/public functions and modules
+
+### Compiler flow
+
+Big picture:
+* parse
+* type/semantics-check each module _independently_, converting to some HIR
+  * correctness/typechecking of a module using another module can only depend on the interface on that module, not the code inside
+    * except for compile-time asserts?
+      * or do we force compile time asserts _into_ the interface itself?
+    * this is also important for incrementalness, users only need to wait on parsing the interface and functions used in there
+    * language design: support this stuff 
+      * making counting matching {} easy?
+* walk top-down, instantiating each module with the right parameters and converting to LIR
+* convert LIR to output, either Verilog or VHDL
+
+Details:
+* lazy, incremental, ...
+  * use salsa? https://rustc-dev-guide.rust-lang.org/salsa.html
+* for ideas on what we need to support IDEs: https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md 
 
 ### Build system
 
