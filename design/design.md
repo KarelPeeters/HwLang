@@ -19,6 +19,7 @@
 * `()` for params and generics (which are really just params!)
 * `[]` for array indexing and literals
 * `<>` only for comparison operators, no generics! (simplifies parsing)
+* expression based wherever possible (eg. loops, if, ... are all expressions)
 
 ### Identifiers
 
@@ -44,21 +45,22 @@ Array(T, n)
 ```
 
 What to do about arrays? See https://old.reddit.com/r/ProgrammingLanguages/comments/vxxfh2/array_type_annotation_syntax_string_vs_string/ for some great discussion. Options/summary:
-* Rust-like `[T; N]` or `Array(T, N)`
-  * easy to parse, clearly different from array literals 
-  * works badly for multi arrays, eg. `[[T; N]; M]` is indexed as `t[m][n]`
-* C-like `T[N]` is easy to type
-  * corresponds nicely to indexing order
-  * might be ambiguous with indexing into arrays/lists of types? is that a problem?
-  * tricky to parse? not really
-* Post suggests `[N]T`, but that's really weird and doesn't match usage
-  * but maybe trying to match usage was the whole mistake of the C type notation?
-* What about allowing multiple dims? also for expressions!
-  * `[T; N, M]`, `Array(T, N, M)`, `T[N, M]`
-    * for now let's go with this idea combined with `Array` the most
 
-  
+* Rust-like `[T; N]` or `Array(T, N)`
+    * easy to parse, clearly different from array literals
+    * works badly for multi arrays, eg. `[[T; N]; M]` is indexed as `t[m][n]`
+* C-like `T[N]` is easy to type
+    * corresponds nicely to indexing order
+    * might be ambiguous with indexing into arrays/lists of types? is that a problem?
+    * tricky to parse? not really
+* Post suggests `[N]T`, but that's really weird and doesn't match usage
+    * but maybe trying to match usage was the whole mistake of the C type notation?
+* What about allowing multiple dims? also for expressions!
+    * `[T; N, M]`, `Array(T, N, M)`, `T[N, M]`
+        * for now let's go with this idea combined with `Array` the most
+
 User-defined types:
+
 ```
 enum Letter { A, B, C }
 struct Point(type T) {
@@ -76,35 +78,99 @@ Allow type and function declarations everywhere.
 Parameters in this language are a unification of generics and normal parameters in other languages. They're used for both types and functions. (and modules if we decide to add them)
 
 Goals:
+
 * types and values can be freely mixed
 * parameters and types are _immediately_ in-scope for the following parameters
+* allow anonymous parameters in type declaration and maybe even in functions
+* allow conditional parameters
 
-Implementation:
+Example:
+`(A: type, b: A, c: uint, d: Array(A, c))`
+`(enable: bool, if enable { c: int }, d: u8`
 
-### Language semantics
+### Garbage collection
 
 First thoughts:
 * Everything (appears to be) garbage collected and object-oriented? (like python)
 * Lists etc don't use pass my copy, also just like python.
 * What about mutability? Eg. functions writing to their parameters? Do we just ban this entirely? We kind of want this for unit testing at least.
-  * Maybe classes exist and behave differently?
-  * Or some specific type for shared stuff, eg. `&` or `Ptr(T)`?
+    * Maybe classes exist and behave differently?
+    * Or some specific type for shared stuff, eg. `&` or `Ptr(T)`?
 * Do we use Rust reference semantics but with garbage collecting?
+
+### Assignments
+
+Do we want separate clocked vs non-clocked assignments?
+How do assignments know which clock to use? Infer from LHS and RHS (which must match)? Or have some default clock per function?
+If there are multiple clocks, explicitly set the current clock within some scope?
+How to deal with reset values for delays?
+
+```
+a = b
+a <= b
+a := b
+a <- b
+a <== b
+a <-- b
+
+a = b
+
+reset(!resetn) {
+  a = 0
+}
+delay(clk) {
+  a = b
+}
+```
 
 ### Data structures
 
-list: backed by a dequeue 
-  * remove(index), pop/push both sides (back is implicit), len, ...
-array: simple fixed len array
-ranges: self-explanatory
-option: unwrap
+list: backed by a dequeue
+
+* remove(index), pop/push both sides (back is implicit), len, ...
+  array: simple fixed len array
+  ranges: self-explanatory
+  option: unwrap
 
 ### Literals
+
+* decimal, hex, bin, ...
+* enum literals: `.A` prefix infers enum type!
+* `_` separator? or `'`? (then we reserve _ for wildcard)
+* strings, chars (with escape sequences)
+* f-strings for easy formatting
+* `*` for wildcards? no!
 
 ```
 true, false
 0, 1, 0xA
 ```
+
+### Expressions
+
+Scalar:
+
+* basic arithmetic, boolean operators, bitwise operators, ...
+* array indexing and slicing
+* steal `<=` chaining from python? or just rely on `&&` for now?
+  * maybe just have an `in` operator for ranges?
+
+Reshaping:
+
+* concatenation operator? bitflip operator?
+* convert bits to array and back? transpose arrays? ...
+
+* Is a spread operator like python enough?
+  * No, we want easy support for both little and bit endian!
+* Are a couple of conversion functions enough?
+* Check what VHDL and SystemVerilog do.
+
+### Control flow
+
+* if, while, for, loop, match
+* match expressions with bit/hex patterns!
+
+### Clock interactions
 
 ### Clock specifier
 
@@ -133,6 +199,7 @@ Between all integers there should be different casts:
 ### Modules vs entities vs blocks vs functions
 
 Things we need:
+
 * pure compile-time "functions"
 * runtime "functions" that can contain delay, make registers, clock, synchronization, ...
 
@@ -152,7 +219,20 @@ Capitalization:
 
 ### Build system
 
+### Testing
+
+* easy within-language testing
+* easy connection to python and C++ for test vectors
+  * they don't need to be timing aware, just passing data back and forth is enough
+* easy json parsing on the language side
+* regex matching? maybe even at runtime codegen if the regex is simple enough?
+
 ### IDE plugins
+
+Utilities:
+* invert if
+* switch between if/else chain and match
+* show type of expression or value of constant (if possible)
 
 ### Package manager
 

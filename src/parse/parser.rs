@@ -1,7 +1,7 @@
 use std::mem::swap;
 use std::num::ParseIntError;
 
-use crate::parse::ast::{ArrayItem, ArrayItemKind, Assignment, BinaryOp, Block, ConstDecl, ControlFlowExpression, Declaration, Expression, ExpressionKind, FileContent, ForExpression, FuncDecl, FuncParam, GenericArgs, GenericParam, GenericParams, Identifier, IfExpression, IntPattern, Item, LoopExpression, MaybeIdentifier, Path, Signed, SizedIntSize, SizedIntType, Spanned, Statement, StatementKind, StructDecl, StructField, StructLiteral, Type, TypeAlias, TypeKind, UnaryOp, UseDecl, WhileExpression};
+use crate::parse::ast::{Args, Assignment, BinaryOp, Block, Declaration, Expression, ExpressionKind, ForExpression, Identifier, IfExpression, IntPattern, Item, ItemDefConst, ItemDefFunc, ItemDefStruct, ItemDefType, ItemUse, LoopExpression, MaybeIdentifier, PackageContent, Param, ParamKind, Params, Path, Spanned, Statement, StatementKind, StructField, StructLiteral, StructLiteralField, UnaryOp, WhileExpression};
 use crate::parse::pos::{FileId, Pos, Span};
 
 #[derive(Debug)]
@@ -46,10 +46,6 @@ declare_tokens![
 
     StringLiteral,
 
-    UInt("uint"),
-    Int("int"),
-    Bool("bool"),
-
     True("true"),
     False("false"),
 
@@ -72,7 +68,9 @@ declare_tokens![
     Continue("continue"),
 
     Underscore("_"),
-    Arrow("->"),
+    ArrowRight("->"),
+    ArrowLeft("<-"),
+    DoubleDotEq("..="),
     DoubleDot(".."),
 
     BangEq("!="),
@@ -87,6 +85,7 @@ declare_tokens![
     DoubleAmpersand("&&"),
     DoublePipe("||"),
     DoubleColon("::"),
+    DoubleStar("**"),
 
     PlusEq("+="),
     MinusEq("-="),
@@ -193,7 +192,6 @@ impl<'s> Tokenizer<'s> {
         }
 
         self.left = &self.left[count..];
-
         skipped
     }
 
@@ -244,6 +242,9 @@ impl<'s> Tokenizer<'s> {
         let hex = self.left[offset..].starts_with("0x");
         let bin = self.left[offset..].starts_with("0b");
 
+        // TODO The fact that we are combining the minus with the literal is annoying, since that means we require
+        //   spaces to subtract a non-"-"-literal. Either delay combining minus with literal until semantics or
+        //   allow splitting the minus off again during parsing.
         if minus && (hex | bin) {
             // negative hex and bin literals are not useful, there is no "most negative" edge case anyway
             // we cancel parsing an int here, we want "(-) (0x..)", not "(-0) (x..)" which we are currently trying
@@ -387,36 +388,56 @@ struct Parser<'a> {
 struct BinOpInfo {
     level: u8,
     token: TT,
-    allow_chain: bool,
+    chain: Chain,
     op: BinaryOp,
 }
 
-// Order of operations inspired by
+#[derive(Debug, Copy, Clone)]
+enum Chain {
+    /// Allow chaining with any operator with the same level.
+    SameLevel,
+    /// Allow chaining with only the exact same operator.
+    SameOp,
+    /// Don't allow chaining with any operators of the same level, not even the operator itself.
+    Never,
+}
+
+// Order of operations table, inspired by
 // * Rust: https://doc.rust-lang.org/reference/expressions.html#expression-precedence
 // * C++: https://en.cppreference.com/w/cpp/language/operator_precedence
 // * Java: https://docs.oracle.com/javase/tutorial/java/nutsandbolts/operators.html
+// TODO fuzz this with some randomly generated code to see if the parse tree always looks right
 const BINARY_OPERATOR_INFO: &[BinOpInfo] = &[
     // logical
-    BinOpInfo { level: 1, token: TT::DoublePipe, allow_chain: true, op: BinaryOp::BoolOr },
-    BinOpInfo { level: 2, token: TT::DoubleAmpersand, allow_chain: true, op: BinaryOp::BoolAnd },
+    BinOpInfo { level: 2, token: TT::DoublePipe, chain: Chain::SameOp, op: BinaryOp::BoolOr },
+    BinOpInfo { level: 2, token: TT::DoubleAmpersand, chain: Chain::SameOp, op: BinaryOp::BoolAnd },
     // comparison
-    BinOpInfo { level: 3, token: TT::DoubleEq, allow_chain: false, op: BinaryOp::CmpEq },
-    BinOpInfo { level: 3, token: TT::BangEq, allow_chain: false, op: BinaryOp::CmpNeq },
-    BinOpInfo { level: 3, token: TT::GreaterEqual, allow_chain: false, op: BinaryOp::CmpGte },
-    BinOpInfo { level: 3, token: TT::Greater, allow_chain: false, op: BinaryOp::CmpGt },
-    BinOpInfo { level: 3, token: TT::LessEqual, allow_chain: false, op: BinaryOp::CmpLte },
-    BinOpInfo { level: 3, token: TT::Less, allow_chain: false, op: BinaryOp::CmpLt },
+    BinOpInfo { level: 3, token: TT::DoubleEq, chain: Chain::Never, op: BinaryOp::CmpEq },
+    BinOpInfo { level: 3, token: TT::BangEq, chain: Chain::Never, op: BinaryOp::CmpNeq },
+    BinOpInfo { level: 3, token: TT::GreaterEqual, chain: Chain::Never, op: BinaryOp::CmpGte },
+    BinOpInfo { level: 3, token: TT::Greater, chain: Chain::Never, op: BinaryOp::CmpGt },
+    BinOpInfo { level: 3, token: TT::LessEqual, chain: Chain::Never, op: BinaryOp::CmpLte },
+    BinOpInfo { level: 3, token: TT::Less, chain: Chain::Never, op: BinaryOp::CmpLt },
+    // in
+    BinOpInfo { level: 4, token: TT::In, chain: Chain::Never, op: BinaryOp::In },
+    // range
+    BinOpInfo { level: 5, token: TT::DoubleDot, chain: Chain::Never, op: BinaryOp::Range },
+    BinOpInfo { level: 5, token: TT::DoubleDotEq, chain: Chain::Never, op: BinaryOp::RangeInclusive },
     // bitwise
-    BinOpInfo { level: 4, token: TT::Pipe, allow_chain: true, op: BinaryOp::BitOr },
-    BinOpInfo { level: 5, token: TT::Hat, allow_chain: true, op: BinaryOp::BitXor },
-    BinOpInfo { level: 6, token: TT::Ampersand, allow_chain: true, op: BinaryOp::BitAnd },
+    // TODO why bitwise and logical so far apart? does the order relative to add make sense?
+    BinOpInfo { level: 6, token: TT::Pipe, chain: Chain::SameOp, op: BinaryOp::BitOr },
+    BinOpInfo { level: 6, token: TT::Hat, chain: Chain::SameOp, op: BinaryOp::BitXor },
+    BinOpInfo { level: 6, token: TT::Ampersand, chain: Chain::SameOp, op: BinaryOp::BitAnd },
     // add/sub
-    BinOpInfo { level: 7, token: TT::Plus, allow_chain: true, op: BinaryOp::Add },
-    BinOpInfo { level: 7, token: TT::Minus, allow_chain: true, op: BinaryOp::Sub },
+    BinOpInfo { level: 7, token: TT::Plus, chain: Chain::SameLevel, op: BinaryOp::Add },
+    BinOpInfo { level: 7, token: TT::Minus, chain: Chain::SameLevel, op: BinaryOp::Sub },
     // mul/div/mod
-    BinOpInfo { level: 8, token: TT::Star, allow_chain: true, op: BinaryOp::Mul },
-    BinOpInfo { level: 8, token: TT::Slash, allow_chain: true, op: BinaryOp::Div },
-    BinOpInfo { level: 8, token: TT::Percent, allow_chain: true, op: BinaryOp::Mod },
+    // TODO is mod chaining disallowing working as expected?
+    BinOpInfo { level: 8, token: TT::Star, chain: Chain::SameLevel, op: BinaryOp::Mul },
+    BinOpInfo { level: 8, token: TT::Slash, chain: Chain::SameLevel, op: BinaryOp::Div },
+    BinOpInfo { level: 8, token: TT::Percent, chain: Chain::Never, op: BinaryOp::Mod },
+    // power (we avoid the right-to-left binding by disallowing chaining entirely)
+    BinOpInfo { level: 9, token: TT::DoubleStar, chain: Chain::Never, op: BinaryOp::Pow },
 ];
 
 const BINARY_ASSIGNMENT_OPERATORS: &[(TT, Option<BinaryOp>)] = &[
@@ -442,8 +463,9 @@ const PREFIX_OPERATOR_INFO: &[PrefixOpInfo] = &[
     PrefixOpInfo { level: 2, token: TT::Bang, op: UnaryOp::Not },
 ];
 
-const POSTFIX_DEFAULT_LEVEL: u8 = 3;
-const POSTFIX_CAST_LEVEL: u8 = 1;
+// TODO check this and maybe define a level for each suffix op
+const POSTFIX_LEVEL_DEFAULT: u8 = 3;
+const POSTFIX_LEVEL_STRUCT_LITERAL: u8 = 1;
 
 /// The data required to construct a prefix expression.
 struct PrefixState {
@@ -476,14 +498,14 @@ impl PostFixState {
         let kind = match self.kind {
             PostFixStateKind::Call { args } =>
                 ExpressionKind::Call(inner, args),
-            PostFixStateKind::Cast { ty } =>
-                ExpressionKind::Cast(inner, ty),
             PostFixStateKind::ArrayIndex { index } =>
                 ExpressionKind::ArrayIndex(inner, index),
             PostFixStateKind::DotIdIndex { index } =>
                 ExpressionKind::DotIdIndex(inner, index),
             PostFixStateKind::DotIntIndex { span, index } =>
                 ExpressionKind::DotIntIndex(inner, Spanned { span, inner: index }),
+            PostFixStateKind::StructInit { fields } =>
+                ExpressionKind::StructInit(StructLiteral { struct_ty: inner, fields })
         };
 
         Expression { span, kind }
@@ -491,11 +513,17 @@ impl PostFixState {
 }
 
 enum PostFixStateKind {
-    Call { args: Vec<Expression> },
+    Call { args: Args },
     ArrayIndex { index: Box<Expression> },
     DotIdIndex { index: Identifier },
     DotIntIndex { span: Span, index: u32 },
-    Cast { ty: Type },
+    StructInit { fields: Vec<StructLiteralField> },
+}
+
+#[derive(Debug)]
+struct ListResult<A> {
+    trailing_separator: bool,
+    values: Vec<A>,
 }
 
 #[allow(dead_code)]
@@ -571,27 +599,32 @@ impl<'s> Parser<'s> {
         end: TT,
         sep: Option<TT>,
         mut item: F,
-    ) -> Result<(Span, Vec<A>)> {
-        let mut result = Vec::new();
-        let start_pos = self.peek().span.start;
-        let mut end_pos = start_pos;
+    ) -> Result<ListResult<A>> {
+        let mut values = Vec::new();
 
-        while self.accept(end)?.is_none() {
-            result.push(item(self)?);
-            end_pos = self.last_popped_end;
-
-            if self.accept(end)?.is_some() { break; }
-
+        let maybe_trailing_separator = loop {
+            if self.accept(end)?.is_some() {
+                break true;
+            }
+            values.push(item(self)?);
+            if self.accept(end)?.is_some() {
+                break false;
+            }
             if let Some(sep) = sep {
                 self.expect(sep, "separator")?;
             }
-        }
+        };
 
-        Ok((Span::new(start_pos, end_pos), result))
+        let result = ListResult {
+            trailing_separator: maybe_trailing_separator && !values.is_empty(),
+            values,
+        };
+        Ok(result)
     }
 }
 
 impl<'s> Parser<'s> {
+    // TODO replace or combine?
     fn restrict<T>(&mut self, res: Restrictions, f: impl FnOnce(&mut Self) -> T) -> T {
         let old = std::mem::replace(&mut self.restrictions, res);
         let result = f(self);
@@ -603,169 +636,193 @@ impl<'s> Parser<'s> {
         self.restrict(Restrictions::NONE, f)
     }
 
-    fn file(&mut self) -> Result<FileContent> {
+    fn main_package_content(&mut self) -> Result<PackageContent> {
         let start = self.last_popped_end;
-        let (_, items) = self.list(TT::Eof, None, Self::item)?;
+        let items = self.list(TT::Eof, None, Self::item)?.values;
         let span = Span::new(start, self.last_popped_end);
-        Ok(FileContent { span, items })
+        Ok(PackageContent { span, items })
     }
 
     fn item(&mut self) -> Result<Item> {
         let token = self.peek();
 
         match token.ty {
-            TT::Struct => self.struct_().map(Item::Struct),
-            TT::Const => self.const_().map(Item::Const),
-            TT::Use => self.use_decl().map(Item::Use),
+            TT::Struct => self.item_def_struct().map(Item::Struct),
+            TT::Const => self.item_def_const().map(Item::Const),
+            TT::Use => self.item_use().map(Item::Use),
             TT::Type => self.type_alias().map(Item::Type),
             TT::Fn => self.function().map(Item::Func),
             _ => Err(Self::unexpected_token(token, &[TT::Struct, TT::Const, TT::Use, TT::Type, TT::Fn], "start of item"))
         }
     }
 
-    fn maybe_generic_params(&mut self) -> Result<GenericParams> {
-        let start = self.peek().span.start;
-
-        let params = if self.accept(TT::OpenS)?.is_some() {
-            self.list(TT::CloseS, Some(TT::Comma), Self::generic_param)?.1
+    fn maybe_params(&mut self) -> Result<Params> {
+        if self.at(TT::OpenB) {
+            Ok(self.params()?)
         } else {
-            vec![]
-        };
-
-        let span = Span::new(start, self.last_popped_end);
-        Ok(GenericParams { span, params })
-    }
-
-    fn generic_param(&mut self) -> Result<GenericParam> {
-        let start = self.peek().span.start;
-        let id = self.identifier("generic parameter name")?;
-
-        let bound = if self.accept(TT::Colon)?.is_some() {
-            Some(self.type_()?)
-        } else {
-            None
-        };
-
-        let span = Span::new(start, self.last_popped_end);
-        Ok(GenericParam { span, id, bound })
-    }
-
-    fn maybe_generic_args(&mut self) -> Result<GenericArgs> {
-        let start = self.peek().span.start;
-
-        if self.accept(TT::OpenS)?.is_some() {
-            let mut un_named = vec![];
-            let mut named = vec![];
-
-            let _ = self.list(TT::CloseS, Some(TT::Comma), |s| {
-                if s.at(TT::Id) && s.peek().ty == TT::Eq {
-                    let id = s.identifier("generic arg name")?;
-                    s.expect(TT::Eq, "generic arg separator")?;
-                    let value = s.expression()?;
-                    named.push((id, value));
-                } else {
-                    if !named.is_empty() {
-                        return Err(ParseError::UnnamedNotAllowedAfterNamed { pos: s.peek().span.start });
-                    }
-
-                    let value = s.expression()?;
-                    un_named.push(value);
-                }
-
-                Ok(())
-            })?;
-
-            let span = Span::new(start, self.last_popped_end);
-            Ok(GenericArgs { span, un_named, named })
-        } else {
-            let span = Span::empty_at(self.last_popped_end);
-            Ok(GenericArgs { span, un_named: vec![], named: vec![] })
+            Ok(Params { span: Span::empty_at(self.last_popped_end), params: vec![] })
         }
     }
 
-    fn const_(&mut self) -> Result<ConstDecl> {
+    fn params(&mut self) -> Result<Params> {
+        let start = self.expect(TT::OpenB, "start of parameters")?.span.start;
+        let params = self.list(TT::CloseB, Some(TT::Comma), Self::param)?.values;
+        let span = Span::new(start, self.last_popped_end);
+        Ok(Params { span, params })
+    }
+
+    fn param(&mut self) -> Result<Param> {
+        // TODO a proper grammar DSL would be a lot more convenient here
+        // types of parameter:
+        // * `ty`
+        // * `id: ty`
+        // * `id: ty = default`
+
+        let ty_or_id = self.expression()?;
+
+        if let ExpressionKind::Path(Path { span: _, parents, id }) = &ty_or_id.kind {
+            if parents.is_empty() {
+                if self.accept(TT::Colon)?.is_some() {
+                    let ty = self.expression()?;
+
+                    let default = if self.accept(TT::Eq)?.is_some() {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+
+                    return Ok(Param {
+                        span: Span::new(ty_or_id.span.start, self.last_popped_end),
+                        kind: ParamKind::Named { id: id.clone(), default },
+                        ty,
+                    });
+                }
+            }
+        }
+
+        Ok(Param {
+            span: ty_or_id.span,
+            kind: ParamKind::Anonymous,
+            ty: ty_or_id,
+        })
+    }
+
+    fn call_args(&mut self) -> Result<Args> {
+        let start = self.expect(TT::OpenB, "args start")?.span.start;
+
+        let mut positional = vec![];
+        let mut named = vec![];
+
+        let _ = self.list(TT::CloseB, Some(TT::Comma), |s| {
+            if s.at(TT::Id) && s.peek().ty == TT::Eq {
+                let id = s.identifier("generic arg name")?;
+                s.expect(TT::Eq, "generic arg separator")?;
+                let value = s.expression()?;
+                named.push((id, value));
+            } else {
+                if !named.is_empty() {
+                    return Err(ParseError::UnnamedNotAllowedAfterNamed { pos: s.peek().span.start });
+                }
+
+                let value = s.expression()?;
+                positional.push(value);
+            }
+
+            Ok(())
+        })?;
+
+        let span = Span::new(start, self.last_popped_end);
+        Ok(Args { span, positional, named })
+    }
+
+    fn item_def_const(&mut self) -> Result<ItemDefConst> {
         let start = self.pop()?;
         let id = self.identifier("const name")?;
         self.expect(TT::Colon, "const type")?;
-        let ty = self.type_()?;
+        let ty = self.expression()?;
         self.expect(TT::Eq, "const initializer")?;
-        let init = self.expression()?;
+
+        let value = if self.at(TT::Semi) {
+            None
+        } else {
+            Some(self.expression()?)
+        };
         self.expect(TT::Semi, "const end")?;
 
         let span = Span::new(start.span.start, self.last_popped_end);
-        Ok(ConstDecl { span, id, ty, init })
+        Ok(ItemDefConst { span, id, ty, value })
     }
 
-    fn use_decl(&mut self) -> Result<UseDecl> {
+    fn item_use(&mut self) -> Result<ItemUse> {
         let start_pos = self.expect(TT::Use, "start of use decl")?.span.start;
         let path = self.path()?;
         let as_ = self.accept(TT::As)?.map(|_| self.identifier("as name")).transpose()?;
         self.expect(TT::Semi, "end of item")?;
 
         let span = Span::new(start_pos, path.span.end);
-        Ok(UseDecl { span, path, as_ })
+        Ok(ItemUse { span, path, as_ })
     }
 
-    fn type_alias(&mut self) -> Result<TypeAlias> {
+    fn type_alias(&mut self) -> Result<ItemDefType> {
         let start_pos = self.expect(TT::Type, "start of type alias")?.span.start;
         let id = self.identifier("type alias name")?;
-        let gen_params = self.maybe_generic_params()?;
-        self.expect(TT::Eq, "type alias equal sign")?;
-        let ty = self.type_()?;
+        let params = self.maybe_params()?;
+
+        let inner = if self.accept(TT::Eq)?.is_some() {
+            Some(self.expression_boxed()?)
+        } else {
+            None
+        };
+
         self.expect(TT::Semi, "type alias end")?;
 
         let span = Span::new(start_pos, self.last_popped_end);
-        Ok(TypeAlias { span, id, gen_params, ty })
+        Ok(ItemDefType { span, id, params, inner })
     }
 
-    fn struct_(&mut self) -> Result<StructDecl> {
+    fn item_def_struct(&mut self) -> Result<ItemDefStruct> {
         let start = self.expect(TT::Struct, "start of struct declaration")?.span.start;
         let id = self.identifier("struct name")?;
-        let gen_params = self.maybe_generic_params()?;
+        let params = self.maybe_params()?;
         self.expect(TT::OpenC, "start of struct fields")?;
-        let (_, fields) = self.list(TT::CloseC, Some(TT::Comma), Self::struct_field)?;
+        let fields = self.list(TT::CloseC, Some(TT::Comma), Self::struct_field)?.values;
         let span = Span::new(start, self.last_popped_end);
-        Ok(StructDecl { span, id, gen_params, fields })
+        Ok(ItemDefStruct { span, id, params, fields })
     }
 
     fn struct_field(&mut self) -> Result<StructField> {
         let id = self.identifier("field name")?;
         self.expect(TT::Colon, "field type")?;
-        let ty = self.type_()?;
-
+        let ty = self.expression()?;
         let span = Span::new(id.span.start, ty.span.end);
         Ok(StructField { span, id, ty })
     }
 
-    fn function(&mut self) -> Result<FuncDecl> {
+    fn function(&mut self) -> Result<ItemDefFunc> {
         let start_pos = self.peek().span.start;
 
         self.expect(TT::Fn, "function declaration")?;
         let id = self.identifier("function name")?;
-        let gen_params = self.maybe_generic_params()?;
-        self.expect(TT::OpenB, "start of parameters")?;
-        let (_, params) = self.list(TT::CloseB, Some(TT::Comma), Self::func_param)?;
+        let params = self.params()?;
 
-        let ret_ty = if self.accept(TT::Arrow)?.is_some() {
-            Some(self.type_()?)
+        let ret_ty = if self.accept(TT::ArrowRight)?.is_some() {
+            Some(self.expression()?)
         } else {
             None
         };
 
-        let body = self.block()?;
+        let body = self.maybe_block()?;
 
         let span = Span::new(start_pos, self.last_popped_end);
-        Ok(FuncDecl { span, id, gen_params, params, ret_ty, body })
+        Ok(ItemDefFunc { span, id, params, ret_ty, body })
     }
 
-    fn func_param(&mut self) -> Result<FuncParam> {
-        let start = self.peek().span.start;
-        let id = self.maybe_identifier("parameter name")?;
-        self.expect(TT::Colon, "parameter type")?;
-        let ty = self.type_()?;
-
-        let span = Span::new(start, ty.span.end);
-        Ok(FuncParam { span, id, ty })
+    fn maybe_block(&mut self) -> Result<Option<Block>> {
+        if self.at(TT::OpenC) {
+            Ok(Some(self.block()?))
+        } else {
+            Ok(None)
+        }
     }
 
     fn block(&mut self) -> Result<Block> {
@@ -773,10 +830,9 @@ impl<'s> Parser<'s> {
 
         // TODO better statement parsing
         let mut must_be_last = false;
+        let statements = self.list(TT::CloseC, None, |s| s.statement(&mut must_be_last))?.values;
 
-        let (span, statements) = self.list(TT::CloseC, None, |s| s.statement(&mut must_be_last))?;
-
-        Ok(Block { span: Span::new(start_pos, span.end), statements })
+        Ok(Block { span: Span::new(start_pos, self.last_popped_end), statements })
     }
 
     fn statement(&mut self, must_be_last: &mut bool) -> Result<Statement> {
@@ -787,10 +843,22 @@ impl<'s> Parser<'s> {
             return Err(ParseError::ExpectedEndOfBlock { pos: start_pos });
         }
 
+        // TODO update, add new statements
         let (kind, need_semi) = match token.ty {
             TT::Let => {
                 //declaration
-                let decl = self.variable_declaration(TT::Let)?;
+                // TODO mutability?
+                let start_pos = self.pop()?.span.start;
+                let id = self.maybe_identifier("variable name")?;
+
+                let ty = self.maybe_type_decl()?.map(Box::new);
+                let init = self.accept(TT::Eq)?
+                    .map(|_| self.expression_boxed())
+                    .transpose()?;
+
+                let span = Span::new(start_pos, self.last_popped_end);
+                let decl = Declaration { span, id, ty, init };
+
                 (StatementKind::Declaration(decl), true)
             }
             _ => {
@@ -825,25 +893,12 @@ impl<'s> Parser<'s> {
         Ok(Statement { span, kind })
     }
 
-    fn variable_declaration(&mut self, ty: TT) -> Result<Declaration> {
-        let start_pos = self.expect(ty, "variable declaration")?.span.start;
-        let id = self.maybe_identifier("variable name")?;
-
-        let ty = self.maybe_type_decl()?;
-        let init = self.accept(TT::Eq)?
-            .map(|_| self.expression_boxed())
-            .transpose()?;
-
-        let span = Span::new(start_pos, self.last_popped_end);
-        Ok(Declaration { span, id, ty, init })
-    }
-
     fn expression_boxed(&mut self) -> Result<Box<Expression>> {
         Ok(Box::new(self.expression()?))
     }
 
     fn expression(&mut self) -> Result<Expression> {
-        let expr = self.precedence_climb_binop(0, true)?;
+        let expr = self.precedence_climb_binop(0, None, Chain::SameLevel)?;
         let start = expr.span.start;
 
         if !self.restrictions.no_ternary && self.accept(TT::QuestionMark)?.is_some() {
@@ -851,7 +906,7 @@ impl<'s> Parser<'s> {
             self.expect(TT::Colon, "continue ternary expression")?;
             let else_value = self.expression()?;
 
-            let kind = ExpressionKind::TernaryOp(
+            let kind = ExpressionKind::TernarySelect(
                 Box::new(expr),
                 Box::new(then_value),
                 Box::new(else_value),
@@ -866,7 +921,7 @@ impl<'s> Parser<'s> {
         }
     }
 
-    fn precedence_climb_binop(&mut self, level: u8, allow_chain: bool) -> Result<Expression> {
+    fn precedence_climb_binop(&mut self, level: u8, op: Option<BinaryOp>, chain: Chain) -> Result<Expression> {
         let mut curr = self.unary()?;
 
         loop {
@@ -875,8 +930,16 @@ impl<'s> Parser<'s> {
                 .find(|i| i.token == token.ty);
 
             if let Some(info) = info {
-                if info.level == level && !allow_chain {
-                    return Err(ParseError::CannotChainOperator { span: token.span });
+                if info.level == level {
+                    let allowed = match chain {
+                        Chain::SameLevel => true,
+                        Chain::SameOp => info.op == op.expect("Checking chain, need operator"),
+                        Chain::Never => false
+                    };
+
+                    if !allowed {
+                        return Err(ParseError::CannotChainOperator { span: token.span });
+                    }
                 }
                 if info.level <= level {
                     break;
@@ -884,7 +947,7 @@ impl<'s> Parser<'s> {
 
                 self.pop()?;
 
-                let right = self.precedence_climb_binop(info.level, info.allow_chain)?;
+                let right = self.precedence_climb_binop(info.level, Some(info.op), info.chain)?;
 
                 let left = Box::new(curr);
                 let right = Box::new(right);
@@ -965,10 +1028,8 @@ impl<'s> Parser<'s> {
             let (level, kind) = match token.ty {
                 TT::OpenB => {
                     //call
-                    self.pop()?;
-                    let (_, args) = self.list(TT::CloseB, Some(TT::Comma), Self::expression)?;
-
-                    (POSTFIX_DEFAULT_LEVEL, PostFixStateKind::Call { args })
+                    let args = self.call_args()?;
+                    (POSTFIX_LEVEL_DEFAULT, PostFixStateKind::Call { args })
                 }
                 TT::OpenS => {
                     //array indexing
@@ -976,7 +1037,24 @@ impl<'s> Parser<'s> {
                     let index = self.expression_boxed()?;
                     self.expect(TT::CloseS, "")?;
 
-                    (POSTFIX_DEFAULT_LEVEL, PostFixStateKind::ArrayIndex { index })
+                    (POSTFIX_LEVEL_DEFAULT, PostFixStateKind::ArrayIndex { index })
+                }
+                TT::OpenC if !self.restrictions.no_struct_literal => {
+                    // struct literal
+                    self.pop()?;
+                    let fields = self.list(TT::CloseC, Some(TT::Comma), |s| {
+                        let id = s.identifier("tuple literal field")?;
+                        s.expect(TT::Colon, "tuple literal field separator")?;
+
+                        let value = s.restrict(Restrictions::NO_TERNARY, |s| {
+                            s.expression()
+                        })?;
+
+                        let span = Span::new(id.span.start, value.span.end);
+                        Ok(StructLiteralField { span, id, value })
+                    })?.values;
+
+                    (POSTFIX_LEVEL_STRUCT_LITERAL, PostFixStateKind::StructInit { fields })
                 }
                 TT::Dot => {
                     //dot indexing
@@ -994,14 +1072,7 @@ impl<'s> Parser<'s> {
                         _ => unreachable!(),
                     };
 
-                    (POSTFIX_DEFAULT_LEVEL, kind)
-                }
-                TT::As => {
-                    //casting
-                    self.pop()?;
-                    let ty = self.type_()?;
-
-                    (POSTFIX_CAST_LEVEL, PostFixStateKind::Cast { ty })
+                    (POSTFIX_LEVEL_DEFAULT, kind)
                 }
                 _ => break
             };
@@ -1016,26 +1087,45 @@ impl<'s> Parser<'s> {
         let start_pos = self.peek().span.start;
 
         let kind = match self.peek().ty {
-            TT::IntLiteralDec | TT::IntPatternBin | TT::IntPatternHex => {
-                let value = self.int_pattern()?;
-                ExpressionKind::IntPattern(value.inner)
+            TT::IntLiteralDec | TT::IntPatternBin | TT::IntPatternHex => ExpressionKind::IntPattern(self.int_pattern()?.inner),
+            TT::True | TT::False => ExpressionKind::BoolLiteral(self.pop()?.string.parse().expect("TTs should parse correctly")),
+            TT::StringLiteral => ExpressionKind::StringLiteral(self.pop()?.string),
+            TT::Id => ExpressionKind::Path(self.path()?),
+            TT::Underscore => {
+                self.pop()?;
+                ExpressionKind::Wildcard
             }
-            TT::True | TT::False => {
-                let token = self.pop()?;
-                ExpressionKind::BoolLiteral(token.string.parse().expect("TTs should parse correctly"))
+            TT::Type => {
+                self.pop()?;
+                ExpressionKind::Type
             }
-            TT::StringLiteral => {
-                let token = self.pop()?;
-                ExpressionKind::StringLiteral(token.string)
-            }
-            TT::Id => {
-                let path = self.path()?;
+            TT::OpenB => {
+                // func or tuple
+                self.pop()?;
+                let list = self.list(TT::CloseB, Some(TT::Comma), Self::expression)?;
 
-                if !self.restrictions.no_struct_literal && self.at(TT::OpenC) {
-                    return self.struct_literal(path);
+                if self.accept(TT::ArrowRight)?.is_some() {
+                    let ret = self.expression()?;
+                    ExpressionKind::TypeFunc(list.values, Box::new(ret))
+                } else {
+                    if list.values.len() == 1 && !list.trailing_separator {
+                        let value = list.values.into_iter().next().unwrap();
+                        ExpressionKind::Wrapped(Box::new(value))
+                    } else {
+                        ExpressionKind::TupleInit(list.values)
+                    }
                 }
-
-                ExpressionKind::Path(path)
+            }
+            TT::OpenS => {
+                // array initializer
+                self.pop()?;
+                let items = self.list(TT::CloseS, Some(TT::Comma), Self::expression)?.values;
+                ExpressionKind::ArrayInit(items)
+            }
+            TT::OpenC => {
+                // block
+                let block = self.unrestrict(|s| s.block())?;
+                ExpressionKind::Block(block)
             }
             TT::If => {
                 self.pop()?;
@@ -1046,62 +1136,39 @@ impl<'s> Parser<'s> {
                     .map(|_| self.block())
                     .transpose()?;
 
-                ExpressionKind::ControlFlow(ControlFlowExpression::If(IfExpression {
+                ExpressionKind::If(IfExpression {
                     cond,
                     then_block,
                     else_block,
-                }))
+                })
             }
             TT::Loop => {
                 self.pop()?;
                 let body = self.block()?;
-                ExpressionKind::ControlFlow(ControlFlowExpression::Loop(LoopExpression { body }))
+                ExpressionKind::Loop(LoopExpression { body })
             }
             TT::While => {
                 self.pop()?;
                 let cond = self.restrict(Restrictions::NO_STRUCT_LITERAL, |s| s.expression_boxed())?;
                 let body = self.block()?;
-                ExpressionKind::ControlFlow(ControlFlowExpression::While(WhileExpression { cond, body }))
+                ExpressionKind::While(WhileExpression { cond, body })
             }
             TT::For => {
                 self.pop()?;
-
                 let index = self.maybe_identifier("index variable")?;
-                let index_ty = self.maybe_type_decl()?;
-
+                let index_ty = self.maybe_type_decl()?.map(Box::new);
                 self.expect(TT::In, "in")?;
-                let start = self.expression_boxed()?;
-                self.expect(TT::DoubleDot, "range separator")?;
-
-                let end = self.restrict(Restrictions::NO_STRUCT_LITERAL, |s| {
+                let range = self.restrict(Restrictions::NO_STRUCT_LITERAL, |s| {
                     s.expression_boxed()
                 })?;
-
                 let body = self.block()?;
 
-                ExpressionKind::ControlFlow(ControlFlowExpression::For(ForExpression {
+                ExpressionKind::For(ForExpression {
                     index,
                     index_ty,
-                    start,
-                    end,
+                    range,
                     body,
-                }))
-            }
-            TT::OpenB => {
-                self.pop()?;
-                // TODO shouldn't many more things call unrestrict?
-                let inner = self.unrestrict(|s| s.expression_boxed())?;
-                self.expect(TT::CloseB, "closing parenthesis")?;
-                ExpressionKind::Wrapped(inner)
-            }
-            TT::OpenC => {
-                let block = self.unrestrict(|s| s.block())?;
-                ExpressionKind::Block(block)
-            }
-            TT::OpenS => {
-                self.pop()?;
-                let (_, values) = self.list(TT::CloseS, Some(TT::Comma), |s| s.array_item())?;
-                ExpressionKind::ArrayLiteral(values)
+                })
             }
             TT::Return => {
                 //TODO think about whether this is the right spot to parse a return
@@ -1141,23 +1208,7 @@ impl<'s> Parser<'s> {
         Ok(Expression { span, kind })
     }
 
-    // TODO allow repetition in array literal?
-    fn array_item(&mut self) -> Result<ArrayItem> {
-        let start_pos = self.peek().span.start;
-
-        let spread = self.accept(TT::Star)?.is_some();
-        let value = self.expression_boxed()?;
-
-        let kind = if spread {
-            ArrayItemKind::Spread(value)
-        } else {
-            ArrayItemKind::Value(value)
-        };
-
-        let span = Span::new(start_pos, self.last_popped_end);
-        Ok(ArrayItem { span, kind })
-    }
-
+    // TODO parse this more fully here or in the tokenizer
     fn int_pattern(&mut self) -> Result<Spanned<IntPattern>> {
         let token = self.expect_any(&[TT::IntLiteralDec, TT::IntPatternBin, TT::IntPatternHex], "integer pattern")?;
 
@@ -1169,28 +1220,6 @@ impl<'s> Parser<'s> {
         };
 
         Ok(Spanned { span: token.span, inner: pattern })
-    }
-
-    fn struct_literal(&mut self, path: Path) -> Result<Expression> {
-        self.expect(TT::OpenC, "start of struct literal")?;
-
-        let (_, fields) = self.list(TT::CloseC, Some(TT::Comma), |s| {
-            let id = s.identifier("tuple literal field")?;
-            s.expect(TT::Colon, "tuple literal field separator")?;
-
-            let value = s.restrict(Restrictions::NO_TERNARY, |s| {
-                s.expression()
-            })?;
-
-            Ok((id, value))
-        })?;
-
-        let span = Span::new(path.span.start, self.last_popped_end);
-        let kind = ExpressionKind::StructLiteral(StructLiteral {
-            struct_path: path,
-            fields,
-        });
-        Ok(Expression { span, kind })
     }
 
     fn path(&mut self) -> Result<Path> {
@@ -1219,114 +1248,10 @@ impl<'s> Parser<'s> {
         Ok(Identifier { span: token.span, string: token.string })
     }
 
-    fn maybe_type_decl(&mut self) -> Result<Option<Type>> {
+    fn maybe_type_decl(&mut self) -> Result<Option<Expression>> {
         self.accept(TT::Colon)?
-            .map(|_| self.type_())
+            .map(|_| self.expression())
             .transpose()
-    }
-
-    fn maybe_int_ty(&mut self) -> Result<Option<Type>> {
-        // already parsed as path types: U[N], I[N], B[N]
-        // already parsed as single-tokens: uint, int
-
-        let curr = self.peek();
-        let next = self.lookahead();
-        let start_pos = curr.span.start;
-
-        if curr.ty == TT::Id {
-            let signed = match curr.string.as_str() {
-                "b" => Signed::Bit,
-                "u" => Signed::Unsigned,
-                "i" => Signed::Signed,
-                _ => return Ok(None),
-            };
-
-            let size = if next.ty == TT::IntLiteralDec {
-                // u32
-                let size = match next.string.parse::<u32>() {
-                    Ok(size) => size,
-                    Err(_) => return Ok(None),
-                };
-
-                self.pop()?;
-                self.pop()?;
-
-                SizedIntSize::Literal(size)
-            } else if next.ty == TT::OpenS {
-                // u[N]
-                self.pop()?;
-                self.pop()?;
-                let size = self.expression_boxed()?;
-                self.expect(TT::CloseS, "int type size close bracket")?;
-
-                SizedIntSize::Expression(size)
-            } else {
-                return Ok(None);
-            };
-
-            let kind = TypeKind::SizedInt(SizedIntType { signed, size });
-            let span = Span::new(start_pos, self.last_popped_end);
-            return Ok(Some(Type { span, kind }));
-        }
-
-        return Ok(None);
-    }
-
-    fn type_(&mut self) -> Result<Type> {
-        let start_pos = self.peek().span.start;
-
-        if let Some(ty) = self.maybe_int_ty()? {
-            return Ok(ty);
-        }
-
-        match self.peek().ty {
-            TT::Underscore => Ok(Type { span: self.pop()?.span, kind: TypeKind::Wildcard }),
-
-            TT::UInt => Ok(Type { span: self.pop()?.span, kind: TypeKind::Int(Signed::Unsigned) }),
-            TT::Int => Ok(Type { span: self.pop()?.span, kind: TypeKind::Int(Signed::Signed) }),
-            TT::Bool => Ok(Type { span: self.pop()?.span, kind: TypeKind::Bool }),
-
-            TT::Id => {
-                let path = self.path()?;
-                let gen_args = self.maybe_generic_args()?;
-                Ok(Type {
-                    span: path.span,
-                    kind: TypeKind::Path(path, gen_args),
-                })
-            }
-            TT::OpenB => {
-                //func or tuple
-                self.pop()?;
-                let (_, list) = self.list(TT::CloseB, Some(TT::Comma), Self::type_)?;
-
-                let kind = if self.accept(TT::Arrow)?.is_some() {
-                    let ret = self.type_()?;
-                    TypeKind::Func(list, Box::new(ret))
-                } else {
-                    TypeKind::Tuple(list)
-                };
-
-                Ok(Type {
-                    span: Span::new(start_pos, self.last_popped_end),
-                    kind,
-                })
-            }
-            TT::OpenS => {
-                //array
-                self.pop()?;
-                let inner = self.type_()?;
-                self.expect(TT::Semi, "array type delimiter")?;
-                let len = self.expression_boxed()?;
-                self.expect(TT::CloseS, "end of array type")?;
-
-                Ok(Type {
-                    span: Span::new(start_pos, self.last_popped_end),
-                    kind: TypeKind::Array(Box::new(inner), len),
-                })
-            }
-            // TODO collect type start tokens
-            _ => Err(Self::unexpected_token(self.peek(), &[], "type declaration")),
-        }
     }
 }
 
@@ -1338,19 +1263,19 @@ fn parse_int_literal(token: Token) -> Result<u32> {
     })
 }
 
-pub fn parse_file(file: FileId, input: &str) -> Result<FileContent> {
+pub fn parse_file(file: FileId, input: &str) -> Result<PackageContent> {
     let mut parser = Parser {
         tokenizer: Tokenizer::new(file, input)?,
         last_popped_end: Pos { file, line: 1, col: 1 },
         restrictions: Restrictions::NONE,
     };
-    parser.file()
+    parser.main_package_content()
 }
 
 impl ExpressionKind {
     fn needs_semi(&self) -> bool {
         match self {
-            ExpressionKind::Block(_) | ExpressionKind::ControlFlow(_) => false,
+            ExpressionKind::Block(_) | ExpressionKind::If(_) | ExpressionKind::Loop(_) | ExpressionKind::While(_) | ExpressionKind::For(_) => false,
             _ => true,
         }
     }

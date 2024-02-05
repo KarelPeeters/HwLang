@@ -1,50 +1,100 @@
 use crate::parse::pos::Span;
 
-// TODO remove?
 #[derive(Debug)]
-pub struct Spanned<T> {
-    pub span: Span,
-    pub inner: T,
-}
-
-#[derive(Debug)]
-pub struct FileContent {
+pub struct PackageContent {
     pub span: Span,
     pub items: Vec<Item>,
 }
 
 #[derive(Debug)]
 pub enum Item {
-    Use(UseDecl),
-    Type(TypeAlias),
-    Struct(StructDecl),
-    Func(FuncDecl),
-    Mod(ModuleDecl),
-    Const(ConstDecl),
+    Use(ItemUse),
+    Package(ItemDefPackage),
+    Const(ItemDefConst),
+    Type(ItemDefType),
+    Struct(ItemDefStruct),
+    Enum(ItemDefEnum),
+    Func(ItemDefFunc),
 }
 
 #[derive(Debug)]
-pub struct UseDecl {
+pub struct ItemUse {
     pub span: Span,
     pub path: Path,
     pub as_: Option<Identifier>,
 }
 
 #[derive(Debug)]
-pub struct FuncDecl {
+pub struct ItemDefPackage {
     pub span: Span,
-    pub id: Identifier,
-    pub gen_params: GenericParams,
-    pub params: Vec<FuncParam>,
-    pub ret_ty: Option<Type>,
-    pub body: Block,
+    pub name: MaybeIdentifier,
+    pub content: PackageContent,
 }
 
 #[derive(Debug)]
-pub struct FuncParam {
+pub struct ItemDefConst {
     pub span: Span,
-    pub id: MaybeIdentifier,
-    pub ty: Type,
+    pub id: Identifier,
+    pub ty: Expression,
+    pub value: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct ItemDefType {
+    pub span: Span,
+    pub id: Identifier,
+    pub params: Params,
+    pub inner: Option<Box<Expression>>,
+}
+
+// TODO allow "if" in a bunch of places? eg. struct fields
+#[derive(Debug)]
+pub struct ItemDefStruct {
+    pub span: Span,
+    pub id: Identifier,
+    pub params: Params,
+    pub fields: Vec<StructField>,
+}
+
+#[derive(Debug)]
+pub struct StructField {
+    pub span: Span,
+    pub id: Identifier,
+    pub ty: Expression,
+}
+
+#[derive(Debug)]
+pub struct ItemDefEnum {
+    pub span: Span,
+    pub options: Vec<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct ItemDefFunc {
+    pub span: Span,
+    pub id: Identifier,
+    pub params: Params,
+    pub ret_ty: Option<Expression>,
+    pub body: Option<Block>,
+}
+
+#[derive(Debug)]
+pub struct Params {
+    pub span: Span,
+    pub params: Vec<Param>,
+}
+
+#[derive(Debug)]
+pub struct Param {
+    pub span: Span,
+    pub kind: ParamKind,
+    pub ty: Expression,
+}
+
+#[derive(Debug)]
+pub enum ParamKind {
+    Anonymous,
+    Named { id: Identifier, default: Option<Expression> }
 }
 
 #[derive(Debug)]
@@ -65,13 +115,14 @@ pub enum StatementKind {
     Assignment(Assignment),
     Expression(Box<Expression>),
     ReturnExpression(Box<Expression>),
+    BreakExpression(Box<Expression>),
 }
 
 #[derive(Debug)]
 pub struct Declaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub ty: Option<Type>,
+    pub ty: Option<Box<Expression>>,
     pub init: Option<Box<Expression>>,
 }
 
@@ -84,104 +135,6 @@ pub struct Assignment {
 }
 
 #[derive(Debug)]
-pub struct ModuleDecl {
-    // TODO
-}
-
-// TODO allow "if" in a bunch of places? eg. struct fields
-#[derive(Debug)]
-pub struct StructDecl {
-    pub span: Span,
-    pub id: Identifier,
-    pub gen_params: GenericParams,
-    pub fields: Vec<StructField>,
-}
-
-#[derive(Debug)]
-pub struct StructField {
-    pub span: Span,
-    pub id: Identifier,
-    pub ty: Type,
-}
-
-#[derive(Debug)]
-pub struct TypeAlias {
-    pub span: Span,
-    pub id: Identifier,
-    pub gen_params: GenericParams,
-    pub ty: Type,
-}
-
-#[derive(Debug)]
-pub struct ConstDecl {
-    pub span: Span,
-    pub id: Identifier,
-    pub ty: Type,
-    pub init: Expression,
-}
-
-#[derive(Debug)]
-pub struct Bound {
-    pub span: Span,
-    pub kind: BoundKind,
-}
-
-#[derive(Debug)]
-pub enum BoundKind {
-    TypeType(Span),
-    Type(Type),
-}
-
-#[derive(Debug)]
-pub struct Type {
-    pub span: Span,
-    pub kind: TypeKind,
-}
-
-#[derive(Debug)]
-pub enum TypeKind {
-    Wildcard,
-    Path(Path, GenericArgs),
-
-    Bool,
-    Int(Signed),
-    SizedInt(SizedIntType),
-
-    Tuple(Vec<Type>),
-    Array(Box<Type>, Box<Expression>),
-
-    Func(Vec<Type>, Box<Type>),
-}
-
-#[derive(Debug)]
-pub struct SizedIntType {
-    pub signed: Signed,
-    pub size: SizedIntSize,
-
-    // TODO min/max args?
-    // gen_args: GenericArgs,
-}
-
-#[derive(Debug)]
-pub enum SizedIntSize {
-    Literal(u32),
-    Expression(Box<Expression>),
-}
-
-#[derive(Debug)]
-pub enum Signed {
-    Bit,
-    Unsigned,
-    Signed,
-}
-
-#[derive(Debug)]
-pub enum FixedIntSize {
-    Literal(u32),
-    Expression(Box<Expression>),
-}
-
-#[derive(Debug)]
 pub struct Expression {
     pub span: Span,
     pub kind: ExpressionKind,
@@ -189,64 +142,69 @@ pub struct Expression {
 
 #[derive(Debug)]
 pub enum ExpressionKind {
-    Block(Block),
-    ControlFlow(ControlFlowExpression),
-
+    // Miscellaneous
+    Wildcard,
     Path(Path),
     Wrapped(Box<Expression>),
+    // the special "type" type
+    Type,
 
-    // TODO allow specifying type?
-    // TODO only allow int literals for int types, and only allow binary literals for bit types?
+    // Control flow
+    Block(Block),
+    If(IfExpression),
+    Loop(LoopExpression),
+    While(WhileExpression),
+    For(ForExpression),
+
+    Return(Option<Box<Expression>>),
+    Break(Option<Box<Expression>>),
+    Continue,
+
+    // Literals
     IntPattern(IntPattern),
     BoolLiteral(bool),
     StringLiteral(String),
 
-    // TODO array vs concat? are unsigned ints really just arrays?
-    ArrayLiteral(Vec<ArrayItem>),
-    StructLiteral(StructLiteral),
+    // Structures
+    ArrayInit(Vec<Expression>),
+    TupleInit(Vec<Expression>),
+    StructInit(StructLiteral),
+    TypeFunc(Vec<Expression>, Box<Expression>),
+    Range { inclusive: bool, start: Box<Expression>, end: Box<Expression> },
 
+    // Operations
     UnaryOp(UnaryOp, Box<Expression>),
     BinaryOp(BinaryOp, Box<Expression>, Box<Expression>),
-    TernaryOp(Box<Expression>, Box<Expression>, Box<Expression>),
+    TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
-    Call(Box<Expression>, Vec<Expression>),
-    Cast(Box<Expression>, Type),
-
+    // Indexing
     ArrayIndex(Box<Expression>, Box<Expression>),
     FieldAccess(Box<Expression>, Identifier),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<u32>),
 
-    Return(Option<Box<Expression>>),
-    Break(Option<Box<Expression>>),
-    Continue,
+    // Calls
+    Call(Box<Expression>, Args),
 }
 
 #[derive(Debug)]
-pub enum ControlFlowExpression {
-    If(IfExpression),
-    Match(MatchExpression),
-    Loop(LoopExpression),
-    While(WhileExpression),
-    For(ForExpression),
-}
-
-#[derive(Debug)]
-pub struct ArrayItem {
+pub struct Args {
     pub span: Span,
-    pub kind: ArrayItemKind,
-}
-
-#[derive(Debug)]
-pub enum ArrayItemKind {
-    Value(Box<Expression>),
-    Spread(Box<Expression>),
+    pub positional: Vec<Expression>,
+    pub named: Vec<(Identifier, Expression)>,
 }
 
 #[derive(Debug)]
 pub struct StructLiteral {
-    pub struct_path: Path,
-    pub fields: Vec<(Identifier, Expression)>,
+    pub struct_ty: Box<Expression>,
+    pub fields: Vec<StructLiteralField>,
+}
+
+#[derive(Debug)]
+pub struct StructLiteralField {
+    pub span: Span,
+    pub id: Identifier,
+    pub value: Expression,
 }
 
 #[derive(Debug)]
@@ -254,17 +212,6 @@ pub struct IfExpression {
     pub cond: Box<Expression>,
     pub then_block: Block,
     pub else_block: Option<Block>,
-}
-
-#[derive(Debug)]
-pub struct MatchExpression {
-    pub expr: Box<Expression>,
-    pub arms: Vec<MatchArm>,
-}
-
-#[derive(Debug)]
-pub struct MatchArm {
-    // TODO
 }
 
 #[derive(Debug)]
@@ -281,42 +228,23 @@ pub struct WhileExpression {
 #[derive(Debug)]
 pub struct ForExpression {
     pub index: MaybeIdentifier,
-    pub index_ty: Option<Type>,
-    pub start: Box<Expression>,
-    pub end: Box<Expression>,
+    pub index_ty: Option<Box<Expression>>,
+    pub range: Box<Expression>,
     pub body: Block,
 }
 
 // TODO allow: undefined, wildcard, 0, 1, hex, decimal, ...
+// TODO wildcard symbol: `_`, `?`, `*`, `#`?
+//     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
 #[derive(Debug)]
 pub enum IntPattern {
-    // [0-9], [a-f], _
+    // [0-9a-fA-F_]*
     Hex(String),
-    // [0-1], _
+    // [01_]*
     Bin(String),
-    // [0-9]
+    // [0-9]*
     Dec(String),
-}
-
-#[derive(Debug)]
-pub struct GenericParams {
-    pub span: Span,
-    pub params: Vec<GenericParam>,
-}
-
-#[derive(Debug)]
-pub struct GenericParam {
-    pub span: Span,
-    pub id: Identifier,
-    pub bound: Option<Type>,
-}
-
-#[derive(Debug)]
-pub struct GenericArgs {
-    pub span: Span,
-    pub un_named: Vec<Expression>,
-    pub named: Vec<(Identifier, Expression)>
 }
 
 #[derive(Debug)]
@@ -325,7 +253,7 @@ pub enum MaybeIdentifier {
     Identifier(Identifier),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,
@@ -338,13 +266,14 @@ pub struct Path {
     pub id: Identifier,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum BinaryOp {
     Add,
     Sub,
     Mul,
     Div,
     Mod,
+    Pow,
 
     BitAnd,
     BitOr,
@@ -361,10 +290,22 @@ pub enum BinaryOp {
     CmpLte,
     CmpGt,
     CmpGte,
+
+    In,
+    Range,
+    RangeInclusive,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum UnaryOp {
     Neg,
     Not,
+}
+
+// TODO remove if unnecessary
+// TODO replace Identifier with MaybeIdentifier whenever possible
+#[derive(Debug)]
+pub struct Spanned<T> {
+    pub span: Span,
+    pub inner: T,
 }

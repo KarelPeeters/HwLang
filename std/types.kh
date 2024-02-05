@@ -13,22 +13,23 @@ type int;
 type uint;
 type int(Range(int));
 type uint(Range(uint));
-type int(n: Int) = int(-2**(n-1) .. 2**(n-1));
-type uint(n: Int) = int(-2**(n-1) .. 2**(n-1));
+type int(n: Int) = int(-2**(n - 1) .. 2**(n - 1));
+type uint(n: Int) = int(-2**(n - 1) .. 2**(n - 1));
 
 // Containers
 type List(T: type);
-type Array(T: type, uint, *uint);
+type Array(T: type, uint); // TODO "uint, *uint" or "+uint"?
 
 // Utility
 // TODO convert between these for unbounded types, eg. int/uint
-struct Range(type T) { min: T, max: T }
-struct RangeInc(type T) { min: T, max_inc: T }
+struct Range(T: type) { min: T, max: T }
+struct RangeInc(T: type) { min: T, max_inc: T }
 
-enum Option(type T) {
-    None,
-    Some(T),
-}
+// TODO parse enum
+//enum Option(T: type) {
+//    None,
+//    Some(T),
+//}
 
 // Operators
 // TODO move operators to different file
