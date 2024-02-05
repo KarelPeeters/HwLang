@@ -204,6 +204,38 @@ delay(clk) {
 }
 ```
 
+### Sequential flow
+
+For simple protocols and IO stuff, or other simple state machines, we need some sequential programming model. Again, how to handle resets?
+
+Do we want full fork/join support like in SystemVerilog tasks? Is it easy to efficiently compile this stuff?
+
+```
+// simple 10x clock divider
+sequential(clk) {
+  loop {
+    clk_out = 0;
+    wait(5)
+    clk_out = 1;
+    wait(5)
+  }
+}
+
+// pulse wave generator
+sequential(clk) {
+  loop {
+    wave_out = 0;
+    while !trigger_in { wait(1) }
+    wave_out = 1;
+    wait(1);
+    wave_out = 0;
+    wait(1);
+    wave_out = 1;
+    wait(1);
+  }
+}
+```
+
 ### Data structures
 
 list: backed by a dequeue
