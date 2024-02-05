@@ -1,7 +1,7 @@
 use std::mem::swap;
 use std::num::ParseIntError;
 
-use crate::parse::ast::{Args, Assignment, BinaryOp, Block, Declaration, Expression, ExpressionKind, ForExpression, Identifier, IfExpression, IntPattern, Item, ItemDefConst, ItemDefFunc, ItemDefStruct, ItemDefType, ItemUse, LoopExpression, MaybeIdentifier, PackageContent, Param, ParamKind, Params, Path, Spanned, Statement, StatementKind, StructField, StructLiteral, StructLiteralField, UnaryOp, WhileExpression};
+use crate::parse::ast::{Args, Assignment, BinaryOp, Block, Declaration, Expression, ExpressionKind, ForExpression, Identifier, IfExpression, IntPattern, Item, ItemDefConst, ItemDefFunc, ItemDefInterface, ItemDefStruct, ItemDefType, ItemUse, LoopExpression, MaybeIdentifier, PackageContent, Param, ParamKind, Params, Path, Spanned, Statement, StatementKind, StructField, StructLiteral, StructLiteralField, UnaryOp, WhileExpression};
 use crate::parse::pos::{FileId, Pos, Span};
 
 #[derive(Debug)]
@@ -53,6 +53,7 @@ declare_tokens![
     Type("type"),
     Struct("struct"),
     Fn("fn"),
+    Interface("interface"),
     Return("return"),
     Let("let"),
     Const("const"),
@@ -652,6 +653,7 @@ impl<'s> Parser<'s> {
             TT::Use => self.item_use().map(Item::Use),
             TT::Type => self.type_alias().map(Item::Type),
             TT::Fn => self.function().map(Item::Func),
+            TT::Interface => self.interface().map(Item::Interface),
             _ => Err(Self::unexpected_token(token, &[TT::Struct, TT::Const, TT::Use, TT::Type, TT::Fn], "start of item"))
         }
     }
@@ -815,6 +817,14 @@ impl<'s> Parser<'s> {
 
         let span = Span::new(start_pos, self.last_popped_end);
         Ok(ItemDefFunc { span, id, params, ret_ty, body })
+    }
+
+    fn interface(&mut self) -> Result<ItemDefInterface> {
+        let start_pos = self.peek().span.start;
+
+        self.expect(TT::Interface, "interface declaration")?;
+
+        todo!()
     }
 
     fn maybe_block(&mut self) -> Result<Option<Block>> {

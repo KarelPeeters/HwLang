@@ -158,6 +158,9 @@ Probably undefined for everything to detect startup bugs.
 * What syntax do we use for port directions that switch? Or does everything switch?
 * Can interfaces have built-in asserts/drivers/monitors? How do we turn them on or off?
 
+* Every `def`/`function`/`module`/... defines an implicit interface.
+  * We need an easy way to partially compose them.
+
 ### Port directions
 
 Is `in`, `out`, `inout` fine? Do we want more? Or no `inout`? Do we want a separate type for tristate? Or will a handle type fully handle that.
@@ -349,6 +352,18 @@ Details:
 * lazy, incremental, ...
   * use salsa? https://rustc-dev-guide.rust-lang.org/salsa.html
 * for ideas on what we need to support IDEs: https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md 
+
+
+### Use cases to examine
+
+* basic pipelined datapath (with backpressure)
+* IO state machine
+* AXI config register banks
+  * is the language powerful enough that we don't need to generate code?
+* repeating grids of components
+* FIFOs
+* CPU instruction decoding
+* clock domain crossings, synchronizers, ...
 
 ### Build system
 

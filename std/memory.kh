@@ -1,0 +1,44 @@
+// TODO general syntax for more than 2-way symmetric interfaces
+// TODO all these values are synchronized to a clock, how do we indicate this?
+interface WritePort.Master/Slave(T: type, size: uint) {
+    address: out uint(0..size)
+    data: out T,
+    enable: out bool,
+}
+
+interface ReadPort.Master/Slave(T: type, size: uint) {
+    address: out uint(0..size),
+    data: in T,
+}
+
+// TODO sync by default? or explicit?
+// TODO should sync be part of the interface or part of
+def memory(
+    T: type, size: uint,
+    clk: clock,
+    writers: sync Array(WritePort.Slave(size, T)),
+    readers: sync Array(ReadPort.Slave(size, T))
+) {
+    let data: Array(T, size) = undef;
+
+    sync(clk) {
+        // read before write so this doesn't infer passthrough logic
+        for reader in readers {
+            reader.data = data[reader.address];
+        }
+        for writer in writers {
+            // TODO this becomes a priority decoder, is there a way for make collisions undefined instead?
+            //   maybe that's what happens when the sync is put in the for loop!
+            //   we could also explicitly write "undefs" if there are collisions, but that's not great
+            if writer.enable {
+                data[writer.address] = writer.data;
+            }
+        }
+    }
+}
+
+interface FifoPush.Master/Slave(T: type, cap: uint) {
+
+}
+
+def fifo(T: type, cap: uint, )

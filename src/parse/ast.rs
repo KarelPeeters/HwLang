@@ -15,6 +15,7 @@ pub enum Item {
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
     Func(ItemDefFunc),
+    Interface(ItemDefInterface),
 }
 
 #[derive(Debug)]
@@ -76,6 +77,24 @@ pub struct ItemDefFunc {
     pub params: Params,
     pub ret_ty: Option<Expression>,
     pub body: Option<Block>,
+}
+
+#[derive(Debug)]
+pub struct ItemDefInterface {
+    pub span: Span,
+    pub id: Identifier,
+    // either None or non-empty
+    pub modes: Option<Vec<Identifier>>,
+    pub params: Params,
+    pub fields: Vec<InterfaceField>,
+}
+
+#[derive(Debug)]
+pub struct InterfaceField {
+    pub span: Span,
+    pub id: Identifier,
+    pub dir: Direction,
+    pub ty: Expression,
 }
 
 #[derive(Debug)]
@@ -300,6 +319,12 @@ pub enum BinaryOp {
 pub enum UnaryOp {
     Neg,
     Not,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Direction {
+    In,
+    Out,
 }
 
 // TODO remove if unnecessary

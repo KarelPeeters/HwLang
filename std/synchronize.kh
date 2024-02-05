@@ -1,0 +1,24 @@
+// TODO automatically infer parameter in square brackets?
+struct Control {
+    clk: in clock,
+    reset: async in bool,
+}
+
+// TODO defs that can only be used in a sync block
+// TODO what we really want is a proper clk/reset default context in which functions can be called
+// TODO write some example code with multiple clocks and async resets to check how well all of this will work
+def sync.delay_undef(T: type, input: in T) -> T {
+    let curr: T = undef;
+}
+
+def delay([T: type], input: in T, init: T = undef) -> T {
+    async {
+    }
+    sync(clk) {
+        return input;
+    }
+}
+
+def synchronize(clk: clock, input: async in bool, output: sync(clk) out bool) {
+
+}
