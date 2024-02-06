@@ -107,6 +107,41 @@ Distinction between functions and procedures:
   * input arguments
 
 
+### Testing
+
+Do we want (only) our own simulator or rely on existing ones? We need interop with existing ones anyway!
+
+#### constrained randomization
+
+* allow constraining multiple values at once
+* always explicitly list randomized fields, not with separate setting per field like in SV
+* only allow this for simple structs, not for full classes (will the language even have classes?)
+* don't bother with default constraints in structs, they're just weird
+  tests:
+
+#### Testbench
+* no sequencer/monitor/port... semi-built-in stuff, just simple classes that communicate over channels
+* no stage stuff, no separate build and connect
+* no global shared state through a dict!
+
+* for tests we definitely need non-clocked stuff, so we might as well add it to the language
+
+#### Utilities
+
+* printing debug strings with formatting needs to be super easy
+  * (we don't want to repeatedly type `uvm_info(get_type_name(), $sformatf("..."), UVM_LOW)`)
+  * different log levels (error, warning, info)
+  * different verbosity for info? with some concrete guide on how those levels should be used
+
+* Coverage built-in as much as possible
+
+### Macros
+
+Hopefully functions and the rest of the language are designed well enough that we don't need them.
+
+Maybe have some way of inserting literal VHDL/SV code as an escape hatch? Similar to how C/CPP allow inline assembly.
+Maybe even with the same IO management, although instead of register allocation it will do name mangling here.
+
 ### Interop
 
 #### RTL
@@ -359,6 +394,12 @@ Details:
   * use salsa? https://rustc-dev-guide.rust-lang.org/salsa.html
 * for ideas on what we need to support IDEs: https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md 
 
+Worklist: 
+* Items can heavily depend on each other, on the result of typedefs, on symbols imported ...
+* => We need some kind of worklist algorithm that's very flexible.
+  * Work on an item until we get stuck, then move to the next one.
+  * If all items are stuck there's a cyclic dependency in the source code, report this as an error.
+  * Is `async` rust a good fit here?
 
 ### Use cases to examine
 
@@ -390,3 +431,17 @@ Utilities:
 
 ### Package manager
 
+### Safety features
+
+We want to detect as many issues as early as possible, primarily during compile time and if not at least with asserts during testing.
+
+Examples:
+* we have a very strong type system, and encourage the user to define more types whenever possible
+  * add a way for users to constrain their types, with constructors that assert or return `Option`?
+* integer range issues are caught by range checking (part of int types), and the user has to explicitly truncate or wrap
+* clock/async issues are caught by all values/types having an associated clock property!
+  * this forces users to insert synchronization primitives
+  * users can opt-out via some `unsafe`-style block
+* can we fully detect race conditions between different `async` and `sync` blocks at compile time?
+  * investigate this
+  * we want to avoid any "unpredictable" or undefined behavior, we want least want to emit "X" if this happens in simulation

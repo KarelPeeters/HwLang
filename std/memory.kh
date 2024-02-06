@@ -19,6 +19,8 @@ def memory(
     writers: Array(WritePort.Slave(size, T)),
     readers: Array(ReadPort.Slave(size, T))
 ) {
+    // TODO get this print to parse
+    //    print("Memory with size {size}x{T.size} = {size*T.size}")
     let data: Array(T, size) = undef;
 
     sync(clk) {
