@@ -106,6 +106,7 @@ pub struct Params {
 #[derive(Debug)]
 pub struct Param {
     pub span: Span,
+    pub dir: Option<Direction>,
     pub kind: ParamKind,
     pub ty: Expression,
 }
@@ -174,6 +175,7 @@ pub enum ExpressionKind {
     Loop(LoopExpression),
     While(WhileExpression),
     For(ForExpression),
+    Sync(SyncExpression),
 
     Return(Option<Box<Expression>>),
     Break(Option<Box<Expression>>),
@@ -249,6 +251,12 @@ pub struct ForExpression {
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
     pub range: Box<Expression>,
+    pub body: Block,
+}
+
+#[derive(Debug)]
+pub struct SyncExpression {
+    pub clk: Box<Expression>,
     pub body: Block,
 }
 

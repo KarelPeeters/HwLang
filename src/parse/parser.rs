@@ -1,7 +1,7 @@
 use std::mem::swap;
 use std::num::ParseIntError;
 
-use crate::parse::ast::{Args, Assignment, BinaryOp, Block, Declaration, Expression, ExpressionKind, ForExpression, Identifier, IfExpression, IntPattern, Item, ItemDefConst, ItemDefFunc, ItemDefInterface, ItemDefStruct, ItemDefType, ItemUse, LoopExpression, MaybeIdentifier, PackageContent, Param, ParamKind, Params, Path, Spanned, Statement, StatementKind, StructField, StructLiteral, StructLiteralField, UnaryOp, WhileExpression};
+use crate::parse::ast::{Args, Assignment, BinaryOp, Block, Declaration, Direction, Expression, ExpressionKind, ForExpression, Identifier, IfExpression, InterfaceField, IntPattern, Item, ItemDefConst, ItemDefFunc, ItemDefInterface, ItemDefStruct, ItemDefType, ItemUse, LoopExpression, MaybeIdentifier, PackageContent, Param, ParamKind, Params, Path, Spanned, Statement, StatementKind, StructField, StructLiteral, StructLiteralField, SyncExpression, UnaryOp, WhileExpression};
 use crate::parse::pos::{FileId, Pos, Span};
 
 #[derive(Debug)]
@@ -52,7 +52,8 @@ declare_tokens![
     Use("use"),
     Type("type"),
     Struct("struct"),
-    Fn("fn"),
+    Def("def"),
+    Sync("sync"),
     Interface("interface"),
     Return("return"),
     Let("let"),
@@ -64,6 +65,7 @@ declare_tokens![
     While("while"),
     For("for"),
     In("in"),
+    Out("out"),
     As("as"),
     Break("break"),
     Continue("continue"),
@@ -652,52 +654,66 @@ impl<'s> Parser<'s> {
             TT::Const => self.item_def_const().map(Item::Const),
             TT::Use => self.item_use().map(Item::Use),
             TT::Type => self.type_alias().map(Item::Type),
-            TT::Fn => self.function().map(Item::Func),
+            TT::Def => self.function().map(Item::Func),
             TT::Interface => self.interface().map(Item::Interface),
-            _ => Err(Self::unexpected_token(token, &[TT::Struct, TT::Const, TT::Use, TT::Type, TT::Fn], "start of item"))
+            _ => Err(Self::unexpected_token(token, &[TT::Struct, TT::Const, TT::Use, TT::Type, TT::Def, TT::Interface], "start of item"))
         }
     }
 
-    fn maybe_params(&mut self) -> Result<Params> {
+    fn maybe_params(&mut self, allow_directions: bool) -> Result<Params> {
         if self.at(TT::OpenB) {
-            Ok(self.params()?)
+            Ok(self.params(allow_directions)?)
         } else {
             Ok(Params { span: Span::empty_at(self.last_popped_end), params: vec![] })
         }
     }
 
-    fn params(&mut self) -> Result<Params> {
+    fn params(&mut self, allow_directions: bool) -> Result<Params> {
         let start = self.expect(TT::OpenB, "start of parameters")?.span.start;
-        let params = self.list(TT::CloseB, Some(TT::Comma), Self::param)?.values;
+        let params = self.list(TT::CloseB, Some(TT::Comma), |s| s.param(allow_directions))?.values;
         let span = Span::new(start, self.last_popped_end);
         Ok(Params { span, params })
     }
 
-    fn param(&mut self) -> Result<Param> {
+    fn param(&mut self, allow_directions: bool) -> Result<Param> {
         // TODO a proper grammar DSL would be a lot more convenient here
         // types of parameter:
-        // * `ty`
-        // * `id: ty`
-        // * `id: ty = default`
+        // * `(dir) ty`
+        // * `id: (dir) ty`
+        // * `id: (dir) ty = default`
 
+        let dir = if allow_directions {
+            self.maybe_direction()?
+        } else {
+            None
+        };
         let ty_or_id = self.expression()?;
 
-        if let ExpressionKind::Path(Path { span: _, parents, id }) = &ty_or_id.kind {
-            if parents.is_empty() {
-                if self.accept(TT::Colon)?.is_some() {
-                    let ty = self.expression()?;
+        if dir.is_none() {
+            if let ExpressionKind::Path(Path { span: _, parents, id }) = &ty_or_id.kind {
+                if parents.is_empty() {
+                    if self.accept(TT::Colon)?.is_some() {
+                        let dir = if allow_directions {
+                            self.maybe_direction()?
+                        } else {
+                            None
+                        };
 
-                    let default = if self.accept(TT::Eq)?.is_some() {
-                        Some(self.expression()?)
-                    } else {
-                        None
-                    };
+                        let ty = self.expression()?;
 
-                    return Ok(Param {
-                        span: Span::new(ty_or_id.span.start, self.last_popped_end),
-                        kind: ParamKind::Named { id: id.clone(), default },
-                        ty,
-                    });
+                        let default = if self.accept(TT::Eq)?.is_some() {
+                            Some(self.expression()?)
+                        } else {
+                            None
+                        };
+
+                        return Ok(Param {
+                            span: Span::new(ty_or_id.span.start, self.last_popped_end),
+                            dir,
+                            kind: ParamKind::Named { id: id.clone(), default },
+                            ty,
+                        });
+                    }
                 }
             }
         }
@@ -705,6 +721,7 @@ impl<'s> Parser<'s> {
         Ok(Param {
             span: ty_or_id.span,
             kind: ParamKind::Anonymous,
+            dir,
             ty: ty_or_id,
         })
     }
@@ -768,7 +785,7 @@ impl<'s> Parser<'s> {
     fn type_alias(&mut self) -> Result<ItemDefType> {
         let start_pos = self.expect(TT::Type, "start of type alias")?.span.start;
         let id = self.identifier("type alias name")?;
-        let params = self.maybe_params()?;
+        let params = self.maybe_params(false)?;
 
         let inner = if self.accept(TT::Eq)?.is_some() {
             Some(self.expression_boxed()?)
@@ -785,7 +802,7 @@ impl<'s> Parser<'s> {
     fn item_def_struct(&mut self) -> Result<ItemDefStruct> {
         let start = self.expect(TT::Struct, "start of struct declaration")?.span.start;
         let id = self.identifier("struct name")?;
-        let params = self.maybe_params()?;
+        let params = self.maybe_params(false)?;
         self.expect(TT::OpenC, "start of struct fields")?;
         let fields = self.list(TT::CloseC, Some(TT::Comma), Self::struct_field)?.values;
         let span = Span::new(start, self.last_popped_end);
@@ -803,9 +820,9 @@ impl<'s> Parser<'s> {
     fn function(&mut self) -> Result<ItemDefFunc> {
         let start_pos = self.peek().span.start;
 
-        self.expect(TT::Fn, "function declaration")?;
+        self.expect(TT::Def, "function declaration")?;
         let id = self.identifier("function name")?;
-        let params = self.params()?;
+        let params = self.params(true)?;
 
         let ret_ty = if self.accept(TT::ArrowRight)?.is_some() {
             Some(self.expression()?)
@@ -821,10 +838,63 @@ impl<'s> Parser<'s> {
 
     fn interface(&mut self) -> Result<ItemDefInterface> {
         let start_pos = self.peek().span.start;
-
         self.expect(TT::Interface, "interface declaration")?;
+        let name = self.identifier("interface name")?;
+        let modes = if self.accept(TT::Dot)?.is_some() {
+            let mut modes = vec![];
+            // TODO use list instead? the problem is that there are multiple possible end tokens
+            while let Some(mode) = self.accept(TT::Id)? {
+                modes.push(Identifier { span: mode.span, string: mode.string });
+                if !self.accept(TT::Slash)?.is_some() {
+                    break;
+                }
+            }
+            Some(modes)
+        } else {
+            None
+        };
+        let params = self.maybe_params(false)?;
 
-        todo!()
+        self.expect(TT::OpenC, "start interface body")?;
+        let fields = self.list(TT::CloseC, Some(TT::Comma), Self::interface_field)?.values;
+
+        Ok(ItemDefInterface {
+            span: Span::new(start_pos, self.last_popped_end),
+            id: name,
+            modes,
+            params,
+            fields,
+        })
+    }
+
+    fn interface_field(&mut self) -> Result<InterfaceField> {
+        let id = self.identifier("interface field name")?;
+        self.expect(TT::Colon, "interface field separator")?;
+        let dir = self.direction()?;
+        let ty = self.expression()?;
+        Ok(InterfaceField {
+            span: Span::new(id.span.start, ty.span.end),
+            id,
+            dir,
+            ty,
+        })
+    }
+
+    fn maybe_direction(&mut self) -> Result<Option<Direction>> {
+        if self.at(TT::In) || self.at(TT::Out) {
+            Ok(Some(self.direction()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn direction(&mut self) -> Result<Direction> {
+        let token = self.expect_any(&[TT::In, TT::Out], "direction")?;
+        match token.ty {
+            TT::In => Ok(Direction::In),
+            TT::Out => Ok(Direction::Out),
+            _ => unreachable!(),
+        }
     }
 
     fn maybe_block(&mut self) -> Result<Option<Block>> {
@@ -1179,6 +1249,15 @@ impl<'s> Parser<'s> {
                     range,
                     body,
                 })
+            }
+            TT::Sync => {
+                self.pop()?;
+                self.expect(TT::OpenB, "sync param start")?;
+                let clk = self.expression_boxed()?;
+                self.expect(TT::CloseB, "sync param end")?;
+                let body = self.block()?;
+
+                ExpressionKind::Sync(SyncExpression { clk, body })
             }
             TT::Return => {
                 //TODO think about whether this is the right spot to parse a return

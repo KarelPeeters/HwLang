@@ -1,7 +1,7 @@
 // TODO general syntax for more than 2-way symmetric interfaces
 // TODO all these values are synchronized to a clock, how do we indicate this?
 interface WritePort.Master/Slave(T: type, size: uint) {
-    address: out uint(0..size)
+    address: out uint(0..size),
     data: out T,
     enable: out bool,
 }
@@ -16,8 +16,8 @@ interface ReadPort.Master/Slave(T: type, size: uint) {
 def memory(
     T: type, size: uint,
     clk: clock,
-    writers: sync Array(WritePort.Slave(size, T)),
-    readers: sync Array(ReadPort.Slave(size, T))
+    writers: Array(WritePort.Slave(size, T)),
+    readers: Array(ReadPort.Slave(size, T))
 ) {
     let data: Array(T, size) = undef;
 
