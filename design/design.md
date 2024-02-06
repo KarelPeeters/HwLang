@@ -184,10 +184,16 @@ First thoughts:
 
 ### Assignments
 
-Do we want separate clocked vs non-clocked assignments?
-How do assignments know which clock to use? Infer from LHS and RHS (which must match)? Or have some default clock per function?
-If there are multiple clocks, explicitly set the current clock within some scope?
-How to deal with reset values for delays?
+Clock/Reset/State:
+* Do we want separate clocked vs non-clocked assignments?
+* How do assignments know which clock to use? Infer from LHS and RHS (which must match)? Or have some default clock per function?
+  * If there are multiple clocks, explicitly set the current clock within some scope?
+* How to deal with reset values for delays?
+
+Typing:
+* allow automatic widening of types? or with a separate operator?
+  * literals automatically widen anyway, so this would only be for arithmetic expressions 
+* maybe stick to `truncate`, `extend`, ... for consistency at first
 
 ```
 a = b
