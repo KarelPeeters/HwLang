@@ -1,0 +1,14 @@
+def main(
+    clk: in clock,
+    reset_n: async in bool,
+    buttons: in bits(4),
+    switches: in bits(4),
+    leds: out bits(4),
+) {
+    // leds = switches;
+    // TODO how to set reset values?
+
+    sync(clk) {
+        leds = switches & buttons;
+    }
+}

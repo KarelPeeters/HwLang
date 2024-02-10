@@ -280,6 +280,12 @@ sequential(clk) {
 }
 ```
 
+Do we also want a similar show for pipelined combinatorial stuff? How should the registers be spread out:
+* automatically by our compiler?
+* automatically by backend -> this doesn't seem to work great in practice
+* manually by the user
+  * do we want some warnings/errors if values get misaligned?
+
 ### Data structures
 
 list: backed by a dequeue
@@ -325,7 +331,7 @@ Reshaping:
 ### Control flow
 
 * if, while, for, loop, match
-* match expressions with bit/hex patterns!
+* match expressions with bit/hex patterns, don't cares, ...
 
 ### Clock interactions
 
@@ -445,3 +451,4 @@ Examples:
 * can we fully detect race conditions between different `async` and `sync` blocks at compile time?
   * investigate this
   * we want to avoid any "unpredictable" or undefined behavior, we want least want to emit "X" if this happens in simulation
+* only allow non-resetting registers in pipelines or similar structures that are dataflow-only

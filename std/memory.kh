@@ -23,6 +23,8 @@ def memory(
     //    print("Memory with size {size}x{T.size} = {size*T.size}")
     let data: Array(T, size) = undef;
 
+    // is this actually better than `if(pos_edge(clk))`?
+    //   sure, clearer semantics from the compiler POV!
     sync(clk) {
         // read before write so this doesn't infer passthrough logic
         for reader in readers {

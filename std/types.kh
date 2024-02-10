@@ -6,7 +6,8 @@ type bool;
 // TODO do we need bits? or will arrays be convenient enough?
 // TODO support both named and unnamed parameters for types
 type bits;
-type bits(uint);
+// TODO is this just a type alias for an array of bools?
+type bits(n: uint) = Array(bool, n);
 
 // Signature overloading, even for types!
 type int;
