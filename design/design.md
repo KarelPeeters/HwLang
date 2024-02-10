@@ -155,6 +155,10 @@ We can import and use _all_ existing VHDL and (System)Verilog modules.
 
 #### Simulators
 
+#### Embedded SW
+
+The compiler should be able to generate C headers for all types (enums, structs, ...) so it's super easy to do memory maps and configuration registers.
+
 #### Programming
 
 Ideally we'd have an easy python/C++ interface for both the compiler itself and and runtime.
