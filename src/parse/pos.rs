@@ -49,4 +49,39 @@ impl Span {
     pub fn empty_at(at: Pos) -> Self {
         Self::new(at, at)
     }
+
+    pub fn dummy() -> Self {
+        Span::empty_at(Pos {
+            file: FileId(usize::MAX),
+            line: 0,
+            col: 0,
+        })
+    }
+}
+
+pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos> {
+    let mut line = 0;
+    let mut col = 0;
+    let mut bytes = 0;
+
+    for c in src.chars() {
+        let mut buf = [0; 4];
+        bytes += c.encode_utf8(&mut buf).len();
+
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+
+        if bytes == offset {
+            return Some(Pos { file, line: line+1, col, });
+        }
+        if bytes > offset {
+            return None;
+        }
+    }
+
+    None
 }

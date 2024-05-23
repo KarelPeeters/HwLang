@@ -1,12 +1,25 @@
 use std::path::Path;
-use hwlang::parse::parser::parse_file;
-use hwlang::parse::pos::FileId;
+
+use hwlang::parse::pos::{byte_offset_to_pos, FileId};
 use hwlang::util::visit_dirs;
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
-    let result = parse_file(FileId(0), &src).expect("Failed to parse");
-    println!("{:#?}", result);
+
+    // let result = parse_file(FileId(0), &src).expect("Failed to parse");
+    // println!("{:#?}", result);
+
+    let result = hwlang::grammar::PackageContentParser::new().parse(&src);
+
+    match result {
+        Ok(package) => {
+            println!("{:#?}", package);
+        },
+        Err(e) => {
+            let e = e.map_location(|loc| (loc, byte_offset_to_pos(&src, loc, FileId(0))));
+            println!("{:?}", e);
+        }
+    };
 }
 
 #[test]

@@ -1,0 +1,20 @@
+module adder_complement(
+    const W: uint,
+    input a: uint(W),
+    input b: uint(W),
+    output r: uint(W+1),
+) {
+    r = a + b;
+}
+
+module adder_full(
+    const Amin: int,
+    const Bmin: int,
+    const Amax: int,
+    const Bmax: int,
+    input a: int(Amin..Amax),
+    input b: int(Bmin..Bmax),
+    output r: int(Amin+Bmin..Amax+Bmax),
+) {
+    r = a + b;
+}

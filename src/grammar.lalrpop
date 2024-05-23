@@ -1,0 +1,67 @@
+//use std::str::FromStr;
+use crate::parse::ast::*;
+use crate::parse::pos::*;
+
+grammar;
+
+match {
+    // Skip whitespace and comments
+    r"\s*" => { },
+    r"//[^\n\r]*[\n\r]*" => { }, // `// comment`
+    r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/" => { }, // `/* comment */`
+
+    // pass everything else through
+    _,
+}
+
+pub PackageContent: PackageContent = {
+    Item* => PackageContent { items: <>, span: Span::dummy() }
+};
+
+// items
+Item: Item = {
+    "type" <id:Id> <params:TypeParams> <inner:("=" Expr)?> ";" =>
+        Item::Type(ItemDefType { id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
+};
+
+TypeParams: Params = {
+    => Params { params: vec![], span: Span::dummy() },
+    "(" <params:Params> ")" => params,
+}
+
+#[inline]
+Params: Params = {
+    Separated<Param, ","> => Params { params: <>, span: Span::dummy() },
+};
+
+Param: Param = {
+    <id:Id> ":" <ty:Expr> => Param { dir: None, kind: ParamKind::Named { id, default: None }, ty, span: Span::dummy() },
+};
+
+// expressions
+Expr: Expression = {
+    ExprKind => Expression { kind: <>, span: Span::dummy() }
+};
+
+#[inline]
+ExprKind: ExpressionKind = {
+    <id: Id> => ExpressionKind::Path(Path { span: Span::dummy(), parents: vec![], id }),
+};
+
+// terminals
+Id: Identifier = {
+    r"[a-zA-Z_][a-zA-Z_0-9]*" => Identifier { string: <>.to_owned(), span: Span::dummy() },
+};
+
+// utilities
+#[inline]
+Separated<T, S>: Vec<T> = { // (1)
+    <mut v:(<T> S)*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
