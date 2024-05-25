@@ -40,12 +40,88 @@ Param: Param = {
 
 // expressions
 Expr: Expression = {
-    ExprKind => Expression { kind: <>, span: Span::dummy() }
+    // inner
+    #[precedence(level="0")]
+    <inner:Atom> => inner,
+
+    // prefix
+    #[precedence(level="302")]
+    "!" <expr: Expr> => Expression { kind: ExpressionKind::UnaryOp(UnaryOp::Not, Box::new(expr)), span: Span::dummy() },
+    #[precedence(level="302")]
+    "-" <expr: Expr> => Expression { kind: ExpressionKind::UnaryOp(UnaryOp::Neg, Box::new(expr)), span: Span::dummy() },
+
+    // binary
+    //   power
+    //   TODO do we want right-to-left or no associativity?
+    #[precedence(level="300")] #[assoc(side="none")]
+    <left: Expr> "**" <right: Expr> => build_binary_op(BinaryOp::Pow, left, right),
+    //   mul/div/mod
+    #[precedence(level="301")] #[assoc(side="left")]
+    <left: Expr> "*" <right: Expr> => build_binary_op(BinaryOp::Mul, left, right),
+    <left: Expr> "/" <right: Expr> => build_binary_op(BinaryOp::Div, left, right),
+    //   TODO is this working as expected in combination with mul and div?
+    #[precedence(level="301")] #[assoc(side="none")]
+    <left: Expr> "%" <right: Expr> => build_binary_op(BinaryOp::Mod, left, right),
+    //   add/sub
+    #[precedence(level="303")] #[assoc(side="left")]
+    <left: Expr> "+" <right: Expr> => build_binary_op(BinaryOp::Add, left, right),
+    <left: Expr> "-" <right: Expr> => build_binary_op(BinaryOp::Sub, left, right),
+    //   shift
+    #[precedence(level="304")] #[assoc(side="none")]
+    <left: Expr> "<<" <right: Expr> => build_binary_op(BinaryOp::Shl, left, right),
+    <left: Expr> ">>" <right: Expr> => build_binary_op(BinaryOp::Shr, left, right),
+    //   bitwise
+    //   TODO why bitwise and logical so far apart? does the order relative to add make sense?
+    #[precedence(level="305")] #[assoc(side="left")]
+    <left: Expr> "&" <right: Expr> => build_binary_op(BinaryOp::BitAnd, left, right),
+    <left: Expr> "^" <right: Expr> => build_binary_op(BinaryOp::BitXor, left, right),
+    <left: Expr> "|" <right: Expr> => build_binary_op(BinaryOp::BitOr, left, right),
+    //   range
+    #[precedence(level="306")] #[assoc(side="none")]
+    <left: Expr> ".." <right: Expr> => build_binary_op(BinaryOp::Range, left, right),
+    <left: Expr> "..=" <right: Expr> => build_binary_op(BinaryOp::RangeInclusive, left, right),
+    //   in
+    // TODO rust has in much lower, why?
+    #[precedence(level="307")] #[assoc(side="none")]
+    <left: Expr> "in" <right: Expr> => build_binary_op(BinaryOp::In, left, right),
+    //   comparison
+    #[precedence(level="308")] #[assoc(side="none")]
+    <left: Expr> "==" <right: Expr> => build_binary_op(BinaryOp::CmpEq, left, right),
+    <left: Expr> "!=" <right: Expr> => build_binary_op(BinaryOp::CmpNeq, left, right),
+    <left: Expr> ">=" <right: Expr> => build_binary_op(BinaryOp::CmpGte, left, right),
+    <left: Expr> ">" <right: Expr> => build_binary_op(BinaryOp::CmpGt, left, right),
+    <left: Expr> "<=" <right: Expr> => build_binary_op(BinaryOp::CmpLte, left, right),
+    <left: Expr> "<" <right: Expr> => build_binary_op(BinaryOp::CmpLt, left, right),
+    //   logical
+    // TODO can we prevent mixing of these two without parentheses?
+    //    yes! just combine into one and branch in code
+    #[precedence(level="309")] #[assoc(side="left")]
+    <left: Expr> "&&" <right: Expr> => build_binary_op(BinaryOp::BoolAnd, left, right),
+    <left: Expr> "||" <right: Expr> => build_binary_op(BinaryOp::BoolOr, left, right),
 };
 
-#[inline]
-ExprKind: ExpressionKind = {
-    <id: Id> => ExpressionKind::Path(Path { span: Span::dummy(), parents: vec![], id }),
+Atom: Expression = {
+    // parentheses
+    "(" <expr:Expr> ")" => expr,
+    // path
+    <parents: (<Id> "::")*> <id: Id> =>
+        Expression { kind: ExpressionKind::Path(Path { span: Span::dummy(), parents, id }), span: Span::dummy() },
+    // literals
+    "true" => Expression { kind: ExpressionKind::BoolLiteral(true), span: Span::dummy() },
+    "false" => Expression { kind: ExpressionKind::BoolLiteral(false), span: Span::dummy() },
+    r"0x[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Hex(<>.to_owned())), span: Span::dummy() },
+    r"0b[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Bin(<>.to_owned())), span: Span::dummy() },
+    r"[0-9]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Dec(<>.to_owned())), span: Span::dummy() },
+
+    // suffix
+    <target:Expr> "(" <args:CallArgs> ")" =>
+        Expression { kind: ExpressionKind::Call(Box::new(target), args), span: Span::dummy() },
+}
+
+// TODO support named args
+CallArgs: Args = {
+    <positional:Separated<Expr, ",">> =>
+        Args { positional, named: vec![], span: Span::dummy() },
 };
 
 // terminals

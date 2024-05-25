@@ -293,6 +293,14 @@ pub struct Path {
     pub id: Identifier,
 }
 
+// TODO move to parser utilities module
+pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> Expression {
+    Expression {
+        span: Span::new(left.span.start, right.span.end),
+        kind: ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right)),
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum BinaryOp {
     Add,
