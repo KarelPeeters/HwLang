@@ -22,11 +22,17 @@ pub PackageContent: PackageContent = {
 Item: Item = {
     "type" <id:Id> <params:TypeParams> <inner:("=" Expr)?> ";" =>
         Item::Type(ItemDefType { id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
+    "struct" <id:Id> <params:TypeParams> "{" <fields: Separated<StructField, ",">> "}" =>
+        Item::Struct(ItemDefStruct { id, params, fields, span: Span::dummy() }),
 };
 
 TypeParams: Params = {
     => Params { params: vec![], span: Span::dummy() },
     "(" <params:Params> ")" => params,
+}
+
+StructField: StructField = {
+    <id:Id> ":" <ty:Expr> => StructField { id, ty, span: Span::dummy() },
 }
 
 #[inline]
@@ -35,6 +41,7 @@ Params: Params = {
 };
 
 Param: Param = {
+    <ty: Expr> => Param { dir: None, kind: ParamKind::Anonymous, ty, span: Span::dummy() },
     <id:Id> ":" <ty:Expr> => Param { dir: None, kind: ParamKind::Named { id, default: None }, ty, span: Span::dummy() },
 };
 
@@ -144,6 +151,8 @@ ExprAtomic: Expression = {
     // path
     <parents: (<Id> "::")*> <id: Id> =>
         Expression { kind: ExpressionKind::Path(Path { span: Span::dummy(), parents, id }), span: Span::dummy() },
+    // TODO why does this not get parsed as an identifier?
+    "type" => Expression { kind: ExpressionKind::Type, span: Span::dummy() },
     // literals
     "true" => Expression { kind: ExpressionKind::BoolLiteral(true), span: Span::dummy() },
     "false" => Expression { kind: ExpressionKind::BoolLiteral(false), span: Span::dummy() },
