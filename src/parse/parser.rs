@@ -501,8 +501,8 @@ impl PostFixState {
         let kind = match self.kind {
             PostFixStateKind::Call { args } =>
                 ExpressionKind::Call(inner, args),
-            PostFixStateKind::ArrayIndex { index } =>
-                ExpressionKind::ArrayIndex(inner, index),
+            PostFixStateKind::ArrayIndex { args } =>
+                ExpressionKind::ArrayIndex(inner, args),
             PostFixStateKind::DotIdIndex { index } =>
                 ExpressionKind::DotIdIndex(inner, index),
             PostFixStateKind::DotIntIndex { span, index } =>
@@ -517,7 +517,7 @@ impl PostFixState {
 
 enum PostFixStateKind {
     Call { args: Args },
-    ArrayIndex { index: Box<Expression> },
+    ArrayIndex { args: Args },
     DotIdIndex { index: Identifier },
     DotIntIndex { span: Span, index: u32 },
     StructInit { fields: Vec<StructLiteralField> },
@@ -1114,10 +1114,10 @@ impl<'s> Parser<'s> {
                 TT::OpenS => {
                     //array indexing
                     self.pop()?;
-                    let index = self.expression_boxed()?;
+                    let args = self.call_args()?;
                     self.expect(TT::CloseS, "")?;
 
-                    (POSTFIX_LEVEL_DEFAULT, PostFixStateKind::ArrayIndex { index })
+                    (POSTFIX_LEVEL_DEFAULT, PostFixStateKind::ArrayIndex { args })
                 }
                 TT::OpenC if !self.restrictions.no_struct_literal => {
                     // struct literal

@@ -199,7 +199,7 @@ pub enum ExpressionKind {
     TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
-    ArrayIndex(Box<Expression>, Box<Expression>),
+    ArrayIndex(Box<Expression>, Args),
     FieldAccess(Box<Expression>, Identifier),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<u32>),
