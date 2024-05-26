@@ -29,18 +29,13 @@ fn parse_types() {
 }
 
 #[test]
-fn parse_memory() {
-    test_parse("std/memory.kh")
-}
-
-#[test]
-fn parse_synchronize() {
-    test_parse("std/synchronize.kh")
+fn parse_util() {
+    test_parse("std/util.kh")
 }
 
 #[test]
 fn parse_new() {
-    test_parse("std/new.kh")
+    test_parse("design/sketches/new.kh")
 }
 
 #[test]

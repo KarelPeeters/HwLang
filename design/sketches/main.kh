@@ -1,0 +1,13 @@
+module top(
+    input clk: clock,
+    input reset_n: bool,
+    input buttons: bits(4),
+    input switches: bits(4),
+    output leds: bits(4),
+) {
+    if (!reset_n) {
+        leds = 0;
+    } else if (pos_edge(clk)) {
+        leds = switches & buttons;
+    }
+}
