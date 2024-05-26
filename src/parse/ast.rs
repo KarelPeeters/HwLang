@@ -176,8 +176,8 @@ pub struct Declaration {
 pub struct Assignment {
     pub span: Span,
     pub op: Option<BinaryOp>,
-    pub left: Box<Expression>,
-    pub right: Box<Expression>,
+    pub target: Box<Expression>,
+    pub value: Box<Expression>,
 }
 
 #[derive(Debug)]

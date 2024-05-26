@@ -45,7 +45,10 @@ Statement: Statement = {
         }), span: Span::dummy() }
     },
     // assignment
-    // TODO
+    <target:Box<Expr>> <op:AssignOp> <value:Box<Expr>> ";" => {
+        let assignment = Assignment { op, target, value, span: Span::dummy() };
+        Statement { kind: StatementKind::Assignment(assignment), span: Span::dummy() }
+    },
     // expression
     <Box<Expr>> ";" => Statement { kind: StatementKind::Expression(<>), span: Span::dummy() },
 };
@@ -200,14 +203,26 @@ CallArgs: Args = {
 };
 
 // terminals
+Id: Identifier = {
+    r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)" => Identifier { string: <>.to_owned(), span: Span::dummy() },
+};
+
 MaybeId: MaybeIdentifier = {
     "_" => MaybeIdentifier::Placeholder(Span::dummy()),
     Id => MaybeIdentifier::Identifier(<>),
 };
 
-Id: Identifier = {
-    r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)" => Identifier { string: <>.to_owned(), span: Span::dummy() },
-};
+AssignOp: Option<BinaryOp> = {
+    "=" => None,
+    "+=" => Some(BinaryOp::Add),
+    "-=" => Some(BinaryOp::Sub),
+    "*=" => Some(BinaryOp::Mul),
+    "/=" => Some(BinaryOp::Div),
+    "%=" => Some(BinaryOp::Mod),
+    "&=" => Some(BinaryOp::BitAnd),
+    "^=" => Some(BinaryOp::BitXor),
+    "|=" => Some(BinaryOp::BitOr),
+}
 
 // utilities
 Separated<T, S>: Vec<T> = { // (1)
