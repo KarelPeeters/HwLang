@@ -166,10 +166,17 @@ pub enum StatementKind {
 #[derive(Debug)]
 pub struct Declaration {
     pub span: Span,
-    pub mutable: bool,
+    pub kind: DeclarationKind,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
     pub init: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum DeclarationKind {
+    Const,
+    Var,
+    Val
 }
 
 #[derive(Debug)]
@@ -258,7 +265,15 @@ pub struct StructLiteralField {
 pub struct IfExpression {
     pub cond: Box<Expression>,
     pub then_block: Block,
+    pub else_if_pairs: Vec<ElseIfPair>,
     pub else_block: Option<Block>,
+}
+
+#[derive(Debug)]
+pub struct ElseIfPair {
+    pub span: Span,
+    pub cond: Box<Expression>,
+    pub block: Block,
 }
 
 #[derive(Debug)]

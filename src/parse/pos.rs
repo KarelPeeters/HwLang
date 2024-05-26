@@ -70,7 +70,7 @@ pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos>
 
         if c == '\n' {
             line += 1;
-            col = 1;
+            col = 0;
         } else {
             col += 1;
         }
