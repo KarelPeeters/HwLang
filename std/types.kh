@@ -19,7 +19,7 @@ type int(n: int) = int(0.. 2**(n - 1));
 
 // Containers
 type List(T: type);
-type Array(T: type, uint); // TODO "uint, *uint" or "+uint"?
+type Array(T: type, len: uint); // TODO "uint, *uint" or "+uint"?
 
 // Utility
 // TODO convert between these for unbounded types, eg. int/uint

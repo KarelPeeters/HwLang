@@ -18,6 +18,7 @@ fn test_parse(path: impl AsRef<Path>) {
         Err(e) => {
             let e = e.map_location(|loc| (loc, byte_offset_to_pos(&src, loc, FileId(0))));
             println!("{:?}", e);
+            panic!();
         }
     };
 }
@@ -35,6 +36,11 @@ fn parse_memory() {
 #[test]
 fn parse_synchronize() {
     test_parse("std/synchronize.kh")
+}
+
+#[test]
+fn parse_new() {
+    test_parse("std/new.kh")
 }
 
 #[test]

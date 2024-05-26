@@ -937,7 +937,7 @@ impl<'s> Parser<'s> {
                     .transpose()?;
 
                 let span = Span::new(start_pos, self.last_popped_end);
-                let decl = Declaration { span, id, ty, init };
+                let decl = Declaration { mutable: false, span, id, ty, init };
 
                 (StatementKind::Declaration(decl), true)
             }

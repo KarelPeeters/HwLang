@@ -15,6 +15,7 @@ pub enum Item {
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
     Func(ItemDefFunc),
+    Module(ItemDefModule),
     Interface(ItemDefInterface),
 }
 
@@ -44,7 +45,7 @@ pub struct ItemDefConst {
 pub struct ItemDefType {
     pub span: Span,
     pub id: Identifier,
-    pub params: Params,
+    pub params: Params<TypeParam>,
     pub inner: Option<Box<Expression>>,
 }
 
@@ -53,7 +54,7 @@ pub struct ItemDefType {
 pub struct ItemDefStruct {
     pub span: Span,
     pub id: Identifier,
-    pub params: Params,
+    pub params: Params<TypeParam>,
     pub fields: Vec<StructField>,
 }
 
@@ -64,6 +65,7 @@ pub struct StructField {
     pub ty: Expression,
 }
 
+// TODO proper sum type
 #[derive(Debug)]
 pub struct ItemDefEnum {
     pub span: Span,
@@ -74,9 +76,17 @@ pub struct ItemDefEnum {
 pub struct ItemDefFunc {
     pub span: Span,
     pub id: Identifier,
-    pub params: Params,
+    pub params: Params<FunctionParam>,
     pub ret_ty: Option<Expression>,
     pub body: Option<Block>,
+}
+
+#[derive(Debug)]
+pub struct ItemDefModule {
+    pub span: Span,
+    pub id: Identifier,
+    pub params: Params<ModuleParam>,
+    pub body: Block,
 }
 
 #[derive(Debug)]
@@ -85,7 +95,8 @@ pub struct ItemDefInterface {
     pub id: Identifier,
     // either None or non-empty
     pub modes: Option<Vec<Identifier>>,
-    pub params: Params,
+    // TODO params?
+    // pub params: Params,
     pub fields: Vec<InterfaceField>,
 }
 
@@ -98,23 +109,39 @@ pub struct InterfaceField {
 }
 
 #[derive(Debug)]
-pub struct Params {
+pub struct Params<P> {
     pub span: Span,
-    pub params: Vec<Param>,
+    pub params: Vec<P>,
 }
 
 #[derive(Debug)]
-pub struct Param {
+pub struct TypeParam {
     pub span: Span,
-    pub dir: Option<Direction>,
-    pub kind: ParamKind,
+    pub id: Option<Identifier>,
     pub ty: Expression,
 }
 
 #[derive(Debug)]
-pub enum ParamKind {
-    Anonymous,
-    Named { id: Identifier, default: Option<Expression> }
+pub struct FunctionParam {
+    pub span: Span,
+    pub is_const: bool,
+    pub id: Identifier,
+    pub ty: Expression,
+}
+
+#[derive(Debug)]
+pub struct ModuleParam {
+    pub span: Span,
+    pub kind: ModuleParamKind,
+    pub id: Identifier,
+    pub ty: Expression,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ModuleParamKind {
+    Const,
+    Input,
+    Output,
 }
 
 #[derive(Debug)]
@@ -134,13 +161,12 @@ pub enum StatementKind {
     Declaration(Declaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
-    ReturnExpression(Box<Expression>),
-    BreakExpression(Box<Expression>),
 }
 
 #[derive(Debug)]
 pub struct Declaration {
     pub span: Span,
+    pub mutable: bool,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
     pub init: Option<Box<Expression>>,
@@ -339,6 +365,7 @@ pub enum UnaryOp {
 
 #[derive(Debug, Copy, Clone)]
 pub enum Direction {
+    None,
     In,
     Out,
 }

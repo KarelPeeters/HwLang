@@ -4,10 +4,12 @@ module adder_complement(
     input b: uint(W),
     output r: uint(W+1),
 ) {
+    // TODO allow implicit widening?
     r = a + b;
 }
 
 module adder_full(
+    // TODO allow implicit consts?
     const Amin: int,
     const Bmin: int,
     const Amax: int,
@@ -17,4 +19,80 @@ module adder_full(
     output r: int(Amin+Bmin..Amax+Bmax),
 ) {
     r = a + b;
+}
+
+module counter(
+    const len: uint,
+    input clk: clock,
+    input reset: reset,
+    output i: uint(0..len),
+) {
+    if (reset) {
+        i = 0;
+    } else if (pos_edge(clk)) {
+        i = (i + 1) % len;
+    }
+}
+
+//constant CRC_LENGTH : positive := 16;
+//constant POLYNOMIAL : std_logic_vector(CRC_LENGTH - 1 downto 0) := x"8005";
+//
+//function crc_step(
+//    const crc_len: uint,
+//    const data_len: uint,
+//    crc_prev : bits(crc_len),
+//    data: bits(data_len),
+//    polynomial: bits(crc_len),
+//) -> bits(const crc_len) {
+//    var crc = crc_prev;
+//    for d in data {
+//        crc(crc_len-1) ^= d;
+//        if crc(crc_len-1) {
+//            crc ^= polynomial;
+//        }
+//    }
+//    return crc;
+//}
+
+//struct CRCState(const crc_len) {
+//    state: bits(crc_len),
+//    polynomial: bits(crc_len),
+//}
+//
+//function CRCState(crc_len).step(const data_len: uint, data: bits(data_len)) {
+//    for d in data {
+//        this.state(crc_len - 1) ^= d;
+//        if this.state(crc_len - 1) {
+//            this.state ^= this.polynomial;
+//        }
+//    }
+//}
+
+module CRCModule(
+    const crc_len: uint,
+    const polynomial: bits(crc_len),
+    const data_len: uint,
+    const has_enable: bool,
+
+    input clk: clock,
+    input reset: bit,
+    input data: bits(data_len),
+//    if has_enable {
+        input data_enable: bit,
+//    }
+    output result: bits(crc_len),
+) {
+    var state: bits(crc_len);
+
+    if (reset) {
+        state = 0;
+    } else if (pos_edge(clk)) {
+//        val enable = has_enable ? data_enable : true;
+        val enable = data_enable;
+        if (enable) {
+            state = crc_step(crc_len, data_len, state, data, polynomial);
+        }
+    }
+
+    result = state;
 }

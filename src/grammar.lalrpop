@@ -2,6 +2,7 @@
 use crate::parse::ast::*;
 use crate::parse::pos::*;
 
+// TODO what does inline do?
 grammar;
 
 match {
@@ -20,39 +21,67 @@ pub PackageContent: PackageContent = {
 
 // items
 Item: Item = {
-    "type" <id:Id> <params:TypeParams> <inner:("=" Expr)?> ";" =>
+    "type" <id:Id> <params:MaybeParams<TypeParam>> <inner:("=" Expr)?> ";" =>
         Item::Type(ItemDefType { id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
-    "struct" <id:Id> <params:TypeParams> "{" <fields: Separated<StructField, ",">> "}" =>
+    "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
         Item::Struct(ItemDefStruct { id, params, fields, span: Span::dummy() }),
+    "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
+        Item::Module(ItemDefModule { id, params, body, span: Span::dummy() }),
 };
-
-TypeParams: Params = {
-    => Params { params: vec![], span: Span::dummy() },
-    "(" <params:Params> ")" => params,
-}
 
 StructField: StructField = {
     <id:Id> ":" <ty:Expr> => StructField { id, ty, span: Span::dummy() },
 }
 
-#[inline]
-Params: Params = {
-    Separated<Param, ","> => Params { params: <>, span: Span::dummy() },
+Block: Block = {
+    "{" <statements:Statement*> "}" => Block { statements, span: Span::dummy() },
 };
 
-Param: Param = {
-    <ty: Expr> => Param { dir: None, kind: ParamKind::Anonymous, ty, span: Span::dummy() },
-    <id:Id> ":" <ty:Expr> => Param { dir: None, kind: ParamKind::Named { id, default: None }, ty, span: Span::dummy() },
+Statement: Statement = {
+    // declaration
+    "val" <id:MaybeId> <ty: (":" <Box<Expr>>)?> <init: ("=" <Box<Expr>>)?> ";" => {
+        Statement { kind: StatementKind::Declaration(Declaration {
+            mutable: true, id, ty, init, span: Span::dummy(),
+        }), span: Span::dummy() }
+    },
+    // assignment
+    // TODO
+    // expression
+    <Box<Expr>> ";" => Statement { kind: StatementKind::Expression(<>), span: Span::dummy() },
 };
+
+// parameters
+MaybeParams<P>: Params<P> = {
+    Params<P>,
+    => Params { params: vec![], span: Span::dummy() }
+}
+
+Params<P>: Params<P> = {
+    "(" <Separated<P, ",">> ")" => Params { params: <>, span: Span::dummy() },
+}
+
+TypeParam: TypeParam = {
+    <id:(<Id> ":")?> <ty:Expr> => TypeParam { id, ty, span: Span::dummy() },
+};
+
+FunctionParam: FunctionParam = {
+    <cst:"const"?> <id:Id> ":" <ty:Expr> => FunctionParam { is_const: cst.is_some(), id, ty, span: Span::dummy() },
+};
+
+ModuleParam: ModuleParam = {
+    <kind:ModuleParamKind> <id:Id> ":" <ty:Expr> => ModuleParam { kind, id, ty, span: Span::dummy() },
+};
+
+ModuleParamKind: ModuleParamKind = {
+    "const" => ModuleParamKind::Const,
+    "input" => ModuleParamKind::Input,
+    "output" => ModuleParamKind::Output,
+}
 
 // expressions
 Expr: Expression = ExprLevelReturn;
 
 ExprLevelReturn: Expression = {
-    ExprLevelAssign,
-}
-
-ExprLevelAssign: Expression = {
     ExprLevelIn,
 }
 
@@ -159,11 +188,11 @@ ExprAtomic: Expression = {
     r"0x[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Hex(<>.to_owned())), span: Span::dummy() },
     r"0b[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Bin(<>.to_owned())), span: Span::dummy() },
     r"[0-9]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Dec(<>.to_owned())), span: Span::dummy() },
+
+    // TODO if/while/for/... here?
 };
 
 // supporting blocks
-// TODO what does inline do?
-#[inline]
 CallArgs: Args = {
     // TODO support named args
     <positional:Separated<Expr, ",">> =>
@@ -171,12 +200,16 @@ CallArgs: Args = {
 };
 
 // terminals
+MaybeId: MaybeIdentifier = {
+    "_" => MaybeIdentifier::Placeholder(Span::dummy()),
+    Id => MaybeIdentifier::Identifier(<>),
+};
+
 Id: Identifier = {
-    r"[a-zA-Z_][a-zA-Z_0-9]*" => Identifier { string: <>.to_owned(), span: Span::dummy() },
+    r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)" => Identifier { string: <>.to_owned(), span: Span::dummy() },
 };
 
 // utilities
-#[inline]
 Separated<T, S>: Vec<T> = { // (1)
     <mut v:(<T> S)*> <e:T?> => match e { // (2)
         None => v,
@@ -187,3 +220,6 @@ Separated<T, S>: Vec<T> = { // (1)
     }
 };
 
+Box<T>: Box<T> = {
+    T => Box::new(<>),
+}

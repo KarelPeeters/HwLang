@@ -1,3 +1,3 @@
 pub mod pos;
 pub mod ast;
-pub mod parser;
+// pub mod parser;

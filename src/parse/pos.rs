@@ -76,7 +76,7 @@ pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos>
         }
 
         if bytes == offset {
-            return Some(Pos { file, line: line+1, col, });
+            return Some(Pos { file, line: line + 1, col: col + 1 });
         }
         if bytes > offset {
             return None;
