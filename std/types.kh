@@ -1,13 +1,8 @@
 // TODO allow signature declarations for everything, even types!
 
 // Basic types
+// TODO bool should be an enum :)
 type bool;
-
-// TODO do we need bits? or will arrays be convenient enough?
-// TODO support both named and unnamed parameters for types
-type bits;
-// TODO is this just a type alias for an array of bools?
-type bits(n: uint) = Array(bool, n);
 
 // Signature overloading, even for types!
 // TODO allow separate optional min and max? then uint is just int(0..)
@@ -21,16 +16,19 @@ type int(n: int) = int(0.. 2**(n - 1));
 type List(T: type);
 type Array(T: type, len: uint); // TODO "uint, *uint" or "+uint"?
 
+type bits;
+type bits(n: uint) = Array(bool, n);
+
 // Utility
 // TODO convert between these for unbounded types, eg. int/uint
 struct Range(T: type) { min: T, max: T }
 struct RangeInc(T: type) { min: T, max_inc: T }
 
 // TODO parse enum
-//enum Option(T: type) {
-//    None,
-//    Some(T),
-//}
+enum Option(T: type) {
+    None,
+    Some(T),
+}
 
 // Operators
 // TODO move operators to different file

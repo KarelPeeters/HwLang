@@ -25,8 +25,16 @@ Item: Item = {
         Item::Type(ItemDefType { id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
     "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
         Item::Struct(ItemDefStruct { id, params, fields, span: Span::dummy() }),
+    "enum" <id:Id> <params:MaybeParams<TypeParam>> "{" <variants: Separated<EnumVariant, ",">> "}" =>
+        Item::Enum(ItemDefEnum { id, variants, span: Span::dummy() }),
     "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
         Item::Module(ItemDefModule { id, params, body, span: Span::dummy() }),
+    "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Expr>)?> <body:Block> =>
+        Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
+}
+
+EnumVariant: EnumVariant = {
+    <id:Id> <params:MaybeParams<Expr>> => EnumVariant { id, params, span: Span::dummy() },
 }
 
 StructField: StructField = {
@@ -92,12 +100,9 @@ ModuleParamKind: ModuleParamKind = {
 Expr: Expression = ExprLevelReturn;
 
 ExprLevelReturn: Expression = {
-    ExprLevelIn,
-}
-
-ExprLevelIn: Expression = {
-    // assoc none
-    <left: ExprLevelRange> "in" <right:ExprLevelRange> => build_binary_op(BinaryOp::In, left, right),
+    "return" <value:Box<Expr>?> => Expression { kind: ExpressionKind::Return(value), span: Span::dummy() },
+    "break" <value:Box<Expr>?> => Expression { kind: ExpressionKind::Break(value), span: Span::dummy() },
+    "continue" => Expression { kind: ExpressionKind::Continue, span: Span::dummy() },
     ExprLevelRange,
 }
 
@@ -177,20 +182,55 @@ ExprLevelPower: Expression = {
 }
 
 ExprLevelCall: Expression = {
-    <target:Box<ExprAtomic>> "(" <args:CallArgs> ")" =>
+    <target:Box<ExprLevelDotIndex>> "(" <args:CallArgs> ")" =>
         Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
-    <target:Box<ExprAtomic>> "[" <args:CallArgs> "]" =>
+    <target:Box<ExprLevelDotIndex>> "[" <args:CallArgs> "]" =>
         Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
-    ExprAtomic,
+    ExprLevelDotIndex,
 }
 
-ExprAtomic: Expression = {
+CallArgs: Args = {
+    // TODO support named args
+    <positional:Separated<Expr, ",">> =>
+        Args { positional, named: vec![], span: Span::dummy() },
+}
+
+ExprLevelDotIndex: Expression = {
+    // assoc left
+    <target: Box<ExprLevelDotIndex>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
+    <target: Box<ExprLevelDotIndex>> "." <index: r"[0-9]+"> => {
+        let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
+        Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
+    },
+    ExprLevelStructureInit,
+}
+
+ExprLevelStructureInit: Expression = {
+    // initializers
+    //  tuples
+    "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
+    //  array
+    "[" <elements:Separated<Expr, ",">> "]" => Expression { kind: ExpressionKind::ArrayLiteral(elements), span: Span::dummy() },
+    //  struct
+    // TODO allow struct type params?
+//    <struct_ty:Id> "{" "}" => todo!(),
+//    <struct_ty:Box<Expr>> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
+//        Expression { kind: ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }), span: Span::dummy() },
+    ExprLevelAtomic,
+}
+
+StructLiteralField: StructLiteralField = {
+    <id:Id> ":" <value:Expr> => StructLiteralField { id, value, span: Span::dummy() },
+}
+
+ExprLevelAtomic: Expression = {
     // parentheses
     "(" <expr:Expr> ")" => expr,
+    // block
+//    <block:Block> => Expression { kind: ExpressionKind::Block(block), span: Span::dummy() },
     // path
-    <parents: (<Id> "::")*> <id: Id> =>
-        Expression { kind: ExpressionKind::Path(Path { span: Span::dummy(), parents, id }), span: Span::dummy() },
-    // TODO why does this not get parsed as an identifier?
+    Path => Expression { kind: ExpressionKind::Path(<>), span: Span::dummy() },
+    // special case TODO why does this not get parsed as an identifier?
     "type" => Expression { kind: ExpressionKind::Type, span: Span::dummy() },
     // literals
     "true" => Expression { kind: ExpressionKind::BoolLiteral(true), span: Span::dummy() },
@@ -198,30 +238,34 @@ ExprAtomic: Expression = {
     r"0x[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Hex(<>.to_owned())), span: Span::dummy() },
     r"0b[0-9a-fA-F_]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Bin(<>.to_owned())), span: Span::dummy() },
     r"[0-9]+" => Expression { kind: ExpressionKind::IntPattern(IntPattern::Dec(<>.to_owned())), span: Span::dummy() },
+
     // control flow
     ExprControlFlow,
 }
 
 ExprControlFlow: Expression = {
-    ExprIf,
-}
-
-ExprIf: Expression = {
+    // if
     "if" "(" <cond:Box<Expr>> ")" <then_block:Block> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block>)?> =>
         Expression { kind: ExpressionKind::If(IfExpression {
             cond, then_block, else_if_pairs, else_block
         }), span: Span::dummy() },
+    // loop
+    "loop" <body:Block> =>
+        Expression { kind: ExpressionKind::Loop(LoopExpression { body }), span: Span::dummy() },
+    // for
+    "for" "(" <index:MaybeId> <index_ty: (":" <Box<Expr>>)?> "in" <iter:Box<Expr>> ")" <body:Block> =>
+        Expression { kind: ExpressionKind::For(ForExpression { index, index_ty, iter, body }), span: Span::dummy() },
+    // while
+    "while" "(" <cond:Box<Expr>> ")" <body:Block> =>
+        Expression { kind: ExpressionKind::While(WhileExpression { cond, body }), span: Span::dummy() },
+}
+
+Path: Path = {
+    <parents: (<Id> "::")*> <id: Id> => Path { span: Span::dummy(), parents, id }
 }
 
 ElseIfPair: ElseIfPair = {
     "else" "if" "(" <cond:Box<Expr>> ")" <block:Block> => ElseIfPair { cond, block, span: Span::dummy() },
-}
-
-// supporting blocks
-CallArgs: Args = {
-    // TODO support named args
-    <positional:Separated<Expr, ",">> =>
-        Args { positional, named: vec![], span: Span::dummy() },
 }
 
 // terminals
@@ -249,6 +293,16 @@ AssignOp: Option<BinaryOp> = {
 // utilities
 Separated<T, S>: Vec<T> = { // (1)
     <mut v:(<T> S)*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+}
+
+SeparatedAtLeastOneSep<T, S>: Vec<T> = { // (1)
+    <mut v:(<T> S)+> <e:T?> => match e { // (2)
         None => v,
         Some(e) => {
             v.push(e);

@@ -14,7 +14,7 @@ pub enum Item {
     Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
-    Func(ItemDefFunc),
+    Function(ItemDefFunction),
     Module(ItemDefModule),
     Interface(ItemDefInterface),
 }
@@ -69,16 +69,24 @@ pub struct StructField {
 #[derive(Debug)]
 pub struct ItemDefEnum {
     pub span: Span,
-    pub options: Vec<Identifier>,
+    pub id: Identifier,
+    pub variants: Vec<EnumVariant>,
 }
 
 #[derive(Debug)]
-pub struct ItemDefFunc {
+pub struct EnumVariant {
+    pub span: Span,
+    pub id: Identifier,
+    pub params: Params<Expression>,
+}
+
+#[derive(Debug)]
+pub struct ItemDefFunction {
     pub span: Span,
     pub id: Identifier,
     pub params: Params<FunctionParam>,
     pub ret_ty: Option<Expression>,
-    pub body: Option<Block>,
+    pub body: Block,
 }
 
 #[derive(Debug)]
@@ -202,6 +210,9 @@ pub enum ExpressionKind {
     // the special "type" type
     Type,
 
+    // function type signature
+    TypeFunc(Vec<Expression>, Box<Expression>),
+
     // Control flow
     Block(Block),
     If(IfExpression),
@@ -220,10 +231,9 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayInit(Vec<Expression>),
-    TupleInit(Vec<Expression>),
-    StructInit(StructLiteral),
-    TypeFunc(Vec<Expression>, Box<Expression>),
+    ArrayLiteral(Vec<Expression>),
+    TupleLiteral(Vec<Expression>),
+    StructLiteral(StructLiteral),
     Range { inclusive: bool, start: Box<Expression>, end: Box<Expression> },
 
     // Operations
@@ -233,7 +243,6 @@ pub enum ExpressionKind {
 
     // Indexing
     ArrayIndex(Box<Expression>, Args),
-    FieldAccess(Box<Expression>, Identifier),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<u32>),
 
@@ -291,7 +300,7 @@ pub struct WhileExpression {
 pub struct ForExpression {
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
-    pub range: Box<Expression>,
+    pub iter: Box<Expression>,
     pub body: Block,
 }
 
