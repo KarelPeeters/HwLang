@@ -29,8 +29,9 @@ Item: Item = {
         Item::Enum(ItemDefEnum { id, variants, span: Span::dummy() }),
     "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
         Item::Module(ItemDefModule { id, params, body, span: Span::dummy() }),
-    "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Expr>)?> <body:Block> =>
-        Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
+    // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
+//    "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCall<"false">>)?> <body:Block> =>
+//        Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
 }
 
 EnumVariant: EnumVariant = {
@@ -177,16 +178,17 @@ ExprLevelUnary: Expression = {
 }
 
 ExprLevelPower: Expression = {
-    <left: ExprLevelCall> "**" <right: ExprLevelCall> => build_binary_op(BinaryOp::Pow, left, right),
-    ExprLevelCall,
+    // assoc none
+    <left: ExprLevelCall<"true">> "**" <right: ExprLevelCall<"true">> => build_binary_op(BinaryOp::Pow, left, right),
+    ExprLevelCall<"true">,
 }
 
-ExprLevelCall: Expression = {
-    <target:Box<ExprLevelDotIndex>> "(" <args:CallArgs> ")" =>
+ExprLevelCall<allow_struct_init>: Expression = {
+    <target:Box<ExprLevelDotIndex<allow_struct_init>>> "(" <args:CallArgs> ")" =>
         Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
-    <target:Box<ExprLevelDotIndex>> "[" <args:CallArgs> "]" =>
+    <target:Box<ExprLevelDotIndex<allow_struct_init>>> "[" <args:CallArgs> "]" =>
         Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
-    ExprLevelDotIndex,
+    ExprLevelDotIndex<allow_struct_init>,
 }
 
 CallArgs: Args = {
@@ -195,17 +197,17 @@ CallArgs: Args = {
         Args { positional, named: vec![], span: Span::dummy() },
 }
 
-ExprLevelDotIndex: Expression = {
+ExprLevelDotIndex<allow_struct_init>: Expression = {
     // assoc left
-    <target: Box<ExprLevelDotIndex>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
-    <target: Box<ExprLevelDotIndex>> "." <index: r"[0-9]+"> => {
+    <target: Box<ExprLevelDotIndex<"true">>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
+    <target: Box<ExprLevelDotIndex<"true">>> "." <index: r"[0-9]+"> => {
         let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
         Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
     },
-    ExprLevelStructureInit,
+    ExprLevelStructureInit<allow_struct_init>,
 }
 
-ExprLevelStructureInit: Expression = {
+ExprLevelStructureInit<allow_struct_init>: Expression = {
     // initializers
     //  tuples
     "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
@@ -214,7 +216,7 @@ ExprLevelStructureInit: Expression = {
     //  struct
     // TODO allow struct type params?
 //    <struct_ty:Id> "{" "}" => todo!(),
-//    <struct_ty:Box<Expr>> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
+    <struct_ty:ExprLevelCall<"false">> "{" <fields:Separated<StructLiteralField, ",">> "}" if allow_struct_init != "false" => todo!(),
 //        Expression { kind: ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }), span: Span::dummy() },
     ExprLevelAtomic,
 }
@@ -227,7 +229,7 @@ ExprLevelAtomic: Expression = {
     // parentheses
     "(" <expr:Expr> ")" => expr,
     // block
-//    <block:Block> => Expression { kind: ExpressionKind::Block(block), span: Span::dummy() },
+    <block:Block> => Expression { kind: ExpressionKind::Block(block), span: Span::dummy() },
     // path
     Path => Expression { kind: ExpressionKind::Path(<>), span: Span::dummy() },
     // special case TODO why does this not get parsed as an identifier?
