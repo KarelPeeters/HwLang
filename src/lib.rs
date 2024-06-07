@@ -1,17 +1,7 @@
 use lalrpop_util::lalrpop_mod;
 
-pub mod parse;
+// TODO move grammar to syntax dir
+lalrpop_mod!(grammar);
+pub mod syntax;
+
 pub mod util;
-
-lalrpop_mod!(pub grammar);
-
-// #[cfg(test)]
-// mod tests {
-//     use super::grammar;
-// 
-//     #[test]
-//     fn basic() {
-//         println!("{:?}", grammar::ExprParser::new().parse("2*3+2"));
-//         println!("{:?}", grammar::ExprParser::new().parse("2*(3+2)"));
-//     }
-// }

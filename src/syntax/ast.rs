@@ -1,4 +1,4 @@
-use crate::parse::pos::Span;
+use crate::syntax::pos::Span;
 
 #[derive(Debug)]
 pub struct PackageContent {
