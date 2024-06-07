@@ -183,22 +183,15 @@ ExprLevelPower: Expression = {
     ExprLevelCall,
 }
 
-// TODO debug why this was not possible with macros
-ExprLevelCall: Expression = {
-    <target:Box<ExprLevelDotIndex>> "(" <args:CallArgs> ")" =>
-        Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
-    <target:Box<ExprLevelDotIndex>> "[" <args:CallArgs> "]" =>
-        Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
-    ExprLevelDotIndex,
-}
+ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
+ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
-// TODO relax inner expressions?
-ExprLevelCallNoStruct: Expression = {
-    <target:Box<ExprLevelDotIndexNoStruct>> "(" <args:CallArgs> ")" =>
+ExprLevelCallGeneric<AtomicInner>: Expression = {
+    <target:Box<ExprLevelDotIndex<AtomicInner>>> "(" <args:CallArgs> ")" =>
         Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
-    <target:Box<ExprLevelDotIndexNoStruct>> "[" <args:CallArgs> "]" =>
+    <target:Box<ExprLevelDotIndex<AtomicInner>>> "[" <args:CallArgs> "]" =>
         Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
-    ExprLevelDotIndexNoStruct,
+    ExprLevelDotIndex<AtomicInner>,
 }
 
 CallArgs: Args = {
@@ -207,48 +200,31 @@ CallArgs: Args = {
         Args { positional, named: vec![], span: Span::dummy() },
 }
 
-ExprLevelDotIndex: Expression = {
+ExprLevelDotIndex<AtomicInner>: Expression = {
     // assoc left
-    <target: Box<ExprLevelDotIndex>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
-    <target: Box<ExprLevelDotIndex>> "." <index: r"[0-9]+"> => {
+    <target: Box<ExprLevelDotIndex<AtomicInner>>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
+    <target: Box<ExprLevelDotIndex<AtomicInner>>> "." <index: r"[0-9]+"> => {
         let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
         Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
     },
-    ExprLevelStructureInit,
+    ExprLevelStructureInit<AtomicInner>,
 }
 
-// TODO relax inner expressions?
-ExprLevelDotIndexNoStruct: Expression = {
-    // assoc left
-    <target: Box<ExprLevelDotIndexNoStruct>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
-    <target: Box<ExprLevelDotIndexNoStruct>> "." <index: r"[0-9]+"> => {
-        let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
-        Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
-    },
-    ExprLevelStructureInitNoStruct,
-}
-
-ExprLevelStructureInit: Expression = {
+ExprLevelStructureInit<AtomicInner>: Expression = {
     // initializers
     //  tuples
     "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
     //  array
     "[" <elements:Separated<Expr, ",">> "]" => Expression { kind: ExpressionKind::ArrayLiteral(elements), span: Span::dummy() },
+    AtomicInner,
+}
+
+ExprLevelStructInit: Expression = {
     //  struct
     // TODO allow struct type params?
 //    <struct_ty:Id> "{" "}" => todo!(),
     <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
 //        Expression { kind: ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }), span: Span::dummy() },
-    ExprLevelAtomic,
-}
-
-ExprLevelStructureInitNoStruct: Expression = {
-    // initializers
-    //  tuples
-    "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
-    //  array
-    "[" <elements:Separated<Expr, ",">> "]" => Expression { kind: ExpressionKind::ArrayLiteral(elements), span: Span::dummy() },
-    // note: no struct!
     ExprLevelAtomic,
 }
 
