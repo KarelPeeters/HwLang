@@ -30,8 +30,8 @@ Item: Item = {
     "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
         Item::Module(ItemDefModule { id, params, body, span: Span::dummy() }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-//    "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCall<"false">>)?> <body:Block> =>
-//        Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
+   "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCallNoStruct>)?> <body:Block> =>
+       Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
 }
 
 EnumVariant: EnumVariant = {
@@ -179,16 +179,26 @@ ExprLevelUnary: Expression = {
 
 ExprLevelPower: Expression = {
     // assoc none
-    <left: ExprLevelCall<"true">> "**" <right: ExprLevelCall<"true">> => build_binary_op(BinaryOp::Pow, left, right),
-    ExprLevelCall<"true">,
+    <left: ExprLevelCall> "**" <right: ExprLevelCall> => build_binary_op(BinaryOp::Pow, left, right),
+    ExprLevelCall,
 }
 
-ExprLevelCall<allow_struct_init>: Expression = {
-    <target:Box<ExprLevelDotIndex<allow_struct_init>>> "(" <args:CallArgs> ")" =>
+// TODO debug why this was not possible with macros
+ExprLevelCall: Expression = {
+    <target:Box<ExprLevelDotIndex>> "(" <args:CallArgs> ")" =>
         Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
-    <target:Box<ExprLevelDotIndex<allow_struct_init>>> "[" <args:CallArgs> "]" =>
+    <target:Box<ExprLevelDotIndex>> "[" <args:CallArgs> "]" =>
         Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
-    ExprLevelDotIndex<allow_struct_init>,
+    ExprLevelDotIndex,
+}
+
+// TODO relax inner expressions?
+ExprLevelCallNoStruct: Expression = {
+    <target:Box<ExprLevelDotIndexNoStruct>> "(" <args:CallArgs> ")" =>
+        Expression { kind: ExpressionKind::Call(target, args), span: Span::dummy() },
+    <target:Box<ExprLevelDotIndexNoStruct>> "[" <args:CallArgs> "]" =>
+        Expression { kind: ExpressionKind::ArrayIndex(target, args), span: Span::dummy() },
+    ExprLevelDotIndexNoStruct,
 }
 
 CallArgs: Args = {
@@ -197,17 +207,28 @@ CallArgs: Args = {
         Args { positional, named: vec![], span: Span::dummy() },
 }
 
-ExprLevelDotIndex<allow_struct_init>: Expression = {
+ExprLevelDotIndex: Expression = {
     // assoc left
-    <target: Box<ExprLevelDotIndex<"true">>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
-    <target: Box<ExprLevelDotIndex<"true">>> "." <index: r"[0-9]+"> => {
+    <target: Box<ExprLevelDotIndex>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
+    <target: Box<ExprLevelDotIndex>> "." <index: r"[0-9]+"> => {
         let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
         Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
     },
-    ExprLevelStructureInit<allow_struct_init>,
+    ExprLevelStructureInit,
 }
 
-ExprLevelStructureInit<allow_struct_init>: Expression = {
+// TODO relax inner expressions?
+ExprLevelDotIndexNoStruct: Expression = {
+    // assoc left
+    <target: Box<ExprLevelDotIndexNoStruct>> "." <index: Id> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: Span::dummy() },
+    <target: Box<ExprLevelDotIndexNoStruct>> "." <index: r"[0-9]+"> => {
+        let index = Spanned { span: Span::dummy(), inner: index.parse().unwrap() };
+        Expression { kind: ExpressionKind::DotIntIndex(target, index), span: Span::dummy() }
+    },
+    ExprLevelStructureInitNoStruct,
+}
+
+ExprLevelStructureInit: Expression = {
     // initializers
     //  tuples
     "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
@@ -216,8 +237,18 @@ ExprLevelStructureInit<allow_struct_init>: Expression = {
     //  struct
     // TODO allow struct type params?
 //    <struct_ty:Id> "{" "}" => todo!(),
-    <struct_ty:ExprLevelCall<"false">> "{" <fields:Separated<StructLiteralField, ",">> "}" if allow_struct_init != "false" => todo!(),
+    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
 //        Expression { kind: ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }), span: Span::dummy() },
+    ExprLevelAtomic,
+}
+
+ExprLevelStructureInitNoStruct: Expression = {
+    // initializers
+    //  tuples
+    "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => Expression { kind: ExpressionKind::TupleLiteral(values), span: Span::dummy() },
+    //  array
+    "[" <elements:Separated<Expr, ",">> "]" => Expression { kind: ExpressionKind::ArrayLiteral(elements), span: Span::dummy() },
+    // note: no struct!
     ExprLevelAtomic,
 }
 
