@@ -1,10 +1,11 @@
-use lalrpop_util::{lexer::Token, ParseError};
+use grammar::PackageContentParser;
+use lalrpop_util::{lalrpop_mod, lexer::Token, ParseError};
 use pos::{byte_offset_to_pos, FileId, Pos};
-
-use crate::grammar::PackageContentParser;
 
 pub mod ast;
 pub mod pos;
+
+lalrpop_mod!(grammar, "/syntax/grammar.rs");
 // pub mod parser;
 
 pub fn parse_package_content(
