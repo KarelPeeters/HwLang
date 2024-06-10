@@ -1,18 +1,33 @@
 use std::{fs, io};
+use std::ffi::{OsStr, OsString};
 use std::fs::DirEntry;
 use std::path::Path;
 
-pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&DirEntry)) -> io::Result<()> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
+pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&[OsString], &DirEntry)) -> io::Result<()> {
+    let mut stack = vec![];
+    recurse_for_each_file_impl(dir, &mut stack, f)
+}
+
+pub fn recurse_for_each_file_impl(
+    root: &Path,
+    stack: &mut Vec<OsString>,
+    f: &mut impl FnMut(&[OsString], &DirEntry)
+) -> io::Result<()> {
+    if root.is_dir() {
+        for entry in fs::read_dir(root)? {
             let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                recurse_for_each_file(&path, f)?;
+            let next = entry.path();
+            if next.is_dir() {
+                stack.push(entry.file_name());
+                recurse_for_each_file_impl(&next, stack, f)?;
+                stack.pop();
             } else {
-                f(&entry);
+                f(&stack, &entry);
             }
         }
     }
     Ok(())
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Never {}

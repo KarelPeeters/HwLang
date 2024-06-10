@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use hwlang::syntax::parse_package_content;
+use hwlang::syntax::parse_file_content;
 use hwlang::util::visit_dirs;
 
 fn test_parse(path: impl AsRef<Path>) {
@@ -9,7 +9,7 @@ fn test_parse(path: impl AsRef<Path>) {
     // let result = parse_file(FileId(0), &src).expect("Failed to parse");
     // println!("{:#?}", result);
 
-    let result = parse_package_content(&src);
+    let result = parse_file_content(&src);
 
     match result {
         Ok(package) => {

@@ -15,8 +15,8 @@ match {
     _,
 }
 
-pub PackageContent: PackageContent = {
-    Item* => PackageContent { items: <>, span: Span::dummy() }
+pub FileContent: FileContent = {
+    Item* => FileContent { items: <>, span: Span::dummy() }
 }
 
 // items

@@ -1,7 +1,7 @@
 use crate::syntax::pos::Span;
 
 #[derive(Debug)]
-pub struct PackageContent {
+pub struct FileContent {
     pub span: Span,
     pub items: Vec<Item>,
 }
@@ -30,7 +30,7 @@ pub struct ItemUse {
 pub struct ItemDefPackage {
     pub span: Span,
     pub name: MaybeIdentifier,
-    pub content: PackageContent,
+    pub content: FileContent,
 }
 
 #[derive(Debug)]

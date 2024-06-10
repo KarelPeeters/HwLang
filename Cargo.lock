@@ -230,6 +230,8 @@ name = "hwlang"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "indexmap",
+ "itertools",
  "lalrpop",
  "lalrpop-util",
 ]
