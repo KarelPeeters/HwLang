@@ -141,6 +141,7 @@ pub struct FunctionParam {
 pub struct ModuleParam {
     pub span: Span,
     pub kind: ModuleParamKind,
+    pub sync: SyncKind,
     pub id: Identifier,
     pub ty: Expression,
 }
@@ -150,6 +151,12 @@ pub enum ModuleParamKind {
     Const,
     Input,
     Output,
+}
+
+#[derive(Debug)]
+pub enum SyncKind {
+    Async,
+    Sync(Box<Expression>),
 }
 
 #[derive(Debug)]
@@ -169,6 +176,8 @@ pub enum StatementKind {
     Declaration(Declaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
+    CombinatorialBlock(CombinatorialBlock),
+    ClockedBlock(ClockedBlock),
 }
 
 #[derive(Debug)]
@@ -193,6 +202,20 @@ pub struct Assignment {
     pub op: Option<BinaryOp>,
     pub target: Box<Expression>,
     pub value: Box<Expression>,
+}
+
+#[derive(Debug)]
+pub struct CombinatorialBlock {
+    pub span: Span,
+    pub block: Box<Block>,
+}
+
+#[derive(Debug)]
+pub struct ClockedBlock {
+    pub span: Span,
+    pub clock: Box<Expression>,
+    pub reset: Box<Expression>,
+    pub block: Box<Block>,
 }
 
 #[derive(Debug)]

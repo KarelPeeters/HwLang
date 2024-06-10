@@ -58,6 +58,15 @@ Statement: Statement = {
         let assignment = Assignment { op, target, value, span: Span::dummy() };
         Statement { kind: StatementKind::Assignment(assignment), span: Span::dummy() }
     },
+    // combinatorial block
+    "combinatorial" <Box<Block>> => {
+        let inner = CombinatorialBlock { block: <>, span: Span::dummy() };
+        Statement { kind: StatementKind::CombinatorialBlock(inner), span: Span::dummy() }
+    },
+    "clocked" "(" <clock:Box<Expr>> "," <reset:Box<Expr>> ")" <block:Box<Block>> => {
+        let inner = ClockedBlock { clock, reset, block, span: Span::dummy() };
+        Statement { kind: StatementKind::ClockedBlock(inner), span: Span::dummy() }
+    },
     // expression
     // TODO semicolon is optional for control flow statements and the last expression in a block
     <Box<Expr>> ";" => Statement { kind: StatementKind::Expression(<>), span: Span::dummy() },
@@ -88,13 +97,18 @@ FunctionParam: FunctionParam = {
 }
 
 ModuleParam: ModuleParam = {
-    <kind:ModuleParamKind> <id:Id> ":" <ty:Expr> => ModuleParam { kind, id, ty, span: Span::dummy() },
+    <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> => ModuleParam { id, kind, sync, ty, span: Span::dummy() },
 }
 
 ModuleParamKind: ModuleParamKind = {
     "const" => ModuleParamKind::Const,
     "input" => ModuleParamKind::Input,
     "output" => ModuleParamKind::Output,
+}
+
+SyncKind: SyncKind = {
+    "async" => SyncKind::Async,
+    "sync" "(" <Box<Expr>> ")" => SyncKind::Sync(<>),
 }
 
 // expressions

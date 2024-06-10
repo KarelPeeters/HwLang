@@ -1,0 +1,27 @@
+//function invert(const N: uint, x: bits(N)) -> bits(N) {
+//    return !x;
+//}
+
+module top(
+    clk: input async clock,
+    reset: input async bit,
+    buttons: input sync(clk) bits(4),
+    leds: output sync(clk) bits(4),
+) {
+    combinatorial {
+        // leds = invert(4, button);
+        leds = buttons;
+    }
+
+//    clocked(clk, reset) {
+//        let state = delay(state, init=0);
+//        leds = delay(button, init=x);
+//    }
+
+    // TODO is it possible to complain about multiple drivers at initial compile time?
+//    for (i in 0..4) {
+//        clocked(clk, reset) {
+//            leds[i] = delay(button[i], init=0);
+//        }
+//    }
+}
