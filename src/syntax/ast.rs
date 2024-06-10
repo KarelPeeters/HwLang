@@ -141,6 +141,7 @@ pub struct FunctionParam {
 pub struct ModuleParam {
     pub span: Span,
     pub kind: ModuleParamKind,
+    pub sync: SyncKind,
     pub id: Identifier,
     pub ty: Expression,
 }
@@ -150,6 +151,12 @@ pub enum ModuleParamKind {
     Const,
     Input,
     Output,
+}
+
+#[derive(Debug)]
+pub enum SyncKind {
+    Async,
+    Sync(Box<Expression>),
 }
 
 #[derive(Debug)]

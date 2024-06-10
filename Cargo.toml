@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [build-dependencies]
-lalrpop = { version = "0.20.2", path="../lalrpop/lalrpop" }
+lalrpop = { version = "0.20.2" }
 
 [dependencies]
-lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"], path="../lalrpop/lalrpop-util" }
+clap = { version = "4.5.7", features = ["derive"] }
+lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"] }
