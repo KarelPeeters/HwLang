@@ -1,9 +1,11 @@
 use std::io::Write;
+use indexmap::IndexMap;
 use crate::syntax::{parse_file_content, ParseError};
 use crate::syntax::pos::FileId;
+use crate::syntax::ast;
 
 pub struct CompileSet {
-    pub file_ids: Vec<Vec<String>>,
+    pub files: IndexMap<Vec<String>, (String, ast::FileContent)>,
 }
 
 pub struct CheckedCompileSet {
@@ -13,15 +15,16 @@ pub struct CheckedCompileSet {
 impl CompileSet {
     pub fn new() -> Self {
         CompileSet {
-            file_ids: vec![],
+            files: Default::default(),
         }
     }
 
     pub fn add_file(&mut self, path: Vec<String>, source: String) -> Result<(), ParseError> {
-        let file_id = FileId(self.file_ids.len());
-        self.file_ids.push(path);
-        let ast = parse_file_content(&source, file_id)?;
-        // TODO do something with ast
+        let file_id = FileId(self.files.len());
+        let parsed = parse_file_content(&source, file_id)?;
+        let mut prev = self.files.insert(path, (source, parsed));
+        // TODO properly handle this error
+        assert!(prev.is_none());
         Ok(())
     }
 
@@ -34,7 +37,23 @@ impl CompileSet {
     }
 
     pub fn check(&self) -> CheckedCompileSet {
+        // Steps:
+        // * create scopes for all the modules, populated with placeholders for each of:
+        //   * root libraries (including external)
+        //   * items defined in the current file (including imports)
+
+        // * step over each item and resolve the signature, following and breaking cycles when possible
+        // * step over each item and resolve and typecheck the body
         CheckedCompileSet {}
+
+        /* old item list;
+        //   * root files
+        //   * child files
+        //     -> should these exist at all? we want to avoid non-local references,
+        //        ideally every id that's accessible is mentioned in the file
+        //   * imports in the current file
+        //   * items defined in the current file
+         */
     }
 }
 

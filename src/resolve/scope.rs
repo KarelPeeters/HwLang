@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
 use indexmap::map::IndexMap;
-use crate::resolve::{ResolveError, ResolveResult};
+use crate::resolve::error::ResolveResult;
+use crate::resolve::error::ResolveError;
 use crate::syntax::ast;
 
 #[derive(Debug)]

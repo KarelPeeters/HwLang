@@ -1,7 +1,7 @@
 use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError;
 
-use crate::resolve::ResolveError;
+use crate::resolve::error::ResolveError;
 use crate::syntax::pos::Pos;
 
 #[derive(Debug)]
