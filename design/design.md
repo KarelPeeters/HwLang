@@ -9,6 +9,26 @@
     * Examples: clocks should be marked as such, values should know which clock if any they are synced too.
     * No delta cycles!
 * Interoperate with VHDL, Verilog and SystemVerilog as much as possible
+* Don't raise the abstraction level too much. The goal is not to invent something completely new, just to drastically improve the ergonomics.
+
+## Sources of inspiration
+
+* Software:
+  * Python:
+    * convenient to use and start new projects in
+    * very convenient `int` type
+  * Rust: 
+    * safety: preventing as many bugs as possible by making the compiler check for them continuously during development
+    * very strong type system
+    * cargo: very easy to start a project, compile, publish, version, declare dependencies 
+  * Kotlin
+    * a "second generation" language that replaces Java while still having very good interop with existing Java code
+* Legacy RTL languages
+  * (System)Verilog
+  * VHDL
+* New RTL languages (see also https://github.com/drom/awesome-hdl) 
+  * MyHDL
+  * Chisel
 
 ## Specifics
 
@@ -43,6 +63,8 @@ FixedPoint(signed, integral, fractional) -> UF[4, 3], IF[4, 3]
 List(T)
 Array(T, n)
 ```
+
+Integers are infinite bits by default (like python). The rest of their design follows https://www.jandecaluwe.com/hdldesign/counting.html.
 
 What to do about arrays? See https://old.reddit.com/r/ProgrammingLanguages/comments/vxxfh2/array_type_annotation_syntax_string_vs_string/ for some great discussion. Options/summary:
 
@@ -353,6 +375,8 @@ Either way, if there's only one clock we'll assume that one by default:
 `def flip_flop(clk: Clock, x: Bool)`
 
 ### Type conversion
+
+We don't want _any_ implicit type conversion at all.
 
 Most types should have a `to_bits` function for serialization and for putting things on busses.
 
