@@ -1,4 +1,4 @@
-use crate::resolve::compile::CompileSetError;
+use crate::resolve::compile::{CompileSetError, FrontError};
 use crate::resolve::error::ResolveError;
 use crate::syntax::ParseError;
 
@@ -7,6 +7,7 @@ pub enum CompileError {
     CompileSetError(CompileSetError),
     ParseError(ParseError),
     ResolveError(ResolveError),
+    FrontError(FrontError),
 }
 
 impl From<CompileSetError> for CompileError {
@@ -24,5 +25,11 @@ impl From<ParseError> for CompileError {
 impl From<ResolveError> for CompileError {
     fn from(error: ResolveError) -> Self {
         CompileError::ResolveError(error)
+    }
+}
+
+impl From<FrontError> for CompileError {
+    fn from(error: FrontError) -> Self {
+        CompileError::FrontError(error)
     }
 }

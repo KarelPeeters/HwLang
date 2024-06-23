@@ -1,9 +1,14 @@
 use indexmap::{IndexMap, IndexSet};
+use itertools::{enumerate, Itertools};
 
 use crate::error::CompileError;
+use crate::new_index_type;
 use crate::resolve::scope::{Scope, Visibility};
+use crate::resolve::types::{Type, TypeArena, TypeFunction, TypeInfo, TypeModule};
 use crate::syntax::{ast, parse_file_content};
+use crate::syntax::ast::Expression;
 use crate::syntax::pos::FileId;
+use crate::util::arena::Arena;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FilePath(pub Vec<String>);
@@ -19,14 +24,13 @@ pub struct FileInfo {
     path: FilePath,
     source: String,
     ast: Option<ast::FileContent>,
-    scope_declared: Option<Scope<'static, ScopedItem>>,
-    item_placeholders: Option<Vec<PlaceholderItem>>,
+    local_scope: Option<Scope<'static, ScopedValue>>,
 }
 
 pub struct ModuleInfo {
     path: FilePath,
     file: Option<FileId>,
-    scope: Scope<'static, ScopedItem>,
+    scope: Scope<'static, ScopedValue>,
 }
 
 pub struct Node {
@@ -34,13 +38,10 @@ pub struct Node {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum ScopedItem {
+pub enum ScopedValue {
     File(FileId),
-    Placeholder(PlaceholderItem),
+    Item(Item),
 }
-
-#[derive(Debug, Copy, Clone)]
-pub struct PlaceholderItem(u64);
 
 #[derive(Debug)]
 pub enum CompileSetError {
@@ -82,17 +83,26 @@ impl CompileSet {
     }
 }
 
+new_index_type!(pub Item);
+
+#[derive(Debug)]
+pub struct ItemInfo {
+    file: FileId,
+    ast_item_index: usize,
+    ty: Option<Type>,
+}
+
+#[derive(Debug)]
+pub enum FrontError {
+    CyclicTypeDependency(Vec<Item>),
+}
+
 impl CompileSet {
     pub fn compile(mut self) -> Result<(), CompileError> {
         // Use separate steps to flag all errors of the same type before moving on to the next level.
         // TODO: some error recovery and continuation, eg. return all parse errors at once
-        
-        let mut next_placeholder = 0;
-        let mut next_placeholder = move || {
-            let i = next_placeholder;
-            next_placeholder += 1;
-            PlaceholderItem(i)
-        };
+
+        let mut items: Arena<Item, ItemInfo> = Arena::default();
 
         // parse all files
         for file in self.files.values_mut() {
@@ -105,29 +115,109 @@ impl CompileSet {
             let ast = file.ast.as_ref().unwrap();
             
             let mut scope_declared = Scope::default();
-            let mut item_placeholders = vec![];
-            
-            for item in &ast.items {
-                let (id, ast_vis) = item.id_vis();
+
+            for (ast_item_index, ast_item) in enumerate(&ast.items) {
+                let (id, ast_vis) = ast_item.id_vis();
                 let vis = match ast_vis {
                     ast::Visibility::Public(_) => Visibility::Public, 
                     ast::Visibility::Private => Visibility::Private,
                 };
-                
-                let placeholder = next_placeholder();
-                item_placeholders.push(placeholder);
-                scope_declared.maybe_declare(&id, ScopedItem::Placeholder(placeholder), vis)?;
+
+                let item = items.push(ItemInfo { file: file.id, ast_item_index, ty: None });
+                scope_declared.maybe_declare(&id, ScopedValue::Item(item), vis)?;
             }
             
-            file.scope_declared = Some(scope_declared);
-            file.item_placeholders = Some(item_placeholders);
+            file.local_scope = Some(scope_declared);
         }
-        
-        // type-check everything
+
+        // type-resolve all items
+        // TODO rewrite this using coroutines?
+        let mut types = TypeArena::default();
+        let item_keys = items.keys().collect_vec();
+        for item in item_keys {
+            let mut stack = vec![item];
+            while let Some(curr) = stack.pop() {
+                if items[curr].ty.is_some() {
+                    continue;
+                }
+
+                let result = self.resolve_type_for_item(&mut types, &items, curr);
+                
+                match result {
+                    Ok(ty) => {
+                        assert!(items[item].ty.is_none());
+                        items[item].ty = Some(ty);
+                    }
+                    Err(CheckFirstOr::CheckFirst(CheckFirst(first))) => {
+                        stack.push(curr);
+                        if stack.contains(&first) {
+                            stack.push(first);
+                            return Err(FrontError::CyclicTypeDependency(stack).into());
+                        }
+                        stack.push(first);
+                    }
+                    Err(CheckFirstOr::Error(e)) => {
+                        return Err(e.into());
+                    }
+                }
+            }
+            
+            assert!(items[item].ty.is_some());
+        }
         // TODO support recursion between files
 
         Ok(())
     }
+    
+    fn resolve_type_for_expression(&self, types: &mut TypeArena, expr: &Expression) -> CheckResult<Type> {
+        todo!()
+    }
+
+    fn resolve_type_for_item(&self, types: &mut TypeArena, items: &Arena<Item, ItemInfo>, item: Item) -> CheckResult<Type>  {
+        let info = &items[item];
+
+        let file_info = self.files.get(&info.file).unwrap();
+        let ast_file = file_info.ast.as_ref().unwrap();
+        let ast_item = &ast_file.items[info.ast_item_index];
+        let file_scope = file_info.local_scope.as_ref().unwrap();
+        
+        let ty = match ast_item {
+            ast::Item::Use(ast_item) => todo!(),
+            ast::Item::Const(ast_item) => todo!(),
+            ast::Item::Type(ast_item) => todo!(),
+            ast::Item::Struct(ast_item) => todo!(),
+            ast::Item::Enum(ast_item) => todo!(),
+            ast::Item::Function(ast_item) => {
+                let mut params = vec![];
+                for p in &ast_item.params.params {
+                    params.push(self.resolve_type_for_expression(types, &p.ty)?);
+                }
+                let ret = match &ast_item.ret_ty {
+                    None => types.push(TypeInfo::Void),
+                    Some(ret_ty) => self.resolve_type_for_expression(types, ret_ty)?,
+                };
+                
+                types.push(TypeInfo::Function(TypeFunction { params, ret: Box::new(ret) }))
+            },
+            ast::Item::Module(ast_item) => {
+                types.push(TypeInfo::Module(TypeModule {}))
+            },
+            ast::Item::Interface(ast_item) => todo!(),
+        };
+        
+        Ok(ty)
+    }
+}
+
+type CheckResult<T> = Result<T, CheckFirstOr<FrontError>>;
+
+#[derive(Debug, Copy, Clone)]
+struct CheckFirst(Item);
+
+#[derive(Debug, Copy, Clone)]
+enum CheckFirstOr<E> {
+    CheckFirst(CheckFirst),
+    Error(E),
 }
 
 impl FileInfo {
@@ -137,8 +227,7 @@ impl FileInfo {
             path,
             source,
             ast: None,
-            scope_declared: None,
-            item_placeholders: None,
+            local_scope: None,
         }
     }
 }

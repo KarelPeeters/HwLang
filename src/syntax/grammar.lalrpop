@@ -93,7 +93,7 @@ TypeParam: TypeParam = {
 }
 
 FunctionParam: FunctionParam = {
-    <cst:"const"?> <id:Id> ":" <ty:Expr> => FunctionParam { is_const: cst.is_some(), id, ty, span: Span::dummy() },
+    <id:Id> ":" <ty:Expr> => FunctionParam { id, ty, span: Span::dummy() },
 }
 
 ModuleParam: ModuleParam = {

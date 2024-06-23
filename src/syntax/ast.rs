@@ -148,7 +148,7 @@ pub struct TypeParam {
 #[derive(Debug)]
 pub struct FunctionParam {
     pub span: Span,
-    pub is_const: bool,
+    // pub is_const: bool,
     pub id: Identifier,
     pub ty: Expression,
 }
