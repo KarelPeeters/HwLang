@@ -2,11 +2,11 @@
 //    return !x;
 //}
 
-use util.test.foo;
-use package.util.test.foo as _;
-foo();
+//use util.test.foo;
+//use package.util.test.foo as _;
+//foo();
 
-public module top(
+/*public*/ module top(
     clk: input async clock,
     reset: input async bit,
     buttons: input sync(clk) bits(4),
@@ -30,17 +30,17 @@ public module top(
 //    }
 }
 
-module tree_reduce(
-    clk: input async clock,
-    reset: input async bit,
-
-    N: const int,
-    f: function (sync(clk) T, sync(clk) T) -> sync(clk) T,
-
-    x: input sync(clk) Array(T, N),
-    y: output sync(clk) Option<T>,
-) {
-    clocked(clk, reset) {
-        let
-    }
-}
+//module tree_reduce(
+//    clk: input async clock,
+//    reset: input async bit,
+//
+//    N: input const int,
+//    f: function (sync(clk) T, sync(clk) T) -> sync(clk) T,
+//
+//    x: input sync(clk) Array(T, N),
+//    y: output sync(clk) Option<T>,
+//) {
+//    clocked(clk, reset) {
+//        let
+//    }
+//}

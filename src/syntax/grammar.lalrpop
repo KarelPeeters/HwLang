@@ -21,17 +21,17 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
-    "type" <id:Id> <params:MaybeParams<TypeParam>> <inner:("=" Expr)?> ";" =>
-        Item::Type(ItemDefType { id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
-    "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
-        Item::Struct(ItemDefStruct { id, params, fields, span: Span::dummy() }),
-    "enum" <id:Id> <params:MaybeParams<TypeParam>> "{" <variants: Separated<EnumVariant, ",">> "}" =>
-        Item::Enum(ItemDefEnum { id, variants, span: Span::dummy() }),
-    "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
-        Item::Module(ItemDefModule { id, params, body, span: Span::dummy() }),
+    <vis:Vis> "type" <id:Id> <params:MaybeParams<TypeParam>> <inner:("=" Expr)?> ";" =>
+        Item::Type(ItemDefType { vis, id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
+    <vis:Vis> "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
+        Item::Struct(ItemDefStruct { vis, id, params, fields, span: Span::dummy() }),
+    <vis:Vis> "enum" <id:Id> <params:MaybeParams<TypeParam>> "{" <variants: Separated<EnumVariant, ",">> "}" =>
+        Item::Enum(ItemDefEnum { vis, id, variants, span: Span::dummy() }),
+    <vis:Vis> "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
+        Item::Module(ItemDefModule { vis, id, params, body, span: Span::dummy() }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-   "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCallNoStruct>)?> <body:Block> =>
-       Item::Function(ItemDefFunction { id, params, ret_ty, body, span: Span::dummy() }),
+    <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCallNoStruct>)?> <body:Block> =>
+       Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: Span::dummy() }),
 }
 
 EnumVariant: EnumVariant = {
@@ -297,8 +297,13 @@ Id: Identifier = {
 }
 
 MaybeId: MaybeIdentifier = {
-    "_" => MaybeIdentifier::Placeholder(Span::dummy()),
+    "_" => MaybeIdentifier::Dummy(Span::dummy()),
     Id => MaybeIdentifier::Identifier(<>),
+}
+
+Vis: Visibility = {
+    "pub" => Visibility::Public(Span::dummy()),
+    => Visibility::Private,
 }
 
 AssignOp: Option<BinaryOp> = {

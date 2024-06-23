@@ -20,18 +20,15 @@ fn main() {
     recurse_for_each_file(&args.root, &mut |stack, f| {
         let path = f.path();
         if path.extension() != Some(OsStr::new("kh")) {
-            println!("skipping {:?}", path);
             return;
         }
-        
-        println!("adding {:?}", path);
-        let source = std::fs::read_to_string(&path).unwrap();
         
         let mut stack = stack.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
         stack.push(path.file_stem().unwrap().to_str().unwrap().to_owned());
         
+        let source = std::fs::read_to_string(&path).unwrap();
         set.add_file(FilePath(stack), source).unwrap();
     }).unwrap();
 
-    set.compile();
+    set.compile().unwrap();
 }

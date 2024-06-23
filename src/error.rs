@@ -1,23 +1,28 @@
-use lalrpop_util::lexer::Token;
-use lalrpop_util::ParseError;
-
+use crate::resolve::compile::CompileSetError;
 use crate::resolve::error::ResolveError;
-use crate::syntax::pos::Pos;
+use crate::syntax::ParseError;
 
 #[derive(Debug)]
-pub enum Error {
-    ParseError(ParseError<Pos, Token<'static>, String>),
+pub enum CompileError {
+    CompileSetError(CompileSetError),
+    ParseError(ParseError),
     ResolveError(ResolveError),
 }
 
-impl From<ParseError<Pos, Token<'static>, String>> for Error {
-    fn from(error: ParseError<Pos, Token<'static>, String>) -> Self {
-        Error::ParseError(error)
+impl From<CompileSetError> for CompileError {
+    fn from(error: CompileSetError) -> Self {
+        CompileError::CompileSetError(error)
     }
 }
 
-impl From<ResolveError> for Error {
+impl From<ParseError> for CompileError {
+    fn from(error: ParseError) -> Self {
+        CompileError::ParseError(error)
+    }
+}
+
+impl From<ResolveError> for CompileError {
     fn from(error: ResolveError) -> Self {
-        Error::ResolveError(error)
+        CompileError::ResolveError(error)
     }
 }

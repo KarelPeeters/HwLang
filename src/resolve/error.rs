@@ -6,4 +6,5 @@ pub type ResolveResult<T> = Result<T, ResolveError>;
 pub enum ResolveError {
     IdentifierDeclaredTwice(ast::Identifier),
     UndeclaredIdentifier(ast::Identifier),
+    CannotAcess(ast::Identifier),
 }

@@ -7,15 +7,24 @@ pub struct FileContent {
 }
 
 #[derive(Debug)]
+pub enum Visibility {
+    Public(Span),
+    Private,
+}
+
+// TODO add "doc comment" field to items?
+#[derive(Debug)]
 pub enum Item {
     Use(ItemUse),
-    Package(ItemDefPackage),
+    // Package(ItemDefPackage),
     Const(ItemDefConst),
     Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
     Function(ItemDefFunction),
+    // TODO rename to "block"?
     Module(ItemDefModule),
+    // TODO rename to "bus" and reserve interface for Rust trait/C++ concept/Java interface?
     Interface(ItemDefInterface),
 }
 
@@ -23,7 +32,7 @@ pub enum Item {
 pub struct ItemUse {
     pub span: Span,
     pub path: Path,
-    pub as_: Option<Identifier>,
+    pub as_: Option<MaybeIdentifier>,
 }
 
 #[derive(Debug)]
@@ -36,6 +45,7 @@ pub struct ItemDefPackage {
 #[derive(Debug)]
 pub struct ItemDefConst {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub ty: Expression,
     pub value: Option<Expression>,
@@ -44,6 +54,7 @@ pub struct ItemDefConst {
 #[derive(Debug)]
 pub struct ItemDefType {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub params: Params<TypeParam>,
     pub inner: Option<Box<Expression>>,
@@ -53,6 +64,7 @@ pub struct ItemDefType {
 #[derive(Debug)]
 pub struct ItemDefStruct {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub params: Params<TypeParam>,
     pub fields: Vec<StructField>,
@@ -69,6 +81,7 @@ pub struct StructField {
 #[derive(Debug)]
 pub struct ItemDefEnum {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub variants: Vec<EnumVariant>,
 }
@@ -83,6 +96,7 @@ pub struct EnumVariant {
 #[derive(Debug)]
 pub struct ItemDefFunction {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub params: Params<FunctionParam>,
     pub ret_ty: Option<Expression>,
@@ -92,6 +106,7 @@ pub struct ItemDefFunction {
 #[derive(Debug)]
 pub struct ItemDefModule {
     pub span: Span,
+    pub vis: Visibility,
     pub id: Identifier,
     pub params: Params<ModuleParam>,
     pub body: Block,
@@ -101,6 +116,7 @@ pub struct ItemDefModule {
 pub struct ItemDefInterface {
     pub span: Span,
     pub id: Identifier,
+    pub vis: Visibility,
     // either None or non-empty
     pub modes: Option<Vec<Identifier>>,
     // TODO params?
@@ -347,9 +363,9 @@ pub enum IntPattern {
     Dec(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MaybeIdentifier {
-    Placeholder(Span),
+    Dummy(Span),
     Identifier(Identifier),
 }
 
@@ -423,4 +439,25 @@ pub enum Direction {
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,
+}
+
+impl Item {
+    pub fn id_vis(&self) -> (MaybeIdentifier, &Visibility) {
+        match self {
+            Item::Use(item) => {
+                let id = match &item.as_ {
+                    None => MaybeIdentifier::Identifier(item.path.id.clone()),
+                    Some(as_) => as_.clone(),
+                };
+                (id, &Visibility::Private)
+            },
+            Item::Const(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Type(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Struct(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Enum(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Function(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Module(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Interface(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+        }
+    }
 }
