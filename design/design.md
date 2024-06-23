@@ -41,6 +41,9 @@
 * `<>` only for comparison operators, no generics! (simplifies parsing)
 * expression based wherever possible (eg. loops, if, ... are all expressions)
 
+Alternative: use `[]` for generics and `()` for array indexing
+  but then what about array literals?
+
 ### Identifiers
 
 Standard stuff, maybe borrow r# prefix for keywords from rust?

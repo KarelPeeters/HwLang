@@ -1,8 +1,11 @@
-use clap::Parser;
+use std::ffi::OsStr;
 use std::path::PathBuf;
+
+use clap::Parser;
 use itertools::Itertools;
-use hwlang::resolve::compile_set::CompileSet;
-use hwlang::util::recurse_for_each_file;
+
+use hwlang::resolve::compile::{CompileSet, FilePath};
+use hwlang::util::io::recurse_for_each_file;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -15,11 +18,20 @@ fn main() {
     let mut set = CompileSet::new();
 
     recurse_for_each_file(&args.root, &mut |stack, f| {
-        println!("compiling {:?}", f.path());
-        let source = std::fs::read_to_string(f.path()).unwrap();
-        let stack = stack.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
-        set.add_file(stack, source).unwrap();
+        let path = f.path();
+        if path.extension() != Some(OsStr::new("kh")) {
+            println!("skipping {:?}", path);
+            return;
+        }
+        
+        println!("adding {:?}", path);
+        let source = std::fs::read_to_string(&path).unwrap();
+        
+        let mut stack = stack.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
+        stack.push(path.file_stem().unwrap().to_str().unwrap().to_owned());
+        
+        set.add_file(FilePath(stack), source).unwrap();
     }).unwrap();
 
-    let _set_checked = set.check();
+    set.compile();
 }
