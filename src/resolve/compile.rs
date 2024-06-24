@@ -3,10 +3,11 @@ use itertools::{enumerate, Itertools};
 
 use crate::error::CompileError;
 use crate::new_index_type;
-use crate::resolve::scope::{Scope, Visibility};
-use crate::resolve::types::{Type, TypeArena, TypeFunction, TypeInfo, TypeModule};
+use crate::resolve::scope;
+use crate::resolve::scope::Visibility;
+use crate::resolve::types::{ItemReference, Type, TypeEnum, TypeFunction, TypeInfo, Types, TypeStruct};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::Expression;
+use crate::syntax::ast::{Expression, ExpressionKind, ItemDefType};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -24,18 +25,20 @@ pub struct FileInfo {
     path: FilePath,
     source: String,
     ast: Option<ast::FileContent>,
-    local_scope: Option<Scope<'static, ScopedValue>>,
+    local_scope: Option<Scope<'static>>,
 }
 
 pub struct ModuleInfo {
     path: FilePath,
     file: Option<FileId>,
-    scope: Scope<'static, ScopedValue>,
+    scope: Scope<'static>,
 }
 
 pub struct Node {
     children: IndexMap<String, Node>,
 }
+
+type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ScopedValue {
@@ -87,14 +90,15 @@ new_index_type!(pub Item);
 
 #[derive(Debug)]
 pub struct ItemInfo {
-    file: FileId,
-    ast_item_index: usize,
-    ty: Option<Type>,
+    item_reference: ItemReference,
+    ty: Option<Option<Type>>,
 }
 
 #[derive(Debug)]
 pub enum FrontError {
     CyclicTypeDependency(Vec<Item>),
+    InvalidTypeExpression(Expression),
+    MissingTypeExpression(ItemDefType),
 }
 
 impl CompileSet {
@@ -123,7 +127,8 @@ impl CompileSet {
                     ast::Visibility::Private => Visibility::Private,
                 };
 
-                let item = items.push(ItemInfo { file: file.id, ast_item_index, ty: None });
+                let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
+                let item = items.push(ItemInfo { item_reference, ty: None });
                 scope_declared.maybe_declare(&id, ScopedValue::Item(item), vis)?;
             }
             
@@ -132,7 +137,7 @@ impl CompileSet {
 
         // type-resolve all items
         // TODO rewrite this using coroutines?
-        let mut types = TypeArena::default();
+        let mut types = Types::default();
         let item_keys = items.keys().collect_vec();
         for item in item_keys {
             let mut stack = vec![item];
@@ -165,44 +170,85 @@ impl CompileSet {
             assert!(items[item].ty.is_some());
         }
         // TODO support recursion between files
+        
+        // visit the bodies of all items
+        // TODO
+        
+        // TODO merge type checking and body visiting, we want them to be mixable
 
         Ok(())
     }
-    
-    fn resolve_type_for_expression(&self, types: &mut TypeArena, expr: &Expression) -> CheckResult<Type> {
+
+    fn find_path(&self, scope: &Scope, path: &ast::Path) -> Result<ScopedValue, CompileError> {
         todo!()
     }
 
-    fn resolve_type_for_item(&self, types: &mut TypeArena, items: &Arena<Item, ItemInfo>, item: Item) -> CheckResult<Type>  {
+    fn resolve_type_for_path(&self, types: &mut Types, scope: &Scope, path: &ast::Path) -> CheckResult<Type> {
+        todo!()
+    }
+
+    /// Resolve an expression type as a type.
+    /// This is not the type _of_ the given expression, the expression has to be a valid type by itself.
+    fn resolve_type_for_expression(&self, types: &mut Types, scope: &Scope, expr: &Expression) -> CheckResult<Type> {
+        match &expr.kind {
+            ExpressionKind::Dummy => todo!("this will become a type var once we have type inference"),
+            ExpressionKind::Path(path) => self.resolve_type_for_path(types, scope, path),
+            ExpressionKind::Wrapped(inner) => self.resolve_type_for_expression(types, scope, inner),
+            ExpressionKind::TypeFunc(params, ret) => {
+                let params = params.iter().map(|p| self.resolve_type_for_expression(types, scope, p)).collect::<CheckResult<_>>()?;
+                let ret = self.resolve_type_for_expression(types, scope, ret)?;
+                Ok(types.push(TypeInfo::Function(TypeFunction { params, ret: Box::new(ret) })))
+            },
+            ExpressionKind::Call(_, _) => todo!(),
+            ExpressionKind::TupleLiteral(_) => todo!(),
+
+            // other expressions don't define types
+            _ => Err(FrontError::InvalidTypeExpression(expr.clone()).into()),
+        }
+    }
+
+    // TODO is this the type _of_ an item or the type that an item is by itself?
+    // eg. functions don't declare a type, so disallow them
+    fn resolve_type_for_item(&self, types: &mut Types, items: &Arena<Item, ItemInfo>, item: Item) -> CheckResult<Option<Type>> {
         let info = &items[item];
 
-        let file_info = self.files.get(&info.file).unwrap();
+        // item lookup
+        let item_reference = info.item_reference;
+        let ItemReference { file, item_index } = item_reference;
+        let file_info = self.files.get(&file).unwrap();
         let ast_file = file_info.ast.as_ref().unwrap();
-        let ast_item = &ast_file.items[info.ast_item_index];
+        let ast_item = &ast_file.items[item_index];
         let file_scope = file_info.local_scope.as_ref().unwrap();
-        
+
+        // actual type match
         let ty = match ast_item {
-            ast::Item::Use(ast_item) => todo!(),
-            ast::Item::Const(ast_item) => todo!(),
-            ast::Item::Type(ast_item) => todo!(),
-            ast::Item::Struct(ast_item) => todo!(),
-            ast::Item::Enum(ast_item) => todo!(),
-            ast::Item::Function(ast_item) => {
-                let mut params = vec![];
-                for p in &ast_item.params.params {
-                    params.push(self.resolve_type_for_expression(types, &p.ty)?);
+            ast::Item::Use(ast_item) =>
+                Some(self.resolve_type_for_path(types, &file_scope, &ast_item.path)?),
+            // TODO at what point should type parameters be filled in?
+            //   should all of this machinery return type constructors instead?
+            ast::Item::Type(ast_item) => {
+                assert!(ast_item.params.params.is_empty());
+                match &ast_item.inner {
+                    None => 
+                        return Err(FrontError::MissingTypeExpression(ast_item.clone()).into()),
+                    Some(inner) =>
+                        Some(self.resolve_type_for_expression(types, &file_scope, inner)?),
                 }
-                let ret = match &ast_item.ret_ty {
-                    None => types.push(TypeInfo::Void),
-                    Some(ret_ty) => self.resolve_type_for_expression(types, ret_ty)?,
-                };
-                
-                types.push(TypeInfo::Function(TypeFunction { params, ret: Box::new(ret) }))
             },
-            ast::Item::Module(ast_item) => {
-                types.push(TypeInfo::Module(TypeModule {}))
-            },
-            ast::Item::Interface(ast_item) => todo!(),
+            ast::Item::Struct(ast_item) => {
+                assert!(ast_item.params.params.is_empty());
+                Some(types.push(TypeInfo::Struct(TypeStruct { item_reference })))
+            }
+            ast::Item::Enum(ast_item) => {
+                assert!(ast_item.params.params.is_empty());
+                Some(types.push(TypeInfo::Enum(TypeEnum { item_reference })))
+            }
+
+            // these items don't define types
+            ast::Item::Const(_) => None,
+            ast::Item::Module(_) => None,
+            ast::Item::Interface(_) => None,
+            ast::Item::Function(_) => None,
         };
         
         Ok(ty)
@@ -218,6 +264,12 @@ struct CheckFirst(Item);
 enum CheckFirstOr<E> {
     CheckFirst(CheckFirst),
     Error(E),
+}
+
+impl<E> From<E> for CheckFirstOr<E> {
+    fn from(value: E) -> Self {
+        CheckFirstOr::Error(value)
+    }
 }
 
 impl FileInfo {

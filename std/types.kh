@@ -6,9 +6,10 @@ type bool;
 
 // Signature overloading, even for types!
 // TODO allow separate optional min and max? then uint is just int(0..)
+// TODO is there a nice way to make "unsigned" the default?
 type int;
-type uint(Range(uint));
-type int(Range(int));
+type uint(r: Range(uint));
+type int(r: Range(int));
 type uint(n: int) = int(-2**(n - 1) .. 2**(n - 1));
 type int(n: int) = int(0.. 2**(n - 1));
 

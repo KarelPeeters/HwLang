@@ -26,7 +26,7 @@ Item: Item = {
     <vis:Vis> "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
         Item::Struct(ItemDefStruct { vis, id, params, fields, span: Span::dummy() }),
     <vis:Vis> "enum" <id:Id> <params:MaybeParams<TypeParam>> "{" <variants: Separated<EnumVariant, ",">> "}" =>
-        Item::Enum(ItemDefEnum { vis, id, variants, span: Span::dummy() }),
+        Item::Enum(ItemDefEnum { vis, id, params, variants, span: Span::dummy() }),
     <vis:Vis> "module" <id:Id> <params:MaybeParams<ModuleParam>> <body:Block> =>
         Item::Module(ItemDefModule { vis, id, params, body, span: Span::dummy() }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
@@ -89,7 +89,7 @@ Params<P>: Params<P> = {
 }
 
 TypeParam: TypeParam = {
-    <id:(<Id> ":")?> <ty:Expr> => TypeParam { id, ty, span: Span::dummy() },
+    <id:Id> ":" <ty:Expr> => TypeParam { id, ty, span: Span::dummy() },
 }
 
 FunctionParam: FunctionParam = {
@@ -255,6 +255,7 @@ ExprLevelAtomic: Expression = {
     Path => Expression { kind: ExpressionKind::Path(<>), span: Span::dummy() },
     // special case TODO why does this not get parsed as an identifier?
     "type" => Expression { kind: ExpressionKind::Type, span: Span::dummy() },
+    "_" => Expression { kind: ExpressionKind::Dummy, span: Span::dummy() },
     // literals
     "true" => Expression { kind: ExpressionKind::BoolLiteral(true), span: Span::dummy() },
     "false" => Expression { kind: ExpressionKind::BoolLiteral(false), span: Span::dummy() },

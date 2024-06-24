@@ -1,19 +1,19 @@
 use crate::syntax::pos::Span;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileContent {
     pub span: Span,
     pub items: Vec<Item>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Visibility {
     Public(Span),
     Private,
 }
 
 // TODO add "doc comment" field to items?
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Use(ItemUse),
     // Package(ItemDefPackage),
@@ -28,21 +28,21 @@ pub enum Item {
     Interface(ItemDefInterface),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemUse {
     pub span: Span,
     pub path: Path,
     pub as_: Option<MaybeIdentifier>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefPackage {
     pub span: Span,
     pub name: MaybeIdentifier,
     pub content: FileContent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefConst {
     pub span: Span,
     pub vis: Visibility,
@@ -51,7 +51,7 @@ pub struct ItemDefConst {
     pub value: Option<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
@@ -61,7 +61,7 @@ pub struct ItemDefType {
 }
 
 // TODO allow "if" in a bunch of places? eg. struct fields
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
@@ -70,7 +70,7 @@ pub struct ItemDefStruct {
     pub fields: Vec<StructField>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StructField {
     pub span: Span,
     pub id: Identifier,
@@ -78,22 +78,23 @@ pub struct StructField {
 }
 
 // TODO proper sum type
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
+    pub params: Params<TypeParam>,
     pub variants: Vec<EnumVariant>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub span: Span,
     pub id: Identifier,
     pub params: Params<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefFunction {
     pub span: Span,
     pub vis: Visibility,
@@ -103,7 +104,7 @@ pub struct ItemDefFunction {
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
@@ -112,7 +113,7 @@ pub struct ItemDefModule {
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemDefInterface {
     pub span: Span,
     pub id: Identifier,
@@ -124,7 +125,7 @@ pub struct ItemDefInterface {
     pub fields: Vec<InterfaceField>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InterfaceField {
     pub span: Span,
     pub id: Identifier,
@@ -132,20 +133,20 @@ pub struct InterfaceField {
     pub ty: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Params<P> {
     pub span: Span,
     pub params: Vec<P>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeParam {
     pub span: Span,
-    pub id: Option<Identifier>,
+    pub id: Identifier,
     pub ty: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionParam {
     pub span: Span,
     // pub is_const: bool,
@@ -153,7 +154,7 @@ pub struct FunctionParam {
     pub ty: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleParam {
     pub span: Span,
     pub kind: ModuleParamKind,
@@ -169,25 +170,25 @@ pub enum ModuleParamKind {
     Output,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SyncKind {
     Async,
     Sync(Box<Expression>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub span: Span,
     pub statements: Vec<Statement>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Statement {
     pub span: Span,
     pub kind: StatementKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StatementKind {
     Declaration(Declaration),
     Assignment(Assignment),
@@ -196,7 +197,7 @@ pub enum StatementKind {
     ClockedBlock(ClockedBlock),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Declaration {
     pub span: Span,
     pub kind: DeclarationKind,
@@ -212,7 +213,7 @@ pub enum DeclarationKind {
     Val
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
     pub op: Option<BinaryOp>,
@@ -220,13 +221,13 @@ pub struct Assignment {
     pub value: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CombinatorialBlock {
     pub span: Span,
     pub block: Box<Block>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClockedBlock {
     pub span: Span,
     pub clock: Box<Expression>,
@@ -234,19 +235,22 @@ pub struct ClockedBlock {
     pub block: Box<Block>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub span: Span,
     pub kind: ExpressionKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExpressionKind {
     // Miscellaneous
-    Wildcard,
+    Dummy,
     Path(Path),
     Wrapped(Box<Expression>),
+    
     // the special "type" type
+    // TODO do we want to support higher-kinded types?
+    //   or only use this as peculiar generic syntax? 
     Type,
 
     // function type signature
@@ -289,27 +293,27 @@ pub enum ExpressionKind {
     Call(Box<Expression>, Args),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Args {
     pub span: Span,
     pub positional: Vec<Expression>,
     pub named: Vec<(Identifier, Expression)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StructLiteral {
     pub struct_ty: Box<Expression>,
     pub fields: Vec<StructLiteralField>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StructLiteralField {
     pub span: Span,
     pub id: Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IfExpression {
     pub cond: Box<Expression>,
     pub then_block: Block,
@@ -317,25 +321,25 @@ pub struct IfExpression {
     pub else_block: Option<Block>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ElseIfPair {
     pub span: Span,
     pub cond: Box<Expression>,
     pub block: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoopExpression {
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WhileExpression {
     pub cond: Box<Expression>,
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForExpression {
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
@@ -343,7 +347,7 @@ pub struct ForExpression {
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SyncExpression {
     pub clk: Box<Expression>,
     pub body: Block,
@@ -353,7 +357,7 @@ pub struct SyncExpression {
 // TODO wildcard symbol: `_`, `?`, `*`, `#`?
 //     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IntPattern {
     // [0-9a-fA-F_]*
     Hex(String),
@@ -375,7 +379,7 @@ pub struct Identifier {
     pub string: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Path {
     pub span: Span,
     pub parents: Vec<Identifier>,
@@ -435,7 +439,7 @@ pub enum Direction {
 
 // TODO remove if unnecessary
 // TODO replace Identifier with MaybeIdentifier whenever possible
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,
