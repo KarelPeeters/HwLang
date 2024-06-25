@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use hwlang::syntax::parse_file_content;
-use hwlang::util::visit_dirs;
+use language::syntax::parse_file_content;
+use language::util::visit_dirs;
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();

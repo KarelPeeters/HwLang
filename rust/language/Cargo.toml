@@ -1,0 +1,14 @@
+[package]
+name = "language"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap.workspace = true
+indexmap.workspace = true
+itertools.workspace = true
+lalrpop-util.workspace = true
+num-bigint.workspace = true
+
+[build-dependencies]
+lalrpop.workspace = true

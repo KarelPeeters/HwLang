@@ -1,14 +1,21 @@
-[package]
-name = "hwlang"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "language",
+]
+resolver = "2"
 
-[dependencies]
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+# internal dependencies
+language = { path = "language" }
+
+# external dependencies
 clap = { version = "4.5.7", features = ["derive"] }
 indexmap = "2.2.6"
 itertools = "0.11.0"
 lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"] }
 num-bigint = "0.4.5"
-
-[build-dependencies]
 lalrpop = { version = "0.20.2" }

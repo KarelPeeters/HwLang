@@ -226,18 +226,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hwlang"
-version = "0.1.0"
-dependencies = [
- "clap",
- "indexmap",
- "itertools",
- "lalrpop",
- "lalrpop-util",
- "num-bigint",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,6 +279,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "507460a910eb7b32ee961886ff48539633b788a36b65692b95f225b844c82553"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "language"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "indexmap",
+ "itertools",
+ "lalrpop",
+ "lalrpop-util",
+ "num-bigint",
 ]
 
 [[package]]
