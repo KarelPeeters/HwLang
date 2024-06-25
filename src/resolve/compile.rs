@@ -1,3 +1,4 @@
+use std::net::Incoming;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 
@@ -5,9 +6,9 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{ItemReference, Type, TypeEnum, TypeFunction, TypeInfo, Types, TypeStruct};
+use crate::resolve::types::{ItemReference, Type, Types};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Expression, ExpressionKind, ItemDefType};
+use crate::syntax::ast::{Expression, ItemDefType, Path};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -71,7 +72,7 @@ impl CompileSet {
         let id = FileId(self.files.len());
         println!("adding {:?} => {:?}", id, path);
         let info = FileInfo::new(id, path, source);
-        
+
         let prev = self.files.insert(id, info);
         assert!(prev.is_none());
         Ok(())
@@ -91,7 +92,17 @@ new_index_type!(pub Item);
 #[derive(Debug)]
 pub struct ItemInfo {
     item_reference: ItemReference,
-    ty: Option<Option<Type>>,
+    resolved: Option<ResolvedValue>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ResolvedValue {
+    Type(Type),
+    Const(/*TODO*/),
+    Function(/*TODO*/),
+    Module(/*TODO*/),
+    Interface(/*TODO*/),
+    // TODO others, in particular constants
 }
 
 #[derive(Debug)]
@@ -99,6 +110,23 @@ pub enum FrontError {
     CyclicTypeDependency(Vec<Item>),
     InvalidTypeExpression(Expression),
     MissingTypeExpression(ItemDefType),
+}
+
+pub struct CompileState<'a> {
+    files: &'a IndexMap<FileId, FileInfo>,
+    items: Arena<Item, ItemInfo>,
+    types: Types,
+}
+
+type CheckResult<T> = Result<T, CheckFirstOr<FrontError>>;
+
+#[derive(Debug, Copy, Clone)]
+struct CheckFirst(Item);
+
+#[derive(Debug, Copy, Clone)]
+enum CheckFirstOr<E> {
+    CheckFirst(CheckFirst),
+    Error(E),
 }
 
 impl CompileSet {
@@ -117,41 +145,51 @@ impl CompileSet {
         // build import scope of each file
         for file in self.files.values_mut() {
             let ast = file.ast.as_ref().unwrap();
-            
+
             let mut scope_declared = Scope::default();
 
             for (ast_item_index, ast_item) in enumerate(&ast.items) {
                 let (id, ast_vis) = ast_item.id_vis();
                 let vis = match ast_vis {
-                    ast::Visibility::Public(_) => Visibility::Public, 
+                    ast::Visibility::Public(_) => Visibility::Public,
                     ast::Visibility::Private => Visibility::Private,
                 };
 
                 let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
-                let item = items.push(ItemInfo { item_reference, ty: None });
+                let item = items.push(ItemInfo { item_reference, resolved: None });
                 scope_declared.maybe_declare(&id, ScopedValue::Item(item), vis)?;
             }
-            
+
             file.local_scope = Some(scope_declared);
         }
 
-        // type-resolve all items
-        // TODO rewrite this using coroutines?
-        let mut types = Types::default();
-        let item_keys = items.keys().collect_vec();
+        // visit all items
+        let mut state = CompileState {
+            files: &self.files,
+            items,
+            types: Types::default(),
+        };
+        let item_keys = state.items.keys().collect_vec();
+
         for item in item_keys {
             let mut stack = vec![item];
             while let Some(curr) = stack.pop() {
-                if items[curr].ty.is_some() {
+                // TODO separate signature and content as visit actions
+                if state.items[item].resolved.is_some() {
                     continue;
                 }
 
-                let result = self.resolve_type_for_item(&mut types, &items, curr);
-                
+                let result = state.resolve_item(curr);
+
                 match result {
-                    Ok(ty) => {
-                        assert!(items[item].ty.is_none());
-                        items[item].ty = Some(ty);
+                    Ok(resolved) => {
+                        assert!(state.items[item].resolved.is_none());
+                        state.items[item].resolved = Some(resolved);
+                        
+                        println!("Resolved {:?} to {:?}", item, resolved);
+                    }
+                    Err(CheckFirstOr::Error(e)) => {
+                        return Err(e.into());
                     }
                     Err(CheckFirstOr::CheckFirst(CheckFirst(first))) => {
                         stack.push(curr);
@@ -161,114 +199,72 @@ impl CompileSet {
                         }
                         stack.push(first);
                     }
-                    Err(CheckFirstOr::Error(e)) => {
-                        return Err(e.into());
-                    }
                 }
             }
-            
-            assert!(items[item].ty.is_some());
+
+            // TODO assert more stuff?
+            assert!(state.items[item].resolved.is_some());
         }
-        // TODO support recursion between files
-        
-        // visit the bodies of all items
-        // TODO
-        
-        // TODO merge type checking and body visiting, we want them to be mixable
 
         Ok(())
     }
+}
 
-    fn find_path(&self, scope: &Scope, path: &ast::Path) -> Result<ScopedValue, CompileError> {
-        todo!()
-    }
-
-    fn resolve_type_for_path(&self, types: &mut Types, scope: &Scope, path: &ast::Path) -> CheckResult<Type> {
-        todo!()
-    }
-
-    /// Resolve an expression type as a type.
-    /// This is not the type _of_ the given expression, the expression has to be a valid type by itself.
-    fn resolve_type_for_expression(&self, types: &mut Types, scope: &Scope, expr: &Expression) -> CheckResult<Type> {
-        match &expr.kind {
-            ExpressionKind::Dummy => todo!("this will become a type var once we have type inference"),
-            ExpressionKind::Path(path) => self.resolve_type_for_path(types, scope, path),
-            ExpressionKind::Wrapped(inner) => self.resolve_type_for_expression(types, scope, inner),
-            ExpressionKind::TypeFunc(params, ret) => {
-                let params = params.iter().map(|p| self.resolve_type_for_expression(types, scope, p)).collect::<CheckResult<_>>()?;
-                let ret = self.resolve_type_for_expression(types, scope, ret)?;
-                Ok(types.push(TypeInfo::Function(TypeFunction { params, ret: Box::new(ret) })))
-            },
-            ExpressionKind::Call(_, _) => todo!(),
-            ExpressionKind::TupleLiteral(_) => todo!(),
-
-            // other expressions don't define types
-            _ => Err(FrontError::InvalidTypeExpression(expr.clone()).into()),
-        }
-    }
-
-    // TODO is this the type _of_ an item or the type that an item is by itself?
-    // eg. functions don't declare a type, so disallow them
-    fn resolve_type_for_item(&self, types: &mut Types, items: &Arena<Item, ItemInfo>, item: Item) -> CheckResult<Option<Type>> {
-        let info = &items[item];
+impl CompileState<'_> {
+    fn resolve_item(&mut self, item: Item) -> Result<ResolvedValue, CheckFirstOr<CompileError>> {
+        assert!(self.items[item].resolved.is_none());
 
         // item lookup
+        let info = &self.items[item];
         let item_reference = info.item_reference;
         let ItemReference { file, item_index } = item_reference;
         let file_info = self.files.get(&file).unwrap();
-        let ast_file = file_info.ast.as_ref().unwrap();
-        let ast_item = &ast_file.items[item_index];
-        let file_scope = file_info.local_scope.as_ref().unwrap();
+        let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
+        let scope = file_info.local_scope.as_ref().unwrap();
 
-        // actual type match
-        let ty = match ast_item {
-            ast::Item::Use(ast_item) =>
-                Some(self.resolve_type_for_path(types, &file_scope, &ast_item.path)?),
-            // TODO at what point should type parameters be filled in?
-            //   should all of this machinery return type constructors instead?
-            ast::Item::Type(ast_item) => {
-                assert!(ast_item.params.params.is_empty());
-                match &ast_item.inner {
-                    None => 
-                        return Err(FrontError::MissingTypeExpression(ast_item.clone()).into()),
-                    Some(inner) =>
-                        Some(self.resolve_type_for_expression(types, &file_scope, inner)?),
-                }
+        // actual item
+        let resolved= match item_ast {
+            ast::Item::Use(item_ast) => {
+                self.resolve_path(scope, &item_ast.path)?
+            }
+            ast::Item::Type(item_ast) => { 
+                assert!(item_ast.params.params.is_empty());
+                let expr = item_ast.inner.as_ref().ok_or(FrontError::MissingTypeExpression(item_ast.clone()))?;
+                self.resolve_expression(scope, expr)?
             },
-            ast::Item::Struct(ast_item) => {
-                assert!(ast_item.params.params.is_empty());
-                Some(types.push(TypeInfo::Struct(TypeStruct { item_reference })))
-            }
-            ast::Item::Enum(ast_item) => {
-                assert!(ast_item.params.params.is_empty());
-                Some(types.push(TypeInfo::Enum(TypeEnum { item_reference })))
-            }
-
-            // these items don't define types
-            ast::Item::Const(_) => None,
-            ast::Item::Module(_) => None,
-            ast::Item::Interface(_) => None,
-            ast::Item::Function(_) => None,
+            ast::Item::Struct(_) => todo!(),
+            ast::Item::Enum(_) => todo!(),
+            ast::Item::Const(_) => ResolvedValue::Const(),
+            ast::Item::Function(_) => ResolvedValue::Function(),
+            ast::Item::Module(_) => ResolvedValue::Module(),
+            ast::Item::Interface(_) => ResolvedValue::Interface(),
         };
-        
-        Ok(ty)
+
+        Ok(resolved)
+    }
+
+    fn resolve_path(&mut self, scope: &Scope, path: &Path) -> Result<ResolvedValue, CheckFirst> {
+        todo!()
+    }
+
+    fn get_resolved(&mut self, item: Item) -> Result<ResolvedValue, CheckFirst> {
+        self.items[item].resolved.ok_or(CheckFirst(item))
+    }
+    
+    fn resolve_expression(&mut self, scope: &Scope, expr: &Expression) -> Result<ResolvedValue, CheckFirstOr<CompileError>> {
+        todo!()
     }
 }
 
-type CheckResult<T> = Result<T, CheckFirstOr<FrontError>>;
-
-#[derive(Debug, Copy, Clone)]
-struct CheckFirst(Item);
-
-#[derive(Debug, Copy, Clone)]
-enum CheckFirstOr<E> {
-    CheckFirst(CheckFirst),
-    Error(E),
+impl<E: Into<CompileError>> From<E> for CheckFirstOr<CompileError> { 
+    fn from(value: E) -> Self {
+        CheckFirstOr::Error(value.into())
+    }
 }
 
-impl<E> From<E> for CheckFirstOr<E> {
-    fn from(value: E) -> Self {
-        CheckFirstOr::Error(value)
+impl <E> From<CheckFirst> for CheckFirstOr<E> {
+    fn from(first: CheckFirst) -> Self {
+        CheckFirstOr::CheckFirst(first)
     }
 }
 

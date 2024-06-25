@@ -6,6 +6,8 @@
 //use package.util.test.foo as _;
 //foo();
 
+type TestType = bit;
+
 /*public*/ module top(
     clk: input async clock,
     reset: input async bit,
