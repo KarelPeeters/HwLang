@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "language",
+    "lsp_server",
 ]
 resolver = "2"
 
@@ -16,6 +17,8 @@ language = { path = "language" }
 clap = { version = "4.5.7", features = ["derive"] }
 indexmap = "2.2.6"
 itertools = "0.11.0"
+lalrpop = { version = "0.20.2" }
 lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"] }
 num-bigint = "0.4.5"
-lalrpop = { version = "0.20.2" }
+tokio = { version = "1.38.0", features = ["macros", "rt", "io-std"] }
+tower-lsp = "0.20.0"

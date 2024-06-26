@@ -1,0 +1,10 @@
+[package]
+name = "lsp_server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+language.workspace = true
+
+tokio.workspace = true
+tower-lsp.workspace = true
