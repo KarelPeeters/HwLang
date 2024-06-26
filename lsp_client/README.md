@@ -35,3 +35,14 @@ It also includes an End-to-End test.
 - In the [Extension Development Host](https://code.visualstudio.com/api/get-started/your-first-extension#:~:text=Then%2C%20inside%20the%20editor%2C%20press%20F5.%20This%20will%20compile%20and%20run%20the%20extension%20in%20a%20new%20Extension%20Development%20Host%20window.) instance of VSCode, open a document in 'plain text' language mode.
   - Type `j` or `t` to see `Javascript` and `TypeScript` completion.
   - Enter text content such as `AAA aaa BBB`. The extension will emit diagnostics for all words in all-uppercase.
+
+## TODO
+
+* Borrow implementations from other LSP examples, in particular:
+  * multiple workspaces https://github.com/microsoft/vscode-extension-samples/tree/main/lsp-multi-server-sample
+  * logging https://github.com/microsoft/vscode-extension-samples/tree/main/lsp-log-streaming-sample
+  * anything interesting from VHDL_LS https://github.com/VHDL-LS/rust_hdl_vscode/blob/master/client/src/extension.ts
+* Improve build scripts
+  * build the rust binary
+  * open the new VSCode in the right directory
+  * maybe avoid using an extra VSCode instance, can we just launch it directly
