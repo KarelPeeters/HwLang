@@ -50,6 +50,7 @@ impl LanguageServer for Backend {
             .await;
     }
 
+    // TODO register for https://microsoft.github.io/language-server-protocol/specifications/specification-3-15/#workspace_didChangeWatchedFiles
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         self.client
             .log_message(MessageType::INFO, format!("did_change({:?})", params))
