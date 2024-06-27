@@ -1,5 +1,5 @@
 use tower_lsp::jsonrpc;
-use tower_lsp::lsp_types::{CompletionOptions, InitializedParams, InitializeParams, InitializeResult, MessageType, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions};
+use tower_lsp::lsp_types::{CompletionOptions, DefinitionOptions, InitializedParams, InitializeParams, InitializeResult, MessageType, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions};
 
 use crate::server::core::ServerCore;
 
@@ -50,7 +50,9 @@ const CAPABILITIES: ServerCapabilities = ServerCapabilities {
         completion_item: None,
     }),
     signature_help_provider: None,
-    definition_provider: None,
+    definition_provider: Some(OneOf::Right(DefinitionOptions {
+        work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
+    })),
     type_definition_provider: None,
     implementation_provider: None,
     references_provider: None,

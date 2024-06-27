@@ -1,7 +1,7 @@
 use log::error;
 use tower_lsp::jsonrpc;
 use tower_lsp::jsonrpc::Error;
-use tower_lsp::lsp_types::{CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue, InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams, PrepareRenameResponse, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams, WorkspaceDiagnosticReportResult, WorkspaceEdit};
+use tower_lsp::lsp_types::{CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue, InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams, WorkspaceDiagnosticReportResult, WorkspaceEdit};
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse};
 
 use crate::server::core::ServerCore;
@@ -12,9 +12,14 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn goto_definition(&self, _params: GotoDefinitionParams) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
-        error!("Got a textDocument/definition request, but it is not implemented");
-        Err(Error::method_not_found())
+    pub async fn goto_definition(&self, params: GotoDefinitionParams) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri: params.text_document_position_params.text_document.uri,
+            range: Range::new(Position::new(0, 0), Position::new(0, 8)),
+        })))
+        
+        // error!("Got a textDocument/definition request, but it is not implemented");
+        // Err(Error::method_not_found())
     }
 
     pub async fn goto_type_definition(&self, _params: GotoTypeDefinitionParams) -> jsonrpc::Result<Option<GotoTypeDefinitionResponse>> {
