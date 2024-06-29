@@ -21,37 +21,39 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
-    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:BoxExpr> ";" <end:@R> =>
-        Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<TypeParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R> =>
-        Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<TypeParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R> =>
-        Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<ModuleParam>?> <body:Block> <end:@R> =>
-        Item::Module(ItemDefModule { vis, id, params, body, span: loc.span(start, end) }),
+    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:BoxExpr> ";" <end:@R>
+        => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
+    <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<TypeParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
+        => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
+    <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<TypeParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
+        => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
+    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<ModuleParam>?> <body:Block> <end:@R>
+        => Item::Module(ItemDefModule { vis, id, params, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-    <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R> =>
-       Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
+    <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R>
+        => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
 EnumVariant: EnumVariant = {
-    <start:@L> <id:Id> <params:Params<Expr>?> <end:@R> => EnumVariant { id, params, span: loc.span(start, end) },
+    <start:@L> <id:Id> <params:Params<Expr>?> <end:@R>
+        => EnumVariant { id, params, span: loc.span(start, end) },
 }
 
 StructField: StructField = {
-    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => StructField { id, ty, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <ty:Expr> <end:@R>
+        => StructField { id, ty, span: loc.span(start, end) },
 }
 
 Block: Block = {
-    <start:@L> "{" <statements:Statement*> "}" <end:@R> => Block { statements, span: loc.span(start, end) },
+    <start:@L> "{" <statements:Statement*> "}" <end:@R>
+        => Block { statements, span: loc.span(start, end) },
 }
 
 Statement: Statement = {
     // declaration
     <start:@L> <kind:DeclarationKind> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        Statement { kind: StatementKind::Declaration(Declaration {
-            kind, id, ty, init, span: loc.span(start, end),
-        }), span: loc.span(start, end) }
+        let decl = Declaration { kind, id, ty, init, span: loc.span(start, end) };
+        Statement { kind: StatementKind::Declaration((decl)), span: loc.span(start, end) }
     },
     // assignment
     <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
@@ -92,7 +94,8 @@ FunctionParam: FunctionParam = {
 }
 
 ModuleParam: ModuleParam = {
-    <start:@L> <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> <end:@R> => ModuleParam { id, kind, sync, ty, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> <end:@R>
+        => ModuleParam { id, kind, sync, ty, span: loc.span(start, end) },
 }
 
 ModuleParamKind = Spanned<ModuleParamKindInner>;
@@ -132,7 +135,7 @@ ExprLevelRange: ExpressionKind = {
 
 ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
+    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>>=> build_binary_op(BinaryOp::BoolAnd, left, right),
     <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
