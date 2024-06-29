@@ -50,3 +50,12 @@ type bits(n: Option(uint)) = __builtin_type();
 // ) -> integer() {
 //
 // }
+
+
+// Internal
+function __builtin_type() -> type {
+    return __builtin_type();
+}
+function __builtin_constant(T: type) -> T {
+    return __builtin_constant(T);
+}
