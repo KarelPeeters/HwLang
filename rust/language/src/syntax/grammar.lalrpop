@@ -95,13 +95,21 @@ ModuleParam: ModuleParam = {
     <start:@L> <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> <end:@R> => ModuleParam { id, kind, sync, ty, span: loc.span(start, end) },
 }
 
-ModuleParamKind: ModuleParamKind = {
+ModuleParamKind = {
+    Spanned<ModuleParamKindInner>,
+}
+
+ModuleParamKindInner: ModuleParamKind = {
     "const" => ModuleParamKind::Const,
     "input" => ModuleParamKind::Input,
     "output" => ModuleParamKind::Output,
 }
 
-SyncKind: SyncKind = {
+SyncKind = {
+    Spanned<SyncKindInner>,
+}
+
+SyncKindInner: SyncKind = {
     "async" => SyncKind::Async,
     "sync" "(" <Box<Expr>> ")" => SyncKind::Sync(<>),
 }
@@ -131,58 +139,58 @@ ExprLevelRange: Expression = {
 
 ExprLevelLogical: Expression = {
     // assoc left, no mixing
-    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right),
-    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right),
+    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right, loc.span(start, end)),
     ExprLevelEqual,
 }
 ExprLevelLogicalAnd: Expression = {
-    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right),
+    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right, loc.span(start, end)),
     ExprLevelEqual,
 }
 ExprLevelLogicalOr: Expression = {
-    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right),
+    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right, loc.span(start, end)),
     ExprLevelEqual,
 }
 
 ExprLevelEqual: Expression = {
     // assoc none
-    <start:@L> <left: ExprLevelBitWise> "==" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpEq, left, right),
-    <start:@L> <left: ExprLevelBitWise> "!=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpNeq, left, right),
-    <start:@L> <left: ExprLevelBitWise> ">=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGte, left, right),
-    <start:@L> <left: ExprLevelBitWise> ">" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGt, left, right),
-    <start:@L> <left: ExprLevelBitWise> "<=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLte, left, right),
-    <start:@L> <left: ExprLevelBitWise> "<" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLt, left, right),
+    <start:@L> <left: ExprLevelBitWise> "==" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpEq, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> "!=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpNeq, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> ">=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGte, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> ">" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGt, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> "<=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLte, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> "<" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLt, left, right, loc.span(start, end)),
     ExprLevelBitWise,
 }
 
 ExprLevelBitWise: Expression = {
     // assoc left
-    <start:@L> <left: ExprLevelBitWise> "&" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitAnd, left, right),
-    <start:@L> <left: ExprLevelBitWise> "^" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitXor, left, right),
-    <start:@L> <left: ExprLevelBitWise> "|" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitOr, left, right),
+    <start:@L> <left: ExprLevelBitWise> "&" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitAnd, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> "^" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitXor, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelBitWise> "|" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitOr, left, right, loc.span(start, end)),
     ExprLevelShift,
 }
 
 ExprLevelShift: Expression = {
     // assoc none
-    <start:@L> <left: ExprLevelAdd> "<<" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shl, left, right),
-    <start:@L> <left: ExprLevelAdd> ">>" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shr, left, right),
+    <start:@L> <left: ExprLevelAdd> "<<" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shl, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelAdd> ">>" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shr, left, right, loc.span(start, end)),
     ExprLevelAdd,
 }
 
 ExprLevelAdd: Expression = {
     // assoc left
-    <start:@L> <left: ExprLevelAdd> "+" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Add, left, right),
-    <start:@L> <left: ExprLevelAdd> "-" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Sub, left, right),
+    <start:@L> <left: ExprLevelAdd> "+" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Add, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelAdd> "-" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Sub, left, right, loc.span(start, end)),
     ExprLevelMul,
 }
 
 ExprLevelMul: Expression = {
     // assoc left
-    <start:@L> <left: ExprLevelMul> "*" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mul, left, right),
-    <start:@L> <left: ExprLevelMul> "/" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Div, left, right),
+    <start:@L> <left: ExprLevelMul> "*" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mul, left, right, loc.span(start, end)),
+    <start:@L> <left: ExprLevelMul> "/" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Div, left, right, loc.span(start, end)),
     // TODO disallow mixing this with mul and/or div?
-    <start:@L> <left: ExprLevelMul> "%" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mod, left, right),
+    <start:@L> <left: ExprLevelMul> "%" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mod, left, right, loc.span(start, end)),
     ExprLevelUnary,
 }
 
@@ -194,7 +202,7 @@ ExprLevelUnary: Expression = {
 
 ExprLevelPower: Expression = {
     // assoc none
-    <start:@L> <left: ExprLevelCall> "**" <right: ExprLevelCall> <end:@R> => build_binary_op(BinaryOp::Pow, left, right),
+    <start:@L> <left: ExprLevelCall> "**" <right: ExprLevelCall> <end:@R> => build_binary_op(BinaryOp::Pow, left, right, loc.span(start, end)),
     ExprLevelCall,
 }
 
@@ -314,19 +322,27 @@ Vis: Visibility = {
     => Visibility::Private,
 }
 
-AssignOp: Option<BinaryOp> = {
-    <start:@L> "=" <end:@R> => None,
-    <start:@L> "+=" <end:@R> => Some(BinaryOp::Add),
-    <start:@L> "-=" <end:@R> => Some(BinaryOp::Sub),
-    <start:@L> "*=" <end:@R> => Some(BinaryOp::Mul),
-    <start:@L> "/=" <end:@R> => Some(BinaryOp::Div),
-    <start:@L> "%=" <end:@R> => Some(BinaryOp::Mod),
-    <start:@L> "&=" <end:@R> => Some(BinaryOp::BitAnd),
-    <start:@L> "^=" <end:@R> => Some(BinaryOp::BitXor),
-    <start:@L> "|=" <end:@R> => Some(BinaryOp::BitOr),
+AssignOp: Spanned<Option<BinaryOp>> = {
+    Spanned<AssignOpInner>,
+}
+
+AssignOpInner: Option<BinaryOp> = {
+    "=" => None,
+    "+=" => Some(BinaryOp::Add),
+    "-=" => Some(BinaryOp::Sub),
+    "*=" => Some(BinaryOp::Mul),
+    "/=" => Some(BinaryOp::Div),
+    "%=" => Some(BinaryOp::Mod),
+    "&=" => Some(BinaryOp::BitAnd),
+    "^=" => Some(BinaryOp::BitXor),
+    "|=" => Some(BinaryOp::BitOr),
 }
 
 // utilities
+Spanned<T>: Spanned<T> = {
+    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
+}
+
 Separated<T, S>: Vec<T> = { // (1)
     <mut v:(<T> S)*> <e:T?> => match e { // (2)
         None => v,

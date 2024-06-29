@@ -158,8 +158,8 @@ pub struct FunctionParam {
 #[derive(Debug, Clone)]
 pub struct ModuleParam {
     pub span: Span,
-    pub kind: ModuleParamKind,
-    pub sync: SyncKind,
+    pub kind: Spanned<ModuleParamKind>,
+    pub sync: Spanned<SyncKind>,
     pub id: Identifier,
     pub ty: Expression,
 }
@@ -217,7 +217,7 @@ pub enum DeclarationKind {
 #[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
-    pub op: Option<BinaryOp>,
+    pub op: Spanned<Option<BinaryOp>>,
     pub target: Box<Expression>,
     pub value: Box<Expression>,
 }
@@ -236,6 +236,8 @@ pub struct ClockedBlock {
     pub block: Box<Block>,
 }
 
+// TODO just make this spanned<expression>?
+//  this would simplify the parser by a lot too
 #[derive(Debug, Clone)]
 pub struct Expression {
     pub span: Span,
@@ -390,9 +392,9 @@ pub struct Path {
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> Expression {
+pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression, span: Span) -> Expression {
     Expression {
-        span: Span::new(left.span.start, right.span.end),
+        span,
         kind: ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right)),
     }
 }
@@ -438,8 +440,6 @@ pub enum Direction {
     Out,
 }
 
-// TODO remove if unnecessary
-// TODO replace Identifier with MaybeIdentifier whenever possible
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub span: Span,
