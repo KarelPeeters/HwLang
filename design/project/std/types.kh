@@ -15,6 +15,7 @@ type bool = __builtin_type();
 // x: uint -> simple alias for a positive integer
 // TODO do we want to allow uint to take ranges?
 
+// Utility
 enum Option(T: type) {
     None,
     Some(T),
@@ -25,11 +26,12 @@ struct Range(L: type, H: type) {
     max: H,
 }
 
-type int(r: Range(Option(int), Option(int))) = __builtin_type();
+// TODO add overloading?
+type int_range(r: Range(Option(int), Option(int))) = __builtin_type();
 type int = int(..);
 type uint = int(0..);
-type int(n: uint) = int(-2**(n - 1) .. 2**(n - 1));
-type uint(n: uint) = int(0 .. 2**n);
+type int_bits(n: uint) = int(-2**(n - 1) .. 2**(n - 1));
+type uint_bits(n: uint) = int(0 .. 2**n);
 
 // Containers
 type List(T: type) = __builtin_type();
@@ -37,11 +39,6 @@ type List(T: type) = __builtin_type();
 type Array(T: type, len: uint) = __builtin_type();
 
 type bits(n: Option(uint)) = __builtin_type();
-
-// Utility
-// TODO convert between these for unbounded types, eg. int/uint
-struct Range(T: type) { min: T, max: T }
-struct RangeInc(T: type) { min: T, max_inc: T }
 
 // Operators
 // TODO move operators to different file
