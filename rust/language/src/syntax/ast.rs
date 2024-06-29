@@ -56,7 +56,7 @@ pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Params<TypeParam>,
+    pub params: Option<Params<TypeParam>>,
     pub inner: Box<Expression>,
 }
 
@@ -66,7 +66,7 @@ pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Params<TypeParam>,
+    pub params: Option<Params<TypeParam>>,
     pub fields: Vec<StructField>,
 }
 
@@ -83,7 +83,7 @@ pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Params<TypeParam>,
+    pub params: Option<Params<TypeParam>>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -91,7 +91,7 @@ pub struct ItemDefEnum {
 pub struct EnumVariant {
     pub span: Span,
     pub id: Identifier,
-    pub params: Params<Expression>,
+    pub params: Option<Params<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,10 +109,11 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Params<ModuleParam>,
+    pub params: Option<Params<ModuleParam>>,
     pub body: Block,
 }
 
+// TODO think about the syntax and meaning of this
 #[derive(Debug, Clone)]
 pub struct ItemDefInterface {
     pub span: Span,
@@ -246,6 +247,8 @@ pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
     Path(Path),
+    // Wrapped just means an expression that's surrounded by parenthesis.
+    // It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
     
     // the special "type" type

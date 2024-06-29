@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Formatter};
+use std::panic::Location;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct FileId(pub usize);
@@ -50,12 +51,32 @@ impl Span {
         Self::new(at, at)
     }
 
-    pub fn dummy() -> Self {
-        Span::empty_at(Pos {
-            file: FileId(usize::MAX),
-            line: 0,
-            col: 0,
-        })
+    // pub fn dummy() -> Self {
+    //     Span::empty_at(Pos {
+    //         file: FileId(usize::MAX),
+    //         line: 0,
+    //         col: 0,
+    //     })
+    // }
+}
+
+pub struct LocationBuilder<'s> {
+    file_id: FileId,
+    src: &'s str,
+}
+
+impl<'s> LocationBuilder<'s> {
+    pub fn new(file_id: FileId, src: &'s str) -> Self {
+        Self { file_id, src }
+    }
+
+    pub fn span(&self, start: usize, end: usize) -> Span {
+        // TODO when called repeatedly this becomes O(n**2), fix this
+        //   ideally by computing this incrementally in the parser (using a custom lexer),
+        //   otherwise using some acceleration structure here
+        let start = byte_offset_to_pos(&self.src, start, self.file_id).unwrap();
+        let end = byte_offset_to_pos(&self.src, end, self.file_id).unwrap();
+        Span::new(start, end)
     }
 }
 
@@ -63,6 +84,10 @@ pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos>
     let mut line = 0;
     let mut col = 0;
     let mut bytes = 0;
+
+    if bytes == offset {
+        return Some(Pos { file, line: line + 1, col: col + 1 });
+    }
 
     for c in src.chars() {
         let mut buf = [0; 4];

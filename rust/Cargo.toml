@@ -17,7 +17,8 @@ language = { path = "language" }
 clap = { version = "4.5.7", features = ["derive"] }
 indexmap = "2.2.6"
 itertools = "0.13.0"
-lalrpop = { version = "0.20.2" }
+#lalrpop = { version = "0.20.2" }
+lalrpop = { version = "0.20.2", path="../../lalrpop/lalrpop" }
 lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"] }
 log = "0.4.21"
 num-bigint = "0.4.5"

@@ -145,7 +145,7 @@ impl CompileSet {
 
         // parse all files
         for file in self.files.values_mut() {
-            let ast = parse_file_content(&file.source, file.id)?;
+            let ast = parse_file_content(file.id, &file.source)?;
             file.ast = Some(ast);
         }
 
@@ -243,6 +243,8 @@ impl CompileState<'_> {
         let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
         let scope = file_info.local_scope.as_ref().unwrap();
 
+        println!("{:?}", item_ast);
+
         // actual resolution
         let resolved= match item_ast {
             ast::Item::Use(item_ast) => {
@@ -250,11 +252,11 @@ impl CompileState<'_> {
                 self.resolve(ResolveQuery { item: next_item, kind: curr_kind })?
             }
             ast::Item::Type(item_ast) => {
-                assert!(item_ast.params.params.is_empty());
+                assert!(item_ast.params.is_none());
 
                 match query.kind {
                     ResolveQueryKind::Signature => self.values.push(ResolvedValueInfo::SignatureType),
-                    ResolveQueryKind::Content => todo!(),
+                    ResolveQueryKind::Content => todo!("type content {:?}", item_ast.span),
                 }
             },
             ast::Item::Struct(_) => todo!(),
