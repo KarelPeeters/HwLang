@@ -57,7 +57,7 @@ pub struct ItemDefType {
     pub vis: Visibility,
     pub id: Identifier,
     pub params: Params<TypeParam>,
-    pub inner: Option<Box<Expression>>,
+    pub inner: Box<Expression>,
 }
 
 // TODO allow "if" in a bunch of places? eg. struct fields
@@ -277,7 +277,7 @@ pub enum ExpressionKind {
     ArrayLiteral(Vec<Expression>),
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
-    Range { inclusive: bool, start: Box<Expression>, end: Box<Expression> },
+    Range { end_inclusive: bool, start: Option<Box<Expression>>, end: Option<Box<Expression>> },
 
     // Operations
     UnaryOp(UnaryOp, Box<Expression>),
@@ -420,8 +420,6 @@ pub enum BinaryOp {
     CmpGte,
 
     In,
-    Range,
-    RangeInclusive,
 }
 
 #[derive(Debug, Copy, Clone)]

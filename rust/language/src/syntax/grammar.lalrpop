@@ -21,8 +21,8 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
-    <vis:Vis> "type" <id:Id> <params:MaybeParams<TypeParam>> <inner:("=" Expr)?> ";" =>
-        Item::Type(ItemDefType { vis, id, inner: inner.map(|(_, inner)| Box::new(inner)), params, span: Span::dummy() }),
+    <vis:Vis> "type" <id:Id> <params:MaybeParams<TypeParam>> "=" <inner:Box<Expr>> ";" =>
+        Item::Type(ItemDefType { vis, id, inner, params, span: Span::dummy() }),
     <vis:Vis> "struct" <id:Id> <params:MaybeParams<TypeParam>> "{" <fields: Separated<StructField, ",">> "}" =>
         Item::Struct(ItemDefStruct { vis, id, params, fields, span: Span::dummy() }),
     <vis:Vis> "enum" <id:Id> <params:MaybeParams<TypeParam>> "{" <variants: Separated<EnumVariant, ",">> "}" =>
@@ -123,8 +123,10 @@ ExprLevelReturn: Expression = {
 
 ExprLevelRange: Expression = {
     // assoc none
-    <left: ExprLevelLogical> ".." <right: ExprLevelLogical> => build_binary_op(BinaryOp::Range, left, right),
-    <left: ExprLevelLogical> "..=" <right: ExprLevelLogical> => build_binary_op(BinaryOp::RangeInclusive, left, right),
+    <start: Box<ExprLevelLogical>?> ".." <end: Box<ExprLevelLogical>?> =>
+        Expression { kind: ExpressionKind::Range { end_inclusive: false, start, end }, span: Span::dummy() },
+    <start: Box<ExprLevelLogical>?> "..=" <end: Box<ExprLevelLogical>?> =>
+        Expression { kind: ExpressionKind::Range { end_inclusive: true, start, end }, span: Span::dummy() },
     ExprLevelLogical,
 }
 
