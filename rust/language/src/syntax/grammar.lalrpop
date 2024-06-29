@@ -21,7 +21,7 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
-    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:Box<Expr>> ";" <end:@R> =>
+    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:BoxExpr> ";" <end:@R> =>
         Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<TypeParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R> =>
         Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
@@ -30,7 +30,7 @@ Item: Item = {
     <start:@L> <vis:Vis> "module" <id:Id> <params:Params<ModuleParam>?> <body:Block> <end:@R> =>
         Item::Module(ItemDefModule { vis, id, params, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-    <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <ExprLevelCallNoStruct>)?> <body:Block> <end:@R> =>
+    <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R> =>
        Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
@@ -48,13 +48,13 @@ Block: Block = {
 
 Statement: Statement = {
     // declaration
-    <start:@L> <kind:DeclarationKind> <id:MaybeId> <ty: (":" <Box<Expr>>)?> <init: ("=" <Box<Expr>>)?> ";" <end:@R> => {
+    <start:@L> <kind:DeclarationKind> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
         Statement { kind: StatementKind::Declaration(Declaration {
             kind, id, ty, init, span: loc.span(start, end),
         }), span: loc.span(start, end) }
     },
     // assignment
-    <start:@L> <target:Box<Expr>> <op:AssignOp> <value:Box<Expr>> ";" <end:@R> => {
+    <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
         let assignment = Assignment { op, target, value, span: loc.span(start, end) };
         Statement { kind: StatementKind::Assignment(assignment), span: loc.span(start, end) }
     },
@@ -63,13 +63,13 @@ Statement: Statement = {
         let inner = CombinatorialBlock { block, span: loc.span(start, end) };
         Statement { kind: StatementKind::CombinatorialBlock(inner), span: loc.span(start, end) }
     },
-    <start:@L> "clocked" "(" <clock:Box<Expr>> "," <reset:Box<Expr>> ")" <block:Box<Block>> <end:@R> => {
+    <start:@L> "clocked" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Box<Block>> <end:@R> => {
         let inner = ClockedBlock { clock, reset, block, span: loc.span(start, end) };
         Statement { kind: StatementKind::ClockedBlock(inner), span: loc.span(start, end) }
     },
     // expression
     // TODO semicolon is optional for control flow statements and the last expression in a block
-    <start:@L> <inner:Box<Expr>> ";" <end:@R> => Statement { kind: StatementKind::Expression(inner), span: loc.span(start, end) },
+    <start:@L> <inner:BoxExpr> ";" <end:@R> => Statement { kind: StatementKind::Expression(inner), span: loc.span(start, end) },
 }
 
 DeclarationKind: DeclarationKind = {
@@ -95,9 +95,7 @@ ModuleParam: ModuleParam = {
     <start:@L> <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> <end:@R> => ModuleParam { id, kind, sync, ty, span: loc.span(start, end) },
 }
 
-ModuleParamKind = {
-    Spanned<ModuleParamKindInner>,
-}
+ModuleParamKind = Spanned<ModuleParamKindInner>;
 
 ModuleParamKindInner: ModuleParamKind = {
     "const" => ModuleParamKind::Const,
@@ -105,149 +103,143 @@ ModuleParamKindInner: ModuleParamKind = {
     "output" => ModuleParamKind::Output,
 }
 
-SyncKind = {
-    Spanned<SyncKindInner>,
-}
+SyncKind = Spanned<SyncKindInner>;
 
 SyncKindInner: SyncKind = {
     "async" => SyncKind::Async,
-    "sync" "(" <Box<Expr>> ")" => SyncKind::Sync(<>),
+    "sync" "(" <BoxExpr> ")" => SyncKind::Sync(<>),
 }
 
 // expressions
-Expr: Expression = ExprLevelReturn;
+Expr: Expression = Spanned<ExprLevelReturn>;
+BoxExpr: Box<Expression> = Box<Expr>;
 
-ExprLevelReturn: Expression = {
-    <start:@L> "return" <value:Box<Expr>?> <end:@R> => Expression { kind: ExpressionKind::Return(value), span: loc.span(start, end) },
-    <start:@L> "break" <value:Box<Expr>?> <end:@R> => Expression { kind: ExpressionKind::Break(value), span: loc.span(start, end) },
-    <start:@L> "continue" <end:@R> => Expression { kind: ExpressionKind::Continue, span: loc.span(start, end) },
+ExprLevelReturn: ExpressionKind = {
+    "return" <value:BoxExpr?> => ExpressionKind::Return(value),
+    "break" <value:BoxExpr?> => ExpressionKind::Break(value),
+    "continue" => ExpressionKind::Continue,
     ExprLevelRange,
 }
 
-ExprLevelRange: Expression = {
+ExprLevelRange: ExpressionKind = {
     // assoc none
-    <start:@L> <range_start: Box<ExprLevelLogical>?> ".." <range_end: Box<ExprLevelLogical>?> <end:@R> => {
-        let kind = ExpressionKind::Range { end_inclusive: false, start: range_start, end: range_end };
-        Expression { kind, span: loc.span(start, end) }
-    },
-    <start:@L> <range_start: Box<ExprLevelLogical>?> "..=" <range_end: Box<ExprLevelLogical>?> <end:@R> => {
-        let kind = ExpressionKind::Range { end_inclusive: true, start: range_start, end: range_end };
-        Expression { kind, span: loc.span(start, end) }
-    },
+    <range_start: BoxSpanned<ExprLevelLogical>?> ".." <range_end: BoxSpanned<ExprLevelLogical>?>
+        => ExpressionKind::Range { end_inclusive: false, start: range_start, end: range_end },
+    <range_start: BoxSpanned<ExprLevelLogical>?> "..=" <range_end: BoxSpanned<ExprLevelLogical>?>
+        => ExpressionKind::Range { end_inclusive: true, start: range_start, end: range_end },
     ExprLevelLogical,
 }
 
-ExprLevelLogical: Expression = {
+ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
-    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
+    <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
-ExprLevelLogicalAnd: Expression = {
-    <start:@L> <left: ExprLevelLogicalAnd> "&&" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolAnd, left, right, loc.span(start, end)),
+ExprLevelLogicalAnd: ExpressionKind = {
+    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
     ExprLevelEqual,
 }
-ExprLevelLogicalOr: Expression = {
-    <start:@L> <left: ExprLevelLogicalOr> "||" <right: ExprLevelEqual> <end:@R> => build_binary_op(BinaryOp::BoolOr, left, right, loc.span(start, end)),
+ExprLevelLogicalOr: ExpressionKind = {
+    <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
 
-ExprLevelEqual: Expression = {
+ExprLevelEqual: ExpressionKind = {
     // assoc none
-    <start:@L> <left: ExprLevelBitWise> "==" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpEq, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> "!=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpNeq, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> ">=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGte, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> ">" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpGt, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> "<=" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLte, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> "<" <right: ExprLevelBitWise> <end:@R> => build_binary_op(BinaryOp::CmpLt, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelBitWise>> "==" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpEq, left, right),
+    <left:Spanned<ExprLevelBitWise>> "!=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpNeq, left, right),
+    <left:Spanned<ExprLevelBitWise>> ">=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpGte, left, right),
+    <left:Spanned<ExprLevelBitWise>> ">" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpGt, left, right),
+    <left:Spanned<ExprLevelBitWise>> "<=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpLte, left, right),
+    <left:Spanned<ExprLevelBitWise>> "<" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpLt, left, right),
     ExprLevelBitWise,
 }
 
-ExprLevelBitWise: Expression = {
+ExprLevelBitWise: ExpressionKind = {
     // assoc left
-    <start:@L> <left: ExprLevelBitWise> "&" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitAnd, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> "^" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitXor, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelBitWise> "|" <right: ExprLevelShift> <end:@R> => build_binary_op(BinaryOp::BitOr, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelBitWise>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
+    <left:Spanned<ExprLevelBitWise>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
+    <left:Spanned<ExprLevelBitWise>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
     ExprLevelShift,
 }
 
-ExprLevelShift: Expression = {
+ExprLevelShift: ExpressionKind = {
     // assoc none
-    <start:@L> <left: ExprLevelAdd> "<<" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shl, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelAdd> ">>" <right: ExprLevelAdd> <end:@R> => build_binary_op(BinaryOp::Shr, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelAdd>> "<<" <right:Spanned<ExprLevelAdd>> => build_binary_op(BinaryOp::Shl, left, right),
+    <left:Spanned<ExprLevelAdd>> ">>" <right:Spanned<ExprLevelAdd>> => build_binary_op(BinaryOp::Shr, left, right),
     ExprLevelAdd,
 }
 
-ExprLevelAdd: Expression = {
+ExprLevelAdd: ExpressionKind = {
     // assoc left
-    <start:@L> <left: ExprLevelAdd> "+" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Add, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelAdd> "-" <right: ExprLevelMul> <end:@R> => build_binary_op(BinaryOp::Sub, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelAdd>> "+" <right:Spanned<ExprLevelMul>> => build_binary_op(BinaryOp::Add, left, right),
+    <left:Spanned<ExprLevelAdd>> "-" <right:Spanned<ExprLevelMul>> => build_binary_op(BinaryOp::Sub, left, right),
     ExprLevelMul,
 }
 
-ExprLevelMul: Expression = {
+ExprLevelMul: ExpressionKind = {
     // assoc left
-    <start:@L> <left: ExprLevelMul> "*" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mul, left, right, loc.span(start, end)),
-    <start:@L> <left: ExprLevelMul> "/" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Div, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelMul>> "*" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Mul, left, right),
+    <left:Spanned<ExprLevelMul>> "/" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Div, left, right),
     // TODO disallow mixing this with mul and/or div?
-    <start:@L> <left: ExprLevelMul> "%" <right: ExprLevelUnary> <end:@R> => build_binary_op(BinaryOp::Mod, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelMul>> "%" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Mod, left, right),
     ExprLevelUnary,
 }
 
-ExprLevelUnary: Expression = {
-    <start:@L> "!" <inner:Box<ExprLevelPower>> <end:@R> => Expression { kind: ExpressionKind::UnaryOp(UnaryOp::Not, inner), span: loc.span(start, end) },
-    <start:@L> "-" <inner:Box<ExprLevelPower>> <end:@R> => Expression { kind: ExpressionKind::UnaryOp(UnaryOp::Neg, inner), span: loc.span(start, end) },
+ExprLevelUnary: ExpressionKind = {
+    "!" <inner:BoxSpanned<ExprLevelPower>> => ExpressionKind::UnaryOp(UnaryOp::Not, inner),
+    "-" <inner:BoxSpanned<ExprLevelPower>> => ExpressionKind::UnaryOp(UnaryOp::Neg, inner),
     ExprLevelPower,
 }
 
-ExprLevelPower: Expression = {
+ExprLevelPower: ExpressionKind = {
     // assoc none
-    <start:@L> <left: ExprLevelCall> "**" <right: ExprLevelCall> <end:@R> => build_binary_op(BinaryOp::Pow, left, right, loc.span(start, end)),
+    <left:Spanned<ExprLevelCall>> "**" <right:Spanned<ExprLevelCall>> => build_binary_op(BinaryOp::Pow, left, right),
     ExprLevelCall,
 }
 
 ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
 ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
-ExprLevelCallGeneric<AtomicInner>: Expression = {
-    <start:@L> <target:Box<ExprLevelDotIndex<AtomicInner>>> "(" <args:CallArgs> ")" <end:@R> =>
-        Expression { kind: ExpressionKind::Call(target, args), span: loc.span(start, end) },
-    <start:@L> <target:Box<ExprLevelDotIndex<AtomicInner>>> "[" <args:CallArgs> "]" <end:@R> =>
-        Expression { kind: ExpressionKind::ArrayIndex(target, args), span: loc.span(start, end) },
+ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
+    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "(" <args:CallArgs> ")" =>
+        ExpressionKind::Call(target, args),
+    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:CallArgs> "]" =>
+        ExpressionKind::ArrayIndex(target, args),
     ExprLevelDotIndex<AtomicInner>,
 }
 
 CallArgs: Args = {
     // TODO support named args
-    <start:@L> <positional:Separated<Expr, ",">> <end:@R> =>
+    <start:@L> <positional:Separated<Expr, ",">> <end:@L> =>
         Args { positional, named: vec![], span: loc.span(start, end) },
 }
 
-ExprLevelDotIndex<AtomicInner>: Expression = {
+ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
     // assoc left
-    <start:@L> <target: Box<ExprLevelDotIndex<AtomicInner>>> "." <index: Id> <end:@R> => Expression { kind: ExpressionKind::DotIdIndex(target, index), span: loc.span(start, end) },
-    <start:@L> <target: Box<ExprLevelDotIndex<AtomicInner>>> "." <index: r"[0-9]+"> <end:@R> => {
-        let index = Spanned { span: loc.span(start, end), inner: index.parse().unwrap() };
-        Expression { kind: ExpressionKind::DotIntIndex(target, index), span: loc.span(start, end) }
-    },
+    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Id>
+        => ExpressionKind::DotIdIndex(target, index),
+    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<r"[0-9]+">>
+        => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
     ExprLevelStructureInit<AtomicInner>,
 }
 
-ExprLevelStructureInit<AtomicInner>: Expression = {
+ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
     // initializers
     //  tuples
-    <start:@L> "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" <end:@R> => Expression { kind: ExpressionKind::TupleLiteral(values), span: loc.span(start, end) },
+    "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(values),
     //  array
-    <start:@L> "[" <elements:Separated<Expr, ",">> "]" <end:@R> => Expression { kind: ExpressionKind::ArrayLiteral(elements), span: loc.span(start, end) },
+    "[" <elements:Separated<Expr, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
     AtomicInner,
 }
 
-ExprLevelStructInit: Expression = {
+ExprLevelStructInit: ExpressionKind = {
     //  struct
     // TODO allow struct type params?
-    // <start:@L> <struct_ty:Id> "{" "}" <end:@R> => todo!(),
-    <start:@L> <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" <end:@R> => todo!(),
-//        Expression { kind: ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }), span: loc.span(start, end) },
+    // <struct_ty:Id> "{" "}" => todo!(),
+    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
+//        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
     ExprLevelAtomic,
 }
 
@@ -255,45 +247,43 @@ StructLiteralField: StructLiteralField = {
     <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: loc.span(start, end) },
 }
 
-ExprLevelAtomic: Expression = {
+ExprLevelAtomic: ExpressionKind = {
     // parentheses
-    <start:@L> "(" <expr:Expr> ")" <end:@R> => expr,
+    "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
     // block
-    <start:@L> <block:Block> <end:@R> => Expression { kind: ExpressionKind::Block(block), span: loc.span(start, end) },
+    <block:Block> => ExpressionKind::Block(block),
     // path
-    <start:@L> <path:Path> <end:@R> => Expression { kind: ExpressionKind::Path(path), span: loc.span(start, end) },
+    <path:Path> => ExpressionKind::Path(path),
     // special case TODO why does this not get parsed as an identifier?
-    <start:@L> "type" <end:@R> => Expression { kind: ExpressionKind::Type, span: loc.span(start, end) },
-    <start:@L> "_" <end:@R> => Expression { kind: ExpressionKind::Dummy, span: loc.span(start, end) },
+    "type" => ExpressionKind::Type,
+    "_" => ExpressionKind::Dummy,
     // literals
-    <start:@L> "true" <end:@R> => Expression { kind: ExpressionKind::BoolLiteral(true), span: loc.span(start, end) },
-    <start:@L> "false" <end:@R> => Expression { kind: ExpressionKind::BoolLiteral(false), span: loc.span(start, end) },
-    <start:@L> <string:r"0x[0-9a-fA-F_]+"> <end:@R>
-        => Expression { kind: ExpressionKind::IntPattern(IntPattern::Hex(string.to_owned())), span: loc.span(start, end) },
-    <start:@L> <string:r"0b[0-9a-fA-F_]+"> <end:@R>
-        => Expression { kind: ExpressionKind::IntPattern(IntPattern::Bin(string.to_owned())), span: loc.span(start, end) },
-    <start:@L> <string:r"[0-9]+"> <end:@R>
-        => Expression { kind: ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())), span: loc.span(start, end) },
+    "true" => ExpressionKind::BoolLiteral(true),
+    "false" => ExpressionKind::BoolLiteral(false),
+    <string:r"0x[0-9a-fA-F_]+">
+        => ExpressionKind::IntPattern(IntPattern::Hex(string.to_owned())),
+    <string:r"0b[0-9a-fA-F_]+">
+        => ExpressionKind::IntPattern(IntPattern::Bin(string.to_owned())),
+    <string:r"[0-9]+">
+        => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
 
     // control flow
     ExprControlFlow,
 }
 
-ExprControlFlow: Expression = {
+ExprControlFlow: ExpressionKind = {
     // if
-    <start:@L> "if" "(" <cond:Box<Expr>> ")" <then_block:Block> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block>)?> <end:@R>
-        => Expression { kind: ExpressionKind::If(IfExpression {
-            cond, then_block, else_if_pairs, else_block
-        }), span: loc.span(start, end) },
+    "if" "(" <cond:BoxExpr> ")" <then_block:Block> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block>)?>
+        => ExpressionKind::If(IfExpression { cond, then_block, else_if_pairs, else_block }),
     // loop
-    <start:@L> "loop" <body:Block> <end:@R>
-        => Expression { kind: ExpressionKind::Loop(LoopExpression { body }), span: loc.span(start, end) },
+    "loop" <body:Block>
+        => ExpressionKind::Loop(LoopExpression { body }),
     // for
-    <start:@L> "for" "(" <index:MaybeId> <index_ty: (":" <Box<Expr>>)?> "in" <iter:Box<Expr>> ")" <body:Block> <end:@R>
-        => Expression { kind: ExpressionKind::For(ForExpression { index, index_ty, iter, body }), span: loc.span(start, end) },
+    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block>
+        => ExpressionKind::For(ForExpression { index, index_ty, iter, body }),
     // while
-    <start:@L> "while" "(" <cond:Box<Expr>> ")" <body:Block> <end:@R>
-        => Expression { kind: ExpressionKind::While(WhileExpression { cond, body }), span: loc.span(start, end) },
+    "while" "(" <cond:BoxExpr> ")" <body:Block>
+        => ExpressionKind::While(WhileExpression { cond, body }),
 }
 
 Path: Path = {
@@ -302,7 +292,7 @@ Path: Path = {
 }
 
 ElseIfPair: ElseIfPair = {
-    <start:@L> "else" "if" "(" <cond:Box<Expr>> ")" <block:Block> <end:@R>
+    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block> <end:@R>
         => ElseIfPair { cond, block, span: loc.span(start, end) },
 }
 
@@ -322,9 +312,7 @@ Vis: Visibility = {
     => Visibility::Private,
 }
 
-AssignOp: Spanned<Option<BinaryOp>> = {
-    Spanned<AssignOpInner>,
-}
+AssignOp: Spanned<Option<BinaryOp>> = Spanned<AssignOpInner>;
 
 AssignOpInner: Option<BinaryOp> = {
     "=" => None,
@@ -339,10 +327,6 @@ AssignOpInner: Option<BinaryOp> = {
 }
 
 // utilities
-Spanned<T>: Spanned<T> = {
-    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
-}
-
 Separated<T, S>: Vec<T> = { // (1)
     <mut v:(<T> S)*> <e:T?> => match e { // (2)
         None => v,
@@ -366,3 +350,9 @@ SeparatedAtLeastOneSep<T, S>: Vec<T> = { // (1)
 Box<T>: Box<T> = {
     T => Box::new(<>),
 }
+
+Spanned<T>: Spanned<T> = {
+    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
+}
+
+BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;

@@ -236,13 +236,7 @@ pub struct ClockedBlock {
     pub block: Box<Block>,
 }
 
-// TODO just make this spanned<expression>?
-//  this would simplify the parser by a lot too
-#[derive(Debug, Clone)]
-pub struct Expression {
-    pub span: Span,
-    pub kind: ExpressionKind,
-}
+pub type Expression = Spanned<ExpressionKind>;
 
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
@@ -292,7 +286,7 @@ pub enum ExpressionKind {
     // Indexing
     ArrayIndex(Box<Expression>, Args),
     DotIdIndex(Box<Expression>, Identifier),
-    DotIntIndex(Box<Expression>, Spanned<u32>),
+    DotIntIndex(Box<Expression>, Spanned<String>),
 
     // Calls
     Call(Box<Expression>, Args),
@@ -378,6 +372,7 @@ pub enum MaybeIdentifier {
     Identifier(Identifier),
 }
 
+// TODO this is also just a spanned string
 #[derive(Debug, Clone)]
 pub struct Identifier {
     pub span: Span,
@@ -392,11 +387,8 @@ pub struct Path {
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression, span: Span) -> Expression {
-    Expression {
-        span,
-        kind: ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right)),
-    }
+pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
+    ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right))
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -444,6 +436,15 @@ pub enum Direction {
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,
+}
+
+impl<T> Spanned<T> {
+    pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
+        Spanned {
+            span: self.span,
+            inner: f(self.inner),
+        }
+    }
 }
 
 impl Item {
