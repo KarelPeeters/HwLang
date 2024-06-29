@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -5,6 +6,11 @@ use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
 use indexmap::map::{Entry, IndexMap};
+
+// TODO use refcell for all of these data structures?
+//   that would allow users to push new values without worrying about mutability
+//   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
+//   !! but what about allowing internal iteration? that will conflict with the refcell!
 
 #[macro_export]
 macro_rules! new_index_type {

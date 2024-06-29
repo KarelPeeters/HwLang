@@ -57,7 +57,7 @@ impl<V: Debug> Scope<'_, V> {
             if vis.can_access(s_vis) {
                 Ok(s)
             } else {
-                Err(ResolveError::CannotAcess(id.clone()))
+                Err(ResolveError::CannotAccess(id.clone()))
             }
         } else if let Some((p, p_vis)) = self.parent {
             // TODO does min access make sense?

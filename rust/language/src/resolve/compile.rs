@@ -1,4 +1,3 @@
-use std::net::Incoming;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 
@@ -6,7 +5,8 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{ItemReference, Type, Types};
+use crate::resolve::types::ItemReference;
+use crate::resolve::values::{ResolvedValue, ResolvedValueInfo, ResolvedValues};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Expression, ItemDefType, Path};
 use crate::syntax::pos::FileId;
@@ -42,9 +42,9 @@ pub struct Node {
 type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
 #[derive(Debug, Copy, Clone)]
-pub enum ScopedValue {
-    File(FileId),
+enum ScopedValue {
     Item(Item),
+    File(FileId),
 }
 
 #[derive(Debug)]
@@ -92,40 +92,44 @@ new_index_type!(pub Item);
 #[derive(Debug)]
 pub struct ItemInfo {
     item_reference: ItemReference,
-    resolved: Option<ResolvedValue>,
-}
 
-#[derive(Debug, Copy, Clone)]
-pub enum ResolvedValue {
-    Type(Type),
-    Const(/*TODO*/),
-    Function(/*TODO*/),
-    Module(/*TODO*/),
-    Interface(/*TODO*/),
-    // TODO others, in particular constants
+    signature: Option<ResolvedValue>,
+    content: Option<ResolvedValue>,
 }
 
 #[derive(Debug)]
 pub enum FrontError {
-    CyclicTypeDependency(Vec<Item>),
+    CyclicTypeDependency(Vec<ResolveQuery>),
     InvalidTypeExpression(Expression),
     MissingTypeExpression(ItemDefType),
+    UnexpectedPathToFile(Path, FileId),
+    UnexpectedPathToItem(Path, Item),
 }
 
 pub struct CompileState<'a> {
     files: &'a IndexMap<FileId, FileInfo>,
     items: Arena<Item, ItemInfo>,
-    types: Types,
+    values: ResolvedValues,
 }
 
-type CheckResult<T> = Result<T, CheckFirstOr<FrontError>>;
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ResolveQuery {
+    item: Item,
+    kind: ResolveQueryKind,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ResolveQueryKind {
+    Signature,
+    Content,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ResolveFirst(ResolveQuery);
 
 #[derive(Debug, Copy, Clone)]
-struct CheckFirst(Item);
-
-#[derive(Debug, Copy, Clone)]
-enum CheckFirstOr<E> {
-    CheckFirst(CheckFirst),
+enum ResolveFirstOr<E> {
+    ResolveFirst(ResolveQuery),
     Error(E),
 }
 
@@ -134,7 +138,10 @@ impl CompileSet {
         // Use separate steps to flag all errors of the same type before moving on to the next level.
         // TODO: some error recovery and continuation, eg. return all parse errors at once
 
+        // items only exists to serve as a level of indirection between values,
+        //   so we can easily do the graph solution in a single pass
         let mut items: Arena<Item, ItemInfo> = Arena::default();
+        let values = ResolvedValues::default();
 
         // parse all files
         for file in self.files.values_mut() {
@@ -146,6 +153,7 @@ impl CompileSet {
         for file in self.files.values_mut() {
             let ast = file.ast.as_ref().unwrap();
 
+            // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
             let mut scope_declared = Scope::default();
 
             for (ast_item_index, ast_item) in enumerate(&ast.items) {
@@ -156,54 +164,25 @@ impl CompileSet {
                 };
 
                 let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
-                let item = items.push(ItemInfo { item_reference, resolved: None });
+                let item = items.push(ItemInfo { item_reference, signature: None, content: None });
                 scope_declared.maybe_declare(&id, ScopedValue::Item(item), vis)?;
             }
 
             file.local_scope = Some(scope_declared);
         }
 
-        // visit all items
         let mut state = CompileState {
             files: &self.files,
             items,
-            types: Types::default(),
+            values,
         };
+
+        // fully resolve all items
         let item_keys = state.items.keys().collect_vec();
-
         for item in item_keys {
-            let mut stack = vec![item];
-            while let Some(curr) = stack.pop() {
-                // TODO separate signature and content as visit actions
-                if state.items[item].resolved.is_some() {
-                    continue;
-                }
-
-                let result = state.resolve_item(curr);
-
-                match result {
-                    Ok(resolved) => {
-                        assert!(state.items[item].resolved.is_none());
-                        state.items[item].resolved = Some(resolved);
-                        
-                        println!("Resolved {:?} to {:?}", item, resolved);
-                    }
-                    Err(CheckFirstOr::Error(e)) => {
-                        return Err(e.into());
-                    }
-                    Err(CheckFirstOr::CheckFirst(CheckFirst(first))) => {
-                        stack.push(curr);
-                        if stack.contains(&first) {
-                            stack.push(first);
-                            return Err(FrontError::CyclicTypeDependency(stack).into());
-                        }
-                        stack.push(first);
-                    }
-                }
-            }
-
-            // TODO assert more stuff?
-            assert!(state.items[item].resolved.is_some());
+            println!("Starting full resolution of {:?}", item);
+            let query = ResolveQuery { item, kind: ResolveQueryKind::Content };
+            state.resolve_fully(query)?;
         }
 
         Ok(())
@@ -211,60 +190,137 @@ impl CompileSet {
 }
 
 impl CompileState<'_> {
-    fn resolve_item(&mut self, item: Item) -> Result<ResolvedValue, CheckFirstOr<CompileError>> {
-        assert!(self.items[item].resolved.is_none());
+    fn resolve_fully(&mut self, query: ResolveQuery) -> Result<(), CompileError> {
+        let mut stack = vec![query];
+
+        while let Some(curr) = stack.pop() {
+            if self.resolve(curr).is_ok() {
+                continue;
+            }
+
+            let result = self.resolve_new(curr);
+
+            match result {
+                Ok(resolved) => {
+                    println!("Resolved {:?} to {:?}", query, resolved);
+                    *curr.kind.slot_mut(&mut self.items[curr.item]) = Some(resolved);
+                }
+                Err(ResolveFirstOr::Error(e)) => {
+                    return Err(e.into());
+                }
+                Err(ResolveFirstOr::ResolveFirst(first)) => {
+                    stack.push(curr);
+                    let has_cycle = stack.contains(&first);
+                    stack.push(first);
+                    if has_cycle {
+                        return Err(FrontError::CyclicTypeDependency(stack).into());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve(&self, query: ResolveQuery) -> Result<ResolvedValue, ResolveFirst> {
+        match query.kind.slot(&self.items[query.item]) {
+            &Some(result) => Ok(result),
+            None => Err(ResolveFirst(query))
+        }
+    }
+
+    fn resolve_new(&mut self, query: ResolveQuery) -> Result<ResolvedValue, ResolveFirstOr<CompileError>> {
+        // check that this is indeed a new query
+        assert!(query.kind.slot(&self.items[query.item]).is_none());
+
+        let ResolveQuery { item: curr_item, kind: curr_kind } = query;
 
         // item lookup
-        let info = &self.items[item];
+        let info = &self.items[curr_item];
         let item_reference = info.item_reference;
         let ItemReference { file, item_index } = item_reference;
         let file_info = self.files.get(&file).unwrap();
         let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
         let scope = file_info.local_scope.as_ref().unwrap();
 
-        // actual item
+        // actual resolution
         let resolved= match item_ast {
             ast::Item::Use(item_ast) => {
-                self.resolve_path(scope, &item_ast.path)?
+                let next_item = self.follow_path(scope, &item_ast.path)?;
+                self.resolve(ResolveQuery { item: next_item, kind: curr_kind })?
             }
-            ast::Item::Type(item_ast) => { 
+            ast::Item::Type(item_ast) => {
                 assert!(item_ast.params.params.is_empty());
-                let expr = item_ast.inner.as_ref().ok_or(FrontError::MissingTypeExpression(item_ast.clone()))?;
-                self.resolve_expression(scope, expr)?
+
+                match query.kind {
+                    ResolveQueryKind::Signature => self.values.push(ResolvedValueInfo::SignatureType),
+                    ResolveQueryKind::Content => todo!(),
+                }
             },
             ast::Item::Struct(_) => todo!(),
             ast::Item::Enum(_) => todo!(),
-            ast::Item::Const(_) => ResolvedValue::Const(),
-            ast::Item::Function(_) => ResolvedValue::Function(),
-            ast::Item::Module(_) => ResolvedValue::Module(),
-            ast::Item::Interface(_) => ResolvedValue::Interface(),
+            ast::Item::Const(_) => todo!(),
+            ast::Item::Function(_) => todo!(),
+            ast::Item::Module(_) => todo!(),
+            ast::Item::Interface(_) => todo!(),
         };
 
         Ok(resolved)
     }
 
-    fn resolve_path(&mut self, scope: &Scope, path: &Path) -> Result<ResolvedValue, CheckFirst> {
-        todo!()
+    fn follow_path(&self, scope: &Scope, path: &Path) -> Result<Item, ResolveFirstOr<CompileError>> {
+        let mut scope = scope;
+        let mut vis = Visibility::Private;
+
+        for parent in &path.parents {
+            match *scope.find(None, &parent, vis)? {
+                ScopedValue::Item(item) =>
+                    return Err(FrontError::UnexpectedPathToItem(path.clone(), item).into()),
+                ScopedValue::File(file) => {
+                    scope = self.files.get(&file).unwrap().local_scope.as_ref().unwrap();
+                    vis = Visibility::Public;
+                }
+            }
+        }
+
+        match *scope.find(None, &path.id, vis)? {
+            ScopedValue::Item(item) =>
+                Ok(item),
+            ScopedValue::File(file) =>
+                Err(FrontError::UnexpectedPathToFile(path.clone(), file).into()),
+        }
     }
 
-    fn get_resolved(&mut self, item: Item) -> Result<ResolvedValue, CheckFirst> {
-        self.items[item].resolved.ok_or(CheckFirst(item))
-    }
-    
-    fn resolve_expression(&mut self, scope: &Scope, expr: &Expression) -> Result<ResolvedValue, CheckFirstOr<CompileError>> {
+    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> Result<ResolvedValue, ResolveFirstOr<CompileError>> {
         todo!()
     }
 }
 
-impl<E: Into<CompileError>> From<E> for CheckFirstOr<CompileError> { 
+impl ResolveQueryKind {
+    pub fn slot(self, info: &ItemInfo) -> &Option<ResolvedValue> {
+        match self {
+            ResolveQueryKind::Signature => &info.signature,
+            ResolveQueryKind::Content => &info.content,
+        }
+    }
+
+    pub fn slot_mut(self, info: &mut ItemInfo) -> &mut Option<ResolvedValue> {
+        match self {
+            ResolveQueryKind::Signature => &mut info.signature,
+            ResolveQueryKind::Content => &mut info.content,
+        }
+    }
+}
+
+impl<E: Into<CompileError>> From<E> for ResolveFirstOr<CompileError> {
     fn from(value: E) -> Self {
-        CheckFirstOr::Error(value.into())
+        ResolveFirstOr::Error(value.into())
     }
 }
 
-impl <E> From<CheckFirst> for CheckFirstOr<E> {
-    fn from(first: CheckFirst) -> Self {
-        CheckFirstOr::CheckFirst(first)
+impl From<ResolveFirst> for ResolveFirstOr<CompileError> {
+    fn from(value: ResolveFirst) -> Self {
+        ResolveFirstOr::ResolveFirst(value.0)
     }
 }
 

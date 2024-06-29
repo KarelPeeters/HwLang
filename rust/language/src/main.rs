@@ -29,6 +29,10 @@ fn main() {
         let source = std::fs::read_to_string(&path).unwrap();
         set.add_file(FilePath(stack), source).unwrap();
     }).unwrap();
-
+    
+    if set.files.len() == 0 {
+        println!("Warning: no input files found");
+    }
+    
     set.compile().unwrap();
 }
