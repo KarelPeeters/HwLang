@@ -1,0 +1,14 @@
+//function index_of_first_set_bit(const n: uint, x: bits(n)) -> Option(uint(0..n)) {
+//    for (i in 0..2**n) {
+//        if (x[i]) {
+//            return Option.Some(i);
+//        };
+//    };
+//    return Option.None;
+//}
+//
+//function index_to_one_hot(n: uint, index: Option(uint(0..n))) -> bits(n) {
+//    var result = [0] * n;
+//    result[index] = 1;
+//    return result;
+//}
