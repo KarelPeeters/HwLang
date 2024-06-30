@@ -1,7 +1,9 @@
+use std::hash::{Hash, Hasher};
 use num_bigint::BigInt;
 use num_traits::identities::Zero;
 
 use crate::new_index_type;
+use crate::resolve::values::Value;
 use crate::syntax::pos::FileId;
 use crate::util::arena::ArenaSet;
 
@@ -44,18 +46,22 @@ pub struct TypeInfoFunction {
     pub ret: Type,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq)]
 pub struct TypeInfoStruct {
-    // TODO fields
-    // TODO exclude everything except the reference from hash and eq?
+    // only the reference and params are included in hash and eq
     pub item_reference: ItemReference,
+    pub params: Vec<Value>,
+    
+    pub fields: Vec<(String, Type)>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq)]
 pub struct TypeInfoEnum {
-    // TODO options
-    // TODO exclude everything except the reference from hash and eq?
+    // only the reference and params are included in hash and eq
     pub item_reference: ItemReference,
+    pub params: Vec<Value>,
+
+    pub variants: Vec<(String, Option<Type>)>,
 }
 
 /// Utility type to refer to a specific item in a specific file.
@@ -105,5 +111,29 @@ impl<T> BasicTypes<T> {
             ty_int: f(&self.ty_int),
             ty_uint: f(&self.ty_uint),
         }
+    }
+}
+
+impl Hash for TypeInfoStruct {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.item_reference, &self.params).hash(state);
+    }
+}
+
+impl PartialEq for TypeInfoStruct {
+    fn eq(&self, other: &Self) -> bool {
+        (self.item_reference, &self.params) == (other.item_reference, &other.params)
+    }
+}
+
+impl Hash for TypeInfoEnum {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.item_reference, &self.params).hash(state);
+    }
+}
+
+impl PartialEq for TypeInfoEnum {
+    fn eq(&self, other: &Self) -> bool {
+        (self.item_reference, &self.params) == (other.item_reference, &other.params)
     }
 }

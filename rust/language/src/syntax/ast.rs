@@ -91,7 +91,7 @@ pub struct ItemDefEnum {
 pub struct EnumVariant {
     pub span: Span,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<Expression>>>,
+    pub content: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]

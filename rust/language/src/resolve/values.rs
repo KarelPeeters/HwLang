@@ -1,6 +1,9 @@
+use std::hash::{Hash, Hasher};
 use num_bigint::BigInt;
 use crate::new_index_type;
-use crate::resolve::types::Type;
+use crate::resolve::compile::FunctionBody;
+use crate::resolve::types::{ItemReference, Type};
+use crate::syntax::ast::Identifier;
 use crate::util::arena::ArenaSet;
 
 // TODO find a better name for this, eg. InterpreterValue, CompileValue, just Value, ...
@@ -25,8 +28,26 @@ pub struct ValueIntInfo {
     pub value: BigInt,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct ValueFunctionInfo {
+    // only this field is used in hash and eq
+    pub item_reference: ItemReference,
+    
     pub ty: Type,
-    // TODO value is the parsed and fully resolved body IR/AST
+    pub params: Vec<Identifier>,
+    pub body: FunctionBody,
+}
+
+impl Eq for ValueFunctionInfo {}
+
+impl PartialEq for ValueFunctionInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.item_reference == other.item_reference
+    }
+}
+
+impl Hash for ValueFunctionInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.item_reference.hash(state)
+    }
 }

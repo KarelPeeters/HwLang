@@ -35,8 +35,8 @@ Item: Item = {
 }
 
 EnumVariant: EnumVariant = {
-    <start:@L> <id:Id> <params:Params<Expr>?> <end:@R>
-        => EnumVariant { id, params, span: loc.span(start, end) },
+    <start:@L> <id:Id> <content:("(" <Expr> ")")?> <end:@R>
+        => EnumVariant { id, content, span: loc.span(start, end) },
 }
 
 StructField: StructField = {

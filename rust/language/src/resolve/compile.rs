@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 
@@ -5,12 +6,16 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoStruct, Types};
+use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
+
+macro_rules! throw {
+    ($e:expr) => { return Err($e.into()) };
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FilePath(pub Vec<String>);
@@ -39,10 +44,10 @@ pub struct Node {
     children: IndexMap<String, Node>,
 }
 
-type Scope<'s> = scope::Scope<'s, ScopedValue>;
+pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
 #[derive(Debug, Copy, Clone)]
-enum ScopedValue {
+pub enum ScopedValue {
     Item(Item),
     File(FileId),
 }
@@ -63,10 +68,10 @@ impl CompileSet {
 
     pub fn add_file(&mut self, path: FilePath, source: String) -> Result<(), CompileSetError> {
         if path.0.is_empty() {
-            return Err(CompileSetError::EmptyPath);
+            throw!(CompileSetError::EmptyPath);
         }
         if !self.paths.insert(path.clone()) {
-            return Err(CompileSetError::DuplicatePath(path.clone()));
+            throw!(CompileSetError::DuplicatePath(path.clone()));
         }
 
         let id = FileId(self.files.len());
@@ -79,11 +84,11 @@ impl CompileSet {
     }
 
     pub fn add_external_vhdl(&mut self, library: String, source: String) {
-        todo!()
+        todo!("compile VHDL library={:?}, source.len={}", library, source.len())
     }
 
     pub fn add_external_verilog(&mut self, source: String) {
-        todo!()
+        todo!("compile verilog source.len={}", source.len())
     }
 }
 
@@ -100,12 +105,17 @@ pub struct ItemInfo {
 #[derive(Debug)]
 pub enum FrontError {
     CyclicTypeDependency(Vec<ResolveQuery>),
-    InvalidTypeExpression(Expression),
-    MissingTypeExpression(ItemDefType),
-    UnexpectedPathToFile(Path, FileId),
-    UnexpectedPathToItem(Path, Item),
+
+    ExpectedTypeExpression(Expression),
+    ExpectedFunctionExpression(Expression),
+
+    ExpectedPathToItemNotFile(Path, FileId),
+    ExpectedPathToFileNotItem(Path, Item),
+
     InvalidBuiltinIdentifier(Expression, Identifier),
     InvalidBuiltinArgs(Expression, Args),
+
+    DuplicateParameterName(Identifier, Identifier),
 }
 
 pub struct CompileState<'a> {
@@ -132,7 +142,7 @@ pub enum ResolveQueryKind {
 pub struct ResolveFirst(ResolveQuery);
 
 #[derive(Debug, Copy, Clone)]
-enum ResolveFirstOr<E> {
+pub enum ResolveFirstOr<E> {
     ResolveFirst(ResolveQuery),
     Error(E),
 }
@@ -177,7 +187,7 @@ impl CompileSet {
         }
 
         let basic_values = types.basic().map(|&ty| values.push(ValueInfo::Type(ty)));
-        
+
         let mut state = CompileState {
             files: &self.files,
             items,
@@ -198,7 +208,13 @@ impl CompileSet {
     }
 }
 
-type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
+pub type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum FunctionBody {
+    /// type alias, enum, or struct
+    TypeConstructor(ItemReference),
+}
 
 impl CompileState<'_> {
     fn resolve_fully(&mut self, query: ResolveQuery) -> Result<(), CompileError> {
@@ -243,7 +259,7 @@ impl CompileState<'_> {
     fn resolve_new(&mut self, query: ResolveQuery) -> ResolveResult<Value> {
         // check that this is indeed a new query
         assert!(query.kind.slot(&self.items[query.item]).is_none());
-        
+
         // item lookup
         let ResolveQuery { item, kind } = query;
         let info = &self.items[item];
@@ -252,7 +268,7 @@ impl CompileState<'_> {
         let file_info = self.files.get(&file).unwrap();
         let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
         let scope = file_info.local_scope.as_ref().unwrap();
-        
+
         println!("  resolve_new {:?} at {:?}", query, item_ast.span());
 
         // actual resolution
@@ -261,29 +277,11 @@ impl CompileState<'_> {
                 let next_item = self.follow_path(scope, &item_ast.path)?;
                 self.resolve(ResolveQuery { item: next_item, kind })?
             }
-            ast::Item::Type(item_ast) => {
-                let ItemDefType { span: _, vis: _, id: _, params, inner } = item_ast;
-                self.resolve_new_type_def_item(query, scope, params, |state| {
-                    state.eval_expression_as_ty(scope, inner)
-                })?
-            },
-            ast::Item::Struct(item_Ast) => {
-                let ItemDefStruct { span: _, vis: _, id: _, params, fields } = item_Ast;
-                // TODO properly use fields
-                let _ = fields;
-                self.resolve_new_type_def_item(query, scope, params, |state| {
-                    let info = TypeInfoStruct { item_reference };
-                    Ok(state.types.push(TypeInfo::Struct(info)))
-                })?
-            },
-            ast::Item::Enum(item_ast) => {
-                let ItemDefEnum { span: _, vis: _, id: _, params, variants } = item_ast;
-                // TODO properly use variants
-                let _ = variants;
-                self.resolve_new_type_def_item(query, scope, params, |state| {
-                    let info = TypeInfoEnum { item_reference };
-                    Ok(state.types.push(TypeInfo::Enum(info)))
-                })?
+            ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner: _ }) |
+            ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields: _ }) |
+            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants: _ })
+            => {
+                self.resolve_new_type_def_item(query, scope, item_reference, params)?
             },
             ast::Item::Const(_) => todo!(),
             ast::Item::Function(_) => todo!(),
@@ -298,35 +296,48 @@ impl CompileState<'_> {
         &mut self,
         query: ResolveQuery,
         scope: &Scope,
+        item_reference: ItemReference,
         params: &Option<Spanned<Vec<TypeParam>>>,
-        value_if_no_params: impl FnOnce(&mut Self) -> ResolveResult<Type>,
     ) -> ResolveResult<Value> {
-        let value_info = match params {
+        let build_value = FunctionBody::TypeConstructor(item_reference);
+        
+        let value = match params {
             None => {
                 // no params, this is just a straight type definition
                 match query.kind {
-                    ResolveQueryKind::Signature => ValueInfo::Type(self.types.basic().ty_type),
-                    ResolveQueryKind::Value => ValueInfo::Type(value_if_no_params(self)?),
+                    ResolveQueryKind::Signature => self.type_as_value(self.types.basic().ty_type),
+                    ResolveQueryKind::Value => self.call_function_body(build_value)?,
                 }
             }
             Some(params) => {
                 // params, this is a type constructor, equivalent to a function that returns a type
                 let ty = self.type_constructor_signature(scope, &params.inner)?;
                 match query.kind {
-                    ResolveQueryKind::Signature => ValueInfo::Type(ty),
+                    ResolveQueryKind::Signature => self.type_as_value(ty),
                     ResolveQueryKind::Value => {
-                        // TODO insert actual generating code in here
-                        let func = ValueFunctionInfo { ty };
-                        ValueInfo::Function(func)
+                        // check parameter names for uniqueness
+                        // TODO this is a weird place to do this,
+                        //  can't we type-check the item itself including its header first?
+                        let mut unique: HashMap<&str, &Identifier> = Default::default();
+                        for p in &params.inner {
+                            if let Some(prev)  = unique.insert(&p.id.string, &p.id) {
+                                throw!(FrontError::DuplicateParameterName(prev.clone(), p.id.clone()))
+                            }
+                        }
+
+                        // construct the actual function value
+                        let params = params.inner.iter().map(|p| p.id.clone()).collect_vec();
+                        let func = ValueFunctionInfo { item_reference, ty, params, body: build_value };
+                        self.values.push(ValueInfo::Function(func))
                     }
                 }
             }
         };
 
-        Ok(self.values.push(value_info))
+        Ok(value)
     }
-    
-    fn type_constructor_signature(&mut self, scope: &Scope, params: &Vec<TypeParam>) -> ResolveResult<Type> { 
+
+    fn type_constructor_signature(&mut self, scope: &Scope, params: &Vec<TypeParam>) -> ResolveResult<Type> {
         let mut param_types = vec![];
         for param in params {
             let TypeParam { id: _, ty, span: _ } = param;
@@ -347,7 +358,7 @@ impl CompileState<'_> {
         for parent in &path.parents {
             match *scope.find(None, &parent, vis)? {
                 ScopedValue::Item(item) =>
-                    return Err(FrontError::UnexpectedPathToItem(path.clone(), item).into()),
+                    return Err(FrontError::ExpectedPathToFileNotItem(path.clone(), item).into()),
                 ScopedValue::File(file) => {
                     scope = self.files.get(&file).unwrap().local_scope.as_ref().unwrap();
                     vis = Visibility::Public;
@@ -359,39 +370,42 @@ impl CompileState<'_> {
             ScopedValue::Item(item) =>
                 Ok(item),
             ScopedValue::File(file) =>
-                Err(FrontError::UnexpectedPathToFile(path.clone(), file).into()),
+                Err(FrontError::ExpectedPathToItemNotFile(path.clone(), file).into()),
         }
     }
 
+    // TODO this should support separate signature and value queries too
+    //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
+    //    careful, think about how this interacts with the future type inference system
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
         match &expr.inner {
-            ExpressionKind::Dummy => todo!("ExpressionKind::Dummy at {:?}", expr.span),
-            ExpressionKind::Path(_) => todo!("ExpressionKind::Path at {:?}", expr.span),
-            ExpressionKind::Wrapped(_) => todo!("ExpressionKind::Wrapped at {:?}", expr.span),
-            ExpressionKind::Type => todo!("ExpressionKind::Type at {:?}", expr.span),
-            ExpressionKind::TypeFunc(_, _) => todo!("ExpressionKind::TypeFunc at {:?}", expr.span),
-            ExpressionKind::Block(_) => todo!("ExpressionKind::Block at {:?}", expr.span),
-            ExpressionKind::If(_) => todo!("ExpressionKind::If at {:?}", expr.span),
-            ExpressionKind::Loop(_) => todo!("ExpressionKind::Loop at {:?}", expr.span),
-            ExpressionKind::While(_) => todo!("ExpressionKind::While at {:?}", expr.span),
-            ExpressionKind::For(_) => todo!("ExpressionKind::For at {:?}", expr.span),
-            ExpressionKind::Sync(_) => todo!("ExpressionKind::Sync at {:?}", expr.span),
-            ExpressionKind::Return(_) => todo!("ExpressionKind::Return at {:?}", expr.span),
-            ExpressionKind::Break(_) => todo!("ExpressionKind::Break at {:?}", expr.span),
-            ExpressionKind::Continue => todo!("ExpressionKind::Continue at {:?}", expr.span),
-            ExpressionKind::IntPattern(_) => todo!("ExpressionKind::IntPattern at {:?}", expr.span),
-            ExpressionKind::BoolLiteral(_) => todo!("ExpressionKind::BoolLiteral at {:?}", expr.span),
-            ExpressionKind::StringLiteral(_) => todo!("ExpressionKind::StringLiteral at {:?}", expr.span),
-            ExpressionKind::ArrayLiteral(_) => todo!("ExpressionKind::ArrayLiteral at {:?}", expr.span),
-            ExpressionKind::TupleLiteral(_) => todo!("ExpressionKind::TupleLiteral at {:?}", expr.span),
-            ExpressionKind::StructLiteral(_) => todo!("ExpressionKind::StructLiteral at {:?}", expr.span),
-            ExpressionKind::Range { .. } => todo!("ExpressionKind::Range at {:?}", expr.span),
-            ExpressionKind::UnaryOp(_, _) => todo!("ExpressionKind::UnaryOp at {:?}", expr.span),
-            ExpressionKind::BinaryOp(_, _, _) => todo!("ExpressionKind::BinaryOp at {:?}", expr.span),
-            ExpressionKind::TernarySelect(_, _, _) => todo!("ExpressionKind::TernarySelect at {:?}", expr.span),
-            ExpressionKind::ArrayIndex(_, _) => todo!("ExpressionKind::ArrayIndex at {:?}", expr.span),
-            ExpressionKind::DotIdIndex(_, _) => todo!("ExpressionKind::DotIdIndex at {:?}", expr.span),
-            ExpressionKind::DotIntIndex(_, _) => todo!("ExpressionKind::DotIntIndex at {:?}", expr.span),
+            ExpressionKind::Dummy => todo!(),
+            ExpressionKind::Path(_) => todo!(),
+            ExpressionKind::Wrapped(_) => todo!(),
+            ExpressionKind::Type => Ok(self.basic_values.ty_type),
+            ExpressionKind::TypeFunc(_, _) => todo!(),
+            ExpressionKind::Block(_) => todo!(),
+            ExpressionKind::If(_) => todo!(),
+            ExpressionKind::Loop(_) => todo!(),
+            ExpressionKind::While(_) => todo!(),
+            ExpressionKind::For(_) => todo!(),
+            ExpressionKind::Sync(_) => todo!(),
+            ExpressionKind::Return(_) => todo!(),
+            ExpressionKind::Break(_) => todo!(),
+            ExpressionKind::Continue => todo!(),
+            ExpressionKind::IntPattern(_) => todo!(),
+            ExpressionKind::BoolLiteral(_) => todo!(),
+            ExpressionKind::StringLiteral(_) => todo!(),
+            ExpressionKind::ArrayLiteral(_) => todo!(),
+            ExpressionKind::TupleLiteral(_) => todo!(),
+            ExpressionKind::StructLiteral(_) => todo!(),
+            ExpressionKind::Range { .. } => todo!(),
+            ExpressionKind::UnaryOp(_, _) => todo!(),
+            ExpressionKind::BinaryOp(_, _, _) => todo!(),
+            ExpressionKind::TernarySelect(_, _, _) => todo!(),
+            ExpressionKind::ArrayIndex(_, _) => todo!(),
+            ExpressionKind::DotIdIndex(_, _) => todo!(),
+            ExpressionKind::DotIntIndex(_, _) => todo!(),
             ExpressionKind::Call(target, args) => {
                 if let ExpressionKind::Path(Path { parents, id, span: _ }) = &target.inner {
                     if parents.is_empty() {
@@ -401,7 +415,13 @@ impl CompileState<'_> {
                     }
                 }
 
-                todo!("ExpressionKind::Call at {:?}", expr.span)
+                let target_value = self.eval_expression(scope, target)?;
+                match &self.values[target_value] {
+                    ValueInfo::Function(target_value) => {
+                        todo!()
+                    }
+                    _ => throw!(FrontError::ExpectedFunctionExpression((&**target).clone())),
+                }
             },
         }
     }
@@ -410,7 +430,7 @@ impl CompileState<'_> {
         let value = self.eval_expression(scope, expr)?;
         match &self.values[value] {
             &ValueInfo::Type(ty) => Ok(ty),
-            _ => Err(FrontError::InvalidTypeExpression(expr.clone()).into()),
+            _ => Err(FrontError::ExpectedTypeExpression(expr.clone()).into()),
         }
     }
 
@@ -429,14 +449,35 @@ impl CompileState<'_> {
                     }
                 }
 
-                return Err(FrontError::InvalidBuiltinArgs(expr.clone(), args.clone()).into());
+                throw!(FrontError::InvalidBuiltinArgs(expr.clone(), args.clone()));
             }
-            _ => return Err(FrontError::InvalidBuiltinIdentifier(expr.clone(), id.clone()).into()),
+            _ => throw!(FrontError::InvalidBuiltinIdentifier(expr.clone(), id.clone())),
         }
     }
 
     fn type_as_value(&mut self, ty: Type) -> Value {
         self.values.push(ValueInfo::Type(ty))
+    }
+
+    fn call_function_body(&mut self, body: FunctionBody) -> ResolveResult<Value> {
+        match body {
+            FunctionBody::TypeConstructor(item_reference) => {
+                let ItemReference { file, item_index } = item_reference;
+                let file_info = self.files.get(&file).unwrap();
+                let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
+                let scope = file_info.local_scope.as_ref().unwrap();
+
+                match item_ast {
+                    ast::Item::Type(item_ast) => {
+                        let ty = self.eval_expression_as_ty(scope, &item_ast.inner)?;
+                        Ok(self.type_as_value(ty))
+                    }
+                    ast::Item::Struct(_) => todo!(),
+                    ast::Item::Enum(_) => todo!(),
+                    _ => unreachable!(),
+                }
+            },
+        }
     }
 }
 
