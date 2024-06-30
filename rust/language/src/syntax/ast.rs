@@ -460,4 +460,17 @@ impl Item {
             Item::Interface(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
         }
     }
+    
+    pub fn span(&self) -> Span {
+        match self {
+            Item::Use(item) => item.span,
+            Item::Const(item) => item.span,
+            Item::Type(item) => item.span,
+            Item::Struct(item) => item.span,
+            Item::Enum(item) => item.span,
+            Item::Function(item) => item.span,
+            Item::Module(item) => item.span,
+            Item::Interface(item) => item.span,
+        }
+    }
 }

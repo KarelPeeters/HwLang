@@ -5,10 +5,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
+use crate::resolve::types::{ItemReference, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, Types};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Expression, ItemDefType, Path, Spanned, TypeParam};
+use crate::syntax::ast::{Expression, ExpressionKind, ItemDefEnum, ItemDefType, Path, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -192,6 +192,8 @@ impl CompileSet {
     }
 }
 
+pub type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
+
 impl CompileState<'_> {
     fn resolve_fully(&mut self, query: ResolveQuery) -> Result<(), CompileError> {
         let mut stack = vec![query];
@@ -205,7 +207,7 @@ impl CompileState<'_> {
 
             match result {
                 Ok(resolved) => {
-                    println!("Resolved {:?} to {:?}", query, resolved);
+                    println!("  resolved {:?} to {:?}", query, resolved);
                     *curr.kind.slot_mut(&mut self.items[curr.item]) = Some(resolved);
                 }
                 Err(ResolveFirstOr::Error(e)) => {
@@ -232,62 +234,72 @@ impl CompileState<'_> {
         }
     }
 
-    fn resolve_new(&mut self, query: ResolveQuery) -> Result<Value, ResolveFirstOr<CompileError>> {
+    fn resolve_new(&mut self, query: ResolveQuery) -> ResolveResult<Value> {
         // check that this is indeed a new query
         assert!(query.kind.slot(&self.items[query.item]).is_none());
-
-        let ResolveQuery { item: curr_item, kind: curr_kind } = query;
-
+        
         // item lookup
-        let info = &self.items[curr_item];
+        let ResolveQuery { item, kind } = query;
+        let info = &self.items[item];
         let item_reference = info.item_reference;
         let ItemReference { file, item_index } = item_reference;
         let file_info = self.files.get(&file).unwrap();
         let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
         let scope = file_info.local_scope.as_ref().unwrap();
-
-        println!("{:?}", item_ast);
+        
+        println!("  resolve_new {:?} at {:?}", query, item_ast.span());
 
         // actual resolution
         let resolved= match item_ast {
             ast::Item::Use(item_ast) => {
                 let next_item = self.follow_path(scope, &item_ast.path)?;
-                self.resolve(ResolveQuery { item: next_item, kind: curr_kind })?
+                self.resolve(ResolveQuery { item: next_item, kind })?
             }
             ast::Item::Type(item_ast) => {
-                // type resolution
-                let ty_info = match &item_ast.params {
-                    None => TypeInfo::Type,
-                    Some(Spanned { inner: params, span: _ }) => {
-                        let mut param_types = vec![];
-                        for param in params {
-                            let TypeParam { id: _, ty, span: _ } = param;
-                            let param_ty = self.eval_expression_as_ty(scope, ty)?;
-                            param_types.push(param_ty);
+                let ItemDefType { span: _, vis: _, id: _, params, inner } = item_ast;
+                
+                // let ty = self.define_maybe_type_constructor(scope, &params)?;
+                
+                let value_info = match params {
+                    None => {
+                        // no params, this is just a straight type definition
+                        match query.kind {
+                            ResolveQueryKind::Signature => ValueInfo::Type(self.types.ty_type()),
+                            ResolveQueryKind::Value => ValueInfo::Type(self.eval_expression_as_ty(scope, inner)?),
                         }
-                        TypeInfo::Function(TypeInfoFunction {
-                            params: param_types,
-                            ret: self.types.ty_type(),
-                        })
+                    }
+                    Some(params) => {
+                        // params, this is a type constructor, equivalent to a function that returns a type
+                        let ty = self.type_constructor_signature(scope, &params.inner)?;
+                        match query.kind {
+                            ResolveQueryKind::Signature => ValueInfo::Type(ty),
+                            ResolveQueryKind::Value => {
+                                let func = ValueFunctionInfo { ty };
+                                ValueInfo::Function(func)
+                            }
+                        }
                     }
                 };
-                let ty = self.types.push(ty_info);
-
-                // query response
-                match query.kind {
-                    ResolveQueryKind::Signature => {
-                        // TODO should signature queries return types instead of values?
-                        self.values.push(ValueInfo::Type(ty))
-                    },
-                    ResolveQueryKind::Value => {
-                        // TODO process actual body
-                        let info = ValueFunctionInfo { ty };
-                        self.values.push(ValueInfo::Function(info))
-                    },
-                }
+                
+                self.values.push(value_info)
             },
             ast::Item::Struct(_) => todo!(),
-            ast::Item::Enum(_) => todo!(),
+            ast::Item::Enum(item_ast) => {
+                // let ItemDefEnum { span: _, vis: _, id: _, params, variants } = item_ast;
+                // let ty = self.define_maybe_type_constructor(scope, params)?;
+                // 
+                // match query.kind {
+                //     ResolveQueryKind::Signature => {
+                //         self.values.push(ValueInfo::Type(ty));
+                //     }
+                //     ResolveQueryKind::Value => {
+                //         let _ = variants;
+                //         let 
+                //     }
+                // }
+                
+                todo!()
+            },
             ast::Item::Const(_) => todo!(),
             ast::Item::Function(_) => todo!(),
             ast::Item::Module(_) => todo!(),
@@ -296,8 +308,22 @@ impl CompileState<'_> {
 
         Ok(resolved)
     }
+    
+    fn type_constructor_signature(&mut self, scope: &Scope, params: &Vec<TypeParam>) -> ResolveResult<Type> { 
+        let mut param_types = vec![];
+        for param in params {
+            let TypeParam { id: _, ty, span: _ } = param;
+            let param_ty = self.eval_expression_as_ty(scope, ty)?;
+            param_types.push(param_ty);
+        }
+        let ty_info = TypeInfo::Function(TypeInfoFunction {
+            params: param_types,
+            ret: self.types.ty_type(),
+        });
+        Ok(self.types.push(ty_info))
+    }
 
-    fn follow_path(&self, scope: &Scope, path: &Path) -> Result<Item, ResolveFirstOr<CompileError>> {
+    fn follow_path(&self, scope: &Scope, path: &Path) -> ResolveResult<Item> {
         let mut scope = scope;
         let mut vis = Visibility::Private;
 
@@ -320,16 +346,45 @@ impl CompileState<'_> {
         }
     }
 
-    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> Result<Value, ResolveFirstOr<CompileError>> {
-        todo!()
+    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
+        match expr.inner {
+            ExpressionKind::Dummy => todo!("ExpressionKind::Dummy"),
+            ExpressionKind::Path(_) => todo!("ExpressionKind::Path"),
+            ExpressionKind::Wrapped(_) => todo!("ExpressionKind::Wrapped"),
+            ExpressionKind::Type => todo!("ExpressionKind::Type"),
+            ExpressionKind::TypeFunc(_, _) => todo!("ExpressionKind::TypeFunc"),
+            ExpressionKind::Block(_) => todo!("ExpressionKind::Block"),
+            ExpressionKind::If(_) => todo!("ExpressionKind::If"),
+            ExpressionKind::Loop(_) => todo!("ExpressionKind::Loop"),
+            ExpressionKind::While(_) => todo!("ExpressionKind::While"),
+            ExpressionKind::For(_) => todo!("ExpressionKind::For"),
+            ExpressionKind::Sync(_) => todo!("ExpressionKind::Sync"),
+            ExpressionKind::Return(_) => todo!("ExpressionKind::Return"),
+            ExpressionKind::Break(_) => todo!("ExpressionKind::Break"),
+            ExpressionKind::Continue => todo!("ExpressionKind::Continue"),
+            ExpressionKind::IntPattern(_) => todo!("ExpressionKind::IntPattern"),
+            ExpressionKind::BoolLiteral(_) => todo!("ExpressionKind::BoolLiteral"),
+            ExpressionKind::StringLiteral(_) => todo!("ExpressionKind::StringLiteral"),
+            ExpressionKind::ArrayLiteral(_) => todo!("ExpressionKind::ArrayLiteral"),
+            ExpressionKind::TupleLiteral(_) => todo!("ExpressionKind::TupleLiteral"),
+            ExpressionKind::StructLiteral(_) => todo!("ExpressionKind::StructLiteral"),
+            ExpressionKind::Range { .. } => todo!("ExpressionKind::Range"),
+            ExpressionKind::UnaryOp(_, _) => todo!("ExpressionKind::UnaryOp"),
+            ExpressionKind::BinaryOp(_, _, _) => todo!("ExpressionKind::BinaryOp"),
+            ExpressionKind::TernarySelect(_, _, _) => todo!("ExpressionKind::TernarySelect"),
+            ExpressionKind::ArrayIndex(_, _) => todo!("ExpressionKind::ArrayIndex"),
+            ExpressionKind::DotIdIndex(_, _) => todo!("ExpressionKind::DotIdIndex"),
+            ExpressionKind::DotIntIndex(_, _) => todo!("ExpressionKind::DotIntIndex"),
+            ExpressionKind::Call(_, _) => todo!("ExpressionKind::Call"),
+        }
     }
 
-    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> Result<Type, ResolveFirstOr<CompileError>> {
-        // let value = self.eval_expression(scope, expr)?;
-        // match &self.types[value] {
-        // 
-        // }
-        todo!()
+    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
+        let value = self.eval_expression(scope, expr)?;
+        match &self.values[value] {
+            &ValueInfo::Type(ty) => Ok(ty),
+            _ => Err(FrontError::InvalidTypeExpression(expr.clone()).into()),
+        }
     }
 }
 

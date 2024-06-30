@@ -2,8 +2,6 @@ use std::fmt::Debug;
 
 use indexmap::map::IndexMap;
 
-use crate::resolve::error::ResolveError;
-use crate::resolve::error::ResolveResult;
 use crate::syntax::ast;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -18,20 +16,29 @@ pub struct Scope<'p, V> {
     values: IndexMap<String, (V, Visibility)>,
 }
 
+pub type ScopeResult<T> = Result<T, ScopeError>;
+
+#[derive(Debug)]
+pub enum ScopeError {
+    IdentifierDeclaredTwice(ast::Identifier),
+    UndeclaredIdentifier(ast::Identifier),
+    CannotAccess(ast::Identifier),
+}
+
 impl<V: Debug> Scope<'_, V> {
     pub fn nest(&self, vis: Visibility) -> Scope<V> {
         Scope { parent: Some((self, vis)), values: Default::default() }
     }
 
-    pub fn declare<'a>(&mut self, id: &ast::Identifier, var: V, vis: Visibility) -> ResolveResult<()> {
+    pub fn declare<'a>(&mut self, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
         if self.values.insert(id.string.to_owned(), (var, vis)).is_some() {
-            Err(ResolveError::IdentifierDeclaredTwice(id.clone()))
+            Err(ScopeError::IdentifierDeclaredTwice(id.clone()))
         } else {
             Ok(())
         }
     }
 
-    pub fn maybe_declare(&mut self, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ResolveResult<()> {
+    pub fn maybe_declare(&mut self, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ScopeResult<()> {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
                 self.declare(id, var, vis),
@@ -52,12 +59,12 @@ impl<V: Debug> Scope<'_, V> {
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'a, 's>(&'s self, root: Option<&'s Self>, id: &'a ast::Identifier, vis: Visibility) -> ResolveResult<&V> {
+    pub fn find<'a, 's>(&'s self, root: Option<&'s Self>, id: &'a ast::Identifier, vis: Visibility) -> ScopeResult<&V> {
         if let Some(&(ref s, s_vis)) = self.values.get(&id.string) {
             if vis.can_access(s_vis) {
                 Ok(s)
             } else {
-                Err(ResolveError::CannotAccess(id.clone()))
+                Err(ScopeError::CannotAccess(id.clone()))
             }
         } else if let Some((p, p_vis)) = self.parent {
             // TODO does min access make sense?
@@ -66,7 +73,7 @@ impl<V: Debug> Scope<'_, V> {
             // TODO do we need vis support here too?
             root.find(None, id, Visibility::Public)
         } else {
-            Err(ResolveError::UndeclaredIdentifier(id.clone()))
+            Err(ScopeError::UndeclaredIdentifier(id.clone()))
         }
     }
 
