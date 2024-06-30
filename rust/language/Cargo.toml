@@ -9,6 +9,7 @@ indexmap.workspace = true
 itertools.workspace = true
 lalrpop-util.workspace = true
 num-bigint.workspace = true
+num-traits.workspace = true
 
 [build-dependencies]
 lalrpop.workspace = true

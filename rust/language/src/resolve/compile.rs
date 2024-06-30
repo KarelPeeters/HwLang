@@ -5,10 +5,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{ItemReference, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, Types};
+use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Expression, ExpressionKind, ItemDefEnum, ItemDefType, Path, Spanned, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefType, Path, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -104,6 +104,8 @@ pub enum FrontError {
     MissingTypeExpression(ItemDefType),
     UnexpectedPathToFile(Path, FileId),
     UnexpectedPathToItem(Path, Item),
+    InvalidBuiltinIdentifier(Expression, Identifier),
+    InvalidBuiltinArgs(Expression, Args),
 }
 
 pub struct CompileState<'a> {
@@ -111,10 +113,11 @@ pub struct CompileState<'a> {
     items: Arena<Item, ItemInfo>,
     values: Values,
     types: Types,
+    basic_values: BasicTypes<Value>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct ResolveQuery {
+struct ResolveQuery {
     item: Item,
     kind: ResolveQueryKind,
 }
@@ -142,7 +145,7 @@ impl CompileSet {
         // items only exists to serve as a level of indirection between values,
         //   so we can easily do the graph solution in a single pass
         let mut items: Arena<Item, ItemInfo> = Arena::default();
-        let values = Values::default();
+        let mut values = Values::default();
         let types = Types::default();
 
         // parse all files
@@ -173,11 +176,14 @@ impl CompileSet {
             file.local_scope = Some(scope_declared);
         }
 
+        let basic_values = types.basic().map(|&ty| values.push(ValueInfo::Type(ty)));
+        
         let mut state = CompileState {
             files: &self.files,
             items,
             values,
             types,
+            basic_values
         };
 
         // fully resolve all items
@@ -192,7 +198,7 @@ impl CompileSet {
     }
 }
 
-pub type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
+type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
 
 impl CompileState<'_> {
     fn resolve_fully(&mut self, query: ResolveQuery) -> Result<(), CompileError> {
@@ -264,7 +270,7 @@ impl CompileState<'_> {
                     None => {
                         // no params, this is just a straight type definition
                         match query.kind {
-                            ResolveQueryKind::Signature => ValueInfo::Type(self.types.ty_type()),
+                            ResolveQueryKind::Signature => ValueInfo::Type(self.types.basic().ty_type),
                             ResolveQueryKind::Value => ValueInfo::Type(self.eval_expression_as_ty(scope, inner)?),
                         }
                     }
@@ -318,7 +324,7 @@ impl CompileState<'_> {
         }
         let ty_info = TypeInfo::Function(TypeInfoFunction {
             params: param_types,
-            ret: self.types.ty_type(),
+            ret: self.types.basic().ty_type,
         });
         Ok(self.types.push(ty_info))
     }
@@ -346,45 +352,80 @@ impl CompileState<'_> {
         }
     }
 
-    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
-        match expr.inner {
-            ExpressionKind::Dummy => todo!("ExpressionKind::Dummy"),
-            ExpressionKind::Path(_) => todo!("ExpressionKind::Path"),
-            ExpressionKind::Wrapped(_) => todo!("ExpressionKind::Wrapped"),
-            ExpressionKind::Type => todo!("ExpressionKind::Type"),
-            ExpressionKind::TypeFunc(_, _) => todo!("ExpressionKind::TypeFunc"),
-            ExpressionKind::Block(_) => todo!("ExpressionKind::Block"),
-            ExpressionKind::If(_) => todo!("ExpressionKind::If"),
-            ExpressionKind::Loop(_) => todo!("ExpressionKind::Loop"),
-            ExpressionKind::While(_) => todo!("ExpressionKind::While"),
-            ExpressionKind::For(_) => todo!("ExpressionKind::For"),
-            ExpressionKind::Sync(_) => todo!("ExpressionKind::Sync"),
-            ExpressionKind::Return(_) => todo!("ExpressionKind::Return"),
-            ExpressionKind::Break(_) => todo!("ExpressionKind::Break"),
-            ExpressionKind::Continue => todo!("ExpressionKind::Continue"),
-            ExpressionKind::IntPattern(_) => todo!("ExpressionKind::IntPattern"),
-            ExpressionKind::BoolLiteral(_) => todo!("ExpressionKind::BoolLiteral"),
-            ExpressionKind::StringLiteral(_) => todo!("ExpressionKind::StringLiteral"),
-            ExpressionKind::ArrayLiteral(_) => todo!("ExpressionKind::ArrayLiteral"),
-            ExpressionKind::TupleLiteral(_) => todo!("ExpressionKind::TupleLiteral"),
-            ExpressionKind::StructLiteral(_) => todo!("ExpressionKind::StructLiteral"),
-            ExpressionKind::Range { .. } => todo!("ExpressionKind::Range"),
-            ExpressionKind::UnaryOp(_, _) => todo!("ExpressionKind::UnaryOp"),
-            ExpressionKind::BinaryOp(_, _, _) => todo!("ExpressionKind::BinaryOp"),
-            ExpressionKind::TernarySelect(_, _, _) => todo!("ExpressionKind::TernarySelect"),
-            ExpressionKind::ArrayIndex(_, _) => todo!("ExpressionKind::ArrayIndex"),
-            ExpressionKind::DotIdIndex(_, _) => todo!("ExpressionKind::DotIdIndex"),
-            ExpressionKind::DotIntIndex(_, _) => todo!("ExpressionKind::DotIntIndex"),
-            ExpressionKind::Call(_, _) => todo!("ExpressionKind::Call"),
+    fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
+        match &expr.inner {
+            ExpressionKind::Dummy => todo!("ExpressionKind::Dummy at {:?}", expr.span),
+            ExpressionKind::Path(_) => todo!("ExpressionKind::Path at {:?}", expr.span),
+            ExpressionKind::Wrapped(_) => todo!("ExpressionKind::Wrapped at {:?}", expr.span),
+            ExpressionKind::Type => todo!("ExpressionKind::Type at {:?}", expr.span),
+            ExpressionKind::TypeFunc(_, _) => todo!("ExpressionKind::TypeFunc at {:?}", expr.span),
+            ExpressionKind::Block(_) => todo!("ExpressionKind::Block at {:?}", expr.span),
+            ExpressionKind::If(_) => todo!("ExpressionKind::If at {:?}", expr.span),
+            ExpressionKind::Loop(_) => todo!("ExpressionKind::Loop at {:?}", expr.span),
+            ExpressionKind::While(_) => todo!("ExpressionKind::While at {:?}", expr.span),
+            ExpressionKind::For(_) => todo!("ExpressionKind::For at {:?}", expr.span),
+            ExpressionKind::Sync(_) => todo!("ExpressionKind::Sync at {:?}", expr.span),
+            ExpressionKind::Return(_) => todo!("ExpressionKind::Return at {:?}", expr.span),
+            ExpressionKind::Break(_) => todo!("ExpressionKind::Break at {:?}", expr.span),
+            ExpressionKind::Continue => todo!("ExpressionKind::Continue at {:?}", expr.span),
+            ExpressionKind::IntPattern(_) => todo!("ExpressionKind::IntPattern at {:?}", expr.span),
+            ExpressionKind::BoolLiteral(_) => todo!("ExpressionKind::BoolLiteral at {:?}", expr.span),
+            ExpressionKind::StringLiteral(_) => todo!("ExpressionKind::StringLiteral at {:?}", expr.span),
+            ExpressionKind::ArrayLiteral(_) => todo!("ExpressionKind::ArrayLiteral at {:?}", expr.span),
+            ExpressionKind::TupleLiteral(_) => todo!("ExpressionKind::TupleLiteral at {:?}", expr.span),
+            ExpressionKind::StructLiteral(_) => todo!("ExpressionKind::StructLiteral at {:?}", expr.span),
+            ExpressionKind::Range { .. } => todo!("ExpressionKind::Range at {:?}", expr.span),
+            ExpressionKind::UnaryOp(_, _) => todo!("ExpressionKind::UnaryOp at {:?}", expr.span),
+            ExpressionKind::BinaryOp(_, _, _) => todo!("ExpressionKind::BinaryOp at {:?}", expr.span),
+            ExpressionKind::TernarySelect(_, _, _) => todo!("ExpressionKind::TernarySelect at {:?}", expr.span),
+            ExpressionKind::ArrayIndex(_, _) => todo!("ExpressionKind::ArrayIndex at {:?}", expr.span),
+            ExpressionKind::DotIdIndex(_, _) => todo!("ExpressionKind::DotIdIndex at {:?}", expr.span),
+            ExpressionKind::DotIntIndex(_, _) => todo!("ExpressionKind::DotIntIndex at {:?}", expr.span),
+            ExpressionKind::Call(target, args) => {
+                if let ExpressionKind::Path(Path { parents, id, span: _ }) = &target.inner {
+                    if parents.is_empty() {
+                        if let Some(name) = id.string.strip_prefix("__builtin_") {
+                            return self.eval_builtin_call(expr, name, id, args);
+                        }
+                    }
+                }
+
+                todo!("ExpressionKind::Call at {:?}", expr.span)
+            },
         }
     }
 
-    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
+    fn eval_expression_as_ty(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
         let value = self.eval_expression(scope, expr)?;
         match &self.values[value] {
             &ValueInfo::Type(ty) => Ok(ty),
             _ => Err(FrontError::InvalidTypeExpression(expr.clone()).into()),
         }
+    }
+
+    fn eval_builtin_call(&mut self, expr: &Expression, name: &str, id: &Identifier, args: &Args) -> ResolveResult<Value> {
+        // TODO disallow calling builtin in user modules?
+        match name {
+            "type" => {
+                if args.inner.len() >= 1 {
+                    if let ExpressionKind::StringLiteral(ty) = &args.inner[0].inner {
+                        match ty.as_str() {
+                            "bool" if args.inner.len() == 1 => {
+                                return Ok(self.basic_values.ty_bool);
+                            }
+                            _ => {},
+                        }
+                    }
+                }
+
+                return Err(FrontError::InvalidBuiltinArgs(expr.clone(), args.clone()).into());
+            }
+            _ => return Err(FrontError::InvalidBuiltinIdentifier(expr.clone(), id.clone()).into()),
+        }
+    }
+
+    fn type_as_value(&mut self, ty: Type) -> Value {
+        self.values.push(ValueInfo::Type(ty))
     }
 }
 

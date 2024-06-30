@@ -289,8 +289,9 @@ pub enum ExpressionKind {
 #[derive(Debug, Clone)]
 pub struct Args {
     pub span: Span,
-    pub positional: Vec<Expression>,
-    pub named: Vec<(Identifier, Expression)>,
+    pub inner: Vec<Expression>,
+    // TODO implement named args
+    // pub named: Vec<(Identifier, Expression)>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,6 @@
 use num_bigint::BigInt;
+use num_traits::identities::Zero;
+
 use crate::new_index_type;
 use crate::syntax::pos::FileId;
 use crate::util::arena::ArenaSet;
@@ -7,14 +9,22 @@ new_index_type!(pub Type);
 
 pub struct Types {
     arena: ArenaSet<Type, TypeInfo>,
-    ty_type: Type,
-    ty_void: Type,
-    ty_int: Type,
+    basic: BasicTypes<Type>,
+}
+
+#[derive(Debug)]
+pub struct BasicTypes<T> {
+    pub ty_type: T,
+    pub ty_void: T,
+    pub ty_bool: T,
+    pub ty_int: T,
+    pub ty_uint: T,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypeInfo {
     Type,
+    Boolean,
     Integer(TypeInfoInteger),
     Function(TypeInfoFunction),
     Tuple(Vec<Type>),
@@ -59,11 +69,18 @@ pub struct ItemReference {
 impl Default for Types {
     fn default() -> Self {
         let mut arena = ArenaSet::default();
-        Self {
+
+        let basic = BasicTypes {
             ty_type: arena.push(TypeInfo::Type),
             ty_void: arena.push(TypeInfo::Tuple(vec![])),
+            ty_bool: arena.push(TypeInfo::Boolean),
             ty_int: arena.push(TypeInfo::Integer(TypeInfoInteger { min: None, max: None })),
+            ty_uint: arena.push(TypeInfo::Integer(TypeInfoInteger { min: Some(BigInt::zero()), max: None })),
+        };
+
+        Types {
             arena,
+            basic,
         }
     }
 }
@@ -73,15 +90,20 @@ impl Types {
         self.arena.push(info)
     }
 
-    pub fn ty_type(&self) -> Type {
-        self.ty_type
+    pub fn basic(&self) -> &BasicTypes<Type> {
+        // this is an accessor function to prevent mutable access to the inner types
+        &self.basic
     }
+}
 
-    pub fn ty_void(&self) -> Type {
-        self.ty_void
-    }
-
-    pub fn ty_int(&self) -> Type {
-        self.ty_int
+impl<T> BasicTypes<T> {
+    pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> BasicTypes<U> {
+        BasicTypes {
+            ty_type: f(&self.ty_type),
+            ty_void: f(&self.ty_void),
+            ty_bool: f(&self.ty_bool),
+            ty_int: f(&self.ty_int),
+            ty_uint: f(&self.ty_uint),
+        }
     }
 }

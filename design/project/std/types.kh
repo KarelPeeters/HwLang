@@ -2,7 +2,7 @@
 
 // Basic types
 // TODO bool should be an enum :)
-type bool = __builtin_type();
+type bool = __builtin_type("bool");
 
 // TODO what is the difference if anything between "type" and "const" for types?
 //const bool: type = __builtin_type();
@@ -35,18 +35,18 @@ struct Range(L: type, H: type) {
 }
 
 // TODO add overloading?
-type int_range(r: Range(Option(int), Option(int))) = __builtin_type();
+type int_range(r: Range(Option(int), Option(int))) = __builtin_type("int_range", r);
 type int = int(..);
 type uint = int(0..);
 type int_bits(n: uint) = int(-2**(n - 1) .. 2**(n - 1));
 type uint_bits(n: uint) = int(0 .. 2**n);
 
 // Containers
-type List(T: type) = __builtin_type();
+//type List(T: type) = __builtin_type("List", T);
  // TODO "uint, *uint" or "+uint"? (for multidim arrays)
-type Array(T: type, len: uint) = __builtin_type();
+type Array(T: type, len: uint) = __builtin_type("Array", T, len);
 
-type bits(n: Option(uint)) = __builtin_type();
+type bits(n: Option(uint)) = __builtin_type("bits", n);
 
 // Operators
 // TODO move operators to different file
@@ -58,12 +58,3 @@ type bits(n: Option(uint)) = __builtin_type();
 // ) -> integer() {
 //
 // }
-
-
-// Internal
-function __builtin_type() -> type {
-    return __builtin_type();
-}
-function __builtin_constant(T: type) -> T {
-    return __builtin_constant(T);
-}

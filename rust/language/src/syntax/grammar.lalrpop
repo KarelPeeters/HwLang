@@ -135,7 +135,7 @@ ExprLevelRange: ExpressionKind = {
 
 ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>>=> build_binary_op(BinaryOp::BoolAnd, left, right),
+    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
     <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
@@ -215,8 +215,8 @@ ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
 
 CallArgs: Args = {
     // TODO support named args
-    <start:@L> <positional:Separated<Expr, ",">> <end:@L> =>
-        Args { positional, named: vec![], span: loc.span(start, end) },
+    <start:@L> <inner:Separated<Expr, ",">> <end:@L> =>
+        Args { inner, span: loc.span(start, end) },
 }
 
 ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
@@ -269,6 +269,11 @@ ExprLevelAtomic: ExpressionKind = {
         => ExpressionKind::IntPattern(IntPattern::Bin(string.to_owned())),
     <string:r"[0-9]+">
         => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
+    // TODO escape sequences
+    <full:r#""[^"]*""#> => {
+        let string = full[1..full.len()-1].to_owned();
+        ExpressionKind::StringLiteral(string.to_owned())
+    },
 
     // control flow
     ExprControlFlow,
