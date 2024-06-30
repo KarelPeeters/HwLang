@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Itertools};
+use itertools::{enumerate, Itertools, zip_eq};
 
 use crate::error::CompileError;
 use crate::new_index_type;
@@ -48,8 +48,10 @@ pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ScopedValue {
+    // TODO should items and files also just be values, freely storable by the user?
     Item(Item),
     File(FileId),
+    Value(Value),
 }
 
 #[derive(Debug)]
@@ -110,7 +112,9 @@ pub enum FrontError {
     ExpectedFunctionExpression(Expression),
 
     ExpectedPathToItemNotFile(Path, FileId),
+    ExpectedPathToItemNotValue(Path, Value),
     ExpectedPathToFileNotItem(Path, Item),
+    ExpectedPathToFileNotValue(Path, Value),
 
     InvalidBuiltinIdentifier(Expression, Identifier),
     InvalidBuiltinArgs(Expression, Args),
@@ -237,9 +241,10 @@ impl CompileState<'_> {
                 }
                 Err(ResolveFirstOr::ResolveFirst(first)) => {
                     stack.push(curr);
-                    let has_cycle = stack.contains(&first);
+                    let cycle_start_index = stack.iter().position(|s| s == &first);
                     stack.push(first);
-                    if has_cycle {
+                    if let Some(cycle_start_index) = cycle_start_index {
+                        drop(stack.drain(..cycle_start_index));
                         return Err(FrontError::CyclicTypeDependency(stack).into());
                     }
                 }
@@ -256,6 +261,7 @@ impl CompileState<'_> {
         }
     }
 
+    // TODO split this (and the corresponding functions) into signature and value for extra type safety
     fn resolve_new(&mut self, query: ResolveQuery) -> ResolveResult<Value> {
         // check that this is indeed a new query
         assert!(query.kind.slot(&self.items[query.item]).is_none());
@@ -300,13 +306,13 @@ impl CompileState<'_> {
         params: &Option<Spanned<Vec<TypeParam>>>,
     ) -> ResolveResult<Value> {
         let build_value = FunctionBody::TypeConstructor(item_reference);
-        
+
         let value = match params {
             None => {
                 // no params, this is just a straight type definition
                 match query.kind {
                     ResolveQueryKind::Signature => self.type_as_value(self.types.basic().ty_type),
-                    ResolveQueryKind::Value => self.call_function_body(build_value)?,
+                    ResolveQueryKind::Value => self.call_function_body(&build_value)?,
                 }
             }
             Some(params) => {
@@ -357,8 +363,8 @@ impl CompileState<'_> {
 
         for parent in &path.parents {
             match *scope.find(None, &parent, vis)? {
-                ScopedValue::Item(item) =>
-                    return Err(FrontError::ExpectedPathToFileNotItem(path.clone(), item).into()),
+                ScopedValue::Item(item) => throw!(FrontError::ExpectedPathToFileNotItem(path.clone(), item)),
+                ScopedValue::Value(value) => throw!(FrontError::ExpectedPathToFileNotValue(path.clone(), value)),
                 ScopedValue::File(file) => {
                     scope = self.files.get(&file).unwrap().local_scope.as_ref().unwrap();
                     vis = Visibility::Public;
@@ -371,6 +377,8 @@ impl CompileState<'_> {
                 Ok(item),
             ScopedValue::File(file) =>
                 Err(FrontError::ExpectedPathToItemNotFile(path.clone(), file).into()),
+            ScopedValue::Value(value) =>
+                Err(FrontError::ExpectedPathToItemNotValue(path.clone(), value).into()),
         }
     }
 
@@ -380,7 +388,11 @@ impl CompileState<'_> {
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
         match &expr.inner {
             ExpressionKind::Dummy => todo!(),
-            ExpressionKind::Path(_) => todo!(),
+            ExpressionKind::Path(path) => {
+                let item = self.follow_path(scope, path)?;
+                let result = self.resolve(ResolveQuery { item, kind: ResolveQueryKind::Value })?;
+                Ok(result)
+            },
             ExpressionKind::Wrapped(_) => todo!(),
             ExpressionKind::Type => Ok(self.basic_values.ty_type),
             ExpressionKind::TypeFunc(_, _) => todo!(),
@@ -418,7 +430,26 @@ impl CompileState<'_> {
                 let target_value = self.eval_expression(scope, target)?;
                 match &self.values[target_value] {
                     ValueInfo::Function(target_value) => {
-                        todo!()
+                        let ValueFunctionInfo { item_reference, ty, params, body } = target_value;
+                        // TODO skip these clones
+                        let params = params.clone();
+                        let body = body.clone();
+
+                        // define params
+                        // TODO this is a bit strange, shouldn't the function body have been fully checked at this point?
+                        let mut body_scope = scope.nest(Visibility::Private);
+                        // TODO check param/arg length and type match, return proper errors
+                        for (param, arg) in zip_eq(&params, &args.inner) {
+                            // note: args are evaluated in the parent scope
+                            let arg = self.eval_expression(scope, arg)?;
+                            // TODO visibility does not really sense here, this scope is never accessible from outside
+                            body_scope.declare(param, ScopedValue::Value(arg), Visibility::Private)?;
+                        }
+
+                        // actually run the function
+                        // TODO time/step/recursion limit?
+                        let result = self.call_function_body(&body)?;
+                        Ok(result)
                     }
                     _ => throw!(FrontError::ExpectedFunctionExpression((&**target).clone())),
                 }
@@ -459,9 +490,9 @@ impl CompileState<'_> {
         self.values.push(ValueInfo::Type(ty))
     }
 
-    fn call_function_body(&mut self, body: FunctionBody) -> ResolveResult<Value> {
+    fn call_function_body(&mut self, body: &FunctionBody) -> ResolveResult<Value> {
         match body {
-            FunctionBody::TypeConstructor(item_reference) => {
+            &FunctionBody::TypeConstructor(item_reference) => {
                 let ItemReference { file, item_index } = item_reference;
                 let file_info = self.files.get(&file).unwrap();
                 let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];

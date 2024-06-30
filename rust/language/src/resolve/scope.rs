@@ -32,6 +32,7 @@ impl<V: Debug> Scope<'_, V> {
 
     pub fn declare<'a>(&mut self, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
         if self.values.insert(id.string.to_owned(), (var, vis)).is_some() {
+            // TODO allow shadowing? for items no, but maybe for local variables yes?
             Err(ScopeError::IdentifierDeclaredTwice(id.clone()))
         } else {
             Ok(())

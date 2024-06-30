@@ -44,6 +44,15 @@
 Alternative: use `[]` for generics and `()` for array indexing
   but then what about array literals?
 
+### Generics
+
+We will probably need different generics and call arguments if we want generics to be optional.
+Eg. `struct Foo(T: type)(T)` is really weird, and `Foo(bar)` is ambiguous.
+
+* Do we want to get rid of separate generics entirely, even for struct and enums? No, that doesn't make sense, especially for enums.
+* Do we want to fully split generics and parameters, even for functions? That might be a better idea.
+  * But do functions parameters and other manipulation of `type` still work as-is then?
+
 ### Identifiers
 
 Standard stuff, maybe borrow r# prefix for keywords from rust?
