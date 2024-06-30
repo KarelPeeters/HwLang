@@ -5,10 +5,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
+use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoStruct, Types};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefType, Path, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -263,48 +263,27 @@ impl CompileState<'_> {
             }
             ast::Item::Type(item_ast) => {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item_ast;
-                
-                // let ty = self.define_maybe_type_constructor(scope, &params)?;
-                
-                let value_info = match params {
-                    None => {
-                        // no params, this is just a straight type definition
-                        match query.kind {
-                            ResolveQueryKind::Signature => ValueInfo::Type(self.types.basic().ty_type),
-                            ResolveQueryKind::Value => ValueInfo::Type(self.eval_expression_as_ty(scope, inner)?),
-                        }
-                    }
-                    Some(params) => {
-                        // params, this is a type constructor, equivalent to a function that returns a type
-                        let ty = self.type_constructor_signature(scope, &params.inner)?;
-                        match query.kind {
-                            ResolveQueryKind::Signature => ValueInfo::Type(ty),
-                            ResolveQueryKind::Value => {
-                                let func = ValueFunctionInfo { ty };
-                                ValueInfo::Function(func)
-                            }
-                        }
-                    }
-                };
-                
-                self.values.push(value_info)
+                self.resolve_new_type_def_item(query, scope, params, |state| {
+                    state.eval_expression_as_ty(scope, inner)
+                })?
             },
-            ast::Item::Struct(_) => todo!(),
+            ast::Item::Struct(item_Ast) => {
+                let ItemDefStruct { span: _, vis: _, id: _, params, fields } = item_Ast;
+                // TODO properly use fields
+                let _ = fields;
+                self.resolve_new_type_def_item(query, scope, params, |state| {
+                    let info = TypeInfoStruct { item_reference };
+                    Ok(state.types.push(TypeInfo::Struct(info)))
+                })?
+            },
             ast::Item::Enum(item_ast) => {
-                // let ItemDefEnum { span: _, vis: _, id: _, params, variants } = item_ast;
-                // let ty = self.define_maybe_type_constructor(scope, params)?;
-                // 
-                // match query.kind {
-                //     ResolveQueryKind::Signature => {
-                //         self.values.push(ValueInfo::Type(ty));
-                //     }
-                //     ResolveQueryKind::Value => {
-                //         let _ = variants;
-                //         let 
-                //     }
-                // }
-                
-                todo!()
+                let ItemDefEnum { span: _, vis: _, id: _, params, variants } = item_ast;
+                // TODO properly use variants
+                let _ = variants;
+                self.resolve_new_type_def_item(query, scope, params, |state| {
+                    let info = TypeInfoEnum { item_reference };
+                    Ok(state.types.push(TypeInfo::Enum(info)))
+                })?
             },
             ast::Item::Const(_) => todo!(),
             ast::Item::Function(_) => todo!(),
@@ -313,6 +292,38 @@ impl CompileState<'_> {
         };
 
         Ok(resolved)
+    }
+
+    fn resolve_new_type_def_item(
+        &mut self,
+        query: ResolveQuery,
+        scope: &Scope,
+        params: &Option<Spanned<Vec<TypeParam>>>,
+        value_if_no_params: impl FnOnce(&mut Self) -> ResolveResult<Type>,
+    ) -> ResolveResult<Value> {
+        let value_info = match params {
+            None => {
+                // no params, this is just a straight type definition
+                match query.kind {
+                    ResolveQueryKind::Signature => ValueInfo::Type(self.types.basic().ty_type),
+                    ResolveQueryKind::Value => ValueInfo::Type(value_if_no_params(self)?),
+                }
+            }
+            Some(params) => {
+                // params, this is a type constructor, equivalent to a function that returns a type
+                let ty = self.type_constructor_signature(scope, &params.inner)?;
+                match query.kind {
+                    ResolveQueryKind::Signature => ValueInfo::Type(ty),
+                    ResolveQueryKind::Value => {
+                        // TODO insert actual generating code in here
+                        let func = ValueFunctionInfo { ty };
+                        ValueInfo::Function(func)
+                    }
+                }
+            }
+        };
+
+        Ok(self.values.push(value_info))
     }
     
     fn type_constructor_signature(&mut self, scope: &Scope, params: &Vec<TypeParam>) -> ResolveResult<Type> { 
