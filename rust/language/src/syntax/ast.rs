@@ -56,7 +56,7 @@ pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Params<TypeParam>>,
+    pub params: Option<Spanned<Vec<TypeParam>>>,
     pub inner: Box<Expression>,
 }
 
@@ -66,7 +66,7 @@ pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Params<TypeParam>>,
+    pub params: Option<Spanned<Vec<TypeParam>>>,
     pub fields: Vec<StructField>,
 }
 
@@ -83,7 +83,7 @@ pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Params<TypeParam>>,
+    pub params: Option<Spanned<Vec<TypeParam>>>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -91,7 +91,7 @@ pub struct ItemDefEnum {
 pub struct EnumVariant {
     pub span: Span,
     pub id: Identifier,
-    pub params: Option<Params<Expression>>,
+    pub params: Option<Spanned<Vec<Expression>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +99,7 @@ pub struct ItemDefFunction {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Params<FunctionParam>,
+    pub params: Spanned<Vec<FunctionParam>>,
     pub ret_ty: Option<Expression>,
     pub body: Block,
 }
@@ -109,7 +109,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Params<ModuleParam>>,
+    pub params: Option<Spanned<Vec<ModuleParam>>>,
     pub body: Block,
 }
 
@@ -132,12 +132,6 @@ pub struct InterfaceField {
     pub id: Identifier,
     pub dir: Direction,
     pub ty: Expression,
-}
-
-#[derive(Debug, Clone)]
-pub struct Params<P> {
-    pub span: Span,
-    pub params: Vec<P>,
 }
 
 #[derive(Debug, Clone)]

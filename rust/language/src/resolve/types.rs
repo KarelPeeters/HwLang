@@ -7,40 +7,42 @@ new_index_type!(pub Type);
 
 pub struct Types {
     arena: ArenaSet<Type, TypeInfo>,
+    ty_type: Type,
     ty_void: Type,
     ty_int: Type,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypeInfo {
-    Integer(TypeInteger),
-    Function(TypeFunction),
+    Type,
+    Integer(TypeInfoInteger),
+    Function(TypeInfoFunction),
     Tuple(Vec<Type>),
-    Struct(TypeStruct),
-    Enum(TypeEnum),
+    Struct(TypeInfoStruct),
+    Enum(TypeInfoEnum),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeInteger {
+pub struct TypeInfoInteger {
     pub min: Option<BigInt>,
     pub max: Option<BigInt>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeFunction {
+pub struct TypeInfoFunction {
     pub params: Vec<Type>,
-    pub ret: Box<Type>,
+    pub ret: Type,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeStruct {
+pub struct TypeInfoStruct {
     // TODO fields
     // TODO exclude everything except the reference from hash and eq?
     pub item_reference: ItemReference,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeEnum {
+pub struct TypeInfoEnum {
     // TODO options
     // TODO exclude everything except the reference from hash and eq?
     pub item_reference: ItemReference,
@@ -58,8 +60,9 @@ impl Default for Types {
     fn default() -> Self {
         let mut arena = ArenaSet::default();
         Self {
+            ty_type: arena.push(TypeInfo::Type),
             ty_void: arena.push(TypeInfo::Tuple(vec![])),
-            ty_int: arena.push(TypeInfo::Integer(TypeInteger { min: None, max: None })),
+            ty_int: arena.push(TypeInfo::Integer(TypeInfoInteger { min: None, max: None })),
             arena,
         }
     }
@@ -68,6 +71,10 @@ impl Default for Types {
 impl Types {
     pub fn push(&mut self, info: TypeInfo) -> Type {
         self.arena.push(info)
+    }
+
+    pub fn ty_type(&self) -> Type {
+        self.ty_type
     }
 
     pub fn ty_void(&self) -> Type {

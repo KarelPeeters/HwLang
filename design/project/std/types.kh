@@ -4,6 +4,14 @@
 // TODO bool should be an enum :)
 type bool = __builtin_type();
 
+// TODO what is the difference if anything between "type" and "const" for types?
+//const bool: type = __builtin_type();
+
+//type my_array(T: type) = Array(T, n);
+//function my_array(T: type) -> type {
+//    return Array(T, n);
+//}
+
 // Signature overloading, even for types!
 // TODO allow separate optional min and max? then uint is just int(0..)
 // TODO is there a nice way to make "unsigned" the default?

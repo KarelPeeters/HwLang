@@ -5,10 +5,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::ItemReference;
-use crate::resolve::values::{ResolvedValue, ResolvedValueInfo, ResolvedValues};
+use crate::resolve::types::{ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
+use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Expression, ItemDefType, Path};
+use crate::syntax::ast::{Expression, ItemDefType, Path, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -93,8 +93,8 @@ new_index_type!(pub Item);
 pub struct ItemInfo {
     item_reference: ItemReference,
 
-    signature: Option<ResolvedValue>,
-    content: Option<ResolvedValue>,
+    signature: Option<Value>,
+    content: Option<Value>,
 }
 
 #[derive(Debug)]
@@ -109,7 +109,8 @@ pub enum FrontError {
 pub struct CompileState<'a> {
     files: &'a IndexMap<FileId, FileInfo>,
     items: Arena<Item, ItemInfo>,
-    values: ResolvedValues,
+    values: Values,
+    types: Types,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -121,7 +122,7 @@ pub struct ResolveQuery {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ResolveQueryKind {
     Signature,
-    Content,
+    Value,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -141,7 +142,8 @@ impl CompileSet {
         // items only exists to serve as a level of indirection between values,
         //   so we can easily do the graph solution in a single pass
         let mut items: Arena<Item, ItemInfo> = Arena::default();
-        let values = ResolvedValues::default();
+        let values = Values::default();
+        let types = Types::default();
 
         // parse all files
         for file in self.files.values_mut() {
@@ -175,13 +177,14 @@ impl CompileSet {
             files: &self.files,
             items,
             values,
+            types,
         };
 
         // fully resolve all items
         let item_keys = state.items.keys().collect_vec();
         for item in item_keys {
             println!("Starting full resolution of {:?}", item);
-            let query = ResolveQuery { item, kind: ResolveQueryKind::Content };
+            let query = ResolveQuery { item, kind: ResolveQueryKind::Value };
             state.resolve_fully(query)?;
         }
 
@@ -222,14 +225,14 @@ impl CompileState<'_> {
         Ok(())
     }
 
-    fn resolve(&self, query: ResolveQuery) -> Result<ResolvedValue, ResolveFirst> {
+    fn resolve(&self, query: ResolveQuery) -> Result<Value, ResolveFirst> {
         match query.kind.slot(&self.items[query.item]) {
             &Some(result) => Ok(result),
             None => Err(ResolveFirst(query))
         }
     }
 
-    fn resolve_new(&mut self, query: ResolveQuery) -> Result<ResolvedValue, ResolveFirstOr<CompileError>> {
+    fn resolve_new(&mut self, query: ResolveQuery) -> Result<Value, ResolveFirstOr<CompileError>> {
         // check that this is indeed a new query
         assert!(query.kind.slot(&self.items[query.item]).is_none());
 
@@ -252,11 +255,35 @@ impl CompileState<'_> {
                 self.resolve(ResolveQuery { item: next_item, kind: curr_kind })?
             }
             ast::Item::Type(item_ast) => {
-                assert!(item_ast.params.is_none());
+                // type resolution
+                let ty_info = match &item_ast.params {
+                    None => TypeInfo::Type,
+                    Some(Spanned { inner: params, span: _ }) => {
+                        let mut param_types = vec![];
+                        for param in params {
+                            let TypeParam { id: _, ty, span: _ } = param;
+                            let param_ty = self.eval_expression_as_ty(scope, ty)?;
+                            param_types.push(param_ty);
+                        }
+                        TypeInfo::Function(TypeInfoFunction {
+                            params: param_types,
+                            ret: self.types.ty_type(),
+                        })
+                    }
+                };
+                let ty = self.types.push(ty_info);
 
+                // query response
                 match query.kind {
-                    ResolveQueryKind::Signature => self.values.push(ResolvedValueInfo::SignatureType),
-                    ResolveQueryKind::Content => todo!("type content {:?}", item_ast.span),
+                    ResolveQueryKind::Signature => {
+                        // TODO should signature queries return types instead of values?
+                        self.values.push(ValueInfo::Type(ty))
+                    },
+                    ResolveQueryKind::Value => {
+                        // TODO process actual body
+                        let info = ValueFunctionInfo { ty };
+                        self.values.push(ValueInfo::Function(info))
+                    },
                 }
             },
             ast::Item::Struct(_) => todo!(),
@@ -293,23 +320,31 @@ impl CompileState<'_> {
         }
     }
 
-    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> Result<ResolvedValue, ResolveFirstOr<CompileError>> {
+    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> Result<Value, ResolveFirstOr<CompileError>> {
+        todo!()
+    }
+
+    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> Result<Type, ResolveFirstOr<CompileError>> {
+        // let value = self.eval_expression(scope, expr)?;
+        // match &self.types[value] {
+        // 
+        // }
         todo!()
     }
 }
 
 impl ResolveQueryKind {
-    pub fn slot(self, info: &ItemInfo) -> &Option<ResolvedValue> {
+    pub fn slot(self, info: &ItemInfo) -> &Option<Value> {
         match self {
             ResolveQueryKind::Signature => &info.signature,
-            ResolveQueryKind::Content => &info.content,
+            ResolveQueryKind::Value => &info.content,
         }
     }
 
-    pub fn slot_mut(self, info: &mut ItemInfo) -> &mut Option<ResolvedValue> {
+    pub fn slot_mut(self, info: &mut ItemInfo) -> &mut Option<Value> {
         match self {
             ResolveQueryKind::Signature => &mut info.signature,
-            ResolveQueryKind::Content => &mut info.content,
+            ResolveQueryKind::Value => &mut info.content,
         }
     }
 }

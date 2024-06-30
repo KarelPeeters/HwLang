@@ -81,8 +81,8 @@ DeclarationKind: DeclarationKind = {
 }
 
 // parameters
-Params<P>: Params<P> = {
-    <start:@L> "(" <params: Separated<P, ",">> ")" <end:@R> => Params { params, span: loc.span(start, end) },
+Params<P>: Spanned<Vec<P>> = {
+    <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
 TypeParam: TypeParam = {
