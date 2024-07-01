@@ -127,9 +127,9 @@ ExprLevelReturn: ExpressionKind = {
 ExprLevelRange: ExpressionKind = {
     // assoc none
     <range_start: BoxSpanned<ExprLevelLogical>?> ".." <range_end: BoxSpanned<ExprLevelLogical>?>
-        => ExpressionKind::Range { end_inclusive: false, start: range_start, end: range_end },
+        => ExpressionKind::RangeLiteral(RangeLiteral { end_inclusive: false, start: range_start, end: range_end }),
     <range_start: BoxSpanned<ExprLevelLogical>?> "..=" <range_end: BoxSpanned<ExprLevelLogical>?>
-        => ExpressionKind::Range { end_inclusive: true, start: range_start, end: range_end },
+        => ExpressionKind::RangeLiteral(RangeLiteral { end_inclusive: true, start: range_start, end: range_end }),
     ExprLevelLogical,
 }
 

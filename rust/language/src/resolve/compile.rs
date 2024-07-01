@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::ops::Add;
 
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools, zip_eq};
+use num_bigint::BigInt;
+use num_traits::One;
 
 use crate::error::CompileError;
 use crate::new_index_type;
@@ -10,7 +13,7 @@ use crate::resolve::scope::Visibility;
 use crate::resolve::types::{BasicTypes, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoStruct, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, Spanned, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -117,6 +120,7 @@ pub enum FrontError {
 
     ExpectedTypeExpression(Expression),
     ExpectedFunctionExpression(Expression),
+    ExpectedIntegerExpression(Expression),
 
     ExpectedPathToFileNotValueOrItem(Path, ValueOrItem),
     ExpectedPathToItemNotValue(Path, Value),
@@ -431,7 +435,33 @@ impl<'a> CompileState<'a> {
             ExpressionKind::ArrayLiteral(_) => todo!(),
             ExpressionKind::TupleLiteral(_) => todo!(),
             ExpressionKind::StructLiteral(_) => todo!(),
-            ExpressionKind::Range { .. } => todo!(),
+            ExpressionKind::RangeLiteral(range) => {
+                let &RangeLiteral { end_inclusive, ref start, ref end } = range;
+                
+                let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<Option<BigInt>> {
+                    match point {
+                        None => Ok(None),
+                        Some(point) => {
+                            let point_value = self.eval_expression(scope, point)?;
+                            match &self.values[point_value] {
+                                ValueInfo::Int(value) => Ok(Some(value.value.clone())),
+                                _ => throw!(FrontError::ExpectedIntegerExpression((&**point).clone())),
+                            }
+                        }
+                    }
+                };
+                
+                let start = map_point(start)?;
+                let end_partial = map_point(end)?;
+                
+                let end=  if end_inclusive {
+                    Some(end_partial.unwrap().add(&BigInt::one()))
+                } else {
+                    end_partial
+                };
+                
+                Ok(self.values.push(ValueInfo::Range { start, end }))
+            },
             ExpressionKind::UnaryOp(_, _) => todo!(),
             ExpressionKind::BinaryOp(_, _, _) => todo!(),
             ExpressionKind::TernarySelect(_, _, _) => todo!(),

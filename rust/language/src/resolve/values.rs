@@ -22,6 +22,7 @@ pub enum ValueInfo {
     
     Int(ValueIntInfo),
     Function(ValueFunctionInfo),
+    Range { start: Option<BigInt>, end: Option<BigInt> },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

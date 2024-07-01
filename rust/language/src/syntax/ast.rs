@@ -270,7 +270,7 @@ pub enum ExpressionKind {
     ArrayLiteral(Vec<Expression>),
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
-    Range { end_inclusive: bool, start: Option<Box<Expression>>, end: Option<Box<Expression>> },
+    RangeLiteral(RangeLiteral),
 
     // Operations
     UnaryOp(UnaryOp, Box<Expression>),
@@ -305,6 +305,13 @@ pub struct StructLiteralField {
     pub span: Span,
     pub id: Identifier,
     pub value: Expression,
+}
+
+#[derive(Debug, Clone)]
+pub struct RangeLiteral {
+    pub end_inclusive: bool,
+    pub start: Option<Box<Expression>>,
+    pub end: Option<Box<Expression>>
 }
 
 #[derive(Debug, Clone)]
