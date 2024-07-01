@@ -21,12 +21,14 @@ pub struct BasicTypes<T> {
     pub ty_bool: T,
     pub ty_int: T,
     pub ty_uint: T,
+    pub ty_range: T,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypeInfo {
     Type,
     Boolean,
+    Range,
     Integer(TypeInfoInteger),
     Function(TypeInfoFunction),
     Tuple(Vec<Type>),
@@ -58,7 +60,7 @@ pub struct TypeInfoEnum {
     // TODO refer to identifiers or nothing here instead?
     pub variants: Vec<(String, Option<Type>)>,
 }
- 
+
 /// Used to deduplicate [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) like structs or enums.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct TypeUnique {
@@ -76,6 +78,7 @@ impl Default for Types {
             ty_bool: arena.push(TypeInfo::Boolean),
             ty_int: arena.push(TypeInfo::Integer(TypeInfoInteger { min: None, max: None })),
             ty_uint: arena.push(TypeInfo::Integer(TypeInfoInteger { min: Some(BigInt::zero()), max: None })),
+            ty_range: arena.push(TypeInfo::Range),
         };
 
         Types {
@@ -104,6 +107,7 @@ impl<T> BasicTypes<T> {
             ty_bool: f(&self.ty_bool),
             ty_int: f(&self.ty_int),
             ty_uint: f(&self.ty_uint),
+            ty_range: f(&self.ty_range),
         }
     }
 }

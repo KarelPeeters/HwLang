@@ -437,7 +437,7 @@ impl<'a> CompileState<'a> {
             ExpressionKind::StructLiteral(_) => todo!(),
             ExpressionKind::RangeLiteral(range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
-                
+
                 let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<Option<BigInt>> {
                     match point {
                         None => Ok(None),
@@ -450,16 +450,16 @@ impl<'a> CompileState<'a> {
                         }
                     }
                 };
-                
+
                 let start = map_point(start)?;
                 let end_partial = map_point(end)?;
-                
+
                 let end=  if end_inclusive {
                     Some(end_partial.unwrap().add(&BigInt::one()))
                 } else {
                     end_partial
                 };
-                
+
                 Ok(self.values.push(ValueInfo::Range { start, end }))
             },
             ExpressionKind::UnaryOp(_, _) => todo!(),
@@ -526,6 +526,7 @@ impl<'a> CompileState<'a> {
                         match ty.as_str() {
                             "bool" if args.inner.len() == 1 => return Ok(self.basic_values.ty_bool),
                             "int" if args.inner.len() == 1 => return Ok(self.basic_values.ty_int),
+                            "Range" if args.inner.len() == 1 => return Ok(self.basic_values.ty_range),
                             _ => {},
                         }
                     }

@@ -22,6 +22,8 @@ pub enum ValueInfo {
     
     Int(ValueIntInfo),
     Function(ValueFunctionInfo),
+    
+    // TODO should this be a dedicated type or just an instance of the normal range struct?
     Range { start: Option<BigInt>, end: Option<BigInt> },
 }
 

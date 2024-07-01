@@ -29,13 +29,15 @@ enum Option(T: type) {
     Some(T),
 }
 
-struct Range(L: type, H: type) {
-    min: L,
-    max: H,
-}
+// TODO go back to a more user-accessible struct
+type Range = __builtin_type("Range");
+//struct Range(L: type, H: type) {
+//    min: L,
+//    max: H,
+//}
 
 // TODO add overloading?
-type int_range(r: Range(Option(int), Option(int))) = __builtin_type("int_range", r);
+type int_range(r: Range) = __builtin_type("int_range", r);
 // TODO can we write this as `int_range(..)` again?
 type int = __builtin_type("int");
 type uint = int_range(0..);
