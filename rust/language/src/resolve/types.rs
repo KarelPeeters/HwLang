@@ -3,8 +3,8 @@ use num_bigint::BigInt;
 use num_traits::identities::Zero;
 
 use crate::new_index_type;
+use crate::resolve::compile::ItemReference;
 use crate::resolve::values::Value;
-use crate::syntax::pos::FileId;
 use crate::util::arena::ArenaSet;
 
 new_index_type!(pub Type);
@@ -48,28 +48,22 @@ pub struct TypeInfoFunction {
 
 #[derive(Debug, Clone, Eq)]
 pub struct TypeInfoStruct {
-    // only the reference and params are included in hash and eq
-    pub item_reference: ItemReference,
-    pub params: Vec<Value>,
-    
+    pub unique: TypeUnique,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone, Eq)]
 pub struct TypeInfoEnum {
-    // only the reference and params are included in hash and eq
-    pub item_reference: ItemReference,
-    pub params: Vec<Value>,
-
+    pub unique: TypeUnique,
+    // TODO refer to identifiers or nothing here instead?
     pub variants: Vec<(String, Option<Type>)>,
 }
-
-/// Utility type to refer to a specific item in a specific file.
+ 
 /// Used to deduplicate [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) like structs or enums.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ItemReference {
-    pub file: FileId,
-    pub item_index: usize,
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct TypeUnique {
+    pub item_reference: ItemReference,
+    pub params: Vec<Value>,
 }
 
 impl Default for Types {
@@ -116,24 +110,24 @@ impl<T> BasicTypes<T> {
 
 impl Hash for TypeInfoStruct {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.item_reference, &self.params).hash(state);
+        self.unique.hash(state);
     }
 }
 
 impl PartialEq for TypeInfoStruct {
     fn eq(&self, other: &Self) -> bool {
-        (self.item_reference, &self.params) == (other.item_reference, &other.params)
+        &self.unique == &other.unique
     }
 }
 
 impl Hash for TypeInfoEnum {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.item_reference, &self.params).hash(state);
+        self.unique.hash(state);
     }
 }
 
 impl PartialEq for TypeInfoEnum {
     fn eq(&self, other: &Self) -> bool {
-        (self.item_reference, &self.params) == (other.item_reference, &other.params)
+        &self.unique == &other.unique
     }
 }

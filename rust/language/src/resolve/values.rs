@@ -1,8 +1,8 @@
 use std::hash::{Hash, Hasher};
 use num_bigint::BigInt;
 use crate::new_index_type;
-use crate::resolve::compile::FunctionBody;
-use crate::resolve::types::{ItemReference, Type};
+use crate::resolve::compile::{FunctionBody, Item, ItemReference};
+use crate::resolve::types::Type;
 use crate::syntax::ast::Identifier;
 use crate::util::arena::ArenaSet;
 
@@ -18,6 +18,8 @@ pub type Values = ArenaSet<Value, ValueInfo>;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ValueInfo {
     Type(Type),
+    Item(Item),
+    
     Int(ValueIntInfo),
     Function(ValueFunctionInfo),
 }

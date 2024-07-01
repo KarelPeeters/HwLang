@@ -7,7 +7,7 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, ItemReference, Type, TypeInfo, TypeInfoFunction, Types};
+use crate::resolve::types::{BasicTypes, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoStruct, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, Spanned, TypeParam};
@@ -50,9 +50,15 @@ pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
 #[derive(Debug, Copy, Clone)]
 pub enum ScopedValue {
     // TODO should items and files also just be values, freely storable by the user?
+    Value(Value),
     Item(Item),
     File(FileId),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ValueOrItem {
     Value(Value),
+    Item(Item),
 }
 
 #[derive(Debug)]
@@ -112,10 +118,9 @@ pub enum FrontError {
     ExpectedTypeExpression(Expression),
     ExpectedFunctionExpression(Expression),
 
-    ExpectedPathToItemNotFile(Path, FileId),
+    ExpectedPathToFileNotValueOrItem(Path, ValueOrItem),
     ExpectedPathToItemNotValue(Path, Value),
-    ExpectedPathToFileNotItem(Path, Item),
-    ExpectedPathToFileNotValue(Path, Value),
+    ExpectedPathToItemOrValueNotFile(Path, FileId),
 
     InvalidBuiltinIdentifier(Expression, Identifier),
     InvalidBuiltinArgs(Expression, Args),
@@ -285,6 +290,12 @@ impl<'a> CompileState<'a> {
         let resolved= match item_ast {
             ast::Item::Use(item_ast) => {
                 let next_item = self.follow_path(scope, &item_ast.path)?;
+
+                let next_item = match next_item {
+                    ValueOrItem::Value(value) => throw!(FrontError::ExpectedPathToItemNotValue(item_ast.path.clone(), value)),
+                    ValueOrItem::Item(next_item) => next_item,
+                };
+
                 self.resolve(ResolveQuery { item: next_item, kind })?
             }
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner: _ }) |
@@ -316,7 +327,7 @@ impl<'a> CompileState<'a> {
                 // no params, this is just a straight type definition
                 match query.kind {
                     ResolveQueryKind::Signature => self.type_as_value(self.types.basic().ty_type),
-                    ResolveQueryKind::Value => self.call_function_body(scope, &build_value)?,
+                    ResolveQueryKind::Value => self.call_function_body(scope, &build_value, vec![])?,
                 }
             }
             Some(params) => {
@@ -361,14 +372,16 @@ impl<'a> CompileState<'a> {
         Ok(self.types.push(ty_info))
     }
 
-    fn follow_path(&self, scope: &Scope, path: &Path) -> ResolveResult<Item> {
+    fn follow_path(&mut self, scope: &Scope, path: &Path) -> ResolveResult<ValueOrItem> {
         let mut scope = scope;
         let mut vis = Visibility::Private;
 
         for parent in &path.parents {
             match *scope.find(None, &parent, vis)? {
-                ScopedValue::Item(item) => throw!(FrontError::ExpectedPathToFileNotItem(path.clone(), item)),
-                ScopedValue::Value(value) => throw!(FrontError::ExpectedPathToFileNotValue(path.clone(), value)),
+                ScopedValue::Item(item) =>
+                    throw!(FrontError::ExpectedPathToFileNotValueOrItem(path.clone(), ValueOrItem::Item(item))),
+                ScopedValue::Value(value) =>
+                    throw!(FrontError::ExpectedPathToFileNotValueOrItem(path.clone(), ValueOrItem::Value(value))),
                 ScopedValue::File(file) => {
                     scope = self.files.get(&file).unwrap().local_scope.as_ref().unwrap();
                     vis = Visibility::Public;
@@ -377,12 +390,12 @@ impl<'a> CompileState<'a> {
         }
 
         match *scope.find(None, &path.id, vis)? {
-            ScopedValue::Item(item) =>
-                Ok(item),
-            ScopedValue::File(file) =>
-                Err(FrontError::ExpectedPathToItemNotFile(path.clone(), file).into()),
             ScopedValue::Value(value) =>
-                Err(FrontError::ExpectedPathToItemNotValue(path.clone(), value).into()),
+                Ok(ValueOrItem::Value(value)),
+            ScopedValue::Item(item) =>
+                Ok(ValueOrItem::Item(item)),
+            ScopedValue::File(file) =>
+                Err(FrontError::ExpectedPathToItemOrValueNotFile(path.clone(), file).into()),
         }
     }
 
@@ -393,9 +406,12 @@ impl<'a> CompileState<'a> {
         match &expr.inner {
             ExpressionKind::Dummy => todo!(),
             ExpressionKind::Path(path) => {
-                let item = self.follow_path(scope, path)?;
-                let result = self.resolve(ResolveQuery { item, kind: ResolveQueryKind::Value })?;
-                Ok(result)
+                match self.follow_path(scope, path)? {
+                    ValueOrItem::Value(value) =>
+                        Ok(value),
+                    ValueOrItem::Item(item) =>
+                        Ok(self.resolve(ResolveQuery { item, kind: ResolveQueryKind::Value })?),
+                }
             },
             ExpressionKind::Wrapped(_) => todo!(),
             ExpressionKind::Type => Ok(self.basic_values.ty_type),
@@ -442,17 +458,19 @@ impl<'a> CompileState<'a> {
                         // define params
                         // TODO this is a bit strange, shouldn't the function body have been fully checked at this point?
                         let mut body_scope = scope.nest(Visibility::Private);
+                        let mut param_values = vec![];
                         // TODO check param/arg length and type match, return proper errors
                         for (param, arg) in zip_eq(&params, &args.inner) {
                             // note: args are evaluated in the parent scope
                             let arg = self.eval_expression(scope, arg)?;
                             // TODO visibility does not really sense here, this scope is never accessible from outside
                             body_scope.declare(param, ScopedValue::Value(arg), Visibility::Private)?;
+                            param_values.push(arg);
                         }
 
                         // actually run the function
                         // TODO time/step/recursion limit?
-                        let result = self.call_function_body(&body_scope, &body)?;
+                        let result = self.call_function_body(&body_scope, &body, param_values)?;
                         Ok(result)
                     }
                     _ => throw!(FrontError::ExpectedFunctionExpression((&**target).clone())),
@@ -493,7 +511,7 @@ impl<'a> CompileState<'a> {
         self.values.push(ValueInfo::Type(ty))
     }
 
-    fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody) -> ResolveResult<Value> {
+    fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody, params_for_unique: Vec<Value>) -> ResolveResult<Value> {
         match body {
             &FunctionBody::TypeConstructor(item_reference) => {
                 match self.get_item_ast(item_reference) {
@@ -501,8 +519,38 @@ impl<'a> CompileState<'a> {
                         let ty = self.eval_expression_as_ty(scope_with_params, &item_ast.inner)?;
                         Ok(self.type_as_value(ty))
                     }
-                    ast::Item::Struct(_) => todo!(),
-                    ast::Item::Enum(_) => todo!(),
+                    ast::Item::Struct(item_ast) => {
+                        let unique = TypeUnique { item_reference, params: params_for_unique };
+
+                        // map fields
+                        let mut fields = vec![];
+                        for field in &item_ast.fields {
+                            let field_ty = self.eval_expression_as_ty(scope_with_params, &field.ty)?;
+                            fields.push((field.id.string.clone(), field_ty));
+                        }
+
+                        // define new type
+                        let info = TypeInfoStruct { unique, fields };
+                        let ty = self.types.push(TypeInfo::Struct(info));
+                        Ok(self.type_as_value(ty))
+                    },
+                    ast::Item::Enum(item_ast) => {
+                        let unique = TypeUnique { item_reference, params: params_for_unique };
+
+                        // map variants
+                        let mut variants = vec![];
+                        for variant in &item_ast.variants {
+                            let content = variant.content.as_ref()
+                                .map(|content| self.eval_expression_as_ty(scope_with_params, content))
+                                .transpose()?;
+                            variants.push((variant.id.string.clone(), content));
+                        }
+
+                        // define new type
+                        let info = TypeInfoEnum { unique, variants };
+                        let ty = self.types.push(TypeInfo::Enum(info));
+                        Ok(self.type_as_value(ty))
+                    },
                     _ => unreachable!(),
                 }
             },
@@ -554,4 +602,11 @@ impl FileInfo {
             local_scope: None,
         }
     }
+}
+
+/// Utility type to refer to a specific item in a specific file.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ItemReference {
+    pub file: FileId,
+    pub item_index: usize,
 }
