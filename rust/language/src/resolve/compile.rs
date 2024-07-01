@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools, zip_eq};
 
@@ -220,7 +221,7 @@ pub enum FunctionBody {
     TypeConstructor(ItemReference),
 }
 
-impl CompileState<'_> {
+impl<'a> CompileState<'a> {
     fn resolve_fully(&mut self, query: ResolveQuery) -> Result<(), CompileError> {
         let mut stack = vec![query];
 
@@ -268,11 +269,10 @@ impl CompileState<'_> {
 
         // item lookup
         let ResolveQuery { item, kind } = query;
-        let info = &self.items[item];
-        let item_reference = info.item_reference;
-        let ItemReference { file, item_index } = item_reference;
+        let item_reference = self.items[item].item_reference;
+        let ItemReference { file, item_index: _ } = item_reference;
         let file_info = self.files.get(&file).unwrap();
-        let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
+        let item_ast = self.get_item_ast(item_reference);
         let scope = file_info.local_scope.as_ref().unwrap();
 
         println!("  resolve_new {:?} at {:?}", query, item_ast.span());
@@ -312,7 +312,7 @@ impl CompileState<'_> {
                 // no params, this is just a straight type definition
                 match query.kind {
                     ResolveQueryKind::Signature => self.type_as_value(self.types.basic().ty_type),
-                    ResolveQueryKind::Value => self.call_function_body(&build_value)?,
+                    ResolveQueryKind::Value => self.call_function_body(scope, &build_value)?,
                 }
             }
             Some(params) => {
@@ -448,7 +448,7 @@ impl CompileState<'_> {
 
                         // actually run the function
                         // TODO time/step/recursion limit?
-                        let result = self.call_function_body(&body)?;
+                        let result = self.call_function_body(&body_scope, &body)?;
                         Ok(result)
                     }
                     _ => throw!(FrontError::ExpectedFunctionExpression((&**target).clone())),
@@ -489,17 +489,12 @@ impl CompileState<'_> {
         self.values.push(ValueInfo::Type(ty))
     }
 
-    fn call_function_body(&mut self, body: &FunctionBody) -> ResolveResult<Value> {
+    fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody) -> ResolveResult<Value> {
         match body {
             &FunctionBody::TypeConstructor(item_reference) => {
-                let ItemReference { file, item_index } = item_reference;
-                let file_info = self.files.get(&file).unwrap();
-                let item_ast = &file_info.ast.as_ref().unwrap().items[item_index];
-                let scope = file_info.local_scope.as_ref().unwrap();
-
-                match item_ast {
+                match self.get_item_ast(item_reference) {
                     ast::Item::Type(item_ast) => {
-                        let ty = self.eval_expression_as_ty(scope, &item_ast.inner)?;
+                        let ty = self.eval_expression_as_ty(scope_with_params, &item_ast.inner)?;
                         Ok(self.type_as_value(ty))
                     }
                     ast::Item::Struct(_) => todo!(),
@@ -508,6 +503,12 @@ impl CompileState<'_> {
                 }
             },
         }
+    }
+
+    fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
+        let ItemReference { file, item_index } = item_reference;
+        let file_info = self.files.get(&file).unwrap();
+        &file_info.ast.as_ref().unwrap().items[item_index]
     }
 }
 
