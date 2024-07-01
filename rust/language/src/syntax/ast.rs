@@ -360,11 +360,11 @@ pub struct SyncExpression {
 // (don't allow any of the fancy stuff stuff for decimal ofc)
 #[derive(Debug, Clone)]
 pub enum IntPattern {
-    // [0-9a-fA-F_]*
+    // [0-9a-fA-F_]+
     Hex(String),
-    // [01_]*
+    // [01_]+
     Bin(String),
-    // [0-9]*
+    // [0-9_]+
     Dec(String),
 }
 

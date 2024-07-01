@@ -15,22 +15,17 @@ new_index_type!(pub Value);
 //   but not for values (ints, arrays, ...)
 pub type Values = ArenaSet<Value, ValueInfo>;
 
+// TODO should all values have types? or can eg. ints just be free abstract objects?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ValueInfo {
     Type(Type),
     Item(Item),
-    
-    Int(ValueIntInfo),
+
+    Int(BigInt),
     Function(ValueFunctionInfo),
-    
+
     // TODO should this be a dedicated type or just an instance of the normal range struct?
     Range { start: Option<BigInt>, end: Option<BigInt> },
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ValueIntInfo {
-    pub ty: Type,
-    pub value: BigInt,
 }
 
 #[derive(Debug, Clone)]

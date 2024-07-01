@@ -10,10 +10,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoStruct, Types, TypeUnique};
+use crate::resolve::types::{BasicTypes, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoInteger, TypeInfoStruct, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, ItemDefEnum, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -121,6 +121,7 @@ pub enum FrontError {
     ExpectedTypeExpression(Expression),
     ExpectedFunctionExpression(Expression),
     ExpectedIntegerExpression(Expression),
+    ExpectedRangeExpression(Expression),
 
     ExpectedPathToFileNotValueOrItem(Path, ValueOrItem),
     ExpectedPathToItemNotValue(Path, Value),
@@ -429,7 +430,18 @@ impl<'a> CompileState<'a> {
             ExpressionKind::Return(_) => todo!(),
             ExpressionKind::Break(_) => todo!(),
             ExpressionKind::Continue => todo!(),
-            ExpressionKind::IntPattern(_) => todo!(),
+            ExpressionKind::IntPattern(int) => {
+                let value = match int {
+                    IntPattern::Hex(_) => todo!("hex with wildcards"),
+                    IntPattern::Bin(_) => todo!("bin with wildcards"),
+                    IntPattern::Dec(str_raw) => {
+                        let str_clean = str_raw.replace("_", "");
+                        str_clean.parse::<BigInt>().unwrap()
+                    }
+                };
+
+                Ok(self.values.push(ValueInfo::Int(value)))
+            },
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
             ExpressionKind::ArrayLiteral(_) => todo!(),
@@ -444,7 +456,7 @@ impl<'a> CompileState<'a> {
                         Some(point) => {
                             let point_value = self.eval_expression(scope, point)?;
                             match &self.values[point_value] {
-                                ValueInfo::Int(value) => Ok(Some(value.value.clone())),
+                                ValueInfo::Int(value) => Ok(Some(value.clone())),
                                 _ => throw!(FrontError::ExpectedIntegerExpression((&**point).clone())),
                             }
                         }
@@ -472,7 +484,7 @@ impl<'a> CompileState<'a> {
                 if let ExpressionKind::Path(Path { parents, id, span: _ }) = &target.inner {
                     if parents.is_empty() {
                         if let Some(name) = id.string.strip_prefix("__builtin_") {
-                            return self.eval_builtin_call(expr, name, id, args);
+                            return self.eval_builtin_call(scope, expr, name, id, args);
                         }
                     }
                 }
@@ -517,7 +529,7 @@ impl<'a> CompileState<'a> {
         }
     }
 
-    fn eval_builtin_call(&mut self, expr: &Expression, name: &str, id: &Identifier, args: &Args) -> ResolveResult<Value> {
+    fn eval_builtin_call(&mut self, scope: &Scope, expr: &Expression, name: &str, id: &Identifier, args: &Args) -> ResolveResult<Value> {
         // TODO disallow calling builtin in user modules?
         match name {
             "type" => {
@@ -526,6 +538,16 @@ impl<'a> CompileState<'a> {
                         match ty.as_str() {
                             "bool" if args.inner.len() == 1 => return Ok(self.basic_values.ty_bool),
                             "int" if args.inner.len() == 1 => return Ok(self.basic_values.ty_int),
+                            "int_range" if args.inner.len() == 2 => {
+                                let range = self.eval_expression(scope, &args.inner[1])?;
+                                let (start, end) = match &self.values[range] {
+                                    ValueInfo::Range { start, end } => (start, end),
+                                    _ => throw!(FrontError::ExpectedRangeExpression((&args.inner[1]).clone())),
+                                };
+                                let ty_info = TypeInfoInteger { min: start.clone(), max: end.clone() };
+                                let ty = self.types.push(TypeInfo::Integer(ty_info));
+                                return Ok(self.type_as_value(ty));
+                            },
                             "Range" if args.inner.len() == 1 => return Ok(self.basic_values.ty_range),
                             _ => {},
                         }

@@ -263,10 +263,10 @@ ExprLevelAtomic: ExpressionKind = {
     // literals
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
-    <string:r"0x[0-9a-fA-F_]+">
-        => ExpressionKind::IntPattern(IntPattern::Hex(string.to_owned())),
-    <string:r"0b[0-9a-fA-F_]+">
-        => ExpressionKind::IntPattern(IntPattern::Bin(string.to_owned())),
+    <string:r"0x[0-9a-fA-F_?]+">
+        => ExpressionKind::IntPattern(IntPattern::Hex(string[2..].to_owned())),
+    <string:r"0b[0-9a-fA-F_?]+">
+        => ExpressionKind::IntPattern(IntPattern::Bin(string[2..].to_owned())),
     <string:r"[0-9]+">
         => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
     // TODO escape sequences
