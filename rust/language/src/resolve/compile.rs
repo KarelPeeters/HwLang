@@ -472,9 +472,8 @@ impl CompileState<'_> {
                 if args.inner.len() >= 1 {
                     if let ExpressionKind::StringLiteral(ty) = &args.inner[0].inner {
                         match ty.as_str() {
-                            "bool" if args.inner.len() == 1 => {
-                                return Ok(self.basic_values.ty_bool);
-                            }
+                            "bool" if args.inner.len() == 1 => return Ok(self.basic_values.ty_bool),
+                            "int" if args.inner.len() == 1 => return Ok(self.basic_values.ty_int),
                             _ => {},
                         }
                     }
