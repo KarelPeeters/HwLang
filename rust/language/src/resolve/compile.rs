@@ -18,7 +18,7 @@ macro_rules! throw {
     ($e:expr) => { return Err($e.into()) };
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
 
 pub struct CompileSet {
@@ -153,9 +153,13 @@ pub enum ResolveFirstOr<E> {
 }
 
 impl CompileSet {
+    // TODO: add some error recovery and continuation, eg. return all parse errors at once
     pub fn compile(mut self) -> Result<(), CompileError> {
-        // Use separate steps to flag all errors of the same type before moving on to the next level.
-        // TODO: some error recovery and continuation, eg. return all parse errors at once
+        // sort files to ensure platform-independence
+        // TODO should this be here or at the higher-level path walker?
+        self.files.sort_by(|_, v1, _, v2| {
+            v1.path.cmp(&v2.path)
+        });
 
         // items only exists to serve as a level of indirection between values,
         //   so we can easily do the graph solution in a single pass
