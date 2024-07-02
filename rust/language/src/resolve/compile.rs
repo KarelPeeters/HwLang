@@ -30,22 +30,22 @@ pub struct CompileSet {
     pub files: IndexMap<FileId, FileInfo>,
 }
 
+// TODO distinguish between true and temporary options 
 pub struct FileInfo {
     id: FileId,
     path: FilePath,
     source: String,
     ast: Option<ast::FileContent>,
     local_scope: Option<Scope<'static>>,
+    module: Option<Module>,
 }
+
+new_index_type!(Module);
 
 pub struct ModuleInfo {
     path: FilePath,
     file: Option<FileId>,
-    scope: Scope<'static>,
-}
-
-pub struct Node {
-    children: IndexMap<String, Node>,
+    children: IndexMap<String, Module>,
 }
 
 pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
@@ -55,6 +55,8 @@ pub enum ScopedValue {
     // TODO should items and files also just be values, freely storable by the user?
     Value(Value),
     Item(Item),
+    // TODO remove file as a scoped value? it can only ever come from use 
+    //  statements which look things up in a separate namespace anyway
     File(FileId),
 }
 
@@ -182,13 +184,43 @@ impl CompileSet {
             let ast = parse_file_content(file.id, &file.source)?;
             file.ast = Some(ast);
         }
+        
+        // connect files and modules
+        // TODO this feels overcomplicated
+        let mut modules: Arena<Module, ModuleInfo> = Arena::default();
+        let root_module = modules.push(ModuleInfo { path: FilePath(vec![]), file: None, children: Default::default() });
+
+        let mut get_module = |modules: &mut Arena<Module, ModuleInfo>, path: &FilePath| -> Module {
+            let mut parent = root_module;
+            for (i, path_item) in enumerate(&path.0) {
+                let child = (&modules[parent]).children.get(path_item);
+                match child {
+                    Some(&child) => parent = child,
+                    None => {
+                        let new_module = modules.push(ModuleInfo {
+                            path: FilePath(path.0[..=i].to_vec()),
+                            file: None,
+                            children: Default::default(),
+                        });
+                        modules[parent].children.insert(path_item.clone(), new_module);
+                        parent = new_module;
+                    }
+                }
+            }
+            parent
+        };
+        for file in self.files.values_mut() {
+            let module = get_module(&mut modules, &file.path);
+            modules[module].file = Some(file.id);
+            file.module = Some(module);
+        }
 
         // build import scope of each file
         for file in self.files.values_mut() {
             let ast = file.ast.as_ref().unwrap();
 
             // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-            let mut scope_declared = Scope::default();
+            let mut local_scope = Scope::default();
 
             for (ast_item_index, ast_item) in enumerate(&ast.items) {
                 let (id, ast_vis) = ast_item.id_vis();
@@ -199,10 +231,10 @@ impl CompileSet {
 
                 let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
                 let item = items.push(ItemInfo { item_reference, signature: None, content: None });
-                scope_declared.maybe_declare(&id, ScopedValue::Item(item), vis)?;
+                local_scope.maybe_declare(&id, ScopedValue::Item(item), vis)?;
             }
 
-            file.local_scope = Some(scope_declared);
+            file.local_scope = Some(local_scope);
         }
 
         let basic_values = types.basic().map(|&ty| values.push(ValueInfo::Type(ty)));
@@ -218,7 +250,6 @@ impl CompileSet {
         // fully resolve all items
         let item_keys = state.items.keys().collect_vec();
         for item in item_keys {
-            println!("Starting full resolution of {:?}", item);
             let query = ResolveQuery { item, kind: ResolveQueryKind::Value };
             state.resolve_fully(query)?;
         }
@@ -248,7 +279,6 @@ impl<'a> CompileState<'a> {
 
             match result {
                 Ok(resolved) => {
-                    println!("  resolved {:?} to {:?}", query, resolved);
                     *curr.kind.slot_mut(&mut self.items[curr.item]) = Some(resolved);
                 }
                 Err(ResolveFirstOr::Error(e)) => {
@@ -288,8 +318,6 @@ impl<'a> CompileState<'a> {
         let file_info = self.files.get(&file).unwrap();
         let item_ast = self.get_item_ast(item_reference);
         let scope = file_info.local_scope.as_ref().unwrap();
-
-        println!("  resolve_new {:?} at {:?}", query, item_ast.span());
 
         // actual resolution
         let resolved= match item_ast {
@@ -377,6 +405,8 @@ impl<'a> CompileState<'a> {
         Ok(self.types.push(ty_info))
     }
 
+    // TODO should single identifiers be separate from paths? paths can never resolve to a value,
+    //  only to items and modules (which may correspond to files)
     fn follow_path(&mut self, scope: &Scope, path: &Path) -> ResolveResult<ValueOrItem> {
         let mut scope = scope;
         let mut vis = Visibility::Private;
@@ -653,6 +683,7 @@ impl FileInfo {
             source,
             ast: None,
             local_scope: None,
+            module: None,
         }
     }
 }

@@ -21,6 +21,8 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
+    <start:@L> "use" <path:Path> <as_: ("as" <MaybeId>)?> ";" <end:@R>
+            => Item::Use(ItemUse { path, as_, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:BoxExpr> ";" <end:@R>
         => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<TypeParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
@@ -294,6 +296,8 @@ ExprControlFlow: ExpressionKind = {
         => ExpressionKind::While(WhileExpression { cond, body }),
 }
 
+// TODO use . or :: for separation?
+//   ambiguity with struct field accesses?
 Path: Path = {
     <start:@L> <parents: (<Id> "::")*> <id: Id> <end:@R>
         => Path { span: loc.span(start, end), parents, id }
@@ -316,7 +320,8 @@ MaybeId: MaybeIdentifier = {
 }
 
 Vis: Visibility = {
-    <start:@L> "pub" <end:@R> => Visibility::Public(loc.span(start, end)),
+    // TODO pub or public?
+    <start:@L> "public" <end:@R> => Visibility::Public(loc.span(start, end)),
     => Visibility::Private,
 }
 

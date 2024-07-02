@@ -28,6 +28,7 @@ pub enum Item {
     Interface(ItemDefInterface),
 }
 
+// TODO split this out from the items that actually define _new_ symbols?
 #[derive(Debug, Clone)]
 pub struct ItemUse {
     pub span: Span,
@@ -35,6 +36,7 @@ pub struct ItemUse {
     pub as_: Option<MaybeIdentifier>,
 }
 
+// TODO remove
 #[derive(Debug, Clone)]
 pub struct ItemDefPackage {
     pub span: Span,
