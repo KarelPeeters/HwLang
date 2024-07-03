@@ -407,6 +407,8 @@ impl<'a> CompileState<'a> {
 
     // TODO should single identifiers be separate from paths? paths can never resolve to a value,
     //  only to items and modules (which may correspond to files)
+    // TODO resolution order: child items, sibling items, lib_exit::std::..., lib_curr::root_file::...
+    //  or do we want separate child/sibling keywords too?
     fn follow_path(&mut self, scope: &Scope, path: &Path) -> ResolveResult<ValueOrItem> {
         let mut scope = scope;
         let mut vis = Visibility::Private;
