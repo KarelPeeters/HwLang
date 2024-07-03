@@ -29,8 +29,9 @@ Item: Item = {
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<TypeParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<ModuleParam>?> <body:Block> <end:@R>
-        => Item::Module(ItemDefModule { vis, id, params, body, span: loc.span(start, end) }),
+    // TODO avoid superfluous parents if we don't have any type parameters
+    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<TypeParam>> <ports:Params<ModulePort>> <body:Block> <end:@R>
+        => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
@@ -95,17 +96,16 @@ FunctionParam: FunctionParam = {
     <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => FunctionParam { id, ty, span: loc.span(start, end) },
 }
 
-ModuleParam: ModuleParam = {
-    <start:@L> <id:Id> ":" <kind:ModuleParamKind> <sync: SyncKind> <ty:Expr> <end:@R>
-        => ModuleParam { id, kind, sync, ty, span: loc.span(start, end) },
+ModulePort: ModulePort = {
+    <start:@L> <id:Id> ":" <kind:ModulePortKind> <sync: SyncKind> <ty:Expr> <end:@R>
+        => ModulePort { id, kind, sync, ty, span: loc.span(start, end) },
 }
 
-ModuleParamKind = Spanned<ModuleParamKindInner>;
+ModulePortKind = Spanned<ModulePortKindInner>;
 
-ModuleParamKindInner: ModuleParamKind = {
-    "const" => ModuleParamKind::Const,
-    "input" => ModuleParamKind::Input,
-    "output" => ModuleParamKind::Output,
+ModulePortKindInner: ModulePortKind = {
+    "input" => ModulePortKind::Input,
+    "output" => ModulePortKind::Output,
 }
 
 SyncKind = Spanned<SyncKindInner>;

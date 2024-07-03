@@ -115,7 +115,8 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<ModuleParam>>>,
+    pub params: Spanned<Vec<TypeParam>>,
+    pub ports: Spanned<Vec<ModulePort>>,
     pub body: Block,
 }
 
@@ -156,17 +157,16 @@ pub struct FunctionParam {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleParam {
+pub struct ModulePort {
     pub span: Span,
-    pub kind: Spanned<ModuleParamKind>,
+    pub kind: Spanned<ModulePortKind>,
     pub sync: Spanned<SyncKind>,
     pub id: Identifier,
     pub ty: Expression,
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum ModuleParamKind {
-    Const,
+pub enum ModulePortKind {
     Input,
     Output,
 }
