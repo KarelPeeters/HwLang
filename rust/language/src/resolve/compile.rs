@@ -28,36 +28,35 @@ pub struct CompileSet {
     pub paths: IndexSet<FilePath>,
     // TODO use arena for this too?
     pub files: IndexMap<FileId, FileInfo>,
+
+    pub directories: Arena<Directory, DirectoryInfo>,
+    pub root_directory: Directory,
 }
 
-// TODO distinguish between true and temporary options 
+// TODO distinguish between true and temporary options
 pub struct FileInfo {
     id: FileId,
     path: FilePath,
+    directory: Directory,
     source: String,
     ast: Option<ast::FileContent>,
     local_scope: Option<Scope<'static>>,
-    module: Option<Module>,
 }
 
-new_index_type!(Module);
+new_index_type!(Directory);
 
-pub struct ModuleInfo {
+pub struct DirectoryInfo {
     path: FilePath,
     file: Option<FileId>,
-    children: IndexMap<String, Module>,
+    children: IndexMap<String, Directory>,
 }
 
 pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ScopedValue {
-    // TODO should items and files also just be values, freely storable by the user?
     Value(Value),
     Item(Item),
-    // TODO remove file as a scoped value? it can only ever come from use 
-    //  statements which look things up in a separate namespace anyway
-    File(FileId),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -74,9 +73,14 @@ pub enum CompileSetError {
 
 impl CompileSet {
     pub fn new() -> Self {
+        let mut directories = Arena::default();
+        let root_directory = directories.push(DirectoryInfo { path: FilePath(vec![]), file: None, children: Default::default() });
+
         CompileSet {
             files: IndexMap::default(),
             paths: IndexSet::default(),
+            directories,
+            root_directory,
         }
     }
 
@@ -90,7 +94,12 @@ impl CompileSet {
 
         let id = FileId(self.files.len());
         println!("adding {:?} => {:?}", id, path);
-        let info = FileInfo::new(id, path, source);
+        let directory = self.get_directory(&path);
+        let info = FileInfo::new(id, path, directory, source);
+
+        let slot = &mut self.directories[directory].file;
+        assert_eq!(*slot, None);
+        *slot = Some(id);
 
         let prev = self.files.insert(id, info);
         assert!(prev.is_none());
@@ -103,6 +112,25 @@ impl CompileSet {
 
     pub fn add_external_verilog(&mut self, source: String) {
         todo!("compile verilog source.len={}", source.len())
+    }
+
+    fn get_directory(&mut self, path: &FilePath) -> Directory {
+        let mut curr_dir = self.root_directory;
+        for (i, path_item) in enumerate(&path.0) {
+            curr_dir = match self.directories[curr_dir].children.get(path_item) {
+                Some(&child) => child,
+                None => {
+                    let child = self.directories.push(DirectoryInfo {
+                        path: FilePath(path.0[..=i].to_vec()),
+                        file: None,
+                        children: Default::default(),
+                    });
+                    self.directories[curr_dir].children.insert(path_item.clone(), child);
+                    child
+                }
+            };
+        }
+        curr_dir
     }
 }
 
@@ -125,9 +153,8 @@ pub enum FrontError {
     ExpectedIntegerExpression(Expression),
     ExpectedRangeExpression(Expression),
 
-    ExpectedPathToFileNotValueOrItem(Path, ValueOrItem),
-    ExpectedPathToItemNotValue(Path, Value),
-    ExpectedPathToItemOrValueNotFile(Path, FileId),
+    InvalidPathStep(Identifier, Vec<String>),
+    ExpectedPathToFile(Path),
 
     InvalidBuiltinIdentifier(Expression, Identifier),
     InvalidBuiltinArgs(Expression, Args),
@@ -137,6 +164,8 @@ pub enum FrontError {
 
 pub struct CompileState<'a> {
     files: &'a IndexMap<FileId, FileInfo>,
+    directories: &'a Arena<Directory, DirectoryInfo>,
+    root_directory: Directory,
     items: Arena<Item, ItemInfo>,
     values: Values,
     types: Types,
@@ -144,7 +173,7 @@ pub struct CompileState<'a> {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct ResolveQuery {
+pub struct ResolveQuery {
     item: Item,
     kind: ResolveQueryKind,
 }
@@ -184,36 +213,6 @@ impl CompileSet {
             let ast = parse_file_content(file.id, &file.source)?;
             file.ast = Some(ast);
         }
-        
-        // connect files and modules
-        // TODO this feels overcomplicated
-        let mut modules: Arena<Module, ModuleInfo> = Arena::default();
-        let root_module = modules.push(ModuleInfo { path: FilePath(vec![]), file: None, children: Default::default() });
-
-        let mut get_module = |modules: &mut Arena<Module, ModuleInfo>, path: &FilePath| -> Module {
-            let mut parent = root_module;
-            for (i, path_item) in enumerate(&path.0) {
-                let child = (&modules[parent]).children.get(path_item);
-                match child {
-                    Some(&child) => parent = child,
-                    None => {
-                        let new_module = modules.push(ModuleInfo {
-                            path: FilePath(path.0[..=i].to_vec()),
-                            file: None,
-                            children: Default::default(),
-                        });
-                        modules[parent].children.insert(path_item.clone(), new_module);
-                        parent = new_module;
-                    }
-                }
-            }
-            parent
-        };
-        for file in self.files.values_mut() {
-            let module = get_module(&mut modules, &file.path);
-            modules[module].file = Some(file.id);
-            file.module = Some(module);
-        }
 
         // build import scope of each file
         for file in self.files.values_mut() {
@@ -241,6 +240,8 @@ impl CompileSet {
 
         let mut state = CompileState {
             files: &self.files,
+            directories: &self.directories,
+            root_directory: self.root_directory,
             items,
             values,
             types,
@@ -322,13 +323,7 @@ impl<'a> CompileState<'a> {
         // actual resolution
         let resolved= match item_ast {
             ast::Item::Use(item_ast) => {
-                let next_item = self.follow_path(scope, &item_ast.path)?;
-
-                let next_item = match next_item {
-                    ValueOrItem::Value(value) => throw!(FrontError::ExpectedPathToItemNotValue(item_ast.path.clone(), value)),
-                    ValueOrItem::Item(next_item) => next_item,
-                };
-
+                let next_item = self.resolve_use_path(&item_ast.path)?;
                 self.resolve(ResolveQuery { item: next_item, kind })?
             }
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner: _ }) |
@@ -405,34 +400,35 @@ impl<'a> CompileState<'a> {
         Ok(self.types.push(ty_info))
     }
 
-    // TODO should single identifiers be separate from paths? paths can never resolve to a value,
-    //  only to items and modules (which may correspond to files)
-    // TODO resolution order: child items, sibling items, lib_exit::std::..., lib_curr::root_file::...
-    //  or do we want separate child/sibling keywords too?
-    fn follow_path(&mut self, scope: &Scope, path: &Path) -> ResolveResult<ValueOrItem> {
-        let mut scope = scope;
+    fn resolve_use_path(&mut self, path: &Path) -> ResolveResult<Item> {
+        // TODO the current path design does not allow private sub-modules
+        //   are they really necessary? if all inner items are private it's effectively equivalent
+        
         let mut vis = Visibility::Private;
-
-        for parent in &path.parents {
-            match *scope.find(None, &parent, vis)? {
-                ScopedValue::Item(item) =>
-                    throw!(FrontError::ExpectedPathToFileNotValueOrItem(path.clone(), ValueOrItem::Item(item))),
-                ScopedValue::Value(value) =>
-                    throw!(FrontError::ExpectedPathToFileNotValueOrItem(path.clone(), ValueOrItem::Value(value))),
-                ScopedValue::File(file) => {
-                    scope = self.files.get(&file).unwrap().local_scope.as_ref().unwrap();
-                    vis = Visibility::Public;
-                }
-            }
+        let mut curr_dir = self.root_directory;
+        
+        let Path { span: _, steps, id } = path;
+        
+        for step in steps {
+            curr_dir = self.directories[curr_dir].children.get(&step.string).copied().ok_or_else(|| {
+                let mut options = self.directories[curr_dir].children.keys().cloned().collect_vec();
+                options.sort();
+                FrontError::InvalidPathStep(step.clone(), options)
+            })?;
         }
-
-        match *scope.find(None, &path.id, vis)? {
-            ScopedValue::Value(value) =>
-                Ok(ValueOrItem::Value(value)),
-            ScopedValue::Item(item) =>
-                Ok(ValueOrItem::Item(item)),
-            ScopedValue::File(file) =>
-                Err(FrontError::ExpectedPathToItemOrValueNotFile(path.clone(), file).into()),
+        
+        let file = self.directories[curr_dir].file.ok_or_else(|| {
+            FrontError::ExpectedPathToFile(path.clone())
+        })?;
+        
+        let file_info = self.files.get(&file).unwrap();
+        let file_scope = file_info.local_scope.as_ref().unwrap();
+        
+        // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
+        let value = *file_scope.find(None, id, vis)?;
+        match value {
+            ScopedValue::Item(item) => Ok(item),
+            ScopedValue::Value(_) => unreachable!("file root values should not exist"),
         }
     }
 
@@ -442,12 +438,12 @@ impl<'a> CompileState<'a> {
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
         match &expr.inner {
             ExpressionKind::Dummy => todo!(),
-            ExpressionKind::Path(path) => {
-                match self.follow_path(scope, path)? {
-                    ValueOrItem::Value(value) =>
-                        Ok(value),
-                    ValueOrItem::Item(item) =>
-                        Ok(self.resolve(ResolveQuery { item, kind: ResolveQueryKind::Value })?),
+            ExpressionKind::Id(id) => {
+                match *scope.find(None, id, Visibility::Private)? {
+                    ScopedValue::Value(value)
+                        => Ok(value),
+                    ScopedValue::Item(item)
+                        => Ok(self.resolve(ResolveQuery { item, kind: ResolveQueryKind::Value })?),
                 }
             },
             ExpressionKind::Wrapped(_) => todo!(),
@@ -513,11 +509,9 @@ impl<'a> CompileState<'a> {
             ExpressionKind::DotIdIndex(_, _) => todo!(),
             ExpressionKind::DotIntIndex(_, _) => todo!(),
             ExpressionKind::Call(target, args) => {
-                if let ExpressionKind::Path(Path { parents, id, span: _ }) = &target.inner {
-                    if parents.is_empty() {
-                        if let Some(name) = id.string.strip_prefix("__builtin_") {
-                            return self.eval_builtin_call(scope, expr, name, id, args);
-                        }
+                if let ExpressionKind::Id(id) = &target.inner {
+                    if let Some(name) = id.string.strip_prefix("__builtin_") {
+                        return self.eval_builtin_call(scope, expr, name, id, args);
                     }
                 }
 
@@ -678,14 +672,14 @@ impl From<ResolveFirst> for ResolveFirstOr<CompileError> {
 }
 
 impl FileInfo {
-    pub fn new(id: FileId, path: FilePath, source: String) -> Self {
+    pub fn new(id: FileId, path: FilePath, directory: Directory, source: String) -> Self {
         FileInfo {
             id,
             path,
+            directory,
             source,
             ast: None,
             local_scope: None,
-            module: None,
         }
     }
 }

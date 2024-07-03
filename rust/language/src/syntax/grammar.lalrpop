@@ -257,8 +257,9 @@ ExprLevelAtomic: ExpressionKind = {
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
     // block
     <block:Block> => ExpressionKind::Block(block),
-    // path
-    <path:Path> => ExpressionKind::Path(path),
+    // TODO allow paths as expressions
+    // id
+    <id:Id> => ExpressionKind::Id(id),
     // special case TODO why does this not get parsed as an identifier?
     "type" => ExpressionKind::Type,
     "_" => ExpressionKind::Dummy,
@@ -296,11 +297,9 @@ ExprControlFlow: ExpressionKind = {
         => ExpressionKind::While(WhileExpression { cond, body }),
 }
 
-// TODO use . or :: for separation?
-//   ambiguity with struct field accesses?
 Path: Path = {
-    <start:@L> <parents: (<Id> "::")*> <id: Id> <end:@R>
-        => Path { span: loc.span(start, end), parents, id }
+    <start:@L> <steps: (<Id> "::")*> <id: Id> <end:@R>
+        => Path { span: loc.span(start, end), steps, id }
 }
 
 ElseIfPair: ElseIfPair = {

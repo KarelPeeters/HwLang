@@ -36,6 +36,10 @@ pub struct ItemUse {
     pub as_: Option<MaybeIdentifier>,
 }
 
+pub enum ItemUseKind {
+    Root,
+}
+
 // TODO remove
 #[derive(Debug, Clone)]
 pub struct ItemDefPackage {
@@ -238,7 +242,7 @@ pub type Expression = Spanned<ExpressionKind>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
-    Path(Path),
+    Id(Identifier),
     // Wrapped just means an expression that's surrounded by parenthesis.
     // It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
@@ -386,7 +390,7 @@ pub struct Identifier {
 #[derive(Debug, Clone)]
 pub struct Path {
     pub span: Span,
-    pub parents: Vec<Identifier>,
+    pub steps: Vec<Identifier>,
     pub id: Identifier,
 }
 
