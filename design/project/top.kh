@@ -7,12 +7,13 @@
 //foo();
 
 use std::types::bool;
+use std::types::bits;
 
 type TestType = bool;
 
 public module top ports (
     clk: input clock,
-    reset: input async bit,
+    reset: input async bool,
     buttons: input sync(clk) bits(4),
     leds: output sync(clk) bits(4),
 ) {

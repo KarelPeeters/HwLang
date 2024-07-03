@@ -4,7 +4,7 @@ use std::ops::Add;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools, zip_eq};
 use num_bigint::BigInt;
-use num_traits::One;
+use num_traits::{One, Signed};
 
 use crate::error::CompileError;
 use crate::new_index_type;
@@ -152,6 +152,8 @@ pub enum FrontError {
     ExpectedFunctionExpression(Expression),
     ExpectedIntegerExpression(Expression),
     ExpectedRangeExpression(Expression),
+
+    ExpectedNonNegativeInteger(Expression, BigInt),
 
     InvalidPathStep(Identifier, Vec<String>),
     ExpectedPathToFile(Path),
@@ -362,6 +364,8 @@ impl<'a> CompileState<'a> {
             }
             Some(params) => {
                 // params, this is a type constructor, equivalent to a function that returns a type
+                // TODO the body of the type constructor should still be fully checked, right now type errors only appear
+                //   once the body is actually called
                 let ty = self.type_constructor_signature(scope, &params.inner)?;
                 match query.kind {
                     ResolveQueryKind::Signature => self.type_as_value(ty),
@@ -567,8 +571,8 @@ impl<'a> CompileState<'a> {
                             "bool" if args.inner.len() == 1 => return Ok(self.basic_values.ty_bool),
                             "int" if args.inner.len() == 1 => return Ok(self.basic_values.ty_int),
                             "int_range" if args.inner.len() == 2 => {
-                                let range = self.eval_expression(scope, &args.inner[1])?;
-                                let (start, end) = match &self.values[range] {
+                                let range_value = self.eval_expression(scope, &args.inner[1])?;
+                                let (start, end) = match &self.values[range_value] {
                                     ValueInfo::Range { start, end } => (start, end),
                                     _ => throw!(FrontError::ExpectedRangeExpression((&args.inner[1]).clone())),
                                 };
@@ -577,6 +581,26 @@ impl<'a> CompileState<'a> {
                                 return Ok(self.type_as_value(ty));
                             },
                             "Range" if args.inner.len() == 1 => return Ok(self.basic_values.ty_range),
+                            "bits" if args.inner.len() == 2 => {
+                                let bits_expr = &args.inner[1];
+                                let bits_value = self.eval_expression(scope, bits_expr)?;
+                                let bits_signed = match &self.values[bits_value] {
+                                    ValueInfo::Int(bits) => bits.clone(),
+                                    _ => throw!(FrontError::ExpectedIntegerExpression((&args.inner[1]).clone())),
+                                };
+
+                                // TODO errors should contain call stack
+                                //   or really, this should have been type checked in advance
+                                let bits_unsigned = if bits_signed.is_negative() {
+                                    throw!(FrontError::ExpectedNonNegativeInteger(bits_expr.clone(), bits_signed))
+                                } else {
+                                    bits_signed.magnitude().clone()
+                                };
+
+                                let ty_info = TypeInfo::Bits(bits_unsigned);
+                                let ty = self.types.push(ty_info);
+                                return Ok(self.type_as_value(ty));
+                            }
                             _ => {},
                         }
                     }

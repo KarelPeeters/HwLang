@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
 use num_traits::identities::Zero;
 
 use crate::new_index_type;
@@ -31,6 +31,7 @@ pub enum TypeInfo {
     Type,
     Boolean,
     Range,
+    Bits(BigUint),
     Integer(TypeInfoInteger),
     Function(TypeInfoFunction),
     Tuple(Vec<Type>),
@@ -41,6 +42,7 @@ pub enum TypeInfo {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct TypeInfoInteger {
+    // TODO assert min <= max
     pub min: Option<BigInt>,
     pub max: Option<BigInt>,
 }
@@ -76,7 +78,7 @@ pub struct TypeInfoModule {
 pub struct PortTypeInfo {
     pub direction: PortDirection,
     pub kind: PortKind<SyncKind<usize>, Type>,
-}k
+}
 
 /// Used to deduplicate [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) like structs or enums.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
