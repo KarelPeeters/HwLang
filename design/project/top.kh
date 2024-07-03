@@ -11,7 +11,7 @@ use std::types::bool;
 type TestType = bool;
 
 public module top ports (
-    clk: input async clock,
+    clk: input clock,
     reset: input async bit,
     buttons: input sync(clk) bits(4),
     leds: output sync(clk) bits(4),

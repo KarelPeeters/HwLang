@@ -1,11 +1,12 @@
 use std::hash::{Hash, Hasher};
+
 use num_bigint::BigInt;
 use num_traits::identities::Zero;
 
 use crate::new_index_type;
 use crate::resolve::compile::ItemReference;
 use crate::resolve::values::Value;
-use crate::syntax::ast::ModulePortKind;
+use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 use crate::util::arena::ArenaSet;
 
 new_index_type!(pub Type);
@@ -50,13 +51,13 @@ pub struct TypeInfoFunction {
     pub ret: Type,
 }
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone)]
 pub struct TypeInfoStruct {
     pub unique: TypeUnique,
     pub fields: Vec<(String, Type)>,
 }
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone)]
 pub struct TypeInfoEnum {
     pub unique: TypeUnique,
     // TODO refer to identifiers or nothing here instead?
@@ -65,17 +66,17 @@ pub struct TypeInfoEnum {
 
 // TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
 //  the end use case would be passing a module constructor as a parameter to another module
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone)]
 pub struct TypeInfoModule {
     pub unique: TypeUnique,
     pub ports: Vec<(String, PortTypeInfo)>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct PortTypeInfo {
-    pub kind: ModulePortKind,
-    pub ty: Type,
-}
+    pub direction: PortDirection,
+    pub kind: PortKind<SyncKind<usize>, Type>,
+}k
 
 /// Used to deduplicate [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) like structs or enums.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -140,6 +141,8 @@ impl PartialEq for TypeInfoStruct {
     }
 }
 
+impl Eq for TypeInfoStruct {}
+
 impl Hash for TypeInfoEnum {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.unique.hash(state);
@@ -152,6 +155,8 @@ impl PartialEq for TypeInfoEnum {
     }
 }
 
+impl Eq for TypeInfoEnum {}
+
 impl Hash for TypeInfoModule {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.unique.hash(state);
@@ -163,3 +168,5 @@ impl PartialEq for TypeInfoModule {
         &self.unique == &other.unique
     }
 }
+
+impl Eq for TypeInfoModule {}

@@ -13,7 +13,7 @@ use crate::resolve::scope::Visibility;
 use crate::resolve::types::{BasicTypes, PortTypeInfo, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoInteger, TypeInfoModule, TypeInfoStruct, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ModulePort, Path, PortKind, RangeLiteral, Spanned, SyncKind, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -160,6 +160,7 @@ pub enum FrontError {
     InvalidBuiltinArgs(Expression, Args),
 
     DuplicateParameterName(Identifier, Identifier),
+    UnknownClock(Identifier),
 }
 
 pub struct CompileState<'a> {
@@ -348,6 +349,7 @@ impl<'a> CompileState<'a> {
         item_reference: ItemReference,
         params: &Option<Spanned<Vec<TypeParam>>>,
     ) -> ResolveResult<Value> {
+        // TODO make sure later parameters can use earlier parameters in their type definitions
         let build_value = FunctionBody::TypeConstructor(item_reference);
 
         let value = match params {
@@ -639,9 +641,30 @@ impl<'a> CompileState<'a> {
 
                         // map ports
                         let mut port_types = vec![];
+
                         for port in &ports.inner {
-                            let ty = self.eval_expression_as_ty(scope_with_params, &port.ty)?;
-                            port_types.push((port.id.string.clone(), PortTypeInfo { kind: port.kind.inner, ty }));
+                            let ModulePort { span: _, id: _, direction, kind } = port;
+
+                            let kind_ty = match &kind.inner {
+                                PortKind::Clock => PortKind::Clock,
+                                PortKind::Normal { sync, ty } => {
+                                    let sync_index = match &sync.inner {
+                                        SyncKind::Async => SyncKind::Async,
+                                        SyncKind::Sync(id) => {
+                                            // TODO expand to full expressions and real scope lookups
+                                            let index = port_types.iter().position(|(port_id, _)| port_id == &id.string).ok_or_else(|| {
+                                                FrontError::UnknownClock(id.clone())
+                                            })?;
+                                            SyncKind::Sync(index)
+                                        }
+                                    };
+
+                                    let ty = self.eval_expression_as_ty(scope_with_params, ty)?;
+                                    PortKind::Normal { sync: sync_index, ty }
+                                }
+                            };
+
+                            port_types.push((port.id.string.clone(), PortTypeInfo { direction: port.direction.inner, kind: kind_ty }));
                         }
 
                         // define new type

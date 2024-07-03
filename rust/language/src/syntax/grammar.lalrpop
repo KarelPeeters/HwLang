@@ -97,22 +97,23 @@ FunctionParam: FunctionParam = {
 }
 
 ModulePort: ModulePort = {
-    <start:@L> <id:Id> ":" <kind:ModulePortKind> <sync: SyncKind> <ty:Expr> <end:@R>
-        => ModulePort { id, kind, sync, ty, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<PortKind>> <end:@R>
+        => ModulePort { id, direction, kind, span: loc.span(start, end) },
 }
 
-ModulePortKind = Spanned<ModulePortKindInner>;
-
-ModulePortKindInner: ModulePortKind = {
-    "input" => ModulePortKind::Input,
-    "output" => ModulePortKind::Output,
+PortKind: PortKind<Spanned<SyncKind<Identifier>>, Box<Expression>> = {
+    "clock" => PortKind::Clock,
+    <sync:Spanned<SyncKind>> <ty:BoxExpr> => PortKind::Normal { sync, ty },
 }
 
-SyncKind = Spanned<SyncKindInner>;
+PortDirection: PortDirection = {
+    "input" => PortDirection::Input,
+    "output" => PortDirection::Output,
+}
 
-SyncKindInner: SyncKind = {
+SyncKind: SyncKind<Identifier> = {
     "async" => SyncKind::Async,
-    "sync" "(" <BoxExpr> ")" => SyncKind::Sync(<>),
+    "sync" "(" <Id> ")" => SyncKind::Sync(<>),
 }
 
 // expressions

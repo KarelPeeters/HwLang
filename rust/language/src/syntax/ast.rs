@@ -159,22 +159,28 @@ pub struct FunctionParam {
 #[derive(Debug, Clone)]
 pub struct ModulePort {
     pub span: Span,
-    pub kind: Spanned<ModulePortKind>,
-    pub sync: Spanned<SyncKind>,
     pub id: Identifier,
-    pub ty: Expression,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum ModulePortKind {
-    Input,
-    Output,
+    pub direction: Spanned<PortDirection>,
+    // TODO expand sync to more complicated expressions again
+    pub kind: Spanned<PortKind<Spanned<SyncKind<Identifier>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum SyncKind {
+pub enum PortKind<S, T> {
+    Clock,
+    Normal { sync: S, ty: T },
+}
+
+#[derive(Debug, Clone)]
+pub enum SyncKind<S> {
     Async,
-    Sync(Box<Expression>),
+    Sync(S),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum PortDirection {
+    Input,
+    Output,
 }
 
 #[derive(Debug, Clone)]
