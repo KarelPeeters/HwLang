@@ -29,8 +29,8 @@ Item: Item = {
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<TypeParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
-    // TODO avoid superfluous parents if we don't have any type parameters
-    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<TypeParam>> <ports:Params<ModulePort>> <body:Block> <end:@R>
+    // TODO find some nicer syntax than this "ports" keyword separator
+    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<TypeParam>?> "ports" <ports:Params<ModulePort>> <body:Block> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R>

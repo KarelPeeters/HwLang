@@ -10,7 +10,7 @@ use std::types::bool;
 
 type TestType = bool;
 
-public module top()(
+public module top ports (
     clk: input async clock,
     reset: input async bit,
     buttons: input sync(clk) bits(4),

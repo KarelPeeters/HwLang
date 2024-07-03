@@ -115,7 +115,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Spanned<Vec<TypeParam>>,
+    pub params: Option<Spanned<Vec<TypeParam>>>,
     pub ports: Spanned<Vec<ModulePort>>,
     pub body: Block,
 }
@@ -165,7 +165,7 @@ pub struct ModulePort {
     pub ty: Expression,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum ModulePortKind {
     Input,
     Output,

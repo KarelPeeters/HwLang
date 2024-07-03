@@ -5,6 +5,7 @@ use num_traits::identities::Zero;
 use crate::new_index_type;
 use crate::resolve::compile::ItemReference;
 use crate::resolve::values::Value;
+use crate::syntax::ast::ModulePortKind;
 use crate::util::arena::ArenaSet;
 
 new_index_type!(pub Type);
@@ -34,6 +35,7 @@ pub enum TypeInfo {
     Tuple(Vec<Type>),
     Struct(TypeInfoStruct),
     Enum(TypeInfoEnum),
+    Module(TypeInfoModule),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -59,6 +61,20 @@ pub struct TypeInfoEnum {
     pub unique: TypeUnique,
     // TODO refer to identifiers or nothing here instead?
     pub variants: Vec<(String, Option<Type>)>,
+}
+
+// TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
+//  the end use case would be passing a module constructor as a parameter to another module
+#[derive(Debug, Clone, Eq)]
+pub struct TypeInfoModule {
+    pub unique: TypeUnique,
+    pub ports: Vec<(String, PortTypeInfo)>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct PortTypeInfo {
+    pub kind: ModulePortKind,
+    pub ty: Type,
 }
 
 /// Used to deduplicate [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) like structs or enums.
@@ -131,6 +147,18 @@ impl Hash for TypeInfoEnum {
 }
 
 impl PartialEq for TypeInfoEnum {
+    fn eq(&self, other: &Self) -> bool {
+        &self.unique == &other.unique
+    }
+}
+
+impl Hash for TypeInfoModule {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.unique.hash(state);
+    }
+}
+
+impl PartialEq for TypeInfoModule {
     fn eq(&self, other: &Self) -> bool {
         &self.unique == &other.unique
     }

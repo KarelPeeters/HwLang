@@ -10,10 +10,10 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoInteger, TypeInfoStruct, Types, TypeUnique};
+use crate::resolve::types::{BasicTypes, PortTypeInfo, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoInteger, TypeInfoModule, TypeInfoStruct, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
+use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, TypeParam};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
 
@@ -328,13 +328,13 @@ impl<'a> CompileState<'a> {
             }
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner: _ }) |
             ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields: _ }) |
-            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants: _ })
+            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants: _ }) |
+            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ })
             => {
                 self.resolve_new_type_def_item(query, scope, item_reference, params)?
             },
             ast::Item::Const(_) => todo!(),
             ast::Item::Function(_) => todo!(),
-            ast::Item::Module(_) => todo!(),
             ast::Item::Interface(_) => todo!(),
         };
 
@@ -403,12 +403,12 @@ impl<'a> CompileState<'a> {
     fn resolve_use_path(&mut self, path: &Path) -> ResolveResult<Item> {
         // TODO the current path design does not allow private sub-modules
         //   are they really necessary? if all inner items are private it's effectively equivalent
-        
+
         let mut vis = Visibility::Private;
         let mut curr_dir = self.root_directory;
-        
+
         let Path { span: _, steps, id } = path;
-        
+
         for step in steps {
             curr_dir = self.directories[curr_dir].children.get(&step.string).copied().ok_or_else(|| {
                 let mut options = self.directories[curr_dir].children.keys().cloned().collect_vec();
@@ -416,14 +416,14 @@ impl<'a> CompileState<'a> {
                 FrontError::InvalidPathStep(step.clone(), options)
             })?;
         }
-        
+
         let file = self.directories[curr_dir].file.ok_or_else(|| {
             FrontError::ExpectedPathToFile(path.clone())
         })?;
-        
+
         let file_info = self.files.get(&file).unwrap();
         let file_scope = file_info.local_scope.as_ref().unwrap();
-        
+
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
         let value = *file_scope.find(None, id, vis)?;
         match value {
@@ -595,41 +595,60 @@ impl<'a> CompileState<'a> {
             &FunctionBody::TypeConstructor(item_reference) => {
                 match self.get_item_ast(item_reference) {
                     ast::Item::Type(item_ast) => {
-                        let ty = self.eval_expression_as_ty(scope_with_params, &item_ast.inner)?;
+                        let ItemDefType { span: _, vis: _, id: _, params: _, inner } = item_ast;
+                        let ty = self.eval_expression_as_ty(scope_with_params, inner)?;
                         Ok(self.type_as_value(ty))
                     }
                     ast::Item::Struct(item_ast) => {
+                        let ItemDefStruct { span: _, vis: _, id: _, params: _, fields } = item_ast;
                         let unique = TypeUnique { item_reference, params: params_for_unique };
 
                         // map fields
-                        let mut fields = vec![];
-                        for field in &item_ast.fields {
+                        let mut field_types = vec![];
+                        for field in fields {
                             let field_ty = self.eval_expression_as_ty(scope_with_params, &field.ty)?;
-                            fields.push((field.id.string.clone(), field_ty));
+                            field_types.push((field.id.string.clone(), field_ty));
                         }
 
                         // define new type
-                        let info = TypeInfoStruct { unique, fields };
+                        let info = TypeInfoStruct { unique, fields: field_types };
                         let ty = self.types.push(TypeInfo::Struct(info));
                         Ok(self.type_as_value(ty))
                     },
                     ast::Item::Enum(item_ast) => {
+                        let ItemDefEnum { span: _, vis: _, id: _, params: _, variants } = item_ast;
                         let unique = TypeUnique { item_reference, params: params_for_unique };
 
                         // map variants
-                        let mut variants = vec![];
-                        for variant in &item_ast.variants {
+                        let mut variant_types = vec![];
+                        for variant in variants {
                             let content = variant.content.as_ref()
                                 .map(|content| self.eval_expression_as_ty(scope_with_params, content))
                                 .transpose()?;
-                            variants.push((variant.id.string.clone(), content));
+                            variant_types.push((variant.id.string.clone(), content));
                         }
 
                         // define new type
-                        let info = TypeInfoEnum { unique, variants };
+                        let info = TypeInfoEnum { unique, variants: variant_types };
                         let ty = self.types.push(TypeInfo::Enum(info));
                         Ok(self.type_as_value(ty))
                     },
+                    ast::Item::Module(item_ast) => {
+                        let ItemDefModule { span: _, vis: _, id: _, params: _, ports, body } = item_ast;
+                        let unique = TypeUnique { item_reference, params: params_for_unique };
+
+                        // map ports
+                        let mut port_types = vec![];
+                        for port in &ports.inner {
+                            let ty = self.eval_expression_as_ty(scope_with_params, &port.ty)?;
+                            port_types.push((port.id.string.clone(), PortTypeInfo { kind: port.kind.inner, ty }));
+                        }
+
+                        // define new type
+                        let info = TypeInfoModule { unique, ports: port_types };
+                        let ty = self.types.push(TypeInfo::Module(info));
+                        Ok(self.type_as_value(ty))
+                    }
                     _ => unreachable!(),
                 }
             },
