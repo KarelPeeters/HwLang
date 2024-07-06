@@ -10,7 +10,7 @@ use crate::error::CompileError;
 use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
-use crate::resolve::types::{BasicTypes, PortTypeInfo, Type, TypeInfo, TypeInfoEnum, TypeInfoFunction, TypeInfoInteger, TypeInfoModule, TypeInfoStruct, Types, TypeUnique};
+use crate::resolve::types::{BasicTypes, PortTypeInfo, Type, TypeInfo, EnumTypeInfo, FunctionTypeInfo, IntegerTypeInfo, ModuleTypeInfo, StructTypeInfo, Types, TypeUnique};
 use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ModulePort, Path, PortKind, RangeLiteral, Spanned, SyncKind, TypeParam};
@@ -399,7 +399,7 @@ impl<'a> CompileState<'a> {
             let param_ty = self.eval_expression_as_ty(scope, ty)?;
             param_types.push(param_ty);
         }
-        let ty_info = TypeInfo::Function(TypeInfoFunction {
+        let ty_info = TypeInfo::Function(FunctionTypeInfo {
             params: param_types,
             ret: self.types.basic().ty_type,
         });
@@ -576,7 +576,7 @@ impl<'a> CompileState<'a> {
                                     ValueInfo::Range { start, end } => (start, end),
                                     _ => throw!(FrontError::ExpectedRangeExpression((&args.inner[1]).clone())),
                                 };
-                                let ty_info = TypeInfoInteger { min: start.clone(), max: end.clone() };
+                                let ty_info = IntegerTypeInfo { min: start.clone(), max: end.clone() };
                                 let ty = self.types.push(TypeInfo::Integer(ty_info));
                                 return Ok(self.type_as_value(ty));
                             },
@@ -637,7 +637,7 @@ impl<'a> CompileState<'a> {
                         }
 
                         // define new type
-                        let info = TypeInfoStruct { unique, fields: field_types };
+                        let info = StructTypeInfo { unique, fields: field_types };
                         let ty = self.types.push(TypeInfo::Struct(info));
                         Ok(self.type_as_value(ty))
                     },
@@ -655,7 +655,7 @@ impl<'a> CompileState<'a> {
                         }
 
                         // define new type
-                        let info = TypeInfoEnum { unique, variants: variant_types };
+                        let info = EnumTypeInfo { unique, variants: variant_types };
                         let ty = self.types.push(TypeInfo::Enum(info));
                         Ok(self.type_as_value(ty))
                     },
@@ -692,7 +692,7 @@ impl<'a> CompileState<'a> {
                         }
 
                         // define new type
-                        let info = TypeInfoModule { unique, ports: port_types };
+                        let info = ModuleTypeInfo { unique, ports: port_types };
                         let ty = self.types.push(TypeInfo::Module(info));
                         Ok(self.type_as_value(ty))
                     }

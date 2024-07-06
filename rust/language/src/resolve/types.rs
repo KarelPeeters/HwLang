@@ -32,35 +32,35 @@ pub enum TypeInfo {
     Boolean,
     Range,
     Bits(BigUint),
-    Integer(TypeInfoInteger),
-    Function(TypeInfoFunction),
+    Integer(IntegerTypeInfo),
+    Function(FunctionTypeInfo),
     Tuple(Vec<Type>),
-    Struct(TypeInfoStruct),
-    Enum(TypeInfoEnum),
-    Module(TypeInfoModule),
+    Struct(StructTypeInfo),
+    Enum(EnumTypeInfo),
+    Module(ModuleTypeInfo),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeInfoInteger {
+pub struct IntegerTypeInfo {
     // TODO assert min <= max
     pub min: Option<BigInt>,
     pub max: Option<BigInt>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct TypeInfoFunction {
+pub struct FunctionTypeInfo {
     pub params: Vec<Type>,
     pub ret: Type,
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeInfoStruct {
+pub struct StructTypeInfo {
     pub unique: TypeUnique,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeInfoEnum {
+pub struct EnumTypeInfo {
     pub unique: TypeUnique,
     // TODO refer to identifiers or nothing here instead?
     pub variants: Vec<(String, Option<Type>)>,
@@ -69,7 +69,7 @@ pub struct TypeInfoEnum {
 // TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
 //  the end use case would be passing a module constructor as a parameter to another module
 #[derive(Debug, Clone)]
-pub struct TypeInfoModule {
+pub struct ModuleTypeInfo {
     pub unique: TypeUnique,
     pub ports: Vec<(String, PortTypeInfo)>,
 }
@@ -95,8 +95,8 @@ impl Default for Types {
             ty_type: arena.push(TypeInfo::Type),
             ty_void: arena.push(TypeInfo::Tuple(vec![])),
             ty_bool: arena.push(TypeInfo::Boolean),
-            ty_int: arena.push(TypeInfo::Integer(TypeInfoInteger { min: None, max: None })),
-            ty_uint: arena.push(TypeInfo::Integer(TypeInfoInteger { min: Some(BigInt::zero()), max: None })),
+            ty_int: arena.push(TypeInfo::Integer(IntegerTypeInfo { min: None, max: None })),
+            ty_uint: arena.push(TypeInfo::Integer(IntegerTypeInfo { min: Some(BigInt::zero()), max: None })),
             ty_range: arena.push(TypeInfo::Range),
         };
 
@@ -118,6 +118,14 @@ impl Types {
     }
 }
 
+impl std::ops::Index<Type> for Types {
+    type Output = TypeInfo;
+
+    fn index(&self, index: Type) -> &Self::Output {
+        &self.arena[index]
+    }
+}
+
 impl<T> BasicTypes<T> {
     pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> BasicTypes<U> {
         BasicTypes {
@@ -131,44 +139,44 @@ impl<T> BasicTypes<T> {
     }
 }
 
-impl Hash for TypeInfoStruct {
+impl Hash for StructTypeInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.unique.hash(state);
     }
 }
 
-impl PartialEq for TypeInfoStruct {
+impl PartialEq for StructTypeInfo {
     fn eq(&self, other: &Self) -> bool {
         &self.unique == &other.unique
     }
 }
 
-impl Eq for TypeInfoStruct {}
+impl Eq for StructTypeInfo {}
 
-impl Hash for TypeInfoEnum {
+impl Hash for EnumTypeInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.unique.hash(state);
     }
 }
 
-impl PartialEq for TypeInfoEnum {
+impl PartialEq for EnumTypeInfo {
     fn eq(&self, other: &Self) -> bool {
         &self.unique == &other.unique
     }
 }
 
-impl Eq for TypeInfoEnum {}
+impl Eq for EnumTypeInfo {}
 
-impl Hash for TypeInfoModule {
+impl Hash for ModuleTypeInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.unique.hash(state);
     }
 }
 
-impl PartialEq for TypeInfoModule {
+impl PartialEq for ModuleTypeInfo {
     fn eq(&self, other: &Self) -> bool {
         &self.unique == &other.unique
     }
 }
 
-impl Eq for TypeInfoModule {}
+impl Eq for ModuleTypeInfo {}
