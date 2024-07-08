@@ -6,5 +6,3 @@ pub mod lifecycle;
 pub mod document;
 pub mod language;
 pub mod workspace;
-pub mod window;
-pub mod misc;

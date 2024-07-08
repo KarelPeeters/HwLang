@@ -35,7 +35,8 @@ const CAPABILITIES: ServerCapabilities = ServerCapabilities {
     position_encoding: None,
     text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
         open_close: Some(true),
-        change: Some(TextDocumentSyncKind::INCREMENTAL),
+        // TODO support incremental file changes
+        change: Some(TextDocumentSyncKind::FULL),
         will_save: Some(false),
         will_save_wait_until: Some(false),
         save: None,
