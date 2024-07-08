@@ -1,16 +1,19 @@
 use tower_lsp::jsonrpc;
-use tower_lsp::lsp_types::{CompletionOptions, DefinitionOptions, InitializedParams, InitializeParams, InitializeResult, MessageType, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions};
+use tower_lsp::lsp_types::{CompletionOptions, DefinitionOptions, DocumentHighlightOptions, InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions};
 
 use crate::server::core::ServerCore;
 
 impl ServerCore {
-    pub async fn initialize(&self, _: InitializeParams) -> jsonrpc::Result<InitializeResult> {
+    pub async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         // TODO see if there's anything useful in params
 
         let server_info = ServerInfo {
             name: "hwlang_lsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         };
+
+        self.log_info(format!("client params: {:#?}", params)).await;
+
         Ok(InitializeResult {
             capabilities: CAPABILITIES,
             server_info: Some(server_info),
@@ -57,7 +60,9 @@ const CAPABILITIES: ServerCapabilities = ServerCapabilities {
     type_definition_provider: None,
     implementation_provider: None,
     references_provider: None,
-    document_highlight_provider: None,
+    document_highlight_provider: Some(OneOf::Right(DocumentHighlightOptions {
+        work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
+    })),
     document_symbol_provider: None,
     workspace_symbol_provider: None,
     code_action_provider: None,

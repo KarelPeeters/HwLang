@@ -1,10 +1,13 @@
+use language::syntax::parse_file_content;
+use language::syntax::pos::FileId;
 use log::error;
 use tower_lsp::jsonrpc;
 use tower_lsp::jsonrpc::Error;
-use tower_lsp::lsp_types::{CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue, InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams, WorkspaceDiagnosticReportResult, WorkspaceEdit};
+use tower_lsp::lsp_types::{CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue, InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams, WorkspaceDiagnosticReportResult, WorkspaceEdit};
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse};
 
 use crate::server::core::ServerCore;
+use crate::server::util::ToLsp;
 
 impl ServerCore {
     pub async fn goto_declaration(&self, _params: GotoDeclarationParams) -> jsonrpc::Result<Option<GotoDeclarationResponse>> {
@@ -67,9 +70,33 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn document_highlight(&self, _params: DocumentHighlightParams) -> jsonrpc::Result<Option<Vec<DocumentHighlight>>> {
+    pub async fn document_highlight(&self, params: DocumentHighlightParams) -> jsonrpc::Result<Option<Vec<DocumentHighlight>>> {
+        self.log_params("document_highlight", &params).await;
         error!("Got a textDocument/documentHighlight request, but it is not implemented");
-        Err(Error::method_not_found())
+
+        let DocumentHighlightParams { text_document_position_params, work_done_progress_params:  _, partial_result_params: _ } = params;
+        let TextDocumentPositionParams { text_document, position: _ } = text_document_position_params;
+        let TextDocumentIdentifier { uri } = text_document;
+
+        let state = self.state.lock().await;
+        let source = match state.documents.get(&uri) {
+            Some(source) => source,
+            None => return Ok(None),
+        };
+
+        let ast = match parse_file_content(FileId(0), source) {
+            Ok(ast) => ast,
+            Err(_) => return Ok(None),
+        };
+
+        let mut result = vec![];
+        for item in ast.items {
+            let range = item.span().to_lsp();
+            self.log_info(format!("sending range {range:?}")).await;
+            result.push(DocumentHighlight { range, kind: Some(DocumentHighlightKind::TEXT) });
+        }
+
+        Ok(Some(result))
     }
 
     pub async fn document_link(&self, _params: DocumentLinkParams) -> jsonrpc::Result<Option<Vec<DocumentLink>>> {

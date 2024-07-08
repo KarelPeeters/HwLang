@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use std::fmt::Debug;
 use tokio::sync::Mutex;
 use tower_lsp::{
     lsp_types::{MessageType, Url},
@@ -32,5 +33,9 @@ impl ServerCore {
 
     pub async fn log_log(&self, msg: String) {
         self.client.log_message(MessageType::LOG, msg).await;
+    }
+
+    pub async fn log_params(&self, id: &str, params: impl Debug) {
+        self.client.log_message(MessageType::LOG, format!("{id}({params:?})")).await;
     }
 }
