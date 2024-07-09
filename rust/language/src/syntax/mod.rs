@@ -8,6 +8,7 @@ use crate::util::Never;
 
 pub mod ast;
 pub mod pos;
+pub mod token;
 
 lalrpop_mod!(grammar, "/syntax/grammar.rs");
 

@@ -1,0 +1,180 @@
+use logos::Logos;
+
+// TODO double-check priority and configure it manually for important tokens
+#[derive(Logos, Debug, PartialEq)]
+enum Token {
+    // ignored
+    #[regex(r"\s*")]
+    WhiteSpace,
+    #[regex(r"//[^\n\r]*[\n\r]*")]
+    LineComment,
+    // TODO do we want nesting or not?
+    #[regex(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/")]
+    BlockComment,
+
+    // regexes
+    #[regex(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)")]
+    Identifier,
+    #[regex(r#""[^"]*""#)]
+    StringLiteral,
+    #[regex(r"[0-9]+")]
+    IntLiteralDecimal,
+    #[regex(r"0x[0-9a-fA-F_?]+")]
+    IntPatternHexadecimal,
+    #[regex(r"0b[0-9a-fA-F_?]+")]
+    IntPatternBinary,
+
+    // keywords
+    #[token("use")]
+    Use,
+    #[token("as")]
+    As,
+    #[token("type")]
+    Type,
+    #[token("struct")]
+    Struct,
+    #[token("enum")]
+    Enum,
+    #[token("ports")]
+    Ports,
+    #[token("module")]
+    Module,
+    #[token("function")]
+    Function,
+    #[token("combi")]
+    Combinatorial,
+    #[token("clock")]
+    Clocked,
+    #[token("const")]
+    Const,
+    #[token("val")]
+    Val,
+    #[token("var")]
+    Var,
+    #[token("input")]
+    Input,
+    #[token("output")]
+    Output,
+    #[token("async")]
+    Async,
+    #[token("sync")]
+    Sync,
+    #[token("return")]
+    Return,
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("loop")]
+    Loop,
+    #[token("for")]
+    For,
+    #[token("in")]
+    In,
+    #[token("while")]
+    While,
+    #[token("public")]
+    Public,
+
+    // symbols
+    #[token(";")]
+    Semi,
+    #[token(",")]
+    Comma,
+    #[token("->")]
+    Arrow,
+    #[token("=")]
+    Eq,
+    #[token(":")]
+    Colon,
+
+    #[token("{")]
+    OpenC,
+    #[token("}")]
+    CloseC,
+    #[token("(")]
+    OpenR,
+    #[token(")")]
+    CloseR,
+    #[token("[")]
+    OpenS,
+    #[token("]")]
+    CloseS,
+
+    #[token(".")]
+    Dot,
+
+    #[token("..")]
+    Dots,
+    #[token("..=")]
+    DotsEq,
+    #[token("&&")]
+    AmperAmper,
+    #[token("||")]
+    PipePipe,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    Neq,
+    #[token(">=")]
+    Gte,
+    #[token(">")]
+    Gt,
+    #[token("<=")]
+    Lte,
+    #[token("<")]
+    Lt,
+    #[token("&")]
+    Amper,
+    #[token("^")]
+    Circumflex,
+    #[token("|")]
+    Pipe,
+    #[token("<<")]
+    LtLt,
+    #[token(">>")]
+    GtGt,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[token("/")]
+    Slash,
+    #[token("%")]
+    Percent,
+    #[token("!")]
+    Bang,
+    #[token("**")]
+    StarStar,
+    #[token("_")]
+    Underscore,
+    #[token("::")]
+    ColonColon,
+
+    #[token("+=")]
+    PlusEq,
+    #[token("-=")]
+    MinusEq,
+    #[token("*=")]
+    StarEq,
+    #[token("/=")]
+    SlashEq,
+    #[token("%=")]
+    PercentEq,
+    #[token("&=")]
+    AmperEq,
+    #[token("^=")]
+    CircumflexEq,
+    #[token("|=")]
+    BarEq,
+}
