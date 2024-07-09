@@ -9,6 +9,7 @@ enum Token {
     #[regex(r"//[^\n\r]*[\n\r]*")]
     LineComment,
     // TODO do we want nesting or not?
+    // TODO issue https://github.com/maciejhirsz/logos/issues/400
     #[regex(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/")]
     BlockComment,
 
