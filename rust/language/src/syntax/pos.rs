@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Formatter};
-use std::panic::Location;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct FileId(pub usize);
@@ -10,7 +9,7 @@ impl Debug for FileId {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pos {
     pub file: FileId,
     pub line: usize,
@@ -23,7 +22,7 @@ impl Debug for Pos {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Span {
     //inclusive
     pub start: Pos,
@@ -34,11 +33,30 @@ pub struct Span {
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         assert!(self.start.file == self.end.file);
-        write!(f, "{:?}{}:{}..{}:{}",
-               self.start.file,
-               self.start.line, self.start.col,
-               self.end.line, self.end.col
+        write!(
+            f,
+            "{:?}{}:{}..{}:{}",
+            self.start.file, self.start.line, self.start.col, self.end.line, self.end.col
         )
+    }
+}
+
+impl Pos {
+    #[must_use]
+    pub fn step_over(self, s: &str) -> Pos {
+        // TODO does this handle \r correctly?
+        let mut result = self;
+
+        for c in s.chars() {
+            if c == '\n' {
+                result.col = 0;
+                result.line += 1;
+            } else {
+                result.col += 1;
+            }
+        }
+
+        result
     }
 }
 
@@ -86,7 +104,11 @@ pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos>
     let mut bytes = 0;
 
     if bytes == offset {
-        return Some(Pos { file, line: line + 1, col: col + 1 });
+        return Some(Pos {
+            file,
+            line: line + 1,
+            col: col + 1,
+        });
     }
 
     for c in src.chars() {
@@ -101,7 +123,11 @@ pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos>
         }
 
         if bytes == offset {
-            return Some(Pos { file, line: line + 1, col: col + 1 });
+            return Some(Pos {
+                file,
+                line: line + 1,
+                col: col + 1,
+            });
         }
         if bytes > offset {
             return None;

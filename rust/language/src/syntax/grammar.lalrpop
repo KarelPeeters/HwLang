@@ -273,7 +273,7 @@ ExprLevelAtomic: ExpressionKind = {
         => ExpressionKind::IntPattern(IntPattern::Bin(string[2..].to_owned())),
     <string:r"[0-9]+">
         => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
-    // TODO escape sequences
+    // TODO escape sequences and string formatting expressions
     <full:r#""[^"]*""#> => {
         let string = full[1..full.len()-1].to_owned();
         ExpressionKind::StringLiteral(string.to_owned())

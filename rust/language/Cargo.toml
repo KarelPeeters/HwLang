@@ -11,6 +11,7 @@ lalrpop-util.workspace = true
 logos.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
+regex.workspace=true
 
 [build-dependencies]
 lalrpop.workspace = true
