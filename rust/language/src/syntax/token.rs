@@ -27,8 +27,8 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
         .iter()
         .map(|(_, pattern, kind)| {
             let bare = match kind {
-                Kind::Regex => pattern.to_string(),
-                Kind::Literal => regex::escape(pattern),
+                PK::Regex => pattern.to_string(),
+                PK::Literal => regex::escape(pattern),
             };
             format!("^(:?{bare})")
         })
@@ -97,7 +97,7 @@ fn pick_match(matches: SetMatches) -> Option<usize> {
     for index in matches.iter() {
         let (_, pattern, kind) = TOKEN_PATTERNS[index];
         match kind {
-            Kind::Regex => {
+            PK::Regex => {
                 assert!(
                     single_regex.is_none(),
                     "overlap between regex {:?} and {}",
@@ -106,7 +106,7 @@ fn pick_match(matches: SetMatches) -> Option<usize> {
                 );
                 single_regex = Some(index);
             }
-            Kind::Literal => {
+            PK::Literal => {
                 let curr_len = pattern.len();
                 match longest_literal {
                     None => longest_literal = Some((index, curr_len)),
@@ -125,121 +125,143 @@ fn pick_match(matches: SetMatches) -> Option<usize> {
 }
 
 macro_rules! declare_tokens {
-    ($($token:ident($string:literal, $kind:expr),)*) => {
+    ($($token:ident($string:literal, $pattern_kind:expr, $token_category:expr),)*) => {
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
         pub enum TokenType {
             $($token,)*
         }
 
-        const TOKEN_PATTERNS: &[(TokenType, &'static str, Kind)] = &[
-            $((TokenType::$token, $string, $kind),)*
+        const TOKEN_PATTERNS: &[(TokenType, &'static str, PatternKind)] = &[
+            $((TokenType::$token, $string, $pattern_kind),)*
         ];
+
+        impl TokenType {
+            pub fn category(self) -> TokenCategory {
+                match self {
+                    $(TokenType::$token => $token_category,)*
+                }
+            }
+        }
     };
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Kind {
+enum PatternKind {
     Regex,
     Literal,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TokenCategory {
+    WhiteSpace,
+    Comment,
+    Identifier,
+    IntegerLiteral,
+    StringLiteral,
+    Keyword,
+    Symbol,
+}
+
+use TokenCategory as TC;
+use PatternKind as PK;
+
 declare_tokens! {
     // ignored
-    WhiteSpace(r"\s+", Kind::Regex),
-    LineComment(r"//[^\n\r]*[\n\r]*", Kind::Regex),
-    BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", Kind::Regex),
+    WhiteSpace(r"\s+", PK::Regex, TC::WhiteSpace),
+    LineComment(r"//[^\n\r]*[\n\r]*", PK::Regex, TC::Comment),
+    BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", PK::Regex, TC::Comment),
 
     // patterns
-    Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", Kind::Regex),
-    IntLiteralDecimal(r"[0-9]+", Kind::Regex),
-    IntPatternHexadecimal(r"0x[0-9a-fA-F_?]+", Kind::Regex),
-    IntPatternBinary(r"0b[0-9a-fA-F_?]+", Kind::Regex),
+    Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", PK::Regex, TC::Identifier),
+    IntLiteralDecimal(r"[0-9]+", PK::Regex, TC::IntegerLiteral),
+    IntPatternHexadecimal(r"0x[0-9a-fA-F_?]+", PK::Regex, TC::IntegerLiteral),
+    IntPatternBinary(r"0b[0-9a-fA-F_?]+", PK::Regex, TC::IntegerLiteral),
 
     // TODO better string literal pattern with escape codes and string formatting expressions
-    StringLiteral(r#""[^"]*""#, Kind::Regex),
+    StringLiteral(r#""[^"]*""#, PK::Regex, TC::StringLiteral),
 
     // keywords
-    Use("use", Kind::Literal),
-    As("as", Kind::Literal),
-    Type("type", Kind::Literal),
-    Struct("struct", Kind::Literal),
-    Enum("enum", Kind::Literal),
-    Ports("ports", Kind::Literal),
-    Module("module", Kind::Literal),
-    Function("function", Kind::Literal),
-    Combinatorial("combinatorial", Kind::Literal),
-    Clocked("clocked", Kind::Literal),
-    Const("const", Kind::Literal),
-    Val("val", Kind::Literal),
-    Var("var", Kind::Literal),
-    Input("input", Kind::Literal),
-    Output("output", Kind::Literal),
-    Async("async", Kind::Literal),
-    Sync("sync", Kind::Literal),
-    Return("return", Kind::Literal),
-    Break("break", Kind::Literal),
-    Continue("continue", Kind::Literal),
-    True("true", Kind::Literal),
-    False("false", Kind::Literal),
-    If("if", Kind::Literal),
-    Else("else", Kind::Literal),
-    Loop("loop", Kind::Literal),
-    For("for", Kind::Literal),
-    In("in", Kind::Literal),
-    While("while", Kind::Literal),
-    Public("public", Kind::Literal),
+    Use("use", PK::Literal, TC::Keyword),
+    As("as", PK::Literal, TC::Keyword),
+    Type("type", PK::Literal, TC::Keyword),
+    Struct("struct", PK::Literal, TC::Keyword),
+    Enum("enum", PK::Literal, TC::Keyword),
+    Ports("ports", PK::Literal, TC::Keyword),
+    Module("module", PK::Literal, TC::Keyword),
+    Function("function", PK::Literal, TC::Keyword),
+    Combinatorial("combinatorial", PK::Literal, TC::Keyword),
+    Clocked("clocked", PK::Literal, TC::Keyword),
+    Const("const", PK::Literal, TC::Keyword),
+    Val("val", PK::Literal, TC::Keyword),
+    Var("var", PK::Literal, TC::Keyword),
+    Input("input", PK::Literal, TC::Keyword),
+    Output("output", PK::Literal, TC::Keyword),
+    Async("async", PK::Literal, TC::Keyword),
+    Sync("sync", PK::Literal, TC::Keyword),
+    Return("return", PK::Literal, TC::Keyword),
+    Break("break", PK::Literal, TC::Keyword),
+    Continue("continue", PK::Literal, TC::Keyword),
+    True("true", PK::Literal, TC::Keyword),
+    False("false", PK::Literal, TC::Keyword),
+    If("if", PK::Literal, TC::Keyword),
+    Else("else", PK::Literal, TC::Keyword),
+    Loop("loop", PK::Literal, TC::Keyword),
+    For("for", PK::Literal, TC::Keyword),
+    In("in", PK::Literal, TC::Keyword),
+    While("while", PK::Literal, TC::Keyword),
+    Public("public", PK::Literal, TC::Keyword),
 
     // misc symbols
-    Semi(";", Kind::Literal),
-    Colon(":", Kind::Literal),
-    Comma(",", Kind::Literal),
-    Arrow("->", Kind::Literal),
-    Underscore("_", Kind::Literal),
-    ColonColon("::", Kind::Literal),
+    Semi(";", PK::Literal, TC::Symbol),
+    Colon(":", PK::Literal, TC::Symbol),
+    Comma(",", PK::Literal, TC::Symbol),
+    Arrow("->", PK::Literal, TC::Symbol),
+    Underscore("_", PK::Literal, TC::Symbol),
+    ColonColon("::", PK::Literal, TC::Symbol),
 
     // braces
-    OpenC("{", Kind::Literal),
-    CloseC("}", Kind::Literal),
-    OpenR("(", Kind::Literal),
-    CloseR(")", Kind::Literal),
-    OpenS("[", Kind::Literal),
-    CloseS("]", Kind::Literal),
+    OpenC("{", PK::Literal, TC::Symbol),
+    CloseC("}", PK::Literal, TC::Symbol),
+    OpenR("(", PK::Literal, TC::Symbol),
+    CloseR(")", PK::Literal, TC::Symbol),
+    OpenS("[", PK::Literal, TC::Symbol),
+    CloseS("]", PK::Literal, TC::Symbol),
 
     // operators
-    Dot(".", Kind::Literal),
-    Dots("..", Kind::Literal),
-    DotsEq("..=", Kind::Literal),
-    AmperAmper("&&", Kind::Literal),
-    PipePipe("||", Kind::Literal),
-    EqEq("==", Kind::Literal),
-    Neq("!=", Kind::Literal),
-    Gte(">=", Kind::Literal),
-    Gt(">", Kind::Literal),
-    Lte("<=", Kind::Literal),
-    Lt("<", Kind::Literal),
-    Amper("&", Kind::Literal),
-    Circumflex("^", Kind::Literal),
-    Pipe("|", Kind::Literal),
-    LtLt("<<", Kind::Literal),
-    GtGt(">>", Kind::Literal),
-    Plus("+", Kind::Literal),
-    Minus("-", Kind::Literal),
-    Star("*", Kind::Literal),
-    Slash("/", Kind::Literal),
-    Percent("%", Kind::Literal),
-    Bang("!", Kind::Literal),
-    StarStar("**", Kind::Literal),
+    Dot(".", PK::Literal, TC::Symbol),
+    Dots("..", PK::Literal, TC::Symbol),
+    DotsEq("..=", PK::Literal, TC::Symbol),
+    AmperAmper("&&", PK::Literal, TC::Symbol),
+    PipePipe("||", PK::Literal, TC::Symbol),
+    EqEq("==", PK::Literal, TC::Symbol),
+    Neq("!=", PK::Literal, TC::Symbol),
+    Gte(">=", PK::Literal, TC::Symbol),
+    Gt(">", PK::Literal, TC::Symbol),
+    Lte("<=", PK::Literal, TC::Symbol),
+    Lt("<", PK::Literal, TC::Symbol),
+    Amper("&", PK::Literal, TC::Symbol),
+    Circumflex("^", PK::Literal, TC::Symbol),
+    Pipe("|", PK::Literal, TC::Symbol),
+    LtLt("<<", PK::Literal, TC::Symbol),
+    GtGt(">>", PK::Literal, TC::Symbol),
+    Plus("+", PK::Literal, TC::Symbol),
+    Minus("-", PK::Literal, TC::Symbol),
+    Star("*", PK::Literal, TC::Symbol),
+    Slash("/", PK::Literal, TC::Symbol),
+    Percent("%", PK::Literal, TC::Symbol),
+    Bang("!", PK::Literal, TC::Symbol),
+    StarStar("**", PK::Literal, TC::Symbol),
 
     // assignment operators
-    Eq("=", Kind::Literal),
-    PlusEq("+=", Kind::Literal),
-    MinusEq("-=", Kind::Literal),
-    StarEq("*=", Kind::Literal),
-    SlashEq("/=", Kind::Literal),
-    PercentEq("%=", Kind::Literal),
-    AmperEq("&=", Kind::Literal),
-    CircumflexEq("^=", Kind::Literal),
-    BarEq("|=", Kind::Literal),
+    Eq("=", PK::Literal, TC::Symbol),
+    PlusEq("+=", PK::Literal, TC::Symbol),
+    MinusEq("-=", PK::Literal, TC::Symbol),
+    StarEq("*=", PK::Literal, TC::Symbol),
+    SlashEq("/=", PK::Literal, TC::Symbol),
+    PercentEq("%=", PK::Literal, TC::Symbol),
+    AmperEq("&=", PK::Literal, TC::Symbol),
+    CircumflexEq("^=", PK::Literal, TC::Symbol),
+    BarEq("|=", PK::Literal, TC::Symbol),
 }
 
 #[cfg(test)]
