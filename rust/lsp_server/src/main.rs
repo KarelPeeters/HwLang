@@ -6,6 +6,7 @@ use lsp_server::server::wrapper::ServerWrapper;
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     // TODO support different transports
+    // TODO redirect our own stdout to something else (eg. log file) to avoid it leaking into the LSP protocol
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 

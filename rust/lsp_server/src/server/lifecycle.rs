@@ -1,3 +1,4 @@
+use language::syntax::token::TokenCategory;
 use tower_lsp::jsonrpc;
 use tower_lsp::lsp_types::{
     CompletionOptions, DefinitionOptions, DocumentHighlightOptions, InitializeParams, InitializeResult,
@@ -7,6 +8,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::server::core::ServerCore;
+use crate::server::language::semantic_token_legend;
 
 impl ServerCore {
     pub async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
@@ -44,6 +46,7 @@ const NO_PROGRESS: WorkDoneProgressOptions = WorkDoneProgressOptions {
 };
 
 fn capabilities() -> ServerCapabilities {
+    // TODO spread this out through the different wrapper implementations as well
     ServerCapabilities {
         position_encoding: None,
         text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
@@ -88,12 +91,11 @@ fn capabilities() -> ServerCapabilities {
         execute_command_provider: None,
         workspace: None,
         call_hierarchy_provider: None,
-        // TODO registration?
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: NO_PROGRESS,
                 legend: SemanticTokensLegend {
-                    token_types: SEMANTIC_TOKEN_LEGEND.to_vec(),
+                    token_types: semantic_token_legend(),
                     token_modifiers: vec![],
                 },
                 range: Some(false),
@@ -109,5 +111,3 @@ fn capabilities() -> ServerCapabilities {
     }
 }
 
-// TODO make this faster through a real enum
-const SEMANTIC_TOKEN_LEGEND: &[SemanticTokenType] = &[SemanticTokenType::KEYWORD, SemanticTokenType::STRING];

@@ -41,6 +41,11 @@ impl Debug for Span {
     }
 }
 
+impl FileId {
+    pub const SINGLE: FileId = FileId(0);
+    pub const DUMMY: FileId = FileId(usize::MAX);
+}
+
 impl Pos {
     #[must_use]
     pub fn step_over(self, s: &str) -> Pos {
@@ -68,14 +73,6 @@ impl Span {
     pub fn empty_at(at: Pos) -> Self {
         Self::new(at, at)
     }
-
-    // pub fn dummy() -> Self {
-    //     Span::empty_at(Pos {
-    //         file: FileId(usize::MAX),
-    //         line: 0,
-    //         col: 0,
-    //     })
-    // }
 }
 
 pub struct LocationBuilder<'s> {

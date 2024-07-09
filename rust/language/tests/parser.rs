@@ -5,10 +5,7 @@ use language::{syntax::{parse_file_content, pos::FileId}, util::io::recurse_for_
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
 
-    // let result = parse_file(FileId(0), &src).expect("Failed to parse");
-    // println!("{:#?}", result);
-
-    let result = parse_file_content(FileId(0), &src);
+    let result = parse_file_content(FileId::SINGLE, &src);
 
     match result {
         Ok(package) => {

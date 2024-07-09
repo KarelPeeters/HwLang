@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use tokio::sync::Mutex;
 use tower_lsp::{
     lsp_types::{MessageType, Url},
@@ -19,19 +19,19 @@ pub struct State {
 }
 
 impl ServerCore {
-    pub async fn log_error(&self, msg: String) {
+    pub async fn log_error(&self, msg: impl Display) {
         self.client.log_message(MessageType::ERROR, msg).await;
     }
 
-    pub async fn log_warning(&self, msg: String) {
+    pub async fn log_warning(&self, msg: impl Display) {
         self.client.log_message(MessageType::WARNING, msg).await;
     }
 
-    pub async fn log_info(&self, msg: String) {
+    pub async fn log_info(&self, msg: impl Display) {
         self.client.log_message(MessageType::INFO, msg).await;
     }
 
-    pub async fn log_log(&self, msg: String) {
+    pub async fn log_log(&self, msg: impl Display) {
         self.client.log_message(MessageType::LOG, msg).await;
     }
 

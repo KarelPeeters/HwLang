@@ -2,22 +2,24 @@ use std::cmp::min;
 
 use itertools::Itertools;
 use regex::{Regex, RegexSet, SetMatches};
+use strum::EnumIter;
 
 use crate::syntax::pos::{FileId, Pos, Span};
 
-
 #[derive(Debug, Eq, PartialEq)]
 pub struct Token<S> {
-    ty: TokenType,
-    string: S,
-    span: Span,
+    pub ty: TokenType,
+    pub string: S,
+    pub span: Span,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct InvalidToken {
-    pos: Pos,
-    prefix: String,
+    pub pos: Pos,
+    pub prefix: String,
 }
+
+const ERROR_CONTEXT_LENGTH: usize = 16;
 
 // TODO error check regex overlap in advance at test-time using
 //   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
@@ -34,14 +36,8 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
         })
         .collect_vec();
 
-    println!("patterns:");
-    for p in &patterns {
-        println!("  {p:?}");
-    }
-
     let regex_set = RegexSet::new(&patterns).unwrap();
     let regex_vec = patterns.iter().map(|p| Regex::new(p).unwrap()).collect_vec();
-    println!("{:?}", regex_set);
 
     let mut left = source;
     let mut tokens = vec![];
@@ -49,22 +45,13 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
     let mut pos = Pos { file, line: 0, col: 0 };
 
     while !left.is_empty() {
-        let log_prefix = &left[..min(left.len(), 16)];
-        println!("left: {:?}", log_prefix);
-
         let matches = regex_set.matches(left);
-
-        println!("matches:");
-        for m in matches.iter() {
-            let match_str = regex_vec[m].find(left).unwrap().as_str();
-            println!("  {m}: {:?} {:?}", &TOKEN_PATTERNS[m], match_str);
-        }
 
         let match_index = match pick_match(matches) {
             None => {
                 return Err(InvalidToken {
                     pos,
-                    prefix: log_prefix.to_owned(),
+                    prefix: left[..min(left.len(), ERROR_CONTEXT_LENGTH)].to_owned(),
                 })
             }
             Some(match_index) => match_index,
@@ -151,7 +138,7 @@ enum PatternKind {
     Literal,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter)]
 pub enum TokenCategory {
     WhiteSpace,
     Comment,
@@ -162,8 +149,8 @@ pub enum TokenCategory {
     Symbol,
 }
 
-use TokenCategory as TC;
 use PatternKind as PK;
+use TokenCategory as TC;
 
 declare_tokens! {
     // ignored
@@ -271,7 +258,7 @@ mod test {
 
     #[test]
     fn empty_tokenize() {
-        assert_eq!(Ok(vec![]), tokenize(FileId(0), ""));
-        assert!(tokenize(FileId(0), "test foo function \"foo\"").is_ok());
+        assert_eq!(Ok(vec![]), tokenize(FileId::SINGLE, ""));
+        assert!(tokenize(FileId::SINGLE, "test foo function \"foo\"").is_ok());
     }
 }
