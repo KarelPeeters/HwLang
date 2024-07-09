@@ -1,7 +1,6 @@
 use std::path::Path;
 
-use language::syntax::parse_file_content;
-use language::util::visit_dirs;
+use language::{syntax::{parse_file_content, pos::FileId}, util::io::recurse_for_each_file};
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
@@ -9,7 +8,7 @@ fn test_parse(path: impl AsRef<Path>) {
     // let result = parse_file(FileId(0), &src).expect("Failed to parse");
     // println!("{:#?}", result);
 
-    let result = parse_file_content(&src);
+    let result = parse_file_content(FileId(0), &src);
 
     match result {
         Ok(package) => {
@@ -24,20 +23,22 @@ fn test_parse(path: impl AsRef<Path>) {
 
 #[test]
 fn parse_types() {
-    test_parse("std/types.kh")
+    test_parse("../../design/project/std/types.kh")
 }
 
 #[test]
 fn parse_util() {
-    test_parse("std/util.kh")
+    test_parse("../../design/project/std/util.kh")
 }
 
 #[test]
 fn parse_new() {
-    test_parse("design/sketches/new.kh")
+    test_parse("../../design/sketches/new.kh")
 }
 
 #[test]
 fn parse_std_all() {
-    visit_dirs(Path::new("std"), &mut |entry| test_parse(entry.path())).unwrap();
+    recurse_for_each_file(Path::new("../../design/project/std"), &mut |_, entry| {
+        test_parse(entry.path());
+    }).unwrap();
 }
