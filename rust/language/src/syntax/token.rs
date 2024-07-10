@@ -109,7 +109,7 @@ fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<us
                     curr_len, other_len,
                     "multiple matching literals with same length and priority should be impossible"
                 );
-                curr_len < other_len
+                curr_len > other_len
             }
         };
         if better {

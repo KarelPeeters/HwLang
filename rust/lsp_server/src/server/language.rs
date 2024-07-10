@@ -246,7 +246,7 @@ impl ServerCore {
         };
 
         let mut data = vec![];
-        let mut prev_end = Pos {
+        let mut prev_start = Pos {
             file: FileId::SINGLE,
             line: 1,
             col: 1,
@@ -258,9 +258,9 @@ impl ServerCore {
             let start = token.span.start;
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
-                let delta_line = start.line - prev_end.line;
-                let delta_start = if start.line == prev_end.line {
-                    start.col - prev_end.col
+                let delta_line = start.line - prev_start.line;
+                let delta_start = if start.line == prev_start.line {
+                    start.col - prev_start.col
                 } else {
                     start.col - 1
                 };
@@ -274,8 +274,8 @@ impl ServerCore {
                 };
                 data.push(data_token);
 
-                // only update end if the token was actually included
-                prev_end = token.span.end;
+                // only update start if the token was actually included
+                prev_start = token.span.start;
             }
         }
 
