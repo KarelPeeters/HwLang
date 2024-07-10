@@ -9,6 +9,7 @@ impl Debug for FileId {
     }
 }
 
+// TODO is this one or zero-based? make sure everyone follows it!
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pos {
     pub file: FileId,
@@ -54,7 +55,7 @@ impl Pos {
 
         for c in s.chars() {
             if c == '\n' {
-                result.col = 0;
+                result.col = 1;
                 result.line += 1;
             } else {
                 result.col += 1;

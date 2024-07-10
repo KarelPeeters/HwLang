@@ -43,7 +43,7 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
     let mut left = source;
     let mut tokens = vec![];
 
-    let mut pos = Pos { file, line: 0, col: 0 };
+    let mut pos = Pos { file, line: 1, col: 1 };
 
     while !left.is_empty() {
         let left_context = &left[..min(left.len(), ERROR_CONTEXT_LENGTH)];
@@ -214,7 +214,7 @@ use TokenPriority as TP;
 declare_tokens! {
     // ignored
     WhiteSpace(r"\s+", PK::Regex, TC::WhiteSpace, TP::Unique),
-    LineComment(r"//[^\n\r]*[\n\r]+", PK::Regex, TC::Comment, TP::High),
+    LineComment(r"//[^\n\r]*", PK::Regex, TC::Comment, TP::High),
     BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", PK::Regex, TC::Comment, TP::High),
 
     // patterns

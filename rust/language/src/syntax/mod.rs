@@ -16,8 +16,12 @@ pub type ParseError = lalrpop_util::ParseError<Pos, String, Never>;
 
 pub fn parse_file_content(file_id: FileId, src: &str) -> Result<ast::FileContent, ParseError> {
     // test the tokenizer
-    println!("tokenizing {file_id:?}");
-    tokenize(file_id, src).unwrap();
+    match tokenize(file_id, src) {
+        Ok(_) => {},
+        Err(e) => {
+            return Err(ParseError::InvalidToken { location: e.pos });
+        },
+    }
 
     let loc = LocationBuilder::new(file_id, src);
     grammar::FileContentParser::new()

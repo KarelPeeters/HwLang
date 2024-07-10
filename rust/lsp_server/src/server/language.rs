@@ -218,6 +218,7 @@ impl ServerCore {
         params: SemanticTokensParams,
     ) -> jsonrpc::Result<Option<SemanticTokensResult>> {
         self.log_params("semantic_tokens_full", &params).await;
+
         let SemanticTokensParams {
             work_done_progress_params: _,
             partial_result_params: _,
@@ -247,8 +248,8 @@ impl ServerCore {
         let mut data = vec![];
         let mut prev_end = Pos {
             file: FileId::SINGLE,
-            line: 0,
-            col: 0,
+            line: 1,
+            col: 1,
         };
 
         // TODO check client multi-line token capability
@@ -261,16 +262,17 @@ impl ServerCore {
                 let delta_start = if start.line == prev_end.line {
                     start.col - prev_end.col
                 } else {
-                    start.col
+                    start.col - 1
                 };
 
-                data.push(SemanticToken {
+                let data_token = SemanticToken {
                     delta_line: delta_line as u32,
                     delta_start: delta_start as u32,
                     length: token.string.len() as u32,
                     token_type: semantic_index as u32,
                     token_modifiers_bitset: 0,
-                });
+                };
+                data.push(data_token);
 
                 // only update end if the token was actually included
                 prev_end = token.span.end;
