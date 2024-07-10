@@ -1,9 +1,9 @@
-use std::panic::Location;
 use lalrpop_util::lalrpop_mod;
 
 use pos::{byte_offset_to_pos, FileId, Pos};
 use crate::syntax::pos::LocationBuilder;
 
+use crate::syntax::token::tokenize;
 use crate::util::Never;
 
 pub mod ast;
@@ -15,6 +15,10 @@ lalrpop_mod!(grammar, "/syntax/grammar.rs");
 pub type ParseError = lalrpop_util::ParseError<Pos, String, Never>;
 
 pub fn parse_file_content(file_id: FileId, src: &str) -> Result<ast::FileContent, ParseError> {
+    // test the tokenizer
+    println!("tokenizing {file_id:?}");
+    tokenize(file_id, src).unwrap();
+
     let loc = LocationBuilder::new(file_id, src);
     grammar::FileContentParser::new()
         .parse(&loc, &src)
