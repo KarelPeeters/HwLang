@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use language::syntax::parse_file_content;
 use language::syntax::pos::{FileId, Pos};
-use language::syntax::token::{tokenize, TokenCategory};
+use language::syntax::token::{tokenize, TokenCategory, Tokenizer};
 use log::error;
 use strum::IntoEnumIterator;
 use tower_lsp::jsonrpc;
@@ -237,14 +237,6 @@ impl ServerCore {
             }
         };
 
-        let tokens = match tokenize(FileId::SINGLE, source) {
-            Ok(tokens) => tokens,
-            Err(e) => {
-                self.log_error(format!("failed to tokenize file: {e:?}")).await;
-                return Ok(None);
-            }
-        };
-
         let mut data = vec![];
         let mut prev_start = Pos {
             file: FileId::SINGLE,
@@ -254,7 +246,16 @@ impl ServerCore {
 
         // TODO check client multi-line token capability
         // TODO check that both client and server support utf8-encoding
-        for token in tokens {
+        for token in Tokenizer::new(FileId::SINGLE, source) {
+            let token = match token {
+                Ok(token) => token,
+                Err(e) => {
+                    // TODO error recovery
+                    self.log_error(format!("failed to tokenize file: {e:?}")).await;
+                    break;
+                }
+            };
+
             let start = token.span.start;
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {

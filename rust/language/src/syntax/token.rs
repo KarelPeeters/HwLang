@@ -1,6 +1,7 @@
 use std::cmp::min;
 
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use regex::{Regex, RegexSet, SetMatches};
 use strum::EnumIter;
 
@@ -21,59 +22,102 @@ pub struct InvalidToken {
 
 const ERROR_CONTEXT_LENGTH: usize = 16;
 
+pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidToken> {
+    Tokenizer::new(file, source).try_collect()
+}
+
+// TODO implement recovery by matching without start anchor?
 // TODO error check regex overlap in advance at test-time using
 //   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
 // TODO use lazy_static to compile the regexes only once?
-pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidToken> {
-    let patterns = TOKEN_PATTERNS
-        .iter()
-        .map(|(_, pattern, kind, _)| {
-            let bare = match kind {
-                PK::Regex => pattern.to_string(),
-                PK::Literal => regex::escape(pattern),
-            };
-            // surround in non-capturing group to make sure that the start-of-string "^" binds correctly
-            format!("^(?:{bare})")
-        })
-        .collect_vec();
+pub struct Tokenizer<'s> {
+    compiled: &'static CompiledRegex,
+    pos: Pos,
+    left: &'s str,
+    errored: bool,
+}
 
-    let regex_set = RegexSet::new(&patterns).unwrap();
-    let regex_vec = patterns.iter().map(|p| Regex::new(p).unwrap()).collect_vec();
+impl<'s> Tokenizer<'s> {
+    pub fn new(file: FileId, source: &'s str) -> Self {
+        Tokenizer {
+            compiled: CompiledRegex::instance(),
+            left: source,
+            pos: Pos { file, line: 1, col: 1 },
+            errored: false,
+        }
+    }
+}
 
-    let mut left = source;
-    let mut tokens = vec![];
+impl<'s> Iterator for Tokenizer<'s> {
+    type Item = Result<Token<&'s str>, InvalidToken>;
 
-    let mut pos = Pos { file, line: 1, col: 1 };
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.errored {
+            return None;
+        }
 
-    while !left.is_empty() {
-        let left_context = &left[..min(left.len(), ERROR_CONTEXT_LENGTH)];
-        let matches = regex_set.matches(left);
+        let left_context = &self.left[..min(self.left.len(), ERROR_CONTEXT_LENGTH)];
+        let matches = self.compiled.set.matches(self.left);
 
-        let m = match pick_match(matches, &regex_vec, left) {
+        let m = match pick_match(matches, &self.compiled.vec, self.left) {
             None => {
-                return Err(InvalidToken {
-                    pos,
+                self.errored = true;
+                return Some(Err(InvalidToken {
+                    pos: self.pos,
                     prefix: left_context.to_owned(),
-                })
+                }));
             }
             Some(match_index) => match_index,
         };
 
-        let match_str = &left[..m.len];
-        left = &left[m.len..];
+        let match_str = &self.left[..m.len];
+        self.left = &self.left[m.len..];
 
-        let start = pos;
-        pos = pos.step_over(match_str);
-        let span = Span::new(start, pos);
+        let start = self.pos;
+        self.pos = self.pos.step_over(match_str);
+        let span = Span::new(start, self.pos);
 
-        tokens.push(Token {
+        Some(Ok(Token {
             ty: TOKEN_PATTERNS[m.index].0,
             string: match_str,
             span,
-        })
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct CompiledRegex {
+    set: RegexSet,
+    vec: Vec<Regex>,
+}
+
+impl CompiledRegex {
+    fn new() -> Self {
+        let patterns = TOKEN_PATTERNS
+            .iter()
+            .map(|(_, pattern, kind, _)| {
+                let bare = match kind {
+                    PK::Regex => pattern.to_string(),
+                    PK::Literal => regex::escape(pattern),
+                };
+                // surround in non-capturing group to make sure that the start-of-string "^" binds correctly
+                format!("^(?:{bare})")
+            })
+            .collect_vec();
+
+        let set = RegexSet::new(&patterns).unwrap();
+        let vec = patterns.iter().map(|p| Regex::new(p).unwrap()).collect_vec();
+
+        CompiledRegex { set, vec }
     }
 
-    Ok(tokens)
+    fn instance() -> &'static Self {
+        // TODO https://docs.rs/regex/latest/regex/#sharing-a-regex-across-threads-can-result-in-contention.
+        lazy_static! {
+            static ref INSTANCE: CompiledRegex = CompiledRegex::new();
+        }
+        &*INSTANCE
+    }
 }
 
 struct PickedMatch {
@@ -183,6 +227,7 @@ use PatternKind as PK;
 use TokenCategory as TC;
 use TokenPriority as TP;
 
+// TODO move to separate file
 declare_tokens! {
     // ignored
     WhiteSpace(r"\s+", PK::Regex, TC::WhiteSpace, TP::Unique),
