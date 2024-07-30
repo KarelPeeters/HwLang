@@ -1,0 +1,67 @@
+module spi_master(
+    N: uint
+) ports(
+    clk: input clock,
+    reset: input async reset,
+    sync(clk) {
+        spi_out: output bit,
+        spi_in: input bit,
+    }
+) {
+    task spi_send(N: uint, data: Array(bit, N)) -> Array(bit, N) {
+        var result = Array.full(0);
+        for i in 0..N {
+            @;
+            spi_out = data[i];
+            result[i] = spi_in;
+//            [spi_out, data] = [*data, undefined];
+//            result = [spi_in, *result[..N-1]];
+        }
+        @(clk);
+        return result;
+    }
+
+    clocked(clk, reset) {
+        var state = 0;
+        loop {
+            @;
+            val x = 5;
+
+            for i in 0..16 {
+                x += 1;
+                if (i % 2 == 0) {
+                    @;
+                }
+
+                let result = spi_send(4, [1, 2, 3, 4]);
+            }
+//            for i in 0..16 {
+//
+//            }
+            break;
+        }
+    }
+
+    // assume an input x0 exists
+    clocked(clk, reset) {
+        // single-cycle
+        loop {
+            @;
+            let x0 = x;
+            let x1 = f1(x0);
+            let x2 = f2(x1);
+            let x3 = f3(x2);
+            y = x3;
+        }
+
+        // pipelined
+        loop {
+            @;
+            let x0 = x;
+            let x1 = f1(delay(x0, undefined));
+            let x2 = f2(delay(x1, undefined));
+            let x3 = f3(delay(x2, undefined));
+            y = x3;
+        }
+    }
+}
