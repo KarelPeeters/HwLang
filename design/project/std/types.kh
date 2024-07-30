@@ -41,6 +41,7 @@ type int_range(r: Range) = __builtin_type("int_range", r);
 // TODO can we write this as `int_range(..)` again?
 type int = __builtin_type("int");
 type uint = int_range(0..);
+type natural = int_range(1..);
 type int_bits(n: uint) = int_range(-2**(n - 1) .. 2**(n - 1));
 type uint_bits(n: uint) = int_range(0 .. 2**n);
 

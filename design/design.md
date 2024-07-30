@@ -2,7 +2,7 @@
 
 * Module/Functions/Structures/... should typecheck on their own, independent of their users.
     * This means that an error is _either_ inside of something or at the use site. It can't propagate outwards.
-    * Unlike C++ template parameters!
+    * Unlike C++ template parameters and VHDL functions and modules!
 * Prefer stdlib over language features
 * Privilege the stdlib as little as possible, libraries should be able to do the same
 * Put enough semantics into the language to avoid any possible backend errors.
@@ -10,6 +10,7 @@
     * No delta cycles!
 * Interoperate with VHDL, Verilog and SystemVerilog as much as possible
 * Don't raise the abstraction level too much. The goal is not to invent something completely new, just to drastically improve the ergonomics.
+* Generics, module/protocol interfaces and more generally block/code reuse should be convenient.
 
 ## Sources of inspiration
 

@@ -11,7 +11,7 @@ use crate::new_index_type;
 use crate::resolve::scope;
 use crate::resolve::scope::Visibility;
 use crate::resolve::types::{BasicTypes, PortTypeInfo, Type, TypeInfo, EnumTypeInfo, FunctionTypeInfo, IntegerTypeInfo, ModuleTypeInfo, StructTypeInfo, Types, TypeUnique};
-use crate::resolve::values::{Value, ValueFunctionInfo, ValueInfo, Values};
+use crate::resolve::values::{Value, FunctionValue};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ModulePort, Path, PortKind, RangeLiteral, Spanned, SyncKind, TypeParam};
 use crate::syntax::pos::FileId;
@@ -53,13 +53,13 @@ pub struct DirectoryInfo {
 
 pub type Scope<'s> = scope::Scope<'s, ScopedValue>;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub enum ScopedValue {
     Value(Value),
     Item(Item),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub enum ValueOrItem {
     Value(Value),
     Item(Item),
@@ -170,9 +170,7 @@ pub struct CompileState<'a> {
     directories: &'a Arena<Directory, DirectoryInfo>,
     root_directory: Directory,
     items: Arena<Item, ItemInfo>,
-    values: Values,
     types: Types,
-    basic_values: BasicTypes<Value>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -208,7 +206,6 @@ impl CompileSet {
         // items only exists to serve as a level of indirection between values,
         //   so we can easily do the graph solution in a single pass
         let mut items: Arena<Item, ItemInfo> = Arena::default();
-        let mut values = Values::default();
         let types = Types::default();
 
         // parse all files
@@ -239,16 +236,12 @@ impl CompileSet {
             file.local_scope = Some(local_scope);
         }
 
-        let basic_values = types.basic().map(|&ty| values.push(ValueInfo::Type(ty)));
-
         let mut state = CompileState {
             files: &self.files,
             directories: &self.directories,
             root_directory: self.root_directory,
             items,
-            values,
             types,
-            basic_values
         };
 
         // fully resolve all items
@@ -382,7 +375,7 @@ impl<'a> CompileState<'a> {
 
                         // construct the actual function value
                         let params = params.inner.iter().map(|p| p.id.clone()).collect_vec();
-                        let func = ValueFunctionInfo { item_reference, ty, params, body: build_value };
+                        let func = FunctionValue { item_reference, ty, params, body: build_value };
                         self.values.push(ValueInfo::Function(func))
                     }
                 }
@@ -524,7 +517,7 @@ impl<'a> CompileState<'a> {
                 let target_value = self.eval_expression(scope, target)?;
                 match &self.values[target_value] {
                     ValueInfo::Function(target_value) => {
-                        let ValueFunctionInfo { item_reference, ty, params, body } = target_value;
+                        let FunctionValue { item_reference, ty, params, body } = target_value;
                         // TODO skip these clones
                         let params = params.clone();
                         let body = body.clone();

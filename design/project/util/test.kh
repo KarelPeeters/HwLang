@@ -1,3 +1,37 @@
 //function add_one(x: int) -> int {
 //    return x + 1;
 //}
+
+module delay(T: type, N: uint) ports(
+    clk: input clock,
+    reset: input async bit,
+    x: input sync(clk) T,
+    y: output sync(clk) T
+) {
+//    let buffer: Array(T, N) = Array::repeat(undefined);
+    let buffer: sync(clk) Array(T, N) = undefined;
+    clocked(clk, reset) {
+        [y, *buffer] = [*buffer, x];
+    }
+}
+
+module concatenate(T: type, N: uint, M: uint) ports(
+    clk: input clock,
+    x0: input sync(clk) Array(T, N),
+    x1: input sync(clk) Array(T, M),
+    y: output sync(clk) Array(T, N+M),
+) {
+    clocked(clk) {
+        y = [*x0, *x1];
+    }
+}
+
+struct Settings {
+    n: uint,
+}
+
+module complicated(settings: Settings) ports(
+    clk: input clock,
+    array: input sync(clk) Array(bool, settings.n),
+) {
+}

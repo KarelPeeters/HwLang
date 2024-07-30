@@ -1,4 +1,7 @@
-pub mod compile;
-pub mod scope;
 pub mod types;
 pub mod values;
+
+pub mod scope;
+pub mod scoped_entry;
+
+pub mod compile;

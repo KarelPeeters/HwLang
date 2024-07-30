@@ -1,10 +1,11 @@
 use std::hash::{Hash, Hasher};
 
-use num_bigint::{BigInt, BigUint};
+use num_bigint::BigInt;
 use num_traits::identities::Zero;
 
 use crate::new_index_type;
 use crate::resolve::compile::ItemReference;
+use crate::resolve::scoped_entry::TypeParameter;
 use crate::resolve::values::Value;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 use crate::util::arena::ArenaSet;
@@ -18,7 +19,6 @@ pub struct Types {
 
 #[derive(Debug)]
 pub struct BasicTypes<T> {
-    pub ty_type: T,
     pub ty_void: T,
     pub ty_bool: T,
     pub ty_int: T,
@@ -28,10 +28,11 @@ pub struct BasicTypes<T> {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypeInfo {
-    Type,
+    Parameter(TypeParameter),
+    
     Boolean,
+    Bits(TypeArgValue),
     Range,
-    Bits(BigUint),
     Integer(IntegerTypeInfo),
     Function(FunctionTypeInfo),
     Tuple(Vec<Type>),
@@ -41,10 +42,18 @@ pub enum TypeInfo {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum TypeArgValue {
+    Value(Value),
+    // some more complicated arbitrary expression of which we only know the type
+    //   over time this should expand to some mini-ast sub-language so we can do fancier compile-time reasoning
+    ExpressionWithType(Type),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct IntegerTypeInfo {
     // TODO assert min <= max
-    pub min: Option<BigInt>,
-    pub max: Option<BigInt>,
+    pub min: Option<TypeArgValue>,
+    pub max: Option<TypeArgValue>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -92,11 +101,10 @@ impl Default for Types {
         let mut arena = ArenaSet::default();
 
         let basic = BasicTypes {
-            ty_type: arena.push(TypeInfo::Type),
             ty_void: arena.push(TypeInfo::Tuple(vec![])),
             ty_bool: arena.push(TypeInfo::Boolean),
             ty_int: arena.push(TypeInfo::Integer(IntegerTypeInfo { min: None, max: None })),
-            ty_uint: arena.push(TypeInfo::Integer(IntegerTypeInfo { min: Some(BigInt::zero()), max: None })),
+            ty_uint: arena.push(TypeInfo::Integer(IntegerTypeInfo { min: Some(TypeArgValue::Value(Value::Int(BigInt::zero()))), max: None })),
             ty_range: arena.push(TypeInfo::Range),
         };
 
@@ -129,7 +137,6 @@ impl std::ops::Index<Type> for Types {
 impl<T> BasicTypes<T> {
     pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> BasicTypes<U> {
         BasicTypes {
-            ty_type: f(&self.ty_type),
             ty_void: f(&self.ty_void),
             ty_bool: f(&self.ty_bool),
             ty_int: f(&self.ty_int),
