@@ -10,7 +10,7 @@ impl Debug for FileId {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Pos {
     pub file: FileId,
     pub line: usize,
@@ -23,7 +23,7 @@ impl Debug for Pos {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Span {
     //inclusive
     pub start: Pos,

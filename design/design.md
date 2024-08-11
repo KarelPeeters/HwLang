@@ -54,6 +54,15 @@ Eg. `struct Foo(T: type)(T)` is really weird, and `Foo(bar)` is ambiguous.
 * Do we want to fully split generics and parameters, even for functions? That might be a better idea.
   * But do functions parameters and other manipulation of `type` still work as-is then?
 
+Implementation:
+
+* How to we check which generic types and values are the same/assignable/greater than or equal/...?
+  * Maybe equivalence graphs are useful here, see the egg crate.
+  * Alternatively, is canonicalization enough?
+    * Eg. some fully-expanded multiplication form?
+  * How much do we want to look through function bodies? Ideally not at all, right? But then is calling functions at
+    compile time still possible?
+
 ### Identifiers
 
 Standard stuff, maybe borrow r# prefix for keywords from rust?

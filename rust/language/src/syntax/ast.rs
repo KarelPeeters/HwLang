@@ -1,5 +1,7 @@
 use crate::syntax::pos::Span;
 
+// TODO remove "clone" from everything, and use ast lifetimes everywhere
+
 #[derive(Debug, Clone)]
 pub struct FileContent {
     pub span: Span,
@@ -62,7 +64,7 @@ pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<TypeParam>>>,
+    pub params: Option<Spanned<Vec<GenericParam>>>,
     pub inner: Box<Expression>,
 }
 
@@ -72,7 +74,7 @@ pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<TypeParam>>>,
+    pub params: Option<Spanned<Vec<GenericParam>>>,
     pub fields: Vec<StructField>,
 }
 
@@ -89,7 +91,7 @@ pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<TypeParam>>>,
+    pub params: Option<Spanned<Vec<GenericParam>>>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -115,7 +117,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<TypeParam>>>,
+    pub params: Option<Spanned<Vec<GenericParam>>>,
     pub ports: Spanned<Vec<ModulePort>>,
     pub body: Block,
 }
@@ -142,10 +144,16 @@ pub struct InterfaceField {
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeParam {
+pub struct GenericParam {
     pub span: Span,
     pub id: Identifier,
-    pub ty: Expression,
+    pub kind: GenericParamKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum GenericParamKind {
+    Type,
+    ValueOfType(Expression)
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +252,8 @@ pub struct ClockedBlock {
 
 pub type Expression = Spanned<ExpressionKind>;
 
+// TODO create separate parallel expression hierarchy, dedicated to types?
+//   can they ever even mix? separating them would make future mixed system harder again though
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
     // Miscellaneous
@@ -252,11 +262,6 @@ pub enum ExpressionKind {
     // Wrapped just means an expression that's surrounded by parenthesis.
     // It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
-    
-    // the special "type" type
-    // TODO do we want to support higher-kinded types?
-    //   or only use this as peculiar generic syntax? 
-    Type,
 
     // function type signature
     TypeFunc(Vec<Expression>, Box<Expression>),
@@ -387,7 +392,8 @@ pub enum MaybeIdentifier {
 }
 
 // TODO this is also just a spanned string
-#[derive(Debug, Clone)]
+// TODO do we want to commit to identifier definition uniqueness
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,

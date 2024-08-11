@@ -2,6 +2,7 @@
 //    return x + 1;
 //}
 
+/*
 module delay(T: type, N: uint) ports(
     clk: input clock,
     reset: input async bit,
@@ -35,3 +36,4 @@ module complicated(settings: Settings) ports(
     array: input sync(clk) Array(bool, settings.n),
 ) {
 }
+*/

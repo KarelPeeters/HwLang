@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use itertools::Itertools;
 
-use language::resolve::compile::{CompileSet, FilePath};
+use language::front::driver::{CompileSet, FilePath};
 use language::util::io::recurse_for_each_file;
 
 #[derive(Parser, Debug)]

@@ -1,5 +1,6 @@
-use crate::resolve::compile::{CompileSetError, FrontError};
-use crate::resolve::scope::ScopeError;
+use crate::front::driver::CompileSetError;
+use crate::front::error::FrontError;
+use crate::front::scope::ScopeError;
 use crate::syntax::ParseError;
 
 #[derive(Debug)]

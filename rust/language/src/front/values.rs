@@ -1,16 +1,18 @@
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+
 use num_bigint::BigInt;
-use crate::new_index_type;
-use crate::resolve::compile::{FunctionBody, Item, ItemReference};
-use crate::resolve::scoped_entry::ValueParameter;
-use crate::resolve::types::{Type, TypeUnique};
+
+use crate::front::driver::{FunctionBody, ItemReference};
+use crate::front::param::{GenericValueParameter, ValueParameter};
+use crate::front::types::Type;
+use crate::front::unique::TypeUnique;
 use crate::syntax::ast::Identifier;
-use crate::util::arena::ArenaSet;
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Value {
+    Generic(GenericValueParameter),
     Parameter(ValueParameter),
     
     Int(BigInt),
@@ -21,7 +23,14 @@ pub enum Value {
     // Enum(EnumValue),
 
     // TODO should this be a dedicated type or just an instance of the normal range struct?
-    Range { start: Option<BigInt>, end: Option<BigInt> },
+    Range(ValueRangeInfo),
+}
+
+#[derive(Debug, Clone)]
+pub struct ValueRangeInfo {
+    pub start: Option<Box<Value>>,
+    pub end: Option<Box<Value>>,
+    pub end_inclusive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -41,4 +50,27 @@ pub struct ModuleValue {
     pub unique: TypeUnique,
     // TODO include real content
     pub ty: Type,
+}
+
+impl ValueRangeInfo {
+    pub fn new(start: Option<Box<Value>>, end: Option<Box<Value>>, end_inclusive: bool) -> Self {
+        let result = Self { start, end, end_inclusive };
+        result.assert_valid();
+        result
+    }
+
+    pub fn unbounded() -> Self {
+        Self {
+            start: None,
+            end: None,
+            end_inclusive: false,
+        }
+    }
+
+    pub fn assert_valid(&self) {
+        if self.end.is_none() {
+            assert!(!self.end_inclusive);
+        }
+        // TODO typecheck?
+    }
 }

@@ -23,14 +23,14 @@ pub FileContent: FileContent = {
 Item: Item = {
     <start:@L> "use" <path:Path> <as_: ("as" <MaybeId>)?> ";" <end:@R>
             => Item::Use(ItemUse { path, as_, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<TypeParam>?> "=" <inner:BoxExpr> ";" <end:@R>
+    <start:@L> <vis:Vis> "type" <id:Id> <params:Params<GenericParam>?> "=" <inner:BoxExpr> ";" <end:@R>
         => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<TypeParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
+    <start:@L> <vis:Vis> "struct" <id:Id> <params:Params<GenericParam>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<TypeParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
+    <start:@L> <vis:Vis> "enum" <id:Id> <params:Params<GenericParam>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
     // TODO find some nicer syntax than this "ports" keyword separator
-    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<TypeParam>?> "ports" <ports:Params<ModulePort>> <body:Block> <end:@R>
+    <start:@L> <vis:Vis> "module" <id:Id> <params:Params<GenericParam>?> "ports" <ports:Params<ModulePort>> <body:Block> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     <start:@L> <vis:Vis> "function" <id:Id> <params:Params<FunctionParam>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R>
@@ -88,8 +88,13 @@ Params<P>: Spanned<Vec<P>> = {
     <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
-TypeParam: TypeParam = {
-    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => TypeParam { id, ty, span: loc.span(start, end) },
+GenericParam: GenericParam = {
+    <start:@L> <id:Id> ":" <kind:GenericParamKind> <end:@R> => GenericParam { id, kind, span: loc.span(start, end) },
+}
+
+GenericParamKind: GenericParamKind = {
+    "type" => GenericParamKind::Type,
+    <ty:Expr> => GenericParamKind::ValueOfType(ty),
 }
 
 FunctionParam: FunctionParam = {
@@ -261,8 +266,6 @@ ExprLevelAtomic: ExpressionKind = {
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),
-    // special case TODO why does this not get parsed as an identifier?
-    "type" => ExpressionKind::Type,
     "_" => ExpressionKind::Dummy,
     // literals
     "true" => ExpressionKind::BoolLiteral(true),
