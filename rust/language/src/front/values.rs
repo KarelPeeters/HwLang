@@ -5,7 +5,6 @@ use num_bigint::BigInt;
 use crate::front::driver::{FunctionBody, ItemReference};
 use crate::front::param::{GenericValueParameter, ValueParameter};
 use crate::front::types::Type;
-use crate::front::unique::TypeUnique;
 use crate::syntax::ast::Identifier;
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
@@ -46,10 +45,7 @@ pub struct FunctionValue {
 
 #[derive(Debug, Clone)]
 pub struct ModuleValue {
-    // only this field is used in hash and eq
-    pub unique: TypeUnique,
-    // TODO include real content
-    pub ty: Type,
+    // TODO include real content?
 }
 
 impl ValueRangeInfo {

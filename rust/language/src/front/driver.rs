@@ -4,22 +4,18 @@ use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
 
+use crate::{new_index_type, throw};
 use crate::error::CompileError;
+use crate::front::{scope, TypeOrValue};
 use crate::front::error::FrontError;
-use crate::front::param::{GenericParameter, GenericTypeParameter, GenericValueParameter};
-use crate::front::scope;
+use crate::front::param::{GenericArgs, GenericParameter, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
-use crate::front::types::{Constructor, IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
 use crate::front::values::{Value, ValueRangeInfo};
-use crate::new_index_type;
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned};
 use crate::syntax::pos::FileId;
 use crate::util::arena::Arena;
-
-macro_rules! throw {
-    ($e:expr) => { return Err($e.into()) };
-}
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
@@ -63,12 +59,6 @@ pub enum ScopedEntry {
 // TODO transpose or not?
 pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 pub type ItemKind = TypeOrValue<(), ()>;
-
-#[derive(Debug, Clone)]
-pub enum TypeOrValue<T = Type, V = Value> {
-    Type(T),
-    Value(V),
-}
 
 #[derive(Debug)]
 pub enum CompileSetError {
@@ -302,19 +292,55 @@ impl<'a> CompileState<'a> {
                 Ok(self.resolve_item_type(next_item)?)
             }
             // type definitions
-            ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner: _ }) => {
-                self.resolve_new_type_def_item(scope, params, |scope_inner| {
-                    todo!()
+            ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner }) => {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, params: _, args: _, scope_inner| {
+                    Ok(s.eval_expression_as_ty(scope_inner, inner)?)
                 })
             }
-            ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields: _ }) => {
-                self.resolve_new_type_def_item(scope, params, |scope_inner| {
-                    todo!()
+            ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields }) => {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, params, args, scope_inner| {
+                    // map fields
+                    let mut field_types = vec![];
+                    for field in fields {
+                        let field_ty = s.eval_expression_as_ty(scope_inner, &field.ty)?;
+                        field_types.push((field.id.string.clone(), field_ty));
+                    }
+
+                    let ty = StructTypeInfo {
+                        generic_struct: Generic {
+                            parameters: params.clone(),
+                            inner: StructTypeInfoInner {
+                                item_reference,
+                                fields: field_types,
+                            },
+                        },
+                        args,
+                    };
+                    Ok(Type::Struct(ty))
                 })
             }
-            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants: _ }) => {
-                self.resolve_new_type_def_item(scope, params, |scope_inner| {
-                    todo!()
+            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants }) => {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, params, args, scope_inner| {
+                    // map variants
+                    let mut variant_types = vec![];
+                    for variant in variants {
+                        let content = variant.content.as_ref()
+                            .map(|content| s.eval_expression_as_ty(scope_inner, content))
+                            .transpose()?;
+                        variant_types.push((variant.id.string.clone(), content));
+                    }
+
+                    let ty = EnumTypeInfo {
+                        generic_enum: Generic {
+                            parameters: params.clone(),
+                            inner: EnumTypeInfoInner {
+                                item_reference,
+                                variants: variant_types,
+                            },
+                        },
+                        args,
+                    };
+                    Ok(Type::Enum(ty))
                 })
             },
             // value definitions
@@ -325,21 +351,81 @@ impl<'a> CompileState<'a> {
         }
     }
 
-    fn resolve_new_type_def_item(
+    // TODO move this content into actual type def stuff
+    // fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody, params_for_unique: Vec<Value>) -> ResolveResult<Value> {
+    //     match body {
+    //         &FunctionBody::TypeConstructor(item_reference) => {
+    //             match self.get_item_ast(item_reference) {
+    //                 ast::Item::Type(item_ast) => {
+
+    //                 }
+    //                 ast::Item::Struct(item_ast) => {
+
+    //                 },
+    //                 ast::Item::Enum(item_ast) => {
+    //                 },
+    //                 ast::Item::Module(item_ast) => {
+    //                     let ItemDefModule { span: _, vis: _, id: _, params: _, ports, body } = item_ast;
+    //                     let unique = TypeUnique { item_reference, params: params_for_unique };
+    //
+    //                     // map ports
+    //                     let mut port_types = vec![];
+    //
+    //                     for port in &ports.inner {
+    //                         let ModulePort { span: _, id: _, direction, kind } = port;
+    //
+    //                         let kind_ty = match &kind.inner {
+    //                             PortKind::Clock => PortKind::Clock,
+    //                             PortKind::Normal { sync, ty } => {
+    //                                 let sync_index = match &sync.inner {
+    //                                     SyncKind::Async => SyncKind::Async,
+    //                                     SyncKind::Sync(id) => {
+    //                                         // TODO expand to full expressions and real scope lookups
+    //                                         let index = port_types.iter().position(|(port_id, _)| port_id == &id.string).ok_or_else(|| {
+    //                                             FrontError::UnknownClock(id.clone())
+    //                                         })?;
+    //                                         SyncKind::Sync(index)
+    //                                     }
+    //                                 };
+    //
+    //                                 let ty = self.eval_expression_as_ty(scope_with_params, ty)?;
+    //                                 PortKind::Normal { sync: sync_index, ty }
+    //                             }
+    //                         };
+    //
+    //                         port_types.push((port.id.string.clone(), PortTypeInfo { direction: port.direction.inner, kind: kind_ty }));
+    //                     }
+    //
+    //                     // define new type
+    //                     let info = ModuleTypeInfo { unique, ports: port_types };
+    //                     let ty = self.types.push(Type::Module(info));
+    //                     Ok(self.type_as_value(ty))
+    //                 }
+    //                 _ => unreachable!(),
+    //             }
+    //         },
+    //     }
+    // }
+
+    fn resolve_new_type_def_item<T>(
         &mut self,
+        defining_item: ItemReference,
         scope_outer: &Scope,
         params: &Option<Spanned<Vec<GenericParam>>>,
-        build_ty: impl FnOnce(&Scope) -> Type,
-    ) -> ResolveResult<MaybeConstructor<Type>> {
+        build_ty: impl FnOnce(&mut Self, GenericParams, GenericArgs, &Scope) -> ResolveResult<T>,
+    ) -> ResolveResult<MaybeConstructor<T>> {
         match params {
             None => {
                 // there are no parameters, just map directly
-                Ok(MaybeConstructor::Immediate(build_ty(scope_outer)))
+                let parameters = GenericParams { vec: vec![] };
+                let arguments = GenericArgs { vec: vec![] };
+                Ok(MaybeConstructor::Immediate(build_ty(self, parameters, arguments, scope_outer)?))
             }
             Some(params) => {
                 // build inner scope
                 let mut unique: HashMap<&str, &Identifier> = Default::default();
                 let mut parameters = vec![];
+                let mut arguments = vec![];
                 let mut scope_inner = scope_outer.nest(Visibility::Private);
 
                 for param_ast in &params.inner {
@@ -349,27 +435,30 @@ impl<'a> CompileState<'a> {
                         throw!(FrontError::DuplicateParameterName(prev.clone(), param_ast.id.clone()))
                     }
 
-                    let (param, entry) = match &param_ast.kind {
+                    let (param, arg) = match &param_ast.kind {
                         GenericParamKind::Type => {
-                            let param = GenericTypeParameter { id: param_ast.id.clone() };
+                            let param = GenericTypeParameter { defining_item, id: param_ast.id.clone() };
                             (GenericParameter::Type(param.clone()), TypeOrValue::Type(Type::Generic(param)))
                         },
                         GenericParamKind::ValueOfType(ty) => {
                             let ty = self.eval_expression_as_ty(&scope_inner, ty)?;
-                            let param = GenericValueParameter { id: param_ast.id.clone(), ty };
+                            let param = GenericValueParameter { defining_item, id: param_ast.id.clone(), ty };
                             (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::Generic(param)))
                         },
                     };
 
                     parameters.push(param);
-                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(entry));
+                    arguments.push(arg.clone());
+                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
                     scope_inner.declare(&param_ast.id, entry, Visibility::Private)?;
                 }
 
                 // map inner to actual type
-                let ty_constr = Constructor {
-                    parameters,
-                    inner: build_ty(&scope_inner),
+                let parameters = GenericParams { vec: parameters };
+                let arguments = GenericArgs { vec: arguments };
+                let ty_constr = Generic {
+                    parameters: parameters.clone(),
+                    inner: build_ty(self, parameters, arguments, &scope_inner)?,
                 };
                 Ok(MaybeConstructor::Constructor(ty_constr))
             }
@@ -484,10 +573,25 @@ impl<'a> CompileState<'a> {
                     }
                 }
 
-                let _ = self.eval_expression(scope, target)?;
+                let target = self.eval_expression(scope, target)?;
+
+                match target {
+                    ScopedEntryDirect::Constructor(constr) => {
+                        todo!("{:?}", expr)
+                    }
+                    ScopedEntryDirect::Immediate(entry) => {
+                        match entry {
+                            TypeOrValue::Type(_) => throw!(FrontError::InvalidCallTargetGotType(expr.clone())),
+                            TypeOrValue::Value(_) => {
+                                todo!("call target value")
+                            },
+                        }
+                    }
+                }
+                
                 // TODO support both value function calls and type constructor calls
 
-                todo!("call expression")
+                todo!("call expression at {:?}", expr)
 
                 // match &self.values[target_value] {
                 //     ValueInfo::Function(target_value) => {
@@ -580,93 +684,6 @@ impl<'a> CompileState<'a> {
 
         Ok(result)
     }
-
-    // TODO move this content into actual type def stuff
-    // fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody, params_for_unique: Vec<Value>) -> ResolveResult<Value> {
-    //     match body {
-    //         &FunctionBody::TypeConstructor(item_reference) => {
-    //             match self.get_item_ast(item_reference) {
-    //                 ast::Item::Type(item_ast) => {
-    //                     let ItemDefType { span: _, vis: _, id: _, params: _, inner } = item_ast;
-    //                     let ty = self.eval_expression_as_ty(scope_with_params, inner)?;
-    //                     Ok(self.type_as_value(ty))
-    //                 }
-    //                 ast::Item::Struct(item_ast) => {
-    //                     let ItemDefStruct { span: _, vis: _, id: _, params: _, fields } = item_ast;
-    //                     let unique = TypeUnique { item_reference, params: params_for_unique };
-    //
-    //                     // map fields
-    //                     let mut field_types = vec![];
-    //                     for field in fields {
-    //                         let field_ty = self.eval_expression_as_ty(scope_with_params, &field.ty)?;
-    //                         field_types.push((field.id.string.clone(), field_ty));
-    //                     }
-    //
-    //                     // define new type
-    //                     let info = StructTypeInfo { unique, fields: field_types };
-    //                     let ty = self.types.push(Type::Struct(info));
-    //                     Ok(self.type_as_value(ty))
-    //                 },
-    //                 ast::Item::Enum(item_ast) => {
-    //                     let ItemDefEnum { span: _, vis: _, id: _, params: _, variants } = item_ast;
-    //                     let unique = TypeUnique { item_reference, params: params_for_unique };
-    //
-    //                     // map variants
-    //                     let mut variant_types = vec![];
-    //                     for variant in variants {
-    //                         let content = variant.content.as_ref()
-    //                             .map(|content| self.eval_expression_as_ty(scope_with_params, content))
-    //                             .transpose()?;
-    //                         variant_types.push((variant.id.string.clone(), content));
-    //                     }
-    //
-    //                     // define new type
-    //                     let info = EnumTypeInfo { unique, variants: variant_types };
-    //                     let ty = self.types.push(Type::Enum(info));
-    //                     Ok(self.type_as_value(ty))
-    //                 },
-    //                 ast::Item::Module(item_ast) => {
-    //                     let ItemDefModule { span: _, vis: _, id: _, params: _, ports, body } = item_ast;
-    //                     let unique = TypeUnique { item_reference, params: params_for_unique };
-    //
-    //                     // map ports
-    //                     let mut port_types = vec![];
-    //
-    //                     for port in &ports.inner {
-    //                         let ModulePort { span: _, id: _, direction, kind } = port;
-    //
-    //                         let kind_ty = match &kind.inner {
-    //                             PortKind::Clock => PortKind::Clock,
-    //                             PortKind::Normal { sync, ty } => {
-    //                                 let sync_index = match &sync.inner {
-    //                                     SyncKind::Async => SyncKind::Async,
-    //                                     SyncKind::Sync(id) => {
-    //                                         // TODO expand to full expressions and real scope lookups
-    //                                         let index = port_types.iter().position(|(port_id, _)| port_id == &id.string).ok_or_else(|| {
-    //                                             FrontError::UnknownClock(id.clone())
-    //                                         })?;
-    //                                         SyncKind::Sync(index)
-    //                                     }
-    //                                 };
-    //
-    //                                 let ty = self.eval_expression_as_ty(scope_with_params, ty)?;
-    //                                 PortKind::Normal { sync: sync_index, ty }
-    //                             }
-    //                         };
-    //
-    //                         port_types.push((port.id.string.clone(), PortTypeInfo { direction: port.direction.inner, kind: kind_ty }));
-    //                     }
-    //
-    //                     // define new type
-    //                     let info = ModuleTypeInfo { unique, ports: port_types };
-    //                     let ty = self.types.push(Type::Module(info));
-    //                     Ok(self.type_as_value(ty))
-    //                 }
-    //                 _ => unreachable!(),
-    //             }
-    //         },
-    //     }
-    // }
 
     fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
         let ItemReference { file, item_index } = item_reference;

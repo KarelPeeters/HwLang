@@ -2,6 +2,7 @@ use num_bigint::BigInt;
 use crate::front::driver::Item;
 use crate::syntax::ast::{Args, Expression, Identifier, Path};
 
+// TODO get rid of these error enums, instead directly report as printable construct
 #[derive(Debug)]
 pub enum FrontError {
     CyclicTypeDependency(Vec<Item>),
@@ -14,6 +15,8 @@ pub enum FrontError {
     ExpectedFunctionExpression(Expression),
     ExpectedIntegerExpression(Expression),
     ExpectedRangeExpression(Expression),
+    
+    InvalidCallTargetGotType(Expression),
 
     ExpectedNonNegativeInteger(Expression, BigInt),
 

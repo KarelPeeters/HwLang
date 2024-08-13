@@ -1,20 +1,20 @@
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
-use crate::front::param::{GenericParameter, GenericTypeParameter};
-use crate::front::unique::TypeUnique;
+use crate::front::driver::ItemReference;
+use crate::front::param::{GenericArgs, GenericParams, GenericTypeParameter};
 use crate::front::values::Value;
-use crate::impl_eq_hash_unique;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 
 #[derive(Debug, Clone)]
 pub enum MaybeConstructor<T> {
-    Constructor(Constructor<T>),
+    Constructor(Generic<T>),
     Immediate(T),
 }
 
+// TODO remove? this is just what the struct/enum thing already is
 #[derive(Debug, Clone)]
-pub struct Constructor<T> {
-    pub parameters: Vec<GenericParameter>,
+pub struct Generic<T> {
+    pub parameters: GenericParams,
     pub inner: T,
 }
 
@@ -48,14 +48,26 @@ pub struct FunctionTypeInfo {
 
 #[derive(Debug, Clone)]
 pub struct StructTypeInfo {
-    pub unique: TypeUnique,
+    pub generic_struct: Generic<StructTypeInfoInner>,
+    pub args: GenericArgs,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructTypeInfoInner {
+    pub item_reference: ItemReference,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumTypeInfo {
-    pub unique: TypeUnique,
-    // TODO refer to identifiers or nothing here instead?
+    pub generic_enum: Generic<EnumTypeInfoInner>,
+    pub args: GenericArgs,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumTypeInfoInner {
+    pub item_reference: ItemReference,
+    // TODO use identifier instead of string?
     pub variants: Vec<(String, Option<Type>)>,
 }
 
@@ -63,7 +75,7 @@ pub struct EnumTypeInfo {
 //  the end use case would be passing a module constructor as a parameter to another module
 #[derive(Debug, Clone)]
 pub struct ModuleTypeInfo {
-    pub unique: TypeUnique,
+    pub item_reference: ItemReference,
     pub ports: Vec<(String, PortTypeInfo)>,
 }
 
@@ -76,7 +88,7 @@ pub struct PortTypeInfo {
 impl<T> MaybeConstructor<T> {
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> MaybeConstructor<U> {
         match self {
-            MaybeConstructor::Constructor(c) => MaybeConstructor::Constructor(Constructor {
+            MaybeConstructor::Constructor(c) => MaybeConstructor::Constructor(Generic {
                 parameters: c.parameters,
                 inner: f(c.inner),
             }),
