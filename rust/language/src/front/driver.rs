@@ -3,13 +3,13 @@ use std::collections::HashMap;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Itertools};
+use itertools::{enumerate, Itertools, zip_eq};
 use num_bigint::BigInt;
 
 use crate::{new_index_type, throw};
 use crate::error::{CompileError, DiagnosticError};
 use crate::front::{scope, TypeOrValue};
-use crate::front::param::{GenericArgs, GenericParameter, GenericParams, GenericTypeParameter, GenericValueParameter};
+use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
 use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
 use crate::front::values::{Value, ValueRangeInfo};
@@ -275,7 +275,7 @@ impl<'d> CompileState<'d> {
                     if let Some(cycle_start_index) = cycle_start_index {
                         drop(stack.drain(..cycle_start_index));
 
-                        let mut diag = self.diagnostic("Cyclic type dependency");
+                        let mut diag = self.diagnostic("cyclic type dependency");
                         for item in stack {
                             let item_ast = self.get_item_ast(self.items[item].item_reference);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
@@ -399,7 +399,7 @@ impl<'d> CompileState<'d> {
                 let mut arguments = vec![];
                 let mut scope_inner = scope_outer.nest(Visibility::Private);
 
-                for param_ast in &params.inner {
+                for (param_index, param_ast) in enumerate(&params.inner) {
                     // check parameter names for uniqueness
                     // TODO this is a weird place to do this, this can already happen during parsing
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
@@ -412,14 +412,16 @@ impl<'d> CompileState<'d> {
                         throw!(error);
                     }
 
+                    let unique_id = GenericParameterUniqueId { defining_item, param_index };
+
                     let (param, arg) = match &param_ast.kind {
                         GenericParamKind::Type => {
-                            let param = GenericTypeParameter { defining_item, id: param_ast.id.clone() };
+                            let param = GenericTypeParameter { unique_id, id: param_ast.id.clone() };
                             (GenericParameter::Type(param.clone()), TypeOrValue::Type(Type::Generic(param)))
                         },
                         GenericParamKind::ValueOfType(ty) => {
                             let ty = self.eval_expression_as_ty(&scope_inner, ty)?;
-                            let param = GenericValueParameter { defining_item, id: param_ast.id.clone(), ty };
+                            let param = GenericValueParameter { unique_id, id: param_ast.id.clone(), ty };
                             (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::Generic(param)))
                         },
                     };
@@ -559,8 +561,38 @@ impl<'d> CompileState<'d> {
                 let target_entry = self.eval_expression(scope, target)?;
 
                 match target_entry {
-                    ScopedEntryDirect::Constructor(_) => {
-                        self.diagnostic_todo(expr.span, "constructor call")
+                    ScopedEntryDirect::Constructor(constr) => {
+                        // goal: replace parameters with the arguments of this call
+                        let Generic { inner, parameters } = constr;
+
+                        // check count match
+                        if parameters.vec.len() != args.inner.len() {
+                            throw!(self.diagnostic_simple(
+                                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
+                                args.span,
+                                format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
+                            ))
+                        }
+
+                        // check kind and type match, and collect in replacement map
+                        let mut replacement_map: IndexMap<GenericParameterUniqueId, TypeOrValue> = IndexMap::new();
+                        for (param, arg) in zip_eq(&parameters.vec, &args.inner) {
+                            match param {
+                                GenericParameter::Type(_) => {
+                                    let _ = self.eval_expression_as_ty(scope, arg)?;
+                                    self.diagnostic_todo(arg.span, "constructor call type arg")
+                                }
+                                GenericParameter::Value(param) => {
+                                    // TODO typecheck
+                                    let arg_value = self.eval_expression_as_value(scope, arg)?;
+                                    replacement_map.insert(param.unique_id, TypeOrValue::Value(arg_value));
+                                }
+                            }
+                        }
+
+                        // do the actual replacement
+                        let result = inner.replace_generic_params(&replacement_map);
+                        MaybeConstructor::Immediate(result)
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
@@ -701,7 +733,7 @@ impl<'d> CompileState<'d> {
 
     #[track_caller]
     fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
-        let message = format!("Feature not yet implemented: {}", feature);
+        let message = format!("feature not yet implemented: {}", feature);
         let err = self.diagnostic(&message)
             .add_error(span, "used here")
             .finish();

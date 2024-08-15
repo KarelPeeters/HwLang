@@ -1,7 +1,9 @@
+use indexmap::IndexMap;
 use num_bigint::BigInt;
 
 use crate::front::driver::{FunctionBody, ItemReference};
-use crate::front::param::{GenericValueParameter, ValueParameter};
+use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
+use crate::front::TypeOrValue;
 use crate::front::types::Type;
 use crate::syntax::ast::Identifier;
 
@@ -66,5 +68,21 @@ impl ValueRangeInfo {
             assert!(!self.end_inclusive);
         }
         // TODO typecheck?
+    }
+}
+
+impl GenericContainer for Value {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {
+        match *self {
+            Value::Generic(ref value) => match map.get(&value.unique_id) {
+                None => Value::Generic(value.clone()),
+                Some(new) => new.as_ref().unwrap_value().clone(),
+            }
+            Value::Parameter(_) => todo!(),
+            Value::Int(_) => todo!(),
+            Value::Function(_) => todo!(),
+            Value::Module(_) => todo!(),
+            Value::Range(_) => todo!(),
+        }
     }
 }

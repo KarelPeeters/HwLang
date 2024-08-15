@@ -1,5 +1,8 @@
+use indexmap::IndexMap;
+
 use crate::front::driver::ItemReference;
-use crate::front::param::{GenericArgs, GenericParams, GenericTypeParameter};
+use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
+use crate::front::TypeOrValue;
 use crate::front::values::Value;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 
@@ -91,6 +94,38 @@ impl<T> MaybeConstructor<T> {
                 inner: f(c.inner),
             }),
             MaybeConstructor::Immediate(t) => MaybeConstructor::Immediate(f(t)),
+        }
+    }
+}
+
+impl GenericContainer for Type {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue<Type, Value>>) -> Self {
+        match *self {
+            Type::Generic(ref generic) => match map.get(&generic.unique_id) {
+                None => Type::Generic(generic.clone()),
+                Some(new) => new.as_ref().unwrap_type().clone(),
+            },
+            Type::Boolean => Type::Boolean,
+            Type::Bits(ref width) => Type::Bits(Box::new(width.replace_generic_params(map))),
+            Type::Range => Type::Range,
+            Type::Integer(ref info) => {
+                Type::Integer(IntegerTypeInfo {
+                    range: Box::new(info.range.replace_generic_params(map)),
+                })
+            }
+            Type::Function(ref info) => {
+                Type::Function(FunctionTypeInfo {
+                    params: info.params.iter().map(|t| t.replace_generic_params(map)).collect(),
+                    ret: Box::new(info.ret.replace_generic_params(map)),
+                })
+            }
+            Type::Tuple(ref types) => Type::Tuple(types.iter().map(|t| t.replace_generic_params(map)).collect()),
+            // TODO carefully think about this: once we allow defining local structs that use scoped generic parameters,
+            //   we need to replace them deep inside the fields.
+            //   Do we also want to keep nominal type-ness? How exactly does that interact with the above?
+            Type::Struct(_) => todo!(),
+            Type::Enum(_) => todo!(),
+            Type::Module(_) => todo!(),
         }
     }
 }
