@@ -2,7 +2,11 @@ use std::fmt::Debug;
 
 use indexmap::map::IndexMap;
 
+use crate::error::DiagnosticError;
+use crate::front::driver::{DiagnosticAddable, SourceDatabase};
 use crate::syntax::ast;
+use crate::syntax::pos::Span;
+use crate::throw;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Visibility {
@@ -13,75 +17,78 @@ pub enum Visibility {
 #[derive(Debug)]
 pub struct Scope<'p, V> {
     parent: Option<(&'p Scope<'p, V>, Visibility)>,
-    values: IndexMap<String, (V, Visibility)>,
+    values: IndexMap<String, (V, Span, Visibility)>,
 }
 
-pub type ScopeResult<T> = Result<T, ScopeError>;
-
-#[must_use]
-#[derive(Debug)]
-pub enum ScopeError {
-    IdentifierDeclaredTwice(ast::Identifier),
-    UndeclaredIdentifier(ast::Identifier),
-    CannotAccess(ast::Identifier),
-}
+pub type ScopeResult<T> = Result<T, DiagnosticError>;
 
 impl<V: Debug> Scope<'_, V> {
     pub fn nest(&self, vis: Visibility) -> Scope<V> {
         Scope { parent: Some((self, vis)), values: Default::default() }
     }
 
-    pub fn declare<'a>(&mut self, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
-        if self.values.insert(id.string.to_owned(), (var, vis)).is_some() {
+    pub fn declare<'a>(&mut self, database: &SourceDatabase, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
+        if let Some(&(_, prev_span, _)) = self.values.get(&id.string) {
             // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
-            Err(ScopeError::IdentifierDeclaredTwice(id.clone()))
+
+            let err = database.diagnostic("identifier declared twice")
+                .snippet(prev_span)
+                .add_info(id.span, "previously declared here")
+                .finish()
+                .snippet(id.span)
+                .add_error(prev_span, "declared again here")
+                .finish()
+                .finish();
+            throw!(err)
         } else {
+            // only insert if we know the id is not declared yet, to avoid state mutation in case of an error
+            let prev = self.values.insert(id.string.to_owned(), (var, id.span, vis));
+            assert!(prev.is_none());
             Ok(())
         }
     }
 
-    pub fn maybe_declare(&mut self, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ScopeResult<()> {
+    pub fn maybe_declare(&mut self, database: &SourceDatabase, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ScopeResult<()> {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
-                self.declare(id, var, vis),
+                self.declare(database, id, var, vis),
             ast::MaybeIdentifier::Dummy(_) =>
                 Ok(())
-        }
-    }
-
-    /// Declare a value with the given id. Panics if the id already exists in this scope.
-    pub fn declare_str(&mut self, id: &str, var: V, vis: Visibility) {
-        let prev = self.values.insert(id.to_owned(), (var, vis));
-
-        if let Some(prev) = prev {
-            panic!("Id '{}' already exists in this scope with value {:?}", id, prev)
         }
     }
 
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'a, 's>(&'s self, root: Option<&'s Self>, id: &'a ast::Identifier, vis: Visibility) -> ScopeResult<&V> {
-        if let Some(&(ref s, s_vis)) = self.values.get(&id.string) {
-            if vis.can_access(s_vis) {
-                Ok(s)
+    pub fn find<'a, 's>(&'s self, database: &SourceDatabase, root: Option<&'s Self>, id: &'a ast::Identifier, vis: Visibility) -> ScopeResult<&V> {
+        if let Some(&(ref value, value_span, value_vis)) = self.values.get(&id.string) {
+            if vis.can_access(value_vis) {
+                Ok(value)
             } else {
-                Err(ScopeError::CannotAccess(id.clone()))
+                let err = database.diagnostic("cannot access definition")
+                    .snippet(value_span)
+                    .add_info(value_span, "identifier declared here")
+                    .finish()
+                    .snippet(id.span)
+                    .add_error(id.span, "not accessible here")
+                    .finish()
+                    .finish();
+                throw!(err)
             }
-        } else if let Some((p, p_vis)) = self.parent {
+        } else if let Some((parent, parent_vis)) = self.parent {
             // TODO does min access make sense?
-            p.find(root, id, Visibility::minimum_access(vis, p_vis))
+            parent.find(database, root, id, Visibility::minimum_access(vis, parent_vis))
         } else if let Some(root) = root {
             // TODO do we need vis support here too?
-            root.find(None, id, Visibility::Public)
+            root.find(database, None, id, Visibility::Public)
         } else {
-            Err(ScopeError::UndeclaredIdentifier(id.clone()))
+            let err = database.diagnostic("undeclared identifier")
+                .snippet(id.span)
+                .add_error(id.span, "identifier not declared")
+                .finish()
+                .finish();
+            throw!(err)
         }
-    }
-
-    /// Find the given identifier in this scope without looking at the parent scope.
-    pub fn find_immediate_str(&self, id: &str) -> Option<&V> {
-        self.values.get(id).map(|(s, _)| s)
     }
 
     /// The amount of values declared in this scope without taking the parent scope into account.

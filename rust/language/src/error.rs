@@ -1,5 +1,4 @@
 use crate::front::driver::CompileSetError;
-use crate::front::scope::ScopeError;
 use crate::syntax::ParseError;
 
 #[must_use]
@@ -8,7 +7,6 @@ pub enum CompileError {
     SnippetError(DiagnosticError),
     CompileSetError(CompileSetError),
     ParseError(ParseError),
-    ScopeError(ScopeError),
 }
 
 #[must_use]
@@ -26,12 +24,6 @@ impl From<CompileSetError> for CompileError {
 impl From<ParseError> for CompileError {
     fn from(error: ParseError) -> Self {
         CompileError::ParseError(error)
-    }
-}
-
-impl From<ScopeError> for CompileError {
-    fn from(error: ScopeError) -> Self {
-        CompileError::ScopeError(error)
     }
 }
 

@@ -32,6 +32,7 @@ pub struct SourceDatabase {
 
 // TODO distinguish between true and temporary options
 pub struct FileInfo {
+    #[allow(dead_code)]
     id: FileId,
     path: FilePath,
     directory: Directory,
@@ -200,8 +201,10 @@ impl SourceDatabase {
         }
 
         // build import scope of each file
-        for file in self.files.values_mut() {
-            let ast = file.ast.as_ref().unwrap();
+        // TODO split up database into even more immutable and mutable part
+        let files = self.files.keys().copied().collect_vec();
+        for file in files {
+            let ast = self[file].ast.as_ref().unwrap();
 
             // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
             let mut local_scope = Scope::default();
@@ -213,12 +216,12 @@ impl SourceDatabase {
                     ast::Visibility::Private => Visibility::Private,
                 };
 
-                let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
+                let item_reference = ItemReference { file, item_index: ast_item_index };
                 let item = items.push(ItemInfo { item_reference, ty: None });
-                local_scope.maybe_declare(&common_info.id, ScopedEntry::Item(item), vis)?;
+                local_scope.maybe_declare(&self, &common_info.id, ScopedEntry::Item(item), vis)?;
             }
 
-            file.local_scope = Some(local_scope);
+            self.files.get_mut(&file).unwrap().local_scope = Some(local_scope);
         }
 
         let mut state = CompileState {
@@ -236,6 +239,10 @@ impl SourceDatabase {
 
 
         Ok(())
+    }
+
+    pub fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'_> {
+        Diagnostic::new(self, title)
     }
 }
 
@@ -429,7 +436,7 @@ impl<'d> CompileState<'d> {
                     parameters.push(param);
                     arguments.push(arg.clone());
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    scope_inner.declare(&param_ast.id, entry, Visibility::Private)?;
+                    scope_inner.declare(&self.database, &param_ast.id, entry, Visibility::Private)?;
                 }
 
                 // map inner to actual type
@@ -475,7 +482,7 @@ impl<'d> CompileState<'d> {
         let file_scope = self.database[file].local_scope.as_ref().unwrap();
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let value = file_scope.find(None, id, vis)?;
+        let value = file_scope.find(&self.database, None, id, vis)?;
         match value {
             &ScopedEntry::Item(item) => Ok(item),
             // TODO is this still true?
@@ -491,7 +498,7 @@ impl<'d> CompileState<'d> {
             ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                match scope.find(None, id, Visibility::Private)? {
+                match scope.find(&self.database, None, id, Visibility::Private)? {
                     &ScopedEntry::Item(item) => {
                         // TODO properly support value items, and in general fix "type" vs "value" resolution
                         //  maybe through checking the item kind first?
@@ -596,17 +603,19 @@ impl<'d> CompileState<'d> {
                         // check kind and type match, and collect in replacement map
                         let mut replacement_map: IndexMap<GenericParameterUniqueId, TypeOrValue> = IndexMap::new();
                         for (param, arg) in zip_eq(&parameters.vec, &args.inner) {
-                            match param {
-                                GenericParameter::Type(_) => {
-                                    let _ = self.eval_expression_as_ty(scope, arg)?;
-                                    self.diagnostic_todo(arg.span, "constructor call type arg")
+                            let arg_evaluated = match param {
+                                GenericParameter::Type(_param) => {
+                                    let arg_ty = self.eval_expression_as_ty(scope, arg)?;
+                                    // TODO bound-check
+                                    TypeOrValue::Type(arg_ty)
                                 }
-                                GenericParameter::Value(param) => {
-                                    // TODO typecheck
+                                GenericParameter::Value(_param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    replacement_map.insert(param.unique_id, TypeOrValue::Value(arg_value));
+                                    // TODO type-check
+                                    TypeOrValue::Value(arg_value)
                                 }
-                            }
+                            };
+                            replacement_map.insert(param.unique_id(), arg_evaluated);
                         }
 
                         // do the actual replacement
@@ -714,6 +723,11 @@ impl<'d> CompileState<'d> {
                             let bits = self.eval_expression_as_value(scope, &args.inner[1])?;
                             return Ok(TypeOrValue::Type(Type::Bits(Box::new(bits))));
                         }
+                        "Array" if args.inner.len() == 3 => {
+                            let ty = self.eval_expression_as_ty(scope, &args.inner[1])?;
+                            let len = self.eval_expression_as_value(scope, &args.inner[2])?;
+                            return Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len))));
+                        }
                         // fallthrough
                         _ => {},
                     }
@@ -741,7 +755,7 @@ impl<'d> CompileState<'d> {
     }
 
     fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'d> {
-        Diagnostic::new(self.database, title)
+        self.database.diagnostic(title)
     }
 
     fn diagnostic_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagnosticError {
@@ -900,7 +914,7 @@ impl DiagnosticAddable for DiagnosticSnippet<'_> {
     }
 }
 
-trait DiagnosticAddable: Sized {
+pub trait DiagnosticAddable: Sized {
     fn add(self, level: Level, span: Span, label: impl Into<String>) -> Self;
 
     fn add_error(self, span: Span, label: impl Into<String>) -> Self {

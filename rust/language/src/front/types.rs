@@ -28,6 +28,7 @@ pub enum Type {
     Bits(Box<Value>),
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
     Range,
+    Array(Box<Type>, Box<Value>),
     Integer(IntegerTypeInfo),
     Function(FunctionTypeInfo),
     Tuple(Vec<Type>),
@@ -107,6 +108,12 @@ impl GenericContainer for Type {
             },
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => Type::Bits(Box::new(width.replace_generic_params(map))),
+            Type::Array(ref inner, ref len) => {
+                Type::Array(
+                    Box::new(inner.replace_generic_params(map)),
+                    Box::new(len.replace_generic_params(map)),
+                )
+            }
             Type::Range => Type::Range,
             Type::Integer(ref info) => {
                 Type::Integer(IntegerTypeInfo {
@@ -124,7 +131,7 @@ impl GenericContainer for Type {
             //     we need to replace them deep inside the fields.
             //     Do we also want to keep nominal type-ness? How exactly does that interact with the above?
             //   Solution: do a deep replace of the fields every time,
-            //     but also keep track of all parameters that are defined on the struct itself. If both the fields and 
+            //     but also keep track of all parameters that are defined on the struct itself. If both the fields and
             //     the params match, the types are considered equal.
             //   Do we not want outside params to count for type equality? Double check this.
             Type::Struct(_) => todo!(),
