@@ -5,6 +5,8 @@ use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationRespon
 
 use crate::server::core::ServerCore;
 
+// TODO stop using async (and tower-LSP, it mostly just complicates core with not much possible upside)
+
 /// Wrapper type to allow for splitting the [LanguageServer] trait implementation
 /// across multiple `impl` blocks in different files.
 #[derive(Debug)]

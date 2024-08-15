@@ -27,6 +27,26 @@
 			},
 			"problemMatcher": [
 				"$tsc-watch"
+			],
+			"label": "npm-watch",
+		},
+		{
+			"type": "cargo",
+			"command": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "cargo-build",
+			"options": {
+				"cwd": "../rust"
+			}
+		},
+		{
+			"label": "prepare-lsp",
+			"dependsOn": [
+				"cargo-build",
+				"npm-watch",
 			]
 		}
 	]

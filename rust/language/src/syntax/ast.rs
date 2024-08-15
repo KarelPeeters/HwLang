@@ -393,7 +393,7 @@ pub enum MaybeIdentifier {
 
 // TODO this is also just a spanned string
 // TODO do we want to commit to identifier definition uniqueness
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,

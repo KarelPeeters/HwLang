@@ -1,33 +1,70 @@
+use itertools::Itertools;
+use language::syntax::parse_file_content;
+use language::syntax::pos::{FileId, Pos};
+use language::syntax::token::{tokenize, TokenCategory, Tokenizer};
 use log::error;
+use strum::IntoEnumIterator;
 use tower_lsp::jsonrpc;
 use tower_lsp::jsonrpc::Error;
-use tower_lsp::lsp_types::{CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue, InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams, WorkspaceDiagnosticReportResult, WorkspaceEdit};
-use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse};
+use tower_lsp::lsp_types::request::{
+    GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoImplementationResponse,
+    GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
+};
+use tower_lsp::lsp_types::{
+    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCall,
+    CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, CodeAction, CodeActionParams, CodeActionResponse,
+    CodeLens, CodeLensParams, ColorInformation, ColorPresentation, ColorPresentationParams, CompletionItem,
+    CompletionItemKind, CompletionParams, CompletionResponse, DocumentColorParams, DocumentDiagnosticParams,
+    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
+    DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentOnTypeFormattingParams,
+    DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, InlineValue,
+    InlineValueParams, LinkedEditingRangeParams, LinkedEditingRanges, Location, MessageType, Moniker, MonikerParams,
+    Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams,
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult,
+    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult, SignatureHelp,
+    SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, TypeHierarchyItem,
+    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, WorkspaceDiagnosticParams,
+    WorkspaceDiagnosticReportResult, WorkspaceEdit,
+};
 
 use crate::server::core::ServerCore;
+use crate::server::util::ToLsp;
 
 impl ServerCore {
-    pub async fn goto_declaration(&self, _params: GotoDeclarationParams) -> jsonrpc::Result<Option<GotoDeclarationResponse>> {
+    pub async fn goto_declaration(
+        &self,
+        _params: GotoDeclarationParams,
+    ) -> jsonrpc::Result<Option<GotoDeclarationResponse>> {
         error!("Got a textDocument/declaration request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn goto_definition(&self, params: GotoDefinitionParams) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
+    pub async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
         Ok(Some(GotoDefinitionResponse::Scalar(Location {
             uri: params.text_document_position_params.text_document.uri,
             range: Range::new(Position::new(0, 0), Position::new(0, 8)),
         })))
-        
+
         // error!("Got a textDocument/definition request, but it is not implemented");
         // Err(Error::method_not_found())
     }
 
-    pub async fn goto_type_definition(&self, _params: GotoTypeDefinitionParams) -> jsonrpc::Result<Option<GotoTypeDefinitionResponse>> {
+    pub async fn goto_type_definition(
+        &self,
+        _params: GotoTypeDefinitionParams,
+    ) -> jsonrpc::Result<Option<GotoTypeDefinitionResponse>> {
         error!("Got a textDocument/typeDefinition request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn goto_implementation(&self, _params: GotoImplementationParams) -> jsonrpc::Result<Option<GotoImplementationResponse>> {
+    pub async fn goto_implementation(
+        &self,
+        _params: GotoImplementationParams,
+    ) -> jsonrpc::Result<Option<GotoImplementationResponse>> {
         error!("Got a textDocument/implementation request, but it is not implemented");
         Err(Error::method_not_found())
     }
@@ -37,39 +74,100 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn prepare_call_hierarchy(&self, _params: CallHierarchyPrepareParams) -> jsonrpc::Result<Option<Vec<CallHierarchyItem>>> {
+    pub async fn prepare_call_hierarchy(
+        &self,
+        _params: CallHierarchyPrepareParams,
+    ) -> jsonrpc::Result<Option<Vec<CallHierarchyItem>>> {
         error!("Got a textDocument/prepareCallHierarchy request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn incoming_calls(&self, _params: CallHierarchyIncomingCallsParams) -> jsonrpc::Result<Option<Vec<CallHierarchyIncomingCall>>> {
+    pub async fn incoming_calls(
+        &self,
+        _params: CallHierarchyIncomingCallsParams,
+    ) -> jsonrpc::Result<Option<Vec<CallHierarchyIncomingCall>>> {
         error!("Got a callHierarchy/incomingCalls request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn outgoing_calls(&self, _params: CallHierarchyOutgoingCallsParams) -> jsonrpc::Result<Option<Vec<CallHierarchyOutgoingCall>>> {
+    pub async fn outgoing_calls(
+        &self,
+        _params: CallHierarchyOutgoingCallsParams,
+    ) -> jsonrpc::Result<Option<Vec<CallHierarchyOutgoingCall>>> {
         error!("Got a callHierarchy/outgoingCalls request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn prepare_type_hierarchy(&self, _params: TypeHierarchyPrepareParams) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
+    pub async fn prepare_type_hierarchy(
+        &self,
+        _params: TypeHierarchyPrepareParams,
+    ) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
         error!("Got a textDocument/prepareTypeHierarchy request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn supertypes(&self, _params: TypeHierarchySupertypesParams) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
+    pub async fn supertypes(
+        &self,
+        _params: TypeHierarchySupertypesParams,
+    ) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
         error!("Got a typeHierarchy/supertypes request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn subtypes(&self, _params: TypeHierarchySubtypesParams) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
+    pub async fn subtypes(
+        &self,
+        _params: TypeHierarchySubtypesParams,
+    ) -> jsonrpc::Result<Option<Vec<TypeHierarchyItem>>> {
         error!("Got a typeHierarchy/subtypes request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn document_highlight(&self, _params: DocumentHighlightParams) -> jsonrpc::Result<Option<Vec<DocumentHighlight>>> {
+    pub async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> jsonrpc::Result<Option<Vec<DocumentHighlight>>> {
+        self.log_params("document_highlight", &params).await;
         error!("Got a textDocument/documentHighlight request, but it is not implemented");
-        Err(Error::method_not_found())
+
+        let DocumentHighlightParams {
+            text_document_position_params,
+            work_done_progress_params: _,
+            partial_result_params: _,
+        } = params;
+        let TextDocumentPositionParams {
+            text_document,
+            position: _,
+        } = text_document_position_params;
+        let TextDocumentIdentifier { uri } = text_document;
+
+        let state = self.state.lock().await;
+        let source = match state.documents.get(&uri) {
+            Some(source) => source,
+            None => {
+                self.log_error("failed to find file in DB").await;
+                return Ok(None);
+            }
+        };
+
+        let ast = match parse_file_content(FileId::SINGLE, source) {
+            Ok(ast) => ast,
+            Err(e) => {
+                self.log_error(format!("failed to parse file: {e:?}")).await;
+                return Ok(None);
+            },
+        };
+
+        let mut result = vec![];
+        for item in ast.items {
+            let range = item.span().to_lsp();
+            self.log_info(format!("sending range {range:?}")).await;
+            result.push(DocumentHighlight {
+                range,
+                kind: Some(DocumentHighlightKind::TEXT),
+            });
+        }
+
+        Ok(Some(result))
     }
 
     pub async fn document_link(&self, _params: DocumentLinkParams) -> jsonrpc::Result<Option<Vec<DocumentLink>>> {
@@ -107,22 +205,97 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn document_symbol(&self, _params: DocumentSymbolParams) -> jsonrpc::Result<Option<DocumentSymbolResponse>> {
+    pub async fn document_symbol(
+        &self,
+        _params: DocumentSymbolParams,
+    ) -> jsonrpc::Result<Option<DocumentSymbolResponse>> {
         error!("Got a textDocument/documentSymbol request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn semantic_tokens_full(&self, _params: SemanticTokensParams) -> jsonrpc::Result<Option<SemanticTokensResult>> {
-        error!("Got a textDocument/semanticTokens/full request, but it is not implemented");
-        Err(Error::method_not_found())
+    pub async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> jsonrpc::Result<Option<SemanticTokensResult>> {
+        self.log_params("semantic_tokens_full", &params).await;
+
+        let SemanticTokensParams {
+            work_done_progress_params: _,
+            partial_result_params: _,
+            text_document,
+        } = params;
+
+        let TextDocumentIdentifier { uri } = text_document;
+
+        // TODO proper error reporting
+        let state = self.state.lock().await;
+        let source = match state.documents.get(&uri) {
+            Some(source) => source,
+            None => {
+                self.log_error("failed to find file in DB").await;
+                return Ok(None);
+            }
+        };
+
+        let mut data = vec![];
+        let mut prev_start = Pos {
+            file: FileId::SINGLE,
+            line: 1,
+            col: 1,
+        };
+
+        // TODO check client multi-line token capability
+        // TODO check that both client and server support utf8-encoding
+        for token in Tokenizer::new(FileId::SINGLE, source) {
+            let token = match token {
+                Ok(token) => token,
+                Err(e) => {
+                    // TODO error recovery
+                    self.log_error(format!("failed to tokenize file: {e:?}")).await;
+                    break;
+                }
+            };
+
+            let start = token.span.start;
+
+            if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
+                let delta_line = start.line - prev_start.line;
+                let delta_start = if start.line == prev_start.line {
+                    start.col - prev_start.col
+                } else {
+                    start.col - 1
+                };
+
+                let data_token = SemanticToken {
+                    delta_line: delta_line as u32,
+                    delta_start: delta_start as u32,
+                    length: token.string.len() as u32,
+                    token_type: semantic_index as u32,
+                    token_modifiers_bitset: 0,
+                };
+                data.push(data_token);
+
+                // only update start if the token was actually included
+                prev_start = token.span.start;
+            }
+        }
+
+        let result = SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data });
+        Ok(Some(result))
     }
 
-    pub async fn semantic_tokens_full_delta(&self, _params: SemanticTokensDeltaParams) -> jsonrpc::Result<Option<SemanticTokensFullDeltaResult>> {
+    pub async fn semantic_tokens_full_delta(
+        &self,
+        _params: SemanticTokensDeltaParams,
+    ) -> jsonrpc::Result<Option<SemanticTokensFullDeltaResult>> {
         error!("Got a textDocument/semanticTokens/full/delta request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn semantic_tokens_range(&self, _params: SemanticTokensRangeParams) -> jsonrpc::Result<Option<SemanticTokensRangeResult>> {
+    pub async fn semantic_tokens_range(
+        &self,
+        _params: SemanticTokensRangeParams,
+    ) -> jsonrpc::Result<Option<SemanticTokensRangeResult>> {
         error!("Got a textDocument/semanticTokens/range request, but it is not implemented");
         Err(Error::method_not_found())
     }
@@ -177,12 +350,18 @@ impl ServerCore {
         Ok(params)
     }
 
-    pub async fn diagnostic(&self, _params: DocumentDiagnosticParams) -> jsonrpc::Result<DocumentDiagnosticReportResult> {
+    pub async fn diagnostic(
+        &self,
+        _params: DocumentDiagnosticParams,
+    ) -> jsonrpc::Result<DocumentDiagnosticReportResult> {
         error!("Got a textDocument/diagnostic request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn workspace_diagnostic(&self, _params: WorkspaceDiagnosticParams) -> jsonrpc::Result<WorkspaceDiagnosticReportResult> {
+    pub async fn workspace_diagnostic(
+        &self,
+        _params: WorkspaceDiagnosticParams,
+    ) -> jsonrpc::Result<WorkspaceDiagnosticReportResult> {
         error!("Got a workspace/diagnostic request, but it is not implemented");
         Err(Error::method_not_found())
     }
@@ -207,7 +386,10 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn color_presentation(&self, _params: ColorPresentationParams) -> jsonrpc::Result<Vec<ColorPresentation>> {
+    pub async fn color_presentation(
+        &self,
+        _params: ColorPresentationParams,
+    ) -> jsonrpc::Result<Vec<ColorPresentation>> {
         error!("Got a textDocument/colorPresentation request, but it is not implemented");
         Err(Error::method_not_found())
     }
@@ -217,12 +399,18 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn range_formatting(&self, _params: DocumentRangeFormattingParams) -> jsonrpc::Result<Option<Vec<TextEdit>>> {
+    pub async fn range_formatting(
+        &self,
+        _params: DocumentRangeFormattingParams,
+    ) -> jsonrpc::Result<Option<Vec<TextEdit>>> {
         error!("Got a textDocument/rangeFormatting request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn on_type_formatting(&self, _params: DocumentOnTypeFormattingParams) -> jsonrpc::Result<Option<Vec<TextEdit>>> {
+    pub async fn on_type_formatting(
+        &self,
+        _params: DocumentOnTypeFormattingParams,
+    ) -> jsonrpc::Result<Option<Vec<TextEdit>>> {
         error!("Got a textDocument/onTypeFormatting request, but it is not implemented");
         Err(Error::method_not_found())
     }
@@ -232,13 +420,44 @@ impl ServerCore {
         Err(Error::method_not_found())
     }
 
-    pub async fn prepare_rename(&self, _params: TextDocumentPositionParams) -> jsonrpc::Result<Option<PrepareRenameResponse>> {
+    pub async fn prepare_rename(
+        &self,
+        _params: TextDocumentPositionParams,
+    ) -> jsonrpc::Result<Option<PrepareRenameResponse>> {
         error!("Got a textDocument/prepareRename request, but it is not implemented");
         Err(Error::method_not_found())
     }
 
-    pub async fn linked_editing_range(&self, _params: LinkedEditingRangeParams) -> jsonrpc::Result<Option<LinkedEditingRanges>> {
+    pub async fn linked_editing_range(
+        &self,
+        _params: LinkedEditingRangeParams,
+    ) -> jsonrpc::Result<Option<LinkedEditingRanges>> {
         error!("Got a textDocument/linkedEditingRange request, but it is not implemented");
         Err(Error::method_not_found())
     }
+}
+
+pub fn semantic_token_map(category: TokenCategory) -> Option<SemanticTokenType> {
+    match category {
+        TokenCategory::WhiteSpace => None,
+        TokenCategory::Comment => Some(SemanticTokenType::COMMENT),
+        // TODO better categorization of ids?
+        TokenCategory::Identifier => Some(SemanticTokenType::VARIABLE),
+        TokenCategory::IntegerLiteral => Some(SemanticTokenType::NUMBER),
+        TokenCategory::StringLiteral => Some(SemanticTokenType::STRING),
+        TokenCategory::Keyword => Some(SemanticTokenType::KEYWORD),
+        // TODO is operator right or should this be None?
+        TokenCategory::Symbol => Some(SemanticTokenType::OPERATOR),
+    }
+}
+
+pub fn semantic_token_legend() -> Vec<SemanticTokenType> {
+    let padding = || SemanticTokenType::STRING;
+    TokenCategory::iter()
+        .map(move |c| semantic_token_map(c).unwrap_or(padding()))
+        .collect_vec()
+}
+
+pub fn semantic_token_index(category: TokenCategory) -> Option<usize> {
+    semantic_token_map(category).map(|_| category as usize)
 }
