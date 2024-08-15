@@ -52,13 +52,14 @@ impl<'s> Iterator for Tokenizer<'s> {
     type Item = Result<Token<&'s str>, InvalidToken>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.errored {
+        assert!(!self.errored, "Cannot continue calling next on tokenizer that returned an error");
+        if self.left.is_empty() {
             return None;
         }
 
         let left_context = &self.left[..min(self.left.len(), ERROR_CONTEXT_LENGTH)];
         let matches = self.compiled.set.matches(self.left);
-
+        
         let m = match pick_match(matches, &self.compiled.vec, self.left) {
             None => {
                 self.errored = true;

@@ -2,8 +2,8 @@
 use crate::syntax::ast::*;
 use crate::syntax::pos::*;
 
-// TODO what does inline do?
-grammar(loc: &LocationBuilder<'_>);
+// TODO general question: what does inline do?
+grammar(loc: &FileOffsets);
 
 match {
     // Skip whitespace and comments

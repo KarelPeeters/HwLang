@@ -1,7 +1,7 @@
 use lalrpop_util::lalrpop_mod;
 
-use pos::{byte_offset_to_pos, FileId, Pos};
-use crate::syntax::pos::LocationBuilder;
+use pos::{FileId, Pos};
+use crate::syntax::pos::FileOffsets;
 
 use crate::syntax::token::tokenize;
 use crate::util::Never;
@@ -22,12 +22,12 @@ pub fn parse_file_content(file_id: FileId, src: &str) -> Result<ast::FileContent
             return Err(ParseError::InvalidToken { location: e.pos });
         },
     }
-
-    let loc = LocationBuilder::new(file_id, src);
+    
+    let offsets = FileOffsets::new(file_id, src);
     grammar::FileContentParser::new()
-        .parse(&loc, &src)
+        .parse(&offsets, &src)
         .map_err(|e| {
-            e.map_location(|offset| byte_offset_to_pos(&src, offset, file_id).unwrap())
+            e.map_location(|offset| offsets.byte_to_pos(offset))
                 .map_token(|token| token.1.to_owned())
                 .map_error(|_| unreachable!("no custom errors used in the grammer"))
         })

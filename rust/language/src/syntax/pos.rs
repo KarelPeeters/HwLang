@@ -9,7 +9,6 @@ impl Debug for FileId {
     }
 }
 
-// TODO is this one or zero-based? make sure everyone follows it!
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pos {
     pub file: FileId,
@@ -33,7 +32,7 @@ pub struct Span {
 
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        assert!(self.start.file == self.end.file);
+        assert_eq!(self.start.file, self.end.file);
         write!(
             f,
             "{:?}{}:{}..{}:{}",
@@ -76,61 +75,50 @@ impl Span {
     }
 }
 
-pub struct LocationBuilder<'s> {
-    file_id: FileId,
-    src: &'s str,
+pub struct FileOffsets {
+    file: FileId,
+    total_bytes: usize,
+    line_to_start_byte: Vec<usize>,
 }
 
-impl<'s> LocationBuilder<'s> {
-    pub fn new(file_id: FileId, src: &'s str) -> Self {
-        Self { file_id, src }
-    }
+impl FileOffsets {
+    pub fn new(file: FileId, src: &str) -> Self {
+        let mut line_to_start_byte = vec![0];
 
-    pub fn span(&self, start: usize, end: usize) -> Span {
-        // TODO when called repeatedly this becomes O(n**2), fix this
-        //   ideally by computing this incrementally in the parser (using a custom lexer),
-        //   otherwise using some acceleration structure here
-        let start = byte_offset_to_pos(&self.src, start, self.file_id).unwrap();
-        let end = byte_offset_to_pos(&self.src, end, self.file_id).unwrap();
-        Span::new(start, end)
-    }
-}
+        // iterating over bytes here is fine: we only care about the ascii newline
+        for (i, b) in src.as_bytes().iter().copied().enumerate() {
+            if b == b'\n' {
+                // the next line starts after this byte
+                line_to_start_byte.push(i + 1);
+            }
+        }
 
-pub fn byte_offset_to_pos(src: &str, offset: usize, file: FileId) -> Option<Pos> {
-    let mut line = 0;
-    let mut col = 0;
-    let mut bytes = 0;
-
-    if bytes == offset {
-        return Some(Pos {
+        FileOffsets {
             file,
-            line: line + 1,
-            col: col + 1,
-        });
-    }
-
-    for c in src.chars() {
-        let mut buf = [0; 4];
-        bytes += c.encode_utf8(&mut buf).len();
-
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-
-        if bytes == offset {
-            return Some(Pos {
-                file,
-                line: line + 1,
-                col: col + 1,
-            });
-        }
-        if bytes > offset {
-            return None;
+            total_bytes: src.len(),
+            line_to_start_byte
         }
     }
 
-    None
+    pub fn byte_to_pos(&self, byte: usize) -> Pos {
+        assert!(
+            byte < self.total_bytes,
+            "Byte {} out of range in file {:?} containing {} bytes", byte, self.file, self.total_bytes
+        );
+        let line_0 = self.line_to_start_byte.binary_search(&byte)
+            .unwrap_or_else(|next_line_0| next_line_0 - 1);
+        let col_0 = byte - self.line_to_start_byte[line_0];
+        Pos {
+            file: self.file,
+            line: line_0 + 1,
+            col: col_0 + 1,
+        }
+    }
+
+    // short name, this is used a lot in the grammar
+    pub fn span(&self, start_byte: usize, end_byte: usize) -> Span {
+        let start = self.byte_to_pos(start_byte);
+        let end = self.byte_to_pos(end_byte);
+        Span { start, end }
+    }
 }
