@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use itertools::Itertools;
+use language::error::CompileError;
 
 use language::front::driver::{CompileSet, FilePath};
 use language::util::io::recurse_for_each_file;
@@ -34,5 +35,15 @@ fn main() {
         println!("Warning: no input files found");
     }
     
-    set.compile().unwrap();
+    match set.compile() {
+        Ok(()) => println!("Compilation finished successfully"),
+        Err(e) => {
+            match e {
+                CompileError::SnippetError(e) => eprintln!("{}", e.string),
+                _ => eprintln!("{:?}", e),
+            }
+            eprintln!("Compilation failed");
+            std::process::exit(1);
+        }
+    }
 }

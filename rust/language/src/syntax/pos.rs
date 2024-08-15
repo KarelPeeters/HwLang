@@ -9,9 +9,11 @@ impl Debug for FileId {
     }
 }
 
+// TODO make this more compact, eg. only keep the byte offset and compute the line and col on-demand
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pos {
     pub file: FileId,
+    pub byte: usize,
     pub line: usize,
     pub col: usize,
 }
@@ -100,6 +102,22 @@ impl FileOffsets {
         }
     }
 
+    pub fn file(&self) -> FileId {
+        self.file
+    }
+    
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+    
+    pub fn line_count(&self) -> usize {
+        self.line_to_start_byte.len()
+    }
+    
+    pub fn line_start_byte(&self, line_0: usize) -> usize {
+        self.line_to_start_byte[line_0]
+    }
+
     pub fn byte_to_pos(&self, byte: usize) -> Pos {
         assert!(
             byte < self.total_bytes,
@@ -110,6 +128,7 @@ impl FileOffsets {
         let col_0 = byte - self.line_to_start_byte[line_0];
         Pos {
             file: self.file,
+            byte,
             line: line_0 + 1,
             col: col_0 + 1,
         }

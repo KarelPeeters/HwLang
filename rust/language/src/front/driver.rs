@@ -1,11 +1,13 @@
+use std::cmp::{max, min};
 use std::collections::HashMap;
 
+use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
 
 use crate::{new_index_type, throw};
-use crate::error::CompileError;
+use crate::error::{CompileError, SnippetError};
 use crate::front::{scope, TypeOrValue};
 use crate::front::error::FrontError;
 use crate::front::param::{GenericArgs, GenericParameter, GenericParams, GenericTypeParameter, GenericValueParameter};
@@ -14,7 +16,7 @@ use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeI
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned};
-use crate::syntax::pos::FileId;
+use crate::syntax::pos::{FileId, FileOffsets, Span};
 use crate::util::arena::Arena;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -36,6 +38,7 @@ pub struct FileInfo {
     directory: Directory,
     source: String,
     ast: Option<ast::FileContent>,
+    offsets: FileOffsets,
     local_scope: Option<Scope<'static>>,
 }
 
@@ -174,7 +177,7 @@ impl CompileSet {
 
         // parse all files
         for file in self.files.values_mut() {
-            let ast = parse_file_content(file.id, &file.source)?;
+            let ast = parse_file_content(&file.source, &file.offsets)?;
             file.ast = Some(ast);
         }
 
@@ -351,62 +354,6 @@ impl<'a> CompileState<'a> {
         }
     }
 
-    // TODO move this content into actual type def stuff
-    // fn call_function_body(&mut self, scope_with_params: &Scope, body: &FunctionBody, params_for_unique: Vec<Value>) -> ResolveResult<Value> {
-    //     match body {
-    //         &FunctionBody::TypeConstructor(item_reference) => {
-    //             match self.get_item_ast(item_reference) {
-    //                 ast::Item::Type(item_ast) => {
-
-    //                 }
-    //                 ast::Item::Struct(item_ast) => {
-
-    //                 },
-    //                 ast::Item::Enum(item_ast) => {
-    //                 },
-    //                 ast::Item::Module(item_ast) => {
-    //                     let ItemDefModule { span: _, vis: _, id: _, params: _, ports, body } = item_ast;
-    //                     let unique = TypeUnique { item_reference, params: params_for_unique };
-    //
-    //                     // map ports
-    //                     let mut port_types = vec![];
-    //
-    //                     for port in &ports.inner {
-    //                         let ModulePort { span: _, id: _, direction, kind } = port;
-    //
-    //                         let kind_ty = match &kind.inner {
-    //                             PortKind::Clock => PortKind::Clock,
-    //                             PortKind::Normal { sync, ty } => {
-    //                                 let sync_index = match &sync.inner {
-    //                                     SyncKind::Async => SyncKind::Async,
-    //                                     SyncKind::Sync(id) => {
-    //                                         // TODO expand to full expressions and real scope lookups
-    //                                         let index = port_types.iter().position(|(port_id, _)| port_id == &id.string).ok_or_else(|| {
-    //                                             FrontError::UnknownClock(id.clone())
-    //                                         })?;
-    //                                         SyncKind::Sync(index)
-    //                                     }
-    //                                 };
-    //
-    //                                 let ty = self.eval_expression_as_ty(scope_with_params, ty)?;
-    //                                 PortKind::Normal { sync: sync_index, ty }
-    //                             }
-    //                         };
-    //
-    //                         port_types.push((port.id.string.clone(), PortTypeInfo { direction: port.direction.inner, kind: kind_ty }));
-    //                     }
-    //
-    //                     // define new type
-    //                     let info = ModuleTypeInfo { unique, ports: port_types };
-    //                     let ty = self.types.push(Type::Module(info));
-    //                     Ok(self.type_as_value(ty))
-    //                 }
-    //                 _ => unreachable!(),
-    //             }
-    //         },
-    //     }
-    // }
-
     fn resolve_new_type_def_item<T>(
         &mut self,
         defining_item: ItemReference,
@@ -573,15 +520,19 @@ impl<'a> CompileState<'a> {
                     }
                 }
 
-                let target = self.eval_expression(scope, target)?;
+                let target_entry = self.eval_expression(scope, target)?;
 
-                match target {
+                match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
                         todo!("{:?}", expr)
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
-                            TypeOrValue::Type(_) => throw!(FrontError::InvalidCallTargetGotType(expr.clone())),
+                            TypeOrValue::Type(_) => throw!(self.generate_span_error(
+                                "invalid call target",
+                                target.span,
+                                "invalid call target kind 'type'"
+                            )),
                             TypeOrValue::Value(_) => {
                                 todo!("call target value")
                             },
@@ -690,6 +641,41 @@ impl<'a> CompileState<'a> {
         let file_info = self.files.get(&file).unwrap();
         &file_info.ast.as_ref().unwrap().items[item_index]
     }
+
+    fn generate_span_error(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
+        // TODO make this depend on the actual ast, eg. don't go further back than the containing item
+        const SNIPPET_CONTEXT_LINES: usize = 2;
+        
+        let title = title.into();
+        let detail = detail.into();
+        
+        let file_info = self.files.get(&span.start.file).unwrap();
+        let start_line = max(
+            1,
+            span.start.line.saturating_sub(SNIPPET_CONTEXT_LINES)
+        );
+        let end_line = min(
+            span.end.line + SNIPPET_CONTEXT_LINES, 
+            max(1, file_info.offsets.line_count().saturating_sub(1))
+        );
+        let start_byte = file_info.offsets.line_start_byte(start_line-1);
+        let end_byte = file_info.offsets.line_start_byte(end_line-1);
+        let source = &file_info.source[start_byte..end_byte];
+
+        let message = Level::Error.title(&title).snippet(
+            Snippet::source(source)
+                .line_start(start_line)
+                .annotation(
+                    Level::Error.span((span.start.byte - start_byte)..(span.end.byte - start_byte))
+                        .label(&detail)
+                )
+        );
+
+        // TODO somehow use "anstream" crate?
+        let renderer = Renderer::styled();
+        let string = renderer.render(message).to_string();
+        SnippetError { string }
+    }
 }
 
 impl<E: Into<CompileError>> From<E> for ResolveFirstOr<CompileError> {
@@ -710,6 +696,7 @@ impl FileInfo {
             id,
             path,
             directory,
+            offsets: FileOffsets::new(id, &source),
             source,
             ast: None,
             local_scope: None,

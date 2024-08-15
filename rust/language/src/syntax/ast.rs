@@ -252,8 +252,6 @@ pub struct ClockedBlock {
 
 pub type Expression = Spanned<ExpressionKind>;
 
-// TODO create separate parallel expression hierarchy, dedicated to types?
-//   can they ever even mix? separating them would make future mixed system harder again though
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
     // Miscellaneous

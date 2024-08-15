@@ -42,7 +42,7 @@ impl<'s> Tokenizer<'s> {
         Tokenizer {
             compiled: CompiledRegex::instance(),
             left: source,
-            pos: Pos { file, line: 1, col: 1 },
+            pos: Pos { file, byte: 0, line: 1, col: 1 },
             errored: false,
         }
     }

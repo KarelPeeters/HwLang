@@ -1,3 +1,4 @@
+use annotate_snippets::Message;
 use crate::front::driver::CompileSetError;
 use crate::front::error::FrontError;
 use crate::front::scope::ScopeError;
@@ -5,10 +6,16 @@ use crate::syntax::ParseError;
 
 #[derive(Debug)]
 pub enum CompileError {
+    SnippetError(SnippetError),
     CompileSetError(CompileSetError),
     ParseError(ParseError),
     ScopeError(ScopeError),
     FrontError(FrontError),
+}
+
+#[derive(Debug)]
+pub struct SnippetError {
+    pub string: String,
 }
 
 impl From<CompileSetError> for CompileError {
@@ -32,5 +39,11 @@ impl From<ScopeError> for CompileError {
 impl From<FrontError> for CompileError {
     fn from(error: FrontError) -> Self {
         CompileError::FrontError(error)
+    }
+}
+
+impl From<SnippetError> for CompileError {
+    fn from(error: SnippetError) -> Self {
+        CompileError::SnippetError(error)
     }
 }
