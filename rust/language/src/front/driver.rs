@@ -573,7 +573,7 @@ impl<'d> CompileState<'d> {
                         }
                     }
                 }
-                
+
                 // TODO support both value function calls and type constructor calls
                 // match &self.values[target_value] {
                 //     ValueInfo::Function(target_value) => {
@@ -701,11 +701,12 @@ impl<'d> CompileState<'d> {
 
     #[track_caller]
     fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
-        let err = self.diagnostic("Feature not yet implemented")
-            .add_error(span, &format!("Feature not yet implemented: {}", feature))
+        let message = format!("Feature not yet implemented: {}", feature);
+        let err = self.diagnostic(&message)
+            .add_error(span, "used here")
             .finish();
         println!("{}", err.string);
-        panic!()
+        panic!("{}", message)
     }
 }
 
