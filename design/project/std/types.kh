@@ -41,7 +41,7 @@ type int_range(r: Range) = __builtin_type("int_range", r);
 // TODO can we write this as `int_range(..)` again?
 type int = __builtin_type("int");
 
-//example triggering new error reporting
+// example triggering new error reporting
 //type foo = int();
 
 type uint = int_range(0..);

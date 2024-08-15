@@ -1,9 +1,8 @@
-//use std::str::FromStr;
 use crate::syntax::ast::*;
 use crate::syntax::pos::*;
+use crate::syntax::LocationBuilder;
 
-// TODO general question: what does inline do?
-grammar(loc: &FileOffsets);
+grammar(loc: &LocationBuilder);
 
 match {
     // Skip whitespace and comments

@@ -32,7 +32,8 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
 // TODO use lazy_static to compile the regexes only once?
 pub struct Tokenizer<'s> {
     compiled: &'static CompiledRegex,
-    pos: Pos,
+    file: FileId,
+    curr_byte: usize,
     left: &'s str,
     errored: bool,
 }
@@ -41,8 +42,9 @@ impl<'s> Tokenizer<'s> {
     pub fn new(file: FileId, source: &'s str) -> Self {
         Tokenizer {
             compiled: CompiledRegex::instance(),
+            file,
+            curr_byte: 0,
             left: source,
-            pos: Pos { file, byte: 0, line: 1, col: 1 },
             errored: false,
         }
     }
@@ -56,15 +58,16 @@ impl<'s> Iterator for Tokenizer<'s> {
         if self.left.is_empty() {
             return None;
         }
-
-        let left_context = &self.left[..min(self.left.len(), ERROR_CONTEXT_LENGTH)];
+        
+        let start = Pos { file: self.file, byte: self.curr_byte };
         let matches = self.compiled.set.matches(self.left);
         
         let m = match pick_match(matches, &self.compiled.vec, self.left) {
             None => {
                 self.errored = true;
+                let left_context = &self.left[..min(self.left.len(), ERROR_CONTEXT_LENGTH)];
                 return Some(Err(InvalidToken {
-                    pos: self.pos,
+                    pos: Pos { file: self.file, byte: self.curr_byte },
                     prefix: left_context.to_owned(),
                 }));
             }
@@ -73,10 +76,10 @@ impl<'s> Iterator for Tokenizer<'s> {
 
         let match_str = &self.left[..m.len];
         self.left = &self.left[m.len..];
-
-        let start = self.pos;
-        self.pos = self.pos.step_over(match_str);
-        let span = Span::new(start, self.pos);
+        
+        self.curr_byte += match_str.len();
+        let end = Pos { file: self.file, byte: self.curr_byte };
+        let span = Span::new(start, end);
 
         Some(Ok(Token {
             ty: TOKEN_PATTERNS[m.index].0,
@@ -330,12 +333,19 @@ declare_tokens! {
 
 #[cfg(test)]
 mod test {
-    use crate::syntax::pos::FileId;
-    use crate::syntax::token::tokenize;
+    use crate::syntax::pos::{FileId, Pos, Span};
+    use crate::syntax::token::{Token, tokenize, TokenType};
 
     #[test]
     fn empty_tokenize() {
-        assert_eq!(Ok(vec![]), tokenize(FileId::SINGLE, ""));
-        assert!(tokenize(FileId::SINGLE, "test foo function \"foo\"").is_ok());
+        let file = FileId::SINGLE;
+        
+        assert_eq!(Ok(vec![]), tokenize(file, ""));
+        assert_eq!(Ok(vec![Token {
+            ty: TokenType::WhiteSpace,
+            string: "\n",
+            span: Span { start: Pos { file, byte: 0 }, end: Pos { file: file, byte: 1 } },
+        }]), tokenize(file, "\n"));
+        assert!(tokenize(file, "test foo function \"foo\"").is_ok());
     }
 }

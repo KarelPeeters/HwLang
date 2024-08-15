@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::collections::HashMap;
 
 use annotate_snippets::{Level, Renderer, Snippet};
@@ -643,28 +643,26 @@ impl<'a> CompileState<'a> {
     }
 
     fn generate_span_error(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
-        // TODO make this depend on the actual ast, eg. don't go further back than the containing item
+        // TODO make this depend on the actual AST, eg. don't go further back than the containing item
         const SNIPPET_CONTEXT_LINES: usize = 2;
         
         let title = title.into();
         let detail = detail.into();
         
         let file_info = self.files.get(&span.start.file).unwrap();
-        let start_line = max(
-            1,
-            span.start.line.saturating_sub(SNIPPET_CONTEXT_LINES)
-        );
-        let end_line = min(
-            span.end.line + SNIPPET_CONTEXT_LINES, 
-            max(1, file_info.offsets.line_count().saturating_sub(1))
-        );
-        let start_byte = file_info.offsets.line_start_byte(start_line-1);
-        let end_byte = file_info.offsets.line_start_byte(end_line-1);
+        let offsets = &file_info.offsets;
+
+        let span = offsets.expand_span(span);
+
+        let start_line_0 = span.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
+        let end_line_0 = min(span.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
+        let start_byte = file_info.offsets.line_start_byte(start_line_0);
+        let end_byte = file_info.offsets.line_start_byte(end_line_0);
         let source = &file_info.source[start_byte..end_byte];
 
         let message = Level::Error.title(&title).snippet(
             Snippet::source(source)
-                .line_start(start_line)
+                .line_start(start_line_0)
                 .annotation(
                     Level::Error.span((span.start.byte - start_byte)..(span.end.byte - start_byte))
                         .label(&detail)
