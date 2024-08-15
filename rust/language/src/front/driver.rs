@@ -205,10 +205,11 @@ impl SourceDatabase {
 
         // build import scope of each file
         for &file in &files {
-            let ast = self[file].ast.as_ref().unwrap();
+            let file_info = &self[file];
+            let ast = file_info.ast.as_ref().unwrap();
 
             // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-            let mut local_scope = Scope::default();
+            let mut local_scope = Scope::new_root(file_info.offsets.full_span());
 
             for (ast_item_index, ast_item) in enumerate(&ast.items) {
                 let common_info = ast_item.common_info();
@@ -444,7 +445,9 @@ impl<'d> CompileState<'d> {
                 let mut unique: HashMap<&str, &Identifier> = Default::default();
                 let mut parameters = vec![];
                 let mut arguments = vec![];
-                let mut scope_inner = scope_outer.nest(Visibility::Private);
+
+                let item_span = self.get_item_ast(defining_item).common_info().span_full;
+                let mut scope_inner = scope_outer.nest(item_span, Visibility::Private);
 
                 for (param_index, param_ast) in enumerate(&params.inner) {
                     // check parameter names for uniqueness
@@ -620,7 +623,7 @@ impl<'d> CompileState<'d> {
             ExpressionKind::Call(ref target, ref args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
-                        return Ok(MaybeConstructor::Immediate(self.eval_builtin_call(scope, expr, name, args)?));
+                        return Ok(MaybeConstructor::Immediate(self.eval_builtin_call(scope, expr.span, name, args)?));
                     }
                 }
 
@@ -737,7 +740,7 @@ impl<'d> CompileState<'d> {
         }
     }
 
-    fn eval_builtin_call(&mut self, scope: &Scope, expr: &Expression, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
+    fn eval_builtin_call(&mut self, scope: &Scope, expr_span: Span, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
         // TODO disallow calling builtin outside of stdlib?
         match name {
             "type" => {
@@ -779,7 +782,7 @@ impl<'d> CompileState<'d> {
 
         Err(
             self.diagnostic("invalid builtin arguments")
-                .snippet(expr.span)
+                .snippet(expr_span)
                 .add_error(args.span, "invalid arguments")
                 .finish()
                 .finish()

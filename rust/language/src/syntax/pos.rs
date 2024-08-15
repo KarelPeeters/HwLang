@@ -105,6 +105,13 @@ impl FileOffsets {
         self.line_to_start_byte.len()
     }
 
+    pub fn full_span(&self) -> Span {
+        Span {
+            start: Pos { file: self.file, byte: 0 },
+            end: Pos { file: self.file, byte: self.total_bytes },
+        }
+    }
+
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
         assert_eq!(pos.file, self.file);
         let line_0 = self.line_to_start_byte.binary_search(&pos.byte)

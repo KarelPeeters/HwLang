@@ -1,13 +1,12 @@
 use annotate_snippets::Level;
 use std::fmt::Debug;
 
-use indexmap::map::IndexMap;
-
 use crate::error::DiagnosticError;
 use crate::front::driver::{DiagnosticAddable, SourceDatabase};
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
 use crate::throw;
+use indexmap::map::IndexMap;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Visibility {
@@ -17,6 +16,7 @@ pub enum Visibility {
 
 #[derive(Debug)]
 pub struct Scope<'p, V> {
+    span: Span,
     parent: Option<(&'p Scope<'p, V>, Visibility)>,
     values: IndexMap<String, (V, Span, Visibility)>,
 }
@@ -24,8 +24,12 @@ pub struct Scope<'p, V> {
 pub type ScopeResult<T> = Result<T, DiagnosticError>;
 
 impl<V: Debug> Scope<'_, V> {
-    pub fn nest(&self, vis: Visibility) -> Scope<V> {
-        Scope { parent: Some((self, vis)), values: Default::default() }
+    pub fn new_root(span: Span) -> Scope<'static, V> {
+        Scope { span, parent: None, values: Default::default() }
+    }
+
+    pub fn nest(&self, span: Span, vis: Visibility) -> Scope<V> {
+        Scope { span, parent: Some((self, vis)), values: Default::default() }
     }
 
     pub fn declare<'a>(&mut self, database: &SourceDatabase, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
@@ -33,12 +37,8 @@ impl<V: Debug> Scope<'_, V> {
             // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
 
             let err = database.diagnostic("identifier declared twice")
-                .snippet(prev_span)
-                .add_info(id.span, "previously declared here")
-                .finish()
-                .snippet(id.span)
-                .add_error(prev_span, "declared again here")
-                .finish()
+                .add_info(prev_span, "previously declared here")
+                .add_error(id.span, "declared again here")
                 .finish();
             throw!(err)
         } else {
@@ -67,12 +67,8 @@ impl<V: Debug> Scope<'_, V> {
                 Ok(value)
             } else {
                 let err = database.diagnostic(format!("cannot access identifier `{}`", id.string))
-                    .snippet(value_span)
                     .add_info(value_span, "identifier declared here")
-                    .finish()
-                    .snippet(id.span)
                     .add_error(id.span, "not accessible here")
-                    .finish()
                     .footer(Level::Info, format!("Identifier was declared with visibility `{:?}`,\n but the access happens with visibility `{:?}`", value_vis, vis))
                     .finish();
                 throw!(err)
@@ -84,10 +80,10 @@ impl<V: Debug> Scope<'_, V> {
             // TODO do we need vis support here too?
             root.find(database, None, id, Visibility::Public)
         } else {
-            let err = database.diagnostic("undeclared identifier")
-                .snippet(id.span)
+            // TODO add fuzzy-matched suggestions as info
+            let err = database.diagnostic(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
-                .finish()
+                .add_info(Span::empty_at(self.span.start), "searched in this scope and its parents")
                 .finish();
             throw!(err)
         }
@@ -96,15 +92,6 @@ impl<V: Debug> Scope<'_, V> {
     /// The amount of values declared in this scope without taking the parent scope into account.
     pub fn size(&self) -> usize {
         self.values.len()
-    }
-}
-
-impl<'p, V> Default for Scope<'p, V> {
-    fn default() -> Self {
-        Self {
-            parent: Default::default(),
-            values: Default::default(),
-        }
     }
 }
 
