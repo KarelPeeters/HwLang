@@ -14,7 +14,7 @@ use crate::front::scope::Visibility;
 use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::{ast, parse_file_content};
-use crate::syntax::ast::{Args, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned};
+use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, UnaryOp};
 use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::Arena;
 
@@ -487,9 +487,10 @@ impl<'d> CompileState<'d> {
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
-        let result = match &expr.inner {
+        let result = match expr.inner {
             ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
-            ExpressionKind::Id(id) => {
+            ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
+            ExpressionKind::Id(ref id) => {
                 match scope.find(None, id, Visibility::Private)? {
                     &ScopedEntry::Item(item) => {
                         // TODO properly support value items, and in general fix "type" vs "value" resolution
@@ -502,7 +503,6 @@ impl<'d> CompileState<'d> {
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             },
-            ExpressionKind::Wrapped(_) => self.diagnostic_todo(expr.span, "wrapped expression"),
             ExpressionKind::TypeFunc(_, _) => self.diagnostic_todo(expr.span, "typefunc expression"),
             ExpressionKind::Block(_) => self.diagnostic_todo(expr.span, "block expression"),
             ExpressionKind::If(_) => self.diagnostic_todo(expr.span, "if expression"),
@@ -513,23 +513,23 @@ impl<'d> CompileState<'d> {
             ExpressionKind::Return(_) => self.diagnostic_todo(expr.span, "return expression"),
             ExpressionKind::Break(_) => self.diagnostic_todo(expr.span, "break expression"),
             ExpressionKind::Continue => self.diagnostic_todo(expr.span, "continue expression"),
-            ExpressionKind::IntPattern(int) => {
-                let value = match int {
-                    IntPattern::Hex(_) => self.diagnostic_todo(expr.span, "hex with wildcards"),
-                    IntPattern::Bin(_) => self.diagnostic_todo(expr.span, "bin with wildcards"),
+            ExpressionKind::IntPattern(ref pattern) => {
+                let value = match pattern {
+                    IntPattern::Hex(_) => self.diagnostic_todo(expr.span, "hex int-pattern expression"),
+                    IntPattern::Bin(_) => self.diagnostic_todo(expr.span, "bin int-pattern expression"),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         str_clean.parse::<BigInt>().unwrap()
                     }
                 };
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
-            },
+            }
             ExpressionKind::BoolLiteral(_) => self.diagnostic_todo(expr.span, "boolliteral expression"),
             ExpressionKind::StringLiteral(_) => self.diagnostic_todo(expr.span, "stringliteral expression"),
             ExpressionKind::ArrayLiteral(_) => self.diagnostic_todo(expr.span, "arrayliteral expression"),
             ExpressionKind::TupleLiteral(_) => self.diagnostic_todo(expr.span, "tupleliteral expression"),
             ExpressionKind::StructLiteral(_) => self.diagnostic_todo(expr.span, "structliteral expression"),
-            ExpressionKind::RangeLiteral(range) => {
+            ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
                 let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
@@ -545,13 +545,32 @@ impl<'d> CompileState<'d> {
                 let value = Value::Range(ValueRangeInfo::new(start, end, end_inclusive));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             },
-            ExpressionKind::UnaryOp(_, _) => self.diagnostic_todo(expr.span, "unaryop expression"),
-            ExpressionKind::BinaryOp(_, _, _) => self.diagnostic_todo(expr.span, "binaryop expression"),
+            ExpressionKind::UnaryOp(op, ref inner) => {
+                let result = match op {
+                    UnaryOp::Neg => {
+                        Value::Binary(
+                            BinaryOp::Sub,
+                            Box::new(Value::Int(BigInt::ZERO)),
+                            Box::new(self.eval_expression_as_value(scope, inner)?),
+                        )
+                    }
+                    UnaryOp::Not => self.diagnostic_todo(expr.span, "unaryop not expression"),
+                };
+
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
+            },
+            ExpressionKind::BinaryOp(op, ref left, ref right) => {
+                let left = self.eval_expression_as_value(scope, left)?;
+                let right = self.eval_expression_as_value(scope, right)?;
+
+                let result = Value::Binary(op, Box::new(left), Box::new(right));
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
+            },
             ExpressionKind::TernarySelect(_, _, _) => self.diagnostic_todo(expr.span, "ternaryselect expression"),
             ExpressionKind::ArrayIndex(_, _) => self.diagnostic_todo(expr.span, "arrayindex expression"),
             ExpressionKind::DotIdIndex(_, _) => self.diagnostic_todo(expr.span, "dotidindex expression"),
             ExpressionKind::DotIntIndex(_, _) => self.diagnostic_todo(expr.span, "dotintindex expression"),
-            ExpressionKind::Call(target, args) => {
+            ExpressionKind::Call(ref target, ref args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
                         return Ok(MaybeConstructor::Immediate(self.eval_builtin_call(scope, expr, name, args)?));

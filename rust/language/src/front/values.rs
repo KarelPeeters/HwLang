@@ -5,24 +5,29 @@ use crate::front::driver::{FunctionBody, ItemReference};
 use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
 use crate::front::TypeOrValue;
 use crate::front::types::Type;
-use crate::syntax::ast::Identifier;
+use crate::syntax::ast::{BinaryOp, Identifier};
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
 #[derive(Debug, Clone)]
 pub enum Value {
+    // parameters
     Generic(GenericValueParameter),
     Parameter(ValueParameter),
-    
+
+    // basic
     Int(BigInt),
+    // TODO long-term this should become a standard struct instead of compiler magic
+    Range(ValueRangeInfo),
+    // TODO this BinaryOp should probably be separate from the ast one
+    Binary(BinaryOp, Box<Value>, Box<Value>),
+
+    // structures
     Function(FunctionValue),
     Module(ModuleValue),
     // Struct(StructValue),
     // Tuple(TupleValue),
     // Enum(EnumValue),
-
-    // TODO should this be a dedicated type or just an instance of the normal range struct?
-    Range(ValueRangeInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -79,10 +84,19 @@ impl GenericContainer for Value {
                 Some(new) => new.as_ref().unwrap_value().clone(),
             }
             Value::Parameter(_) => todo!(),
+
             Value::Int(_) => todo!(),
+            Value::Range(_) => todo!(),
+            Value::Binary(op, ref left, ref right) => {
+                Value::Binary(
+                    op,
+                    Box::new(left.replace_generic_params(map)),
+                    Box::new(right.replace_generic_params(map)),
+                )
+            }
+
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),
-            Value::Range(_) => todo!(),
         }
     }
 }

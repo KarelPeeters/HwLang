@@ -121,8 +121,12 @@ impl GenericContainer for Type {
             }
             Type::Tuple(ref types) => Type::Tuple(types.iter().map(|t| t.replace_generic_params(map)).collect()),
             // TODO carefully think about this: once we allow defining local structs that use scoped generic parameters,
-            //   we need to replace them deep inside the fields.
-            //   Do we also want to keep nominal type-ness? How exactly does that interact with the above?
+            //     we need to replace them deep inside the fields.
+            //     Do we also want to keep nominal type-ness? How exactly does that interact with the above?
+            //   Solution: do a deep replace of the fields every time,
+            //     but also keep track of all parameters that are defined on the struct itself. If both the fields and 
+            //     the params match, the types are considered equal.
+            //   Do we not want outside params to count for type equality? Double check this.
             Type::Struct(_) => todo!(),
             Type::Enum(_) => todo!(),
             Type::Module(_) => todo!(),

@@ -256,12 +256,12 @@ pub type Expression = Spanned<ExpressionKind>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
-    Id(Identifier),
-    // Wrapped just means an expression that's surrounded by parenthesis.
-    // It has to be a dedicated expression to ensure it gets a separate span.
+    /// Wrapped just means an expression that's surrounded by parenthesis.
+    /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
+    Id(Identifier),
 
-    // function type signature
+    // Function type signature
     TypeFunc(Vec<Expression>, Box<Expression>),
 
     // Control flow
