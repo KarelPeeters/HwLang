@@ -2,19 +2,18 @@ use indexmap::IndexMap;
 
 use crate::front::driver::ItemReference;
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
-use crate::front::TypeOrValue;
 use crate::front::values::Value;
+use crate::front::TypeOrValue;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 
 #[derive(Debug, Clone)]
 pub enum MaybeConstructor<T> {
-    Constructor(Generic<T>),
+    Constructor(Constructor<T>),
     Immediate(T),
 }
 
-// TODO remove? this is just what the struct/enum thing already is
 #[derive(Debug, Clone)]
-pub struct Generic<T> {
+pub struct Constructor<T> {
     pub parameters: GenericParams,
     pub inner: T,
 }
@@ -48,28 +47,26 @@ pub struct FunctionTypeInfo {
     pub ret: Box<Type>,
 }
 
+/// Two nominal types are considered equal iff their unique ids are equal.
+/// This is a stronger requirement than just requiring the type structures to be the same in two ways:
+/// * Both types need to be defined by the same exact item
+/// * The generic parameters need to match.
+/// This is an additional requirement if some of the parameters don't effect the structure of the type.  
 #[derive(Debug, Clone)]
-pub struct StructTypeInfo {
-    pub generic_struct: Generic<StructTypeInfoInner>,
+pub struct NominalTypeUnique {
+    pub item_reference: ItemReference,
     pub args: GenericArgs,
 }
 
 #[derive(Debug, Clone)]
-pub struct StructTypeInfoInner {
-    pub item_reference: ItemReference,
+pub struct StructTypeInfo {
+    pub nominal_type_unique: NominalTypeUnique,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumTypeInfo {
-    pub generic_enum: Generic<EnumTypeInfoInner>,
-    pub args: GenericArgs,
-}
-
-#[derive(Debug, Clone)]
-pub struct EnumTypeInfoInner {
-    pub item_reference: ItemReference,
-    // TODO use identifier instead of string?
+    pub nominal_type_unique: NominalTypeUnique,
     pub variants: Vec<(String, Option<Type>)>,
 }
 
@@ -90,7 +87,7 @@ pub struct PortTypeInfo {
 impl<T> MaybeConstructor<T> {
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> MaybeConstructor<U> {
         match self {
-            MaybeConstructor::Constructor(c) => MaybeConstructor::Constructor(Generic {
+            MaybeConstructor::Constructor(c) => MaybeConstructor::Constructor(Constructor {
                 parameters: c.parameters,
                 inner: f(c.inner),
             }),
@@ -126,17 +123,39 @@ impl GenericContainer for Type {
                     ret: Box::new(info.ret.replace_generic_params(map)),
                 })
             }
-            Type::Tuple(ref types) => Type::Tuple(types.iter().map(|t| t.replace_generic_params(map)).collect()),
-            // TODO carefully think about this: once we allow defining local structs that use scoped generic parameters,
-            //     we need to replace them deep inside the fields.
-            //     Do we also want to keep nominal type-ness? How exactly does that interact with the above?
-            //   Solution: do a deep replace of the fields every time,
-            //     but also keep track of all parameters that are defined on the struct itself. If both the fields and
-            //     the params match, the types are considered equal.
-            //   Do we not want outside params to count for type equality? Double check this.
-            Type::Struct(_) => todo!(),
-            Type::Enum(_) => todo!(),
+            Type::Tuple(ref types) => {
+                Type::Tuple(types.iter().map(|t| t.replace_generic_params(map)).collect())
+            },
+            Type::Struct(ref info) => {
+                Type::Struct(StructTypeInfo {
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map),
+                    fields: info.fields.iter()
+                        .map(|(name, ty)| (name.clone(), ty.replace_generic_params(map)))
+                        .collect(),
+                })
+            },
+            Type::Enum(ref info) => {
+                Type::Enum(EnumTypeInfo {
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map),
+                    variants: info.variants.iter()
+                        .map(|(name, ty)| {
+                            (name.clone(), ty.as_ref().map(|t| t.replace_generic_params(map)))
+                        })
+                        .collect(),
+                })
+            },
             Type::Module(_) => todo!(),
+        }
+    }
+}
+
+impl GenericContainer for NominalTypeUnique {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue<Type, Value>>) -> Self {
+        NominalTypeUnique {
+            item_reference: self.item_reference.clone(),
+            args: GenericArgs {
+                vec: self.args.vec.iter().map(|t| t.replace_generic_params(map)).collect(),
+            },
         }
     }
 }

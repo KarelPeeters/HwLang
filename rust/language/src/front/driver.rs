@@ -9,7 +9,7 @@ use num_bigint::BigInt;
 use crate::error::{CompileError, DiagnosticError};
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
-use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
+use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::front::{scope, TypeOrValue};
 use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, UnaryOp};
@@ -366,12 +366,12 @@ impl<'d> CompileState<'d> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, _params, _args, scope_inner| {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, _args, scope_inner| {
                     Ok(s.eval_expression_as_ty(scope_inner, inner)?)
                 })
             }
             ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, params, args, scope_inner| {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, args, scope_inner| {
                     // map fields
                     let mut field_types = vec![];
                     for field in fields {
@@ -380,20 +380,14 @@ impl<'d> CompileState<'d> {
                     }
 
                     let ty = StructTypeInfo {
-                        generic_struct: Generic {
-                            parameters: params.clone(),
-                            inner: StructTypeInfoInner {
-                                item_reference,
-                                fields: field_types,
-                            },
-                        },
-                        args,
+                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        fields: field_types,
                     };
                     Ok(Type::Struct(ty))
                 })
             }
             ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, params, args, scope_inner| {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, args, scope_inner| {
                     // map variants
                     let mut variant_types = vec![];
                     for variant in variants {
@@ -404,14 +398,8 @@ impl<'d> CompileState<'d> {
                     }
 
                     let ty = EnumTypeInfo {
-                        generic_enum: Generic {
-                            parameters: params.clone(),
-                            inner: EnumTypeInfoInner {
-                                item_reference,
-                                variants: variant_types,
-                            },
-                        },
-                        args,
+                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        variants: variant_types,
                     };
                     Ok(Type::Enum(ty))
                 })
@@ -431,14 +419,13 @@ impl<'d> CompileState<'d> {
         defining_item: ItemReference,
         scope_outer: &Scope,
         params: &Option<Spanned<Vec<GenericParam>>>,
-        build_ty: impl FnOnce(&mut Self, GenericParams, GenericArgs, &Scope) -> ResolveResult<T>,
+        build_ty: impl FnOnce(&mut Self, GenericArgs, &Scope) -> ResolveResult<T>,
     ) -> ResolveResult<MaybeConstructor<T>> {
         match params {
             None => {
                 // there are no parameters, just map directly
-                let parameters = GenericParams { vec: vec![] };
                 let arguments = GenericArgs { vec: vec![] };
-                Ok(MaybeConstructor::Immediate(build_ty(self, parameters, arguments, scope_outer)?))
+                Ok(MaybeConstructor::Immediate(build_ty(self, arguments, scope_outer)?))
             }
             Some(params) => {
                 // build inner scope
@@ -478,6 +465,8 @@ impl<'d> CompileState<'d> {
 
                     parameters.push(param);
                     arguments.push(arg.clone());
+
+                    // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
                     scope_inner.declare(&self.database, &param_ast.id, entry, Visibility::Private)?;
                 }
@@ -485,9 +474,9 @@ impl<'d> CompileState<'d> {
                 // map inner to actual type
                 let parameters = GenericParams { vec: parameters };
                 let arguments = GenericArgs { vec: arguments };
-                let ty_constr = Generic {
-                    parameters: parameters.clone(),
-                    inner: build_ty(self, parameters, arguments, &scope_inner)?,
+                let ty_constr = Constructor {
+                    parameters,
+                    inner: build_ty(self, arguments, &scope_inner)?,
                 };
                 Ok(MaybeConstructor::Constructor(ty_constr))
             }
@@ -632,7 +621,7 @@ impl<'d> CompileState<'d> {
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
                         // goal: replace parameters with the arguments of this call
-                        let Generic { inner, parameters } = constr;
+                        let Constructor { inner, parameters } = constr;
 
                         // check count match
                         if parameters.vec.len() != args.inner.len() {
