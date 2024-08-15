@@ -14,6 +14,7 @@ pub enum CompileError {
 }
 
 #[derive(Debug)]
+#[must_use]
 pub struct SnippetError {
     pub string: String,
 }

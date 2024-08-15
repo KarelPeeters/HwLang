@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
+use logos::Source;
 use num_bigint::BigInt;
 
 use crate::{new_index_type, throw};
@@ -22,7 +23,7 @@ use crate::util::arena::Arena;
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
 
-pub struct CompileSet {
+pub struct SourceDatabase {
     pub paths: IndexSet<FilePath>,
     // TODO use arena for this too?
     pub files: IndexMap<FileId, FileInfo>,
@@ -42,12 +43,16 @@ pub struct FileInfo {
     local_scope: Option<Scope<'static>>,
 }
 
-new_index_type!(Directory);
+// TODO rename to "FilePath" or "SourcePath"
+new_index_type!(pub Directory);
 
 pub struct DirectoryInfo {
     path: FilePath,
     file: Option<FileId>,
     children: IndexMap<String, Directory>,
+
+    // only intended for use in user-visible diagnostic messages
+    diagnostic_path: String,
 }
 
 pub type Scope<'s> = scope::Scope<'s, ScopedEntry>;
@@ -69,12 +74,17 @@ pub enum CompileSetError {
     DuplicatePath(FilePath),
 }
 
-impl CompileSet {
+impl SourceDatabase {
     pub fn new() -> Self {
         let mut directories = Arena::default();
-        let root_directory = directories.push(DirectoryInfo { path: FilePath(vec![]), file: None, children: Default::default() });
+        let root_directory = directories.push(DirectoryInfo {
+            path: FilePath(vec![]),
+            file: None,
+            children: Default::default(),
+            diagnostic_path: "/".to_owned(),
+        });
 
-        CompileSet {
+        SourceDatabase {
             files: IndexMap::default(),
             paths: IndexSet::default(),
             directories,
@@ -118,10 +128,12 @@ impl CompileSet {
             curr_dir = match self.directories[curr_dir].children.get(path_item) {
                 Some(&child) => child,
                 None => {
+                    let curr_path = &path.0[..=i];
                     let child = self.directories.push(DirectoryInfo {
-                        path: FilePath(path.0[..=i].to_vec()),
+                        path: FilePath(curr_path.to_vec()),
                         file: None,
                         children: Default::default(),
+                        diagnostic_path: curr_path.iter().join("/"),
                     });
                     self.directories[curr_dir].children.insert(path_item.clone(), child);
                     child
@@ -146,10 +158,8 @@ pub struct ItemInfo {
     // TODO where to store the actual value? do we just leave this abstract?
 }
 
-pub struct CompileState<'a> {
-    files: &'a IndexMap<FileId, FileInfo>,
-    directories: &'a Arena<Directory, DirectoryInfo>,
-    root_directory: Directory,
+pub struct CompileState<'d> {
+    database: &'d SourceDatabase,
     items: Arena<Item, ItemInfo>,
 }
 
@@ -162,7 +172,7 @@ pub enum ResolveFirstOr<E> {
     Error(E),
 }
 
-impl CompileSet {
+impl SourceDatabase {
     // TODO: add some error recovery and continuation, eg. return all parse errors at once
     pub fn compile(mut self) -> Result<(), CompileError> {
         // sort files to ensure platform-independence
@@ -204,9 +214,7 @@ impl CompileSet {
         }
 
         let mut state = CompileState {
-            files: &self.files,
-            directories: &self.directories,
-            root_directory: self.root_directory,
+            database: &self,
             items,
         };
 
@@ -282,7 +290,7 @@ impl<'a> CompileState<'a> {
         // item lookup
         let item_reference = self.items[item].item_reference;
         let ItemReference { file, item_index: _ } = item_reference;
-        let file_info = self.files.get(&file).unwrap();
+        let file_info = &self.database[file];
         let item_ast = self.get_item_ast(item_reference);
         let scope = file_info.local_scope.as_ref().unwrap();
 
@@ -417,24 +425,23 @@ impl<'a> CompileState<'a> {
         //   are they really necessary? if all inner items are private it's effectively equivalent
 
         let mut vis = Visibility::Private;
-        let mut curr_dir = self.root_directory;
+        let mut curr_dir = self.database.root_directory;
 
         let Path { span: _, steps, id } = path;
 
         for step in steps {
-            curr_dir = self.directories[curr_dir].children.get(&step.string).copied().ok_or_else(|| {
-                let mut options = self.directories[curr_dir].children.keys().cloned().collect_vec();
+            let curr_dir_info = &self.database[curr_dir];
+            curr_dir = curr_dir_info.children.get(&step.string).copied().ok_or_else(|| {
+                let mut options = curr_dir_info.children.keys().cloned().collect_vec();
                 options.sort();
                 FrontError::InvalidPathStep(step.clone(), options)
             })?;
         }
 
-        let file = self.directories[curr_dir].file.ok_or_else(|| {
+        let file = self.database[curr_dir].file.ok_or_else(|| {
             FrontError::ExpectedPathToFile(path.clone())
         })?;
-
-        let file_info = self.files.get(&file).unwrap();
-        let file_scope = file_info.local_scope.as_ref().unwrap();
+        let file_scope = self.database[file].local_scope.as_ref().unwrap();
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
         let value = file_scope.find(None, id, vis)?;
@@ -528,7 +535,7 @@ impl<'a> CompileState<'a> {
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
-                            TypeOrValue::Type(_) => throw!(self.generate_span_error(
+                            TypeOrValue::Type(_) => throw!(self.single_span_error(
                                 "invalid call target",
                                 target.span,
                                 "invalid call target kind 'type'"
@@ -638,41 +645,15 @@ impl<'a> CompileState<'a> {
 
     fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
         let ItemReference { file, item_index } = item_reference;
-        let file_info = self.files.get(&file).unwrap();
-        &file_info.ast.as_ref().unwrap().items[item_index]
+        let file_info = &self.database[file];
+        let ast = file_info.ast.as_ref().unwrap();
+        &ast.items[item_index]
     }
 
-    fn generate_span_error(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
-        // TODO make this depend on the actual AST, eg. don't go further back than the containing item
-        const SNIPPET_CONTEXT_LINES: usize = 2;
-        
-        let title = title.into();
-        let detail = detail.into();
-        
-        let file_info = self.files.get(&span.start.file).unwrap();
-        let offsets = &file_info.offsets;
-
-        let span = offsets.expand_span(span);
-
-        let start_line_0 = span.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
-        let end_line_0 = min(span.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
-        let start_byte = file_info.offsets.line_start_byte(start_line_0);
-        let end_byte = file_info.offsets.line_start_byte(end_line_0);
-        let source = &file_info.source[start_byte..end_byte];
-
-        let message = Level::Error.title(&title).snippet(
-            Snippet::source(source)
-                .line_start(start_line_0)
-                .annotation(
-                    Level::Error.span((span.start.byte - start_byte)..(span.end.byte - start_byte))
-                        .label(&detail)
-                )
-        );
-
-        // TODO somehow use "anstream" crate?
-        let renderer = Renderer::styled();
-        let string = renderer.render(message).to_string();
-        SnippetError { string }
+    fn single_span_error(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
+        let mut diag = Diagnostic::new(title);
+        diag.error(span, detail);
+        return diag.finish(&self.database);
     }
 }
 
@@ -707,4 +688,71 @@ impl FileInfo {
 pub struct ItemReference {
     pub file: FileId,
     pub item_index: usize,
+}
+
+// Diagnostic error formatting
+const SNIPPET_CONTEXT_LINES: usize = 2;
+
+pub struct Diagnostic {
+    pub title: String,
+    pub errors: Vec<(Span, String)>,
+}
+
+impl Diagnostic {
+    pub fn new(title: impl Into<String>) -> Diagnostic {
+        Diagnostic { title: title.into(), errors: vec![] }
+    }
+
+    // TODO allow reporting multiple errors in a single span
+    pub fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.errors.push((span, message.into()))
+    }
+
+    pub fn finish(self, database: &SourceDatabase) -> SnippetError {
+        let Self { title, errors } = self;
+
+        let mut message = Level::Error.title(&title);
+
+        for &(span, ref error) in &errors {
+            let file_info = &database[span.start.file];
+            let offsets = &file_info.offsets;
+
+            let span = offsets.expand_span(span);
+            let start_line_0 = span.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
+            let end_line_0 = min(span.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
+            let start_byte = offsets.line_start_byte(start_line_0);
+            let end_byte = offsets.line_start_byte(end_line_0);
+            let source = &file_info.source[start_byte..end_byte];
+
+            let path = &database[file_info.directory].diagnostic_path;
+
+            message = message.snippet(
+                Snippet::source(source)
+                    .origin(path)
+                    .line_start(start_line_0 + 1)
+                    .annotation(
+                        Level::Error.span((span.start.byte - start_byte)..(span.end.byte - start_byte))
+                            .label(&error)
+                    )
+            );
+        }
+
+        let renderer = Renderer::styled();
+        let string = renderer.render(message).to_string();
+        SnippetError { string }
+    }
+}
+
+impl std::ops::Index<FileId> for SourceDatabase {
+    type Output = FileInfo;
+    fn index(&self, index: FileId) -> &Self::Output {
+        self.files.get(&index).unwrap()
+    }
+}
+
+impl std::ops::Index<Directory> for SourceDatabase {
+    type Output = DirectoryInfo;
+    fn index(&self, index: Directory) -> &Self::Output {
+        &self.directories[index]
+    }
 }

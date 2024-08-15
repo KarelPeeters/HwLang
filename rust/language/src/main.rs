@@ -5,7 +5,7 @@ use clap::Parser;
 use itertools::Itertools;
 use language::error::CompileError;
 
-use language::front::driver::{CompileSet, FilePath};
+use language::front::driver::{SourceDatabase, FilePath};
 use language::util::io::recurse_for_each_file;
 
 #[derive(Parser, Debug)]
@@ -16,7 +16,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let mut set = CompileSet::new();
+    let mut set = SourceDatabase::new();
 
     recurse_for_each_file(&args.root, &mut |stack, f| {
         let path = f.path();
