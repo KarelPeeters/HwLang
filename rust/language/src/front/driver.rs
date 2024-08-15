@@ -944,6 +944,7 @@ impl<'d> DiagnosticSnippet<'d> {
 
 impl DiagnosticAddable for DiagnosticSnippet<'_> {
     fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
+        assert!(self.span.contains(span), "DiagnosticSnippet labels must fall within snippet span");
         self.annotations.push((level, span, label.into()));
         self
     }

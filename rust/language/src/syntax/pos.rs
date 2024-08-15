@@ -46,11 +46,19 @@ impl FileId {
 
 impl Span {
     pub fn new(start: Pos, end: Pos) -> Self {
+        assert_eq!(start.file, end.file);
         Self { start, end }
     }
 
     pub fn empty_at(at: Pos) -> Self {
         Self::new(at, at)
+    }
+
+    pub fn contains(self, other: Span) -> bool {
+        assert_eq!(self.start.file, self.end.file);
+        assert_eq!(other.start.file, other.end.file);
+        assert_eq!(self.start.file, other.start.file);
+        self.start.byte <= other.start.byte && other.end.byte <= self.end.byte
     }
 }
 
