@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use crate::front::driver::ItemReference;
 use crate::front::param::{GenericArgs, GenericParams, GenericTypeParameter};
 use crate::front::values::Value;

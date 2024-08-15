@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
-use logos::Source;
 use num_bigint::BigInt;
 
 use crate::{new_index_type, throw};
@@ -46,6 +45,7 @@ pub struct FileInfo {
 new_index_type!(pub Directory);
 
 pub struct DirectoryInfo {
+    #[allow(dead_code)]
     path: FilePath,
     file: Option<FileId>,
     children: IndexMap<String, Directory>,
@@ -318,7 +318,7 @@ impl<'d> CompileState<'d> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, params: _, args: _, scope_inner| {
+                self.resolve_new_type_def_item(item_reference, scope, params, |s, _params, _args, scope_inner| {
                     Ok(s.eval_expression_as_ty(scope_inner, inner)?)
                 })
             }
@@ -446,7 +446,8 @@ impl<'d> CompileState<'d> {
         // TODO the current path design does not allow private sub-modules
         //   are they really necessary? if all inner items are private it's effectively equivalent
 
-        let mut vis = Visibility::Private;
+        // TODO allow private visibility in child and sibling paths
+        let vis = Visibility::Public;
         let mut curr_dir = self.database.root_directory;
 
         let Path { span: _, steps, id } = path;
@@ -698,6 +699,7 @@ impl<'d> CompileState<'d> {
             .finish()
     }
 
+    #[track_caller]
     fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
         let err = self.diagnostic("Feature not yet implemented")
             .add_error(span, &format!("Feature not yet implemented: {}", feature))

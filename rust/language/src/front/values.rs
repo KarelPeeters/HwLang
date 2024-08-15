@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use num_bigint::BigInt;
 
 use crate::front::driver::{FunctionBody, ItemReference};

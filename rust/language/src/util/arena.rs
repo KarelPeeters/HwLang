@@ -1,11 +1,10 @@
-use std::cell::RefCell;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
-use indexmap::map::{Entry, IndexMap};
+use indexmap::map::IndexMap;
 
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
@@ -83,11 +82,6 @@ impl<K: IndexType, T> Arena<K, T> {
         self.next_i += 1;
         assert!(self.map.insert(i, value).is_none());
         K::new(Idx::new(i))
-    }
-
-    pub fn pop(&mut self, index: K) -> T {
-        self.map.remove(&index.idx().i)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index))
     }
 
     pub fn replace(&mut self, index: K, new_value: T) -> T {
@@ -214,30 +208,6 @@ impl<K: IndexType, T: Eq + Hash + Clone + Debug> ArenaSet<K, T> {
             self.map_back.insert(value, i);
             K::new(Idx::new(i))
         }
-    }
-
-    pub fn pop(&mut self, index: K) -> T {
-        let value = self.map_fwd.remove(&index.idx().i)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index));
-        self.map_back.remove(&value);
-        value
-    }
-
-    ///Replace the value for the given index with the new value. This new value must be distinct
-    ///from all existing values in this set.
-    pub fn replace(&mut self, index: K, new_value: T) -> T {
-        match self.map_back.entry(new_value.clone()) {
-            Entry::Occupied(_) => panic!("already contains value {:?}", new_value),
-            Entry::Vacant(entry) => entry.insert(index.idx().i),
-        };
-
-        let old_value = self.map_fwd.insert(index.idx().i, new_value)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index));
-
-        let old_index = self.map_back.remove(&old_value);
-        debug_assert_eq!(Some(index.idx().i), old_index);
-
-        old_value
     }
 
     pub fn len(&self) -> usize {

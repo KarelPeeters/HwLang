@@ -1,4 +1,3 @@
-use std::panic::Location;
 use lalrpop_util::lalrpop_mod;
 
 use pos::Pos;

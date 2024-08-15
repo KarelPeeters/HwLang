@@ -1,5 +1,4 @@
 use crate::syntax::ast::*;
-use crate::syntax::pos::*;
 use crate::syntax::LocationBuilder;
 
 grammar(loc: &LocationBuilder);
@@ -55,7 +54,7 @@ Statement: Statement = {
     // declaration
     <start:@L> <kind:DeclarationKind> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
         let decl = Declaration { kind, id, ty, init, span: loc.span(start, end) };
-        Statement { kind: StatementKind::Declaration((decl)), span: loc.span(start, end) }
+        Statement { kind: StatementKind::Declaration(decl), span: loc.span(start, end) }
     },
     // assignment
     <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
