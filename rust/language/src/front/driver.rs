@@ -17,7 +17,7 @@ use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeI
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::{ast, parse_file_content};
 use crate::syntax::ast::{Args, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned};
-use crate::syntax::pos::{FileId, FileOffsets, Span};
+use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::Arena;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -141,6 +141,14 @@ impl SourceDatabase {
             };
         }
         curr_dir
+    }
+
+    pub fn expand_pos(&self, pos: Pos) -> PosFull {
+        self[pos.file].offsets.expand_pos(pos)
+    }
+
+    pub fn expand_span(&self, span: Span) -> SpanFull {
+        self[span.start.file].offsets.expand_span(span)
     }
 }
 
@@ -355,10 +363,12 @@ impl<'a> CompileState<'a> {
                 })
             },
             // value definitions
-            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ }) => todo!(),
-            ast::Item::Const(_) => todo!(),
-            ast::Item::Function(_) => todo!(),
-            ast::Item::Interface(_) => todo!(),
+            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ }) => {
+                self.panic_todo(item_ast.span(), "module definition")
+            },
+            ast::Item::Const(_) => self.panic_todo(item_ast.span(), "const definition"),
+            ast::Item::Function(_) => self.panic_todo(item_ast.span(), "function definition"),
+            ast::Item::Interface(_) => self.panic_todo(item_ast.span(), "interface definition"),
         }
     }
 
@@ -457,7 +467,7 @@ impl<'a> CompileState<'a> {
     //    careful, think about how this interacts with the future type inference system
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match &expr.inner {
-            ExpressionKind::Dummy => todo!(),
+            ExpressionKind::Dummy => self.panic_todo(expr.span, "dummy expression"),
             ExpressionKind::Id(id) => {
                 match scope.find(None, id, Visibility::Private)? {
                     &ScopedEntry::Item(item) => {
@@ -471,21 +481,21 @@ impl<'a> CompileState<'a> {
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             },
-            ExpressionKind::Wrapped(_) => todo!(),
-            ExpressionKind::TypeFunc(_, _) => todo!(),
-            ExpressionKind::Block(_) => todo!(),
-            ExpressionKind::If(_) => todo!(),
-            ExpressionKind::Loop(_) => todo!(),
-            ExpressionKind::While(_) => todo!(),
-            ExpressionKind::For(_) => todo!(),
-            ExpressionKind::Sync(_) => todo!(),
-            ExpressionKind::Return(_) => todo!(),
-            ExpressionKind::Break(_) => todo!(),
-            ExpressionKind::Continue => todo!(),
+            ExpressionKind::Wrapped(_) => self.panic_todo(expr.span, "wrapped expression"),
+            ExpressionKind::TypeFunc(_, _) => self.panic_todo(expr.span, "typefunc expression"),
+            ExpressionKind::Block(_) => self.panic_todo(expr.span, "block expression"),
+            ExpressionKind::If(_) => self.panic_todo(expr.span, "if expression"),
+            ExpressionKind::Loop(_) => self.panic_todo(expr.span, "loop expression"),
+            ExpressionKind::While(_) => self.panic_todo(expr.span, "while expression"),
+            ExpressionKind::For(_) => self.panic_todo(expr.span, "for expression"),
+            ExpressionKind::Sync(_) => self.panic_todo(expr.span, "sync expression"),
+            ExpressionKind::Return(_) => self.panic_todo(expr.span, "return expression"),
+            ExpressionKind::Break(_) => self.panic_todo(expr.span, "break expression"),
+            ExpressionKind::Continue => self.panic_todo(expr.span, "continue expression"),
             ExpressionKind::IntPattern(int) => {
                 let value = match int {
-                    IntPattern::Hex(_) => todo!("hex with wildcards"),
-                    IntPattern::Bin(_) => todo!("bin with wildcards"),
+                    IntPattern::Hex(_) => self.panic_todo(expr.span, "hex with wildcards"),
+                    IntPattern::Bin(_) => self.panic_todo(expr.span, "bin with wildcards"),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         str_clean.parse::<BigInt>().unwrap()
@@ -493,11 +503,11 @@ impl<'a> CompileState<'a> {
                 };
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
             },
-            ExpressionKind::BoolLiteral(_) => todo!(),
-            ExpressionKind::StringLiteral(_) => todo!(),
-            ExpressionKind::ArrayLiteral(_) => todo!(),
-            ExpressionKind::TupleLiteral(_) => todo!(),
-            ExpressionKind::StructLiteral(_) => todo!(),
+            ExpressionKind::BoolLiteral(_) => self.panic_todo(expr.span, "boolliteral expression"),
+            ExpressionKind::StringLiteral(_) => self.panic_todo(expr.span, "stringliteral expression"),
+            ExpressionKind::ArrayLiteral(_) => self.panic_todo(expr.span, "arrayliteral expression"),
+            ExpressionKind::TupleLiteral(_) => self.panic_todo(expr.span, "tupleliteral expression"),
+            ExpressionKind::StructLiteral(_) => self.panic_todo(expr.span, "structliteral expression"),
             ExpressionKind::RangeLiteral(range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
@@ -514,12 +524,12 @@ impl<'a> CompileState<'a> {
                 let value = Value::Range(ValueRangeInfo::new(start, end, end_inclusive));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             },
-            ExpressionKind::UnaryOp(_, _) => todo!(),
-            ExpressionKind::BinaryOp(_, _, _) => todo!(),
-            ExpressionKind::TernarySelect(_, _, _) => todo!(),
-            ExpressionKind::ArrayIndex(_, _) => todo!(),
-            ExpressionKind::DotIdIndex(_, _) => todo!(),
-            ExpressionKind::DotIntIndex(_, _) => todo!(),
+            ExpressionKind::UnaryOp(_, _) => self.panic_todo(expr.span, "unaryop expression"),
+            ExpressionKind::BinaryOp(_, _, _) => self.panic_todo(expr.span, "binaryop expression"),
+            ExpressionKind::TernarySelect(_, _, _) => self.panic_todo(expr.span, "ternaryselect expression"),
+            ExpressionKind::ArrayIndex(_, _) => self.panic_todo(expr.span, "arrayindex expression"),
+            ExpressionKind::DotIdIndex(_, _) => self.panic_todo(expr.span, "dotidindex expression"),
+            ExpressionKind::DotIntIndex(_, _) => self.panic_todo(expr.span, "dotintindex expression"),
             ExpressionKind::Call(target, args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
@@ -531,17 +541,17 @@ impl<'a> CompileState<'a> {
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
-                        todo!("{:?}", expr)
+                        self.panic_todo(expr.span, "constructor call")
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
-                            TypeOrValue::Type(_) => throw!(self.single_span_error(
+                            TypeOrValue::Type(_) => throw!(self.error_single_span(
                                 "invalid call target",
                                 target.span,
                                 "invalid call target kind 'type'"
                             )),
                             TypeOrValue::Value(_) => {
-                                todo!("call target value")
+                                self.panic_todo(target.span, "value call target")
                             },
                         }
                     }
@@ -650,10 +660,20 @@ impl<'a> CompileState<'a> {
         &ast.items[item_index]
     }
 
-    fn single_span_error(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
+    fn error_single_span(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
         let mut diag = Diagnostic::new(title);
         diag.error(span, detail);
         return diag.finish(&self.database);
+    }
+
+    fn panic_todo(&self, span: Span, feature: &str) -> ! {
+        let err = self.error_single_span(
+            "Feature not yet implemented",
+            span,
+            &format!("Feature not yet implemented: {}", feature)
+        );
+        println!("{}", err.string);
+        panic!()
     }
 }
 

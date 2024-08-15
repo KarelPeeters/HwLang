@@ -1,16 +1,10 @@
 use std::fmt::{Debug, Formatter};
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct FileId(pub usize);
 
-impl Debug for FileId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("[{}]", self.0))
-    }
-}
-
 /// Minimal source code position.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pos {
     pub file: FileId,
     pub byte: usize,
@@ -29,7 +23,7 @@ pub struct PosFull {
 }
 
 // TODO make this more compact, sharing the file?
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Span {
     /// inclusive
     pub start: Pos,
@@ -57,6 +51,20 @@ impl Span {
 
     pub fn empty_at(at: Pos) -> Self {
         Self::new(at, at)
+    }
+}
+
+// Short debug implementations, these can appear a lot in AST debug outputs.
+impl Debug for Pos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("Pos([{}]:{})", self.file.0, self.byte))
+    }
+}
+
+impl Debug for Span {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        assert_eq!(self.start.file, self.end.file);
+        f.write_fmt(format_args!("Span([{}]:{}..{})", self.start.file.0, self.start.byte, self.end.byte))
     }
 }
 

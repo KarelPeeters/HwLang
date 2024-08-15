@@ -17,10 +17,6 @@ pub enum FrontError {
     ExpectedIntegerExpression(Expression),
     ExpectedRangeExpression(Expression),
     
-    InvalidCallTargetGotType(Expression),
-    
-    ExpectedNonNegativeInteger(Expression, BigInt),
-    
     InvalidPathStep(Identifier, Vec<String>),
     ExpectedPathToFile(Path),
     
