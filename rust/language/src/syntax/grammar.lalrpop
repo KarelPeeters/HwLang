@@ -322,7 +322,7 @@ MaybeId: MaybeIdentifier = {
 
 Vis: Visibility = {
     // TODO pub or public?
-    <start:@L> "public" <end:@R> => Visibility::Public(loc.span(start, end)),
+    <start:@L> "pub" <end:@R> => Visibility::Public(loc.span(start, end)),
     => Visibility::Private,
 }
 

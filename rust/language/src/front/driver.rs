@@ -3,20 +3,20 @@ use std::collections::HashMap;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Itertools, zip_eq};
+use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 
-use crate::{new_index_type, throw};
 use crate::error::{CompileError, DiagnosticError};
-use crate::front::{scope, TypeOrValue};
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
 use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
 use crate::front::values::{Value, ValueRangeInfo};
-use crate::syntax::{ast, parse_file_content};
+use crate::front::{scope, TypeOrValue};
 use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, UnaryOp};
 use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
+use crate::syntax::{ast, parse_file_content, ParseError};
 use crate::util::arena::Arena;
+use crate::{new_index_type, throw};
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
@@ -35,6 +35,9 @@ pub struct FileInfo {
     #[allow(dead_code)]
     id: FileId,
     path: FilePath,
+    /// only intended for use in user-visible diagnostic messages
+    path_raw: String,
+    #[allow(dead_code)]
     directory: Directory,
     source: String,
     ast: Option<ast::FileContent>,
@@ -50,9 +53,6 @@ pub struct DirectoryInfo {
     path: FilePath,
     file: Option<FileId>,
     children: IndexMap<String, Directory>,
-
-    // only intended for use in user-visible diagnostic messages
-    diagnostic_path: String,
 }
 
 pub type Scope<'s> = scope::Scope<'s, ScopedEntry>;
@@ -82,7 +82,6 @@ impl SourceDatabase {
             path: FilePath(vec![]),
             file: None,
             children: Default::default(),
-            diagnostic_path: "/".to_owned(),
         });
 
         SourceDatabase {
@@ -93,7 +92,7 @@ impl SourceDatabase {
         }
     }
 
-    pub fn add_file(&mut self, path: FilePath, source: String) -> Result<(), CompileSetError> {
+    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<(), CompileSetError> {
         if path.0.is_empty() {
             throw!(CompileSetError::EmptyPath);
         }
@@ -104,7 +103,7 @@ impl SourceDatabase {
         let id = FileId(self.files.len());
         println!("adding {:?} => {:?}", id, path);
         let directory = self.get_directory(&path);
-        let info = FileInfo::new(id, path, directory, source);
+        let info = FileInfo::new(id, path, path_raw, directory, source);
 
         let slot = &mut self.directories[directory].file;
         assert_eq!(*slot, None);
@@ -134,7 +133,6 @@ impl SourceDatabase {
                         path: FilePath(curr_path.to_vec()),
                         file: None,
                         children: Default::default(),
-                        diagnostic_path: curr_path.iter().join("/"),
                     });
                     self.directories[curr_dir].children.insert(path_item.clone(), child);
                     child
@@ -194,16 +192,19 @@ impl SourceDatabase {
         //   so we can easily do the graph solution in a single pass
         let mut items: Arena<Item, ItemInfo> = Arena::default();
 
+        // TODO split up database into even more immutable and mutable part
+        let files = self.files.keys().copied().collect_vec();
+
         // parse all files
-        for file in self.files.values_mut() {
-            let ast = parse_file_content(&file.source, &file.offsets)?;
-            file.ast = Some(ast);
+        for &file in &files {
+            let file_info = &self[file];
+            let ast = parse_file_content(&file_info.source, &file_info.offsets)
+                .map_err(|e| self.map_parser_error(e))?;
+            self.files.get_mut(&file).unwrap().ast = Some(ast);
         }
 
         // build import scope of each file
-        // TODO split up database into even more immutable and mutable part
-        let files = self.files.keys().copied().collect_vec();
-        for file in files {
+        for &file in &files {
             let ast = self[file].ast.as_ref().unwrap();
 
             // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
@@ -239,6 +240,45 @@ impl SourceDatabase {
 
 
         Ok(())
+    }
+
+    fn map_parser_error(&self, e: ParseError) -> DiagnosticError {
+        match e {
+            ParseError::InvalidToken { location } => {
+                let span = Span::empty_at(location);
+                self.diagnostic("invalid token")
+                    .add_error(span, "invalid token")
+                    .finish()
+            }
+            ParseError::UnrecognizedEof { location, expected } => {
+                let span = Span::empty_at(location);
+                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
+
+                self.diagnostic("unexpected eof")
+                    .add_error(span, "invalid token")
+                    .footer(Level::Info, format!("expected one of {:?}", expected))
+                    .finish()
+            },
+            ParseError::UnrecognizedToken { token, expected } => {
+                let (start, _, end) = token;
+                let span = Span::new(start, end);
+                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
+
+                self.diagnostic("unexpected token")
+                    .add_error(span, "unexpected token")
+                    .footer(Level::Info, format!("expected one of {:?}", expected))
+                    .finish()
+            },
+            ParseError::ExtraToken { token } => {
+                let (start, _, end) = token;
+                let span = Span::new(start, end);
+
+                self.diagnostic("unexpected extra token")
+                    .add_error(span, "extra token")
+                    .finish()
+            },
+            ParseError::User { .. } => unreachable!("no user errors are generated by the grammer")
+        }
     }
 
     pub fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'_> {
@@ -788,10 +828,11 @@ impl From<ResolveFirst> for ResolveFirstOr<CompileError> {
 }
 
 impl FileInfo {
-    pub fn new(id: FileId, path: FilePath, directory: Directory, source: String) -> Self {
+    pub fn new(id: FileId, path: FilePath, path_raw: String, directory: Directory, source: String) -> Self {
         FileInfo {
             id,
             path,
+            path_raw,
             directory,
             offsets: FileOffsets::new(id, &source),
             source,
@@ -864,6 +905,7 @@ impl<'d> Diagnostic<'d> {
             let file_info = &database[span.start.file];
             let offsets = &file_info.offsets;
 
+            // select lines and convert to bytes
             let span_snippet = offsets.expand_span(span);
             let start_line_0 = span_snippet.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
             let end_line_0 = min(span_snippet.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
@@ -871,9 +913,10 @@ impl<'d> Diagnostic<'d> {
             let end_byte = offsets.line_start_byte(end_line_0);
             let source = &file_info.source[start_byte..end_byte];
 
-            let path = &database[file_info.directory].diagnostic_path;
-
-            let mut snippet = Snippet::source(source).origin(path).line_start(start_line_0 + 1);
+            // create snippet
+            let mut snippet = Snippet::source(source)
+                .origin(&file_info.path_raw)
+                .line_start(start_line_0 + 1);
             for (level, span_annotation, label) in annotations {
                 let span_byte = (span_annotation.start.byte - start_byte)..(span_annotation.end.byte - start_byte);
                 snippet = snippet.annotation(level.span(span_byte).label(label));

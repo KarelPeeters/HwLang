@@ -11,7 +11,7 @@ use std::types::bits;
 
 type TestType = bool;
 
-public module top ports (
+pub module top ports (
     clk: input clock,
     reset: input async bool,
     buttons: input sync(clk) bits(4),

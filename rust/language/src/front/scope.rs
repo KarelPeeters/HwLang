@@ -1,3 +1,4 @@
+use annotate_snippets::Level;
 use std::fmt::Debug;
 
 use indexmap::map::IndexMap;
@@ -65,13 +66,14 @@ impl<V: Debug> Scope<'_, V> {
             if vis.can_access(value_vis) {
                 Ok(value)
             } else {
-                let err = database.diagnostic("cannot access definition")
+                let err = database.diagnostic(format!("cannot access identifier `{}`", id.string))
                     .snippet(value_span)
                     .add_info(value_span, "identifier declared here")
                     .finish()
                     .snippet(id.span)
                     .add_error(id.span, "not accessible here")
                     .finish()
+                    .footer(Level::Info, format!("Identifier was declared with visibility `{:?}`,\n but the access happens with visibility `{:?}`", value_vis, vis))
                     .finish();
                 throw!(err)
             }

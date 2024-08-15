@@ -2,12 +2,12 @@
 
 // Basic types
 // TODO bool should be an enum :)
-type bool = __builtin_type("bool");
+pub type bool = __builtin_type("bool");
 
 // TODO what is the difference if anything between "type" and "const" for types?
 //const bool: type = __builtin_type();
 
-//type my_array(T: type) = Array(T, n);
+//pub type my_array(T: type) = Array(T, n);
 //function my_array(T: type) -> type {
 //    return Array(T, n);
 //}
@@ -24,40 +24,40 @@ type bool = __builtin_type("bool");
 // TODO do we want to allow uint to take ranges?
 
 // Utility
-enum Option(T: type) {
+pub enum Option(T: type) {
     None,
     Some(T),
 }
 
 // TODO go back to a more user-accessible struct
-type Range = __builtin_type("Range");
+pub type Range = __builtin_type("Range");
 //struct Range(L: type, H: type) {
 //    min: L,
 //    max: H,
 //}
 
 // TODO add overloading?
-type int_range(r: Range) = __builtin_type("int_range", r);
+pub type int_range(r: Range) = __builtin_type("int_range", r);
 // TODO can we write this as `int_range(..)` again?
-type int = __builtin_type("int");
+pub type int = __builtin_type("int");
 
 // example triggering new error reporting
-//type foo = int();
+//pub type foo = int();
 
-type uint = int_range(0..);
-type natural = int_range(1..);
-type int_bits(n: uint) = int_range(-2**(n - 1) .. 2**(n - 1));
-type uint_bits(n: uint) = int_range(0 .. 2**n);
+pub type uint = int_range(0..);
+pub type natural = int_range(1..);
+pub type int_bits(n: uint) = int_range(-2**(n - 1) .. 2**(n - 1));
+pub type uint_bits(n: uint) = int_range(0 .. 2**n);
 
 // Containers
-//type List(T: type) = __builtin_type("List", T);
+//pub type List(T: type) = __builtin_type("List", T);
  // TODO "uint, *uint" or "+uint"? (for multidim arrays)
-type Array(T: type, len: uint) = __builtin_type("Array", T, len);
+pub type Array(T: type, len: uint) = __builtin_type("Array", T, len);
 
 // TODO should this just be an alias for an array of booleans?
 //  we mostly want this for xor/and/or/... operators, maybe we can also just allow those on boolean arrays?
 // TODO get this working again
-//type bits(n: Option(uint)) = __builtin_type("bits", n);
+//pub type bits(n: Option(uint)) = __builtin_type("bits", n);
 
 // Operators
 // TODO move operators to different file

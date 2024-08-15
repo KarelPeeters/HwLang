@@ -276,7 +276,7 @@ declare_tokens! {
     For("for", PK::Literal, TC::Keyword, TP::Normal),
     In("in", PK::Literal, TC::Keyword, TP::Normal),
     While("while", PK::Literal, TC::Keyword, TP::Normal),
-    Public("public", PK::Literal, TC::Keyword, TP::Normal),
+    Public("pub", PK::Literal, TC::Keyword, TP::Normal),
 
     // misc symbols
     Semi(";", PK::Literal, TC::Symbol, TP::Normal),
@@ -334,7 +334,7 @@ declare_tokens! {
 #[cfg(test)]
 mod test {
     use crate::syntax::pos::{FileId, Pos, Span};
-    use crate::syntax::token::{Token, tokenize, TokenType};
+    use crate::syntax::token::{tokenize, Token, TokenType};
 
     #[test]
     fn empty_tokenize() {
