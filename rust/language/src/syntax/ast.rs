@@ -8,7 +8,7 @@ pub struct FileContent {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum Visibility {
     Public(Span),
     Private,
@@ -390,7 +390,7 @@ pub enum MaybeIdentifier {
 }
 
 // TODO this is also just a spanned string
-// TODO do we want to commit to identifier definition uniqueness
+// TODO intern identifiers 
 #[derive(Debug, Clone)]
 pub struct Identifier {
     pub span: Span,
@@ -464,37 +464,39 @@ impl<T> Spanned<T> {
         }
     }
 }
+ 
+#[derive(Debug)]
+pub struct ItemCommonInfo {
+    pub span_full: Span,
+    pub span_short: Span,
+    pub vis: Visibility,
+    pub id: MaybeIdentifier,
+}
 
 impl Item {
-    pub fn id_vis(&self) -> (MaybeIdentifier, &Visibility) {
+    pub fn common_info(&self) -> ItemCommonInfo {
         match self {
             Item::Use(item) => {
                 let id = match &item.as_ {
                     None => MaybeIdentifier::Identifier(item.path.id.clone()),
                     Some(as_) => as_.clone(),
                 };
-                (id, &Visibility::Private)
+                ItemCommonInfo { span_full: item.span, span_short: item.span, vis: Visibility::Private, id }
             },
-            Item::Const(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Type(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Struct(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Enum(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Function(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Module(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
-            Item::Interface(item) => (MaybeIdentifier::Identifier(item.id.clone()), &item.vis),
+            Item::Const(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Type(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Struct(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Enum(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Function(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Module(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+            Item::Interface(item) =>
+                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
         }
-    }
-    
-    pub fn span(&self) -> Span {
-        match self {
-            Item::Use(item) => item.span,
-            Item::Const(item) => item.span,
-            Item::Type(item) => item.span,
-            Item::Struct(item) => item.span,
-            Item::Enum(item) => item.span,
-            Item::Function(item) => item.span,
-            Item::Module(item) => item.span,
-            Item::Interface(item) => item.span,
-        }
-    }
+    } 
 }

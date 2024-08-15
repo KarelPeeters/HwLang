@@ -18,6 +18,7 @@ pub struct Scope<'p, V> {
 
 pub type ScopeResult<T> = Result<T, ScopeError>;
 
+#[must_use]
 #[derive(Debug)]
 pub enum ScopeError {
     IdentifierDeclaredTwice(ast::Identifier),

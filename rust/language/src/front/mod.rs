@@ -6,7 +6,6 @@ pub mod values;
 pub mod param;
 pub mod scope;
 pub mod driver;
-pub mod error;
 
 #[derive(Debug, Clone)]
 pub enum TypeOrValue<T = Type, V = Value> {

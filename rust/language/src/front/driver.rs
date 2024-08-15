@@ -8,9 +8,8 @@ use logos::Source;
 use num_bigint::BigInt;
 
 use crate::{new_index_type, throw};
-use crate::error::{CompileError, SnippetError};
+use crate::error::{CompileError, DiagnosticError};
 use crate::front::{scope, TypeOrValue};
-use crate::front::error::FrontError;
 use crate::front::param::{GenericArgs, GenericParameter, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
 use crate::front::types::{EnumTypeInfo, EnumTypeInfoInner, Generic, IntegerTypeInfo, MaybeConstructor, StructTypeInfo, StructTypeInfoInner, Type};
@@ -68,6 +67,7 @@ pub enum ScopedEntry {
 pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 pub type ItemKind = TypeOrValue<(), ()>;
 
+#[must_use]
 #[derive(Debug)]
 pub enum CompileSetError {
     EmptyPath,
@@ -207,15 +207,15 @@ impl SourceDatabase {
             let mut local_scope = Scope::default();
 
             for (ast_item_index, ast_item) in enumerate(&ast.items) {
-                let (id, ast_vis) = ast_item.id_vis();
-                let vis = match ast_vis {
+                let common_info = ast_item.common_info();
+                let vis = match common_info.vis {
                     ast::Visibility::Public(_) => Visibility::Public,
                     ast::Visibility::Private => Visibility::Private,
                 };
 
                 let item_reference = ItemReference { file: file.id, item_index: ast_item_index };
                 let item = items.push(ItemInfo { item_reference, ty: None });
-                local_scope.maybe_declare(&id, ScopedEntry::Item(item), vis)?;
+                local_scope.maybe_declare(&common_info.id, ScopedEntry::Item(item), vis)?;
             }
 
             file.local_scope = Some(local_scope);
@@ -247,7 +247,7 @@ pub enum FunctionBody {
     TypeConstructor(ItemReference),
 }
 
-impl<'a> CompileState<'a> {
+impl<'d> CompileState<'d> {
     fn resolve_item_type_fully(&mut self, item: Item) -> Result<(), CompileError> {
         let mut stack = vec![item];
 
@@ -274,7 +274,13 @@ impl<'a> CompileState<'a> {
                     stack.push(first);
                     if let Some(cycle_start_index) = cycle_start_index {
                         drop(stack.drain(..cycle_start_index));
-                        throw!(FrontError::CyclicTypeDependency(stack));
+
+                        let mut diag = self.diagnostic("Cyclic type dependency");
+                        for item in stack {
+                            let item_ast = self.get_item_ast(self.items[item].item_reference);
+                            diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
+                        }
+                        throw!(diag.finish())
                     }
                 }
             }
@@ -363,12 +369,12 @@ impl<'a> CompileState<'a> {
                 })
             },
             // value definitions
-            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ }) => {
-                self.panic_todo(item_ast.span(), "module definition")
+            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body: _ }) => {
+                self.diagnostic_todo(item_ast.common_info().span_short, "module definition")
             },
-            ast::Item::Const(_) => self.panic_todo(item_ast.span(), "const definition"),
-            ast::Item::Function(_) => self.panic_todo(item_ast.span(), "function definition"),
-            ast::Item::Interface(_) => self.panic_todo(item_ast.span(), "interface definition"),
+            ast::Item::Const(_) => self.diagnostic_todo(item_ast.common_info().span_short, "const definition"),
+            ast::Item::Function(_) => self.diagnostic_todo(item_ast.common_info().span_short, "function definition"),
+            ast::Item::Interface(_) => self.diagnostic_todo(item_ast.common_info().span_short, "interface definition"),
         }
     }
 
@@ -397,7 +403,13 @@ impl<'a> CompileState<'a> {
                     // check parameter names for uniqueness
                     // TODO this is a weird place to do this, this can already happen during parsing
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
-                        throw!(FrontError::DuplicateParameterName(prev.clone(), param_ast.id.clone()))
+                        let error = self.diagnostic("duplicate parameter name")
+                            .snippet(param_ast.span)
+                            .add_info(prev.span, "previously defined here")
+                            .add_error(param_ast.id.span, "defined for the second time here")
+                            .finish()
+                            .finish();
+                        throw!(error);
                     }
 
                     let (param, arg) = match &param_ast.kind {
@@ -444,12 +456,18 @@ impl<'a> CompileState<'a> {
             curr_dir = curr_dir_info.children.get(&step.string).copied().ok_or_else(|| {
                 let mut options = curr_dir_info.children.keys().cloned().collect_vec();
                 options.sort();
-                FrontError::InvalidPathStep(step.clone(), options)
+
+                self.diagnostic("invalid path step")
+                    .snippet(path.span)
+                    .add_error(step.span, "invalid step")
+                    .finish()
+                    .footer(Level::Info, format!("possible options: {:?}", options))
+                    .finish()
             })?;
         }
 
         let file = self.database[curr_dir].file.ok_or_else(|| {
-            FrontError::ExpectedPathToFile(path.clone())
+            self.diagnostic_simple("expected path to file", path.span, "no file exists at this path")
         })?;
         let file_scope = self.database[file].local_scope.as_ref().unwrap();
 
@@ -467,7 +485,7 @@ impl<'a> CompileState<'a> {
     //    careful, think about how this interacts with the future type inference system
     fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match &expr.inner {
-            ExpressionKind::Dummy => self.panic_todo(expr.span, "dummy expression"),
+            ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
             ExpressionKind::Id(id) => {
                 match scope.find(None, id, Visibility::Private)? {
                     &ScopedEntry::Item(item) => {
@@ -481,21 +499,21 @@ impl<'a> CompileState<'a> {
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             },
-            ExpressionKind::Wrapped(_) => self.panic_todo(expr.span, "wrapped expression"),
-            ExpressionKind::TypeFunc(_, _) => self.panic_todo(expr.span, "typefunc expression"),
-            ExpressionKind::Block(_) => self.panic_todo(expr.span, "block expression"),
-            ExpressionKind::If(_) => self.panic_todo(expr.span, "if expression"),
-            ExpressionKind::Loop(_) => self.panic_todo(expr.span, "loop expression"),
-            ExpressionKind::While(_) => self.panic_todo(expr.span, "while expression"),
-            ExpressionKind::For(_) => self.panic_todo(expr.span, "for expression"),
-            ExpressionKind::Sync(_) => self.panic_todo(expr.span, "sync expression"),
-            ExpressionKind::Return(_) => self.panic_todo(expr.span, "return expression"),
-            ExpressionKind::Break(_) => self.panic_todo(expr.span, "break expression"),
-            ExpressionKind::Continue => self.panic_todo(expr.span, "continue expression"),
+            ExpressionKind::Wrapped(_) => self.diagnostic_todo(expr.span, "wrapped expression"),
+            ExpressionKind::TypeFunc(_, _) => self.diagnostic_todo(expr.span, "typefunc expression"),
+            ExpressionKind::Block(_) => self.diagnostic_todo(expr.span, "block expression"),
+            ExpressionKind::If(_) => self.diagnostic_todo(expr.span, "if expression"),
+            ExpressionKind::Loop(_) => self.diagnostic_todo(expr.span, "loop expression"),
+            ExpressionKind::While(_) => self.diagnostic_todo(expr.span, "while expression"),
+            ExpressionKind::For(_) => self.diagnostic_todo(expr.span, "for expression"),
+            ExpressionKind::Sync(_) => self.diagnostic_todo(expr.span, "sync expression"),
+            ExpressionKind::Return(_) => self.diagnostic_todo(expr.span, "return expression"),
+            ExpressionKind::Break(_) => self.diagnostic_todo(expr.span, "break expression"),
+            ExpressionKind::Continue => self.diagnostic_todo(expr.span, "continue expression"),
             ExpressionKind::IntPattern(int) => {
                 let value = match int {
-                    IntPattern::Hex(_) => self.panic_todo(expr.span, "hex with wildcards"),
-                    IntPattern::Bin(_) => self.panic_todo(expr.span, "bin with wildcards"),
+                    IntPattern::Hex(_) => self.diagnostic_todo(expr.span, "hex with wildcards"),
+                    IntPattern::Bin(_) => self.diagnostic_todo(expr.span, "bin with wildcards"),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         str_clean.parse::<BigInt>().unwrap()
@@ -503,11 +521,11 @@ impl<'a> CompileState<'a> {
                 };
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
             },
-            ExpressionKind::BoolLiteral(_) => self.panic_todo(expr.span, "boolliteral expression"),
-            ExpressionKind::StringLiteral(_) => self.panic_todo(expr.span, "stringliteral expression"),
-            ExpressionKind::ArrayLiteral(_) => self.panic_todo(expr.span, "arrayliteral expression"),
-            ExpressionKind::TupleLiteral(_) => self.panic_todo(expr.span, "tupleliteral expression"),
-            ExpressionKind::StructLiteral(_) => self.panic_todo(expr.span, "structliteral expression"),
+            ExpressionKind::BoolLiteral(_) => self.diagnostic_todo(expr.span, "boolliteral expression"),
+            ExpressionKind::StringLiteral(_) => self.diagnostic_todo(expr.span, "stringliteral expression"),
+            ExpressionKind::ArrayLiteral(_) => self.diagnostic_todo(expr.span, "arrayliteral expression"),
+            ExpressionKind::TupleLiteral(_) => self.diagnostic_todo(expr.span, "tupleliteral expression"),
+            ExpressionKind::StructLiteral(_) => self.diagnostic_todo(expr.span, "structliteral expression"),
             ExpressionKind::RangeLiteral(range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
@@ -524,43 +542,38 @@ impl<'a> CompileState<'a> {
                 let value = Value::Range(ValueRangeInfo::new(start, end, end_inclusive));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             },
-            ExpressionKind::UnaryOp(_, _) => self.panic_todo(expr.span, "unaryop expression"),
-            ExpressionKind::BinaryOp(_, _, _) => self.panic_todo(expr.span, "binaryop expression"),
-            ExpressionKind::TernarySelect(_, _, _) => self.panic_todo(expr.span, "ternaryselect expression"),
-            ExpressionKind::ArrayIndex(_, _) => self.panic_todo(expr.span, "arrayindex expression"),
-            ExpressionKind::DotIdIndex(_, _) => self.panic_todo(expr.span, "dotidindex expression"),
-            ExpressionKind::DotIntIndex(_, _) => self.panic_todo(expr.span, "dotintindex expression"),
+            ExpressionKind::UnaryOp(_, _) => self.diagnostic_todo(expr.span, "unaryop expression"),
+            ExpressionKind::BinaryOp(_, _, _) => self.diagnostic_todo(expr.span, "binaryop expression"),
+            ExpressionKind::TernarySelect(_, _, _) => self.diagnostic_todo(expr.span, "ternaryselect expression"),
+            ExpressionKind::ArrayIndex(_, _) => self.diagnostic_todo(expr.span, "arrayindex expression"),
+            ExpressionKind::DotIdIndex(_, _) => self.diagnostic_todo(expr.span, "dotidindex expression"),
+            ExpressionKind::DotIntIndex(_, _) => self.diagnostic_todo(expr.span, "dotintindex expression"),
             ExpressionKind::Call(target, args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
-                        return Ok(MaybeConstructor::Immediate(self.eval_builtin_call(scope, expr, name, id, args)?));
+                        return Ok(MaybeConstructor::Immediate(self.eval_builtin_call(scope, expr, name, args)?));
                     }
                 }
 
                 let target_entry = self.eval_expression(scope, target)?;
 
                 match target_entry {
-                    ScopedEntryDirect::Constructor(constr) => {
-                        self.panic_todo(expr.span, "constructor call")
+                    ScopedEntryDirect::Constructor(_) => {
+                        self.diagnostic_todo(expr.span, "constructor call")
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
-                            TypeOrValue::Type(_) => throw!(self.error_single_span(
-                                "invalid call target",
-                                target.span,
-                                "invalid call target kind 'type'"
-                            )),
+                            TypeOrValue::Type(_) => throw!(
+                                self.diagnostic_simple("invalid call target", target.span, "invalid call target kind 'type'")
+                            ),
                             TypeOrValue::Value(_) => {
-                                self.panic_todo(target.span, "value call target")
+                                self.diagnostic_todo(target.span, "value call target")
                             },
                         }
                     }
                 }
                 
                 // TODO support both value function calls and type constructor calls
-
-                todo!("call expression at {:?}", expr)
-
                 // match &self.values[target_value] {
                 //     ValueInfo::Function(target_value) => {
                 //         let FunctionValue { item_reference, ty, params, body } = target_value;
@@ -596,10 +609,14 @@ impl<'a> CompileState<'a> {
     fn eval_expression_as_ty(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
-            ScopedEntryDirect::Constructor(_) => throw!(FrontError::ExpectedTypeExpressionGotConstructor(expr.clone())),
+            ScopedEntryDirect::Constructor(_) => throw!(
+                self.diagnostic_simple("expected type, got constructor", expr.span, "constructor")
+            ),
             ScopedEntryDirect::Immediate(entry) => match entry {
                 TypeOrValue::Type(ty) => Ok(ty),
-                TypeOrValue::Value(_) => throw!(FrontError::ExpectedTypeExpressionGotValue(expr.clone())),
+                TypeOrValue::Value(_) => throw!(
+                    self.diagnostic_simple("expected type, got value", expr.span, "value")
+                ),
             }
         }
     }
@@ -607,71 +624,84 @@ impl<'a> CompileState<'a> {
     fn eval_expression_as_value(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
-            ScopedEntryDirect::Constructor(_) => throw!(FrontError::ExpectedValueExpressionGotConstructor(expr.clone())),
+            ScopedEntryDirect::Constructor(_) => throw!(
+                self.diagnostic_simple("expected value, got constructor", expr.span, "constructor")
+            ),
             ScopedEntryDirect::Immediate(entry) => match entry {
-                TypeOrValue::Type(_) => throw!(FrontError::ExpectedValueExpressionGotType(expr.clone())),
+                TypeOrValue::Type(_) => throw!({
+                    self.diagnostic_simple("expected value, got type", expr.span, "type")
+                }),
                 TypeOrValue::Value(value) => Ok(value),
             }
         }
     }
 
-    fn eval_builtin_call(&mut self, scope: &Scope, expr: &Expression, name: &str, id: &Identifier, args: &Args) -> ResolveResult<TypeOrValue> {
-        // TODO disallow calling builtin in user modules?
-        let result = match name {
+    fn eval_builtin_call(&mut self, scope: &Scope, expr: &Expression, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
+        // TODO disallow calling builtin outside of stdlib?
+        match name {
             "type" => {
                 let first_arg = args.inner.get(0).map(|e| &e.inner);
                 if let Some(ExpressionKind::StringLiteral(ty)) = first_arg {
                     match ty.as_str() {
                         "bool" if args.inner.len() == 1 =>
-                            TypeOrValue::Type(Type::Boolean),
+                            return Ok(TypeOrValue::Type(Type::Boolean)),
                         "int" if args.inner.len() == 1 => {
                             let range = Box::new(Value::Range(ValueRangeInfo::unbounded()));
-                            TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range }))
+                            return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
                         }
                         "int_range" if args.inner.len() == 2 => {
                             // TODO typecheck (range must be integer)
                             let range = Box::new(self.eval_expression_as_value(scope, &args.inner[1])?);
                             let ty_info = IntegerTypeInfo { range };
-                            TypeOrValue::Type(Type::Integer(ty_info))
+                            return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
                         },
                         "Range" if args.inner.len() == 1 =>
-                            TypeOrValue::Type(Type::Range),
+                            return Ok(TypeOrValue::Type(Type::Range)),
                         "bits" if args.inner.len() == 2 => {
                             // TODO typecheck (bits must be non-negative integer)
                             let bits = self.eval_expression_as_value(scope, &args.inner[1])?;
-                            TypeOrValue::Type(Type::Bits(Box::new(bits)))
+                            return Ok(TypeOrValue::Type(Type::Bits(Box::new(bits))));
                         }
-                        _ => throw!(FrontError::InvalidBuiltinArgs(expr.clone(), args.clone())),
+                        // fallthrough
+                        _ => {},
                     }
-                } else {
-                    throw!(FrontError::InvalidBuiltinArgs(expr.clone(), args.clone()))
                 }
             }
-            _ => throw!(FrontError::InvalidBuiltinIdentifier(expr.clone(), id.clone())),
-        };
+            // fallthrough
+            _ => {},
+        }
 
-        Ok(result)
+        Err(
+            self.diagnostic("invalid builtin arguments")
+                .snippet(expr.span)
+                .add_error(args.span, "invalid arguments")
+                .finish()
+                .finish()
+                .into()
+        )
     }
 
-    fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
+    fn get_item_ast(&self, item_reference: ItemReference) -> &'d ast::Item {
         let ItemReference { file, item_index } = item_reference;
         let file_info = &self.database[file];
         let ast = file_info.ast.as_ref().unwrap();
         &ast.items[item_index]
     }
 
-    fn error_single_span(&self, title: impl Into<String>, span: Span, detail: impl Into<String>) -> SnippetError {
-        let mut diag = Diagnostic::new(title);
-        diag.error(span, detail);
-        return diag.finish(&self.database);
+    fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'d> {
+        Diagnostic::new(self.database, title)
     }
 
-    fn panic_todo(&self, span: Span, feature: &str) -> ! {
-        let err = self.error_single_span(
-            "Feature not yet implemented",
-            span,
-            &format!("Feature not yet implemented: {}", feature)
-        );
+    fn diagnostic_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagnosticError {
+        self.diagnostic(title)
+            .add_error(span, label)
+            .finish()
+    }
+
+    fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
+        let err = self.diagnostic("Feature not yet implemented")
+            .add_error(span, &format!("Feature not yet implemented: {}", feature))
+            .finish();
         println!("{}", err.string);
         panic!()
     }
@@ -713,53 +743,118 @@ pub struct ItemReference {
 // Diagnostic error formatting
 const SNIPPET_CONTEXT_LINES: usize = 2;
 
-pub struct Diagnostic {
-    pub title: String,
-    pub errors: Vec<(Span, String)>,
+// TODO double-check that this was actually finished in the drop implementation? same for snippet
+// TODO switch to different error collection system to support multiple errors and warnings
+#[must_use]
+pub struct Diagnostic<'d> {
+    title: String,
+    snippets: Vec<(Span, Vec<(Level, Span, String)>)>,
+    footers: Vec<(Level, String)>,
+
+    // This is only stored here to make the finish call slightly neater,
+    //   but could be removed again if the lifetimes are too tricky.
+    database: &'d SourceDatabase,
 }
 
-impl Diagnostic {
-    pub fn new(title: impl Into<String>) -> Diagnostic {
-        Diagnostic { title: title.into(), errors: vec![] }
+#[must_use]
+pub struct DiagnosticSnippet<'d> {
+    diag: Diagnostic<'d>,
+    span: Span,
+    annotations: Vec<(Level, Span, String)>,
+}
+
+impl<'d> Diagnostic<'d> {
+    pub fn new(database: &'d SourceDatabase, title: impl Into<String>) -> Self {
+        Diagnostic {
+            title: title.into(),
+            snippets: vec![],
+            footers: vec![],
+            database,
+        }
     }
 
-    // TODO allow reporting multiple errors in a single span
-    pub fn error(&mut self, span: Span, message: impl Into<String>) {
-        self.errors.push((span, message.into()))
+    pub fn snippet(self, span: Span) -> DiagnosticSnippet<'d> {
+        DiagnosticSnippet {
+            diag: self,
+            span,
+            annotations: vec![],
+        }
     }
 
-    pub fn finish(self, database: &SourceDatabase) -> SnippetError {
-        let Self { title, errors } = self;
+    pub fn footer(mut self, level: Level, footer: impl Into<String>) -> Self {
+        self.footers.push((level, footer.into()));
+        self
+    }
+
+    pub fn finish(self) -> DiagnosticError {
+        let Self { title, snippets, footers, database } = self;
+        assert!(!snippets.is_empty(), "Diagnostic without any snippets is not allowed");
 
         let mut message = Level::Error.title(&title);
 
-        for &(span, ref error) in &errors {
+        for &(span, ref annotations) in &snippets {
             let file_info = &database[span.start.file];
             let offsets = &file_info.offsets;
 
-            let span = offsets.expand_span(span);
-            let start_line_0 = span.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
-            let end_line_0 = min(span.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
+            let span_snippet = offsets.expand_span(span);
+            let start_line_0 = span_snippet.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
+            let end_line_0 = min(span_snippet.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
             let start_byte = offsets.line_start_byte(start_line_0);
             let end_byte = offsets.line_start_byte(end_line_0);
             let source = &file_info.source[start_byte..end_byte];
 
             let path = &database[file_info.directory].diagnostic_path;
 
-            message = message.snippet(
-                Snippet::source(source)
-                    .origin(path)
-                    .line_start(start_line_0 + 1)
-                    .annotation(
-                        Level::Error.span((span.start.byte - start_byte)..(span.end.byte - start_byte))
-                            .label(&error)
-                    )
-            );
+            let mut snippet = Snippet::source(source).origin(path).line_start(start_line_0 + 1);
+            for (level, span_annotation, label) in annotations {
+                let span_byte = (span_annotation.start.byte - start_byte)..(span_annotation.end.byte - start_byte);
+                snippet = snippet.annotation(level.span(span_byte).label(label));
+            }
+
+            message = message.snippet(snippet);
+        }
+
+        for &(level, ref footer) in &footers {
+            message = message.footer(level.title(footer));
         }
 
         let renderer = Renderer::styled();
         let string = renderer.render(message).to_string();
-        SnippetError { string }
+        DiagnosticError { string }
+    }
+}
+
+impl DiagnosticAddable for Diagnostic<'_> {
+    fn add(self, level: Level, span: Span, label: impl Into<String>) -> Self {
+        self.snippet(span).add(level, span, label).finish()
+    }
+}
+
+impl<'d> DiagnosticSnippet<'d> {
+    pub fn finish(self) -> Diagnostic<'d> {
+        let Self { mut diag, span, annotations } = self;
+        assert!(!annotations.is_empty(), "DiagnosticSnippet without any annotations is not allowed");
+        diag.snippets.push((span, annotations));
+        diag
+    }
+}
+
+impl DiagnosticAddable for DiagnosticSnippet<'_> {
+    fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
+        self.annotations.push((level, span, label.into()));
+        self
+    }
+}
+
+trait DiagnosticAddable: Sized {
+    fn add(self, level: Level, span: Span, label: impl Into<String>) -> Self;
+
+    fn add_error(self, span: Span, label: impl Into<String>) -> Self {
+        self.add(Level::Error, span, label)
+    }
+
+    fn add_info(self, span: Span, label: impl Into<String>) -> Self {
+        self.add(Level::Info, span, label)
     }
 }
 
