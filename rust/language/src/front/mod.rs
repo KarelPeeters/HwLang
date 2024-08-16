@@ -5,3 +5,4 @@ pub mod scope;
 pub mod driver;
 pub mod source;
 pub mod common;
+mod diagnostic;

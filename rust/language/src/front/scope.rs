@@ -3,7 +3,7 @@ use std::fmt::Debug;
 
 use crate::error::DiagnosticError;
 use crate::front::common::ScopedEntry;
-use crate::front::driver::DiagnosticAddable;
+use crate::front::diagnostic::DiagnosticAddable;
 use crate::front::source::SourceDatabase;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;

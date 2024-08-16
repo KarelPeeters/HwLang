@@ -2,7 +2,15 @@ use crate::front::driver::Item;
 use crate::front::param::{GenericContainer, GenericParameterUniqueId};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
+use crate::syntax::pos::FileId;
 use indexmap::IndexMap;
+
+/// Utility type to refer to a specific item in a specific file.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ItemReference {
+    pub file: FileId,
+    pub item_index: usize,
+}
 
 // TODO pick a better name for this
 #[derive(Debug, Clone)]

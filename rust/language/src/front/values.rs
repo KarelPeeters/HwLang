@@ -1,5 +1,5 @@
-use crate::front::common::TypeOrValue;
-use crate::front::driver::{FunctionBody, ItemReference};
+use crate::front::common::{ItemReference, TypeOrValue};
+use crate::front::driver::FunctionBody;
 use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
 use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::{BinaryOp, Identifier};

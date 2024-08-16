@@ -1,5 +1,5 @@
+use crate::front::common::ItemReference;
 use crate::front::common::TypeOrValue;
-use crate::front::driver::ItemReference;
 use crate::front::types::Type;
 use crate::syntax::ast::Identifier;
 use indexmap::IndexMap;

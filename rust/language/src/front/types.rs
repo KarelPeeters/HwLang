@@ -1,5 +1,5 @@
+use crate::front::common::ItemReference;
 use crate::front::common::TypeOrValue;
-use crate::front::driver::ItemReference;
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
 use crate::front::values::Value;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
