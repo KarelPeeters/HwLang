@@ -421,6 +421,10 @@ impl<'d> CompileState<'d> {
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, body: _ }) => {
                 self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
+                    // yet another sub-scope for the ports that refer to each other
+                    // TODO get a more accurate span
+                    let mut scope_ports = scope_inner.nest(ports.span, Visibility::Private);
+
                     // map ports
                     // TODO extract duplicate code between all these id uniqueness checking places
                     let mut ports_map = IndexMap::new();
@@ -436,7 +440,7 @@ impl<'d> CompileState<'d> {
                                         sync: match &sync.inner {
                                             SyncKind::Async => SyncKind::Async,
                                             SyncKind::Sync(clk) => {
-                                                let clk = s.eval_expression_as_value(scope, clk)?;
+                                                let clk = s.eval_expression_as_value(&scope_ports, clk)?;
                                                 SyncKind::Sync(clk)
                                             },
                                         },
@@ -450,6 +454,13 @@ impl<'d> CompileState<'d> {
                         if let Some(prev) = prev {
                             throw!(s.diagnostic_defined_twice("module port", ports.span, &port_id, prev.0))
                         }
+
+                        scope_ports.declare(
+                            &s.database,
+                            &port_id,
+                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Port(port_id.clone())))),
+                            Visibility::Private,
+                        )?;
                     }
 
                     // result

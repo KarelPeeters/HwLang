@@ -15,6 +15,9 @@ pub enum Value {
     Generic(GenericValueParameter),
     Parameter(ValueParameter),
 
+    // TODO proper content, think about uniqueness and replacement implications
+    Port(Identifier),
+
     // basic
     Int(BigInt),
     // TODO long-term this should become a standard struct instead of compiler magic
@@ -85,6 +88,7 @@ impl GenericContainer for Value {
                 Some(new) => new.as_ref().unwrap_value().clone(),
             }
             Value::Parameter(_) => todo!(),
+            Value::Port(_) => todo!(),
 
             Value::Int(_) => todo!(),
             Value::Range(_) => todo!(),

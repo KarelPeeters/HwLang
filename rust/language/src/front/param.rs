@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::front::driver::ItemReference;
-use crate::front::TypeOrValue;
 use crate::front::types::Type;
+use crate::front::TypeOrValue;
 use crate::syntax::ast::Identifier;
 
 #[derive(Debug, Clone)]

@@ -32,6 +32,8 @@ impl<V: Debug> Scope<'_, V> {
         Scope { span, parent: Some((self, vis)), values: Default::default() }
     }
 
+    // TODO make _local_ shadowing configurable: allowed, non-local allowed, not allowed
+    // TODO make "identifier" string configurable
     pub fn declare<'a>(&mut self, database: &SourceDatabase, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
         if let Some(&(_, prev_span, _)) = self.values.get(&id.string) {
             // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
