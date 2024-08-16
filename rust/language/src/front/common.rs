@@ -41,7 +41,26 @@ impl<T, V> TypeOrValue<T, V> {
             TypeOrValue::Value(v) => v,
         }
     }
+
+    pub fn unit(&self) -> TypeOrValue<(), ()> {
+        match self {
+            TypeOrValue::Type(_) => TypeOrValue::Type(()),
+            TypeOrValue::Value(_) => TypeOrValue::Value(()),
+        }
+    }
 }
+
+impl PartialEq<Self> for TypeOrValue<(), ()> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TypeOrValue::Type(()), TypeOrValue::Type(())) => true,
+            (TypeOrValue::Value(()), TypeOrValue::Value(())) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for TypeOrValue<(), ()> {}
 
 impl GenericContainer for TypeOrValue {
     fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {
