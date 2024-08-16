@@ -523,12 +523,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             let arg_evaluated = match param {
                                 GenericParameter::Type(_param) => {
                                     let arg_ty = self.eval_expression_as_ty(scope, arg)?;
-                                    // TODO bound-check
+                                    // TODO bound-check (once we add type bounds)
                                     TypeOrValue::Type(arg_ty)
                                 }
-                                GenericParameter::Value(_param) => {
+                                GenericParameter::Value(param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    // TODO type-check
+                                    self.check_type_contains(arg.span, &param.ty, &arg_value)?;
                                     TypeOrValue::Value(arg_value)
                                 }
                             };
@@ -606,10 +606,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         },
                         "Range" if args.inner.len() == 1 =>
                             return Ok(TypeOrValue::Type(Type::Range)),
+                        "bits_inf" if args.inner.len() == 1 => {
+                            return Ok(TypeOrValue::Type(Type::Bits(None)));
+                        }
                         "bits" if args.inner.len() == 2 => {
                             // TODO typecheck (bits must be non-negative integer)
                             let bits = self.eval_expression_as_value(scope, &args.inner[1])?;
-                            return Ok(TypeOrValue::Type(Type::Bits(Box::new(bits))));
+                            return Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits)))));
                         }
                         "Array" if args.inner.len() == 3 => {
                             let ty = self.eval_expression_as_ty(scope, &args.inner[1])?;
@@ -626,13 +629,56 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
 
         Err(
-            self.diagnostic("invalid builtin arguments")
+            self.diagnostic("invalid arguments for __builtin call")
                 .snippet(expr_span)
                 .add_error(args.span, "invalid arguments")
                 .finish()
                 .finish()
                 .into()
         )
+    }
+
+    fn check_type_contains(&self, span: Span, ty: &Type, value: &Value) -> ResolveResult<()> {
+        match (ty, value) {
+            (Type::Range, Value::Range(_)) => return Ok(()),
+            (Type::Integer(IntegerTypeInfo { range }), value) => {
+                if let Value::Range(range) = range.as_ref() {
+                    let &ValueRangeInfo { ref start, ref end, end_inclusive } = range;
+                    if let Some(start) = start {
+                        self.require_value_true(span, &Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone())))?;
+                    }
+                    if let Some(end) = end {
+                        let cmp_op = if end_inclusive { BinaryOp::CmpLte } else { BinaryOp::CmpLt };
+                        self.require_value_true(span, &Value::Binary(cmp_op, Box::new(value.clone()), end.clone()))?;
+                    }
+                    return Ok(())
+                }
+            }
+            _ => {},
+        }
+
+        self.diagnostic_todo(span, &format!("type-check {:?} contains {:?}", ty, value))
+    }
+
+    fn require_value_true(&self, span: Span, value: &Value) -> ResolveResult<()> {
+        match self.try_eval_bool(value) {
+            Some(true) => Ok(()),
+            // TODO print the value as a human-readable string here
+            Some(false) => Err(self.diagnostic_simple("value must be true but was false", span, "during type checking here").into()),
+            None => Err(self.diagnostic_simple("value must be true but could not be evaluated", span, "during type checking here").into()),
+        }
+    }
+
+    fn try_eval_bool(&self, value: &Value) -> Option<bool> {
+        match value {
+            Value::Binary(BinaryOp::CmpLte, left, right) => {
+                if let (Value::Int(left), Value::Int(right)) = (left.as_ref(), right.as_ref()) {
+                    return Some(left <= right);
+                }
+            }
+            _ => {},
+        }
+        None
     }
 
     fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
@@ -662,7 +708,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     #[track_caller]
     fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
-        let message = format!("feature not yet implemented: {}", feature);
+        let message = format!("feature not yet implemented: '{}'", feature);
         let err = self.diagnostic(&message)
             .add_error(span, "used here")
             .finish();

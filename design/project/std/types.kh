@@ -57,7 +57,9 @@ pub type Array(T: type, len: uint) = __builtin_type("Array", T, len);
 // TODO should this just be an alias for an array of booleans?
 //  we mostly want this for xor/and/or/... operators, maybe we can also just allow those on boolean arrays?
 // TODO get this working again
-pub type bits(n: Option(uint)) = __builtin_type("bits", n);
+pub type bits_inf = __builtin_type("bits_inf");
+pub type bits(n: uint) = __builtin_type("bits", n);
+// pub type bits(n: Option(uint)) = __builtin_type("bits", n);
 
 // Operators
 // TODO move operators to different file

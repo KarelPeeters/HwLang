@@ -23,7 +23,7 @@ pub enum Type {
     Generic(GenericTypeParameter),
 
     Boolean,
-    Bits(Box<Value>),
+    Bits(Option<Box<Value>>),
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
     Range,
     Array(Box<Type>, Box<Value>),
@@ -103,7 +103,9 @@ impl GenericContainer for Type {
                 Some(new) => new.as_ref().unwrap_type().clone(),
             },
             Type::Boolean => Type::Boolean,
-            Type::Bits(ref width) => Type::Bits(Box::new(width.replace_generic_params(map))),
+            Type::Bits(ref width) => {
+                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map))))
+            },
             Type::Array(ref inner, ref len) => {
                 Type::Array(
                     Box::new(inner.replace_generic_params(map)),
