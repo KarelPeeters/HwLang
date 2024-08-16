@@ -1,10 +1,9 @@
-use indexmap::IndexMap;
-
+use crate::front::common::TypeOrValue;
 use crate::front::driver::ItemReference;
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
 use crate::front::values::Value;
-use crate::front::TypeOrValue;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
+use indexmap::IndexMap;
 
 #[derive(Debug, Clone)]
 pub enum MaybeConstructor<T> {

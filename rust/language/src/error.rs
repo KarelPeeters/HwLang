@@ -1,4 +1,4 @@
-use crate::front::driver::CompileSetError;
+use crate::front::source::CompileSetError;
 
 #[must_use]
 #[derive(Debug)]

@@ -2,10 +2,13 @@ use annotate_snippets::Level;
 use std::fmt::Debug;
 
 use crate::error::DiagnosticError;
-use crate::front::driver::{DiagnosticAddable, SourceDatabase};
+use crate::front::common::ScopedEntry;
+use crate::front::driver::DiagnosticAddable;
+use crate::front::source::SourceDatabase;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::data::IndexMapExt;
 use indexmap::map::IndexMap;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -15,7 +18,7 @@ pub enum Visibility {
 }
 
 #[derive(Debug)]
-pub struct Scope<'p, V> {
+pub struct Scope<'p, V = ScopedEntry> {
     span: Span,
     parent: Option<(&'p Scope<'p, V>, Visibility)>,
     values: IndexMap<String, (V, Span, Visibility)>,
@@ -45,8 +48,7 @@ impl<V: Debug> Scope<'_, V> {
             throw!(err)
         } else {
             // only insert if we know the id is not declared yet, to avoid state mutation in case of an error
-            let prev = self.values.insert(id.string.to_owned(), (var, id.span, vis));
-            assert!(prev.is_none());
+            self.values.insert_first(id.string.to_owned(), (var, id.span, vis));
             Ok(())
         }
     }

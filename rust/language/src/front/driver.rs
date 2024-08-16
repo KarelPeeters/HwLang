@@ -1,153 +1,96 @@
+use crate::error::{CompileError, DiagnosticError};
+use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
+use crate::front::scope::{Scope, Visibility};
+use crate::front::source::SourceDatabase;
+use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
+use crate::front::values::{Value, ValueRangeInfo};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, ModulePort, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
+use crate::syntax::pos::{FileId, Span};
+use crate::syntax::{ast, parse_file_content};
+use crate::util::arena::Arena;
+use crate::util::data::IndexMapExt;
+use crate::{new_index_type, throw};
 use annotate_snippets::{Level, Renderer, Snippet};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 use std::cmp::min;
 use std::collections::HashMap;
 
-use crate::error::{CompileError, DiagnosticError};
-use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
-use crate::front::scope::Visibility;
-use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
-use crate::front::values::{Value, ValueRangeInfo};
-use crate::front::{scope, TypeOrValue};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, ModulePort, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
-use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
-use crate::syntax::{ast, parse_file_content, ParseError};
-use crate::util::arena::Arena;
-use crate::{new_index_type, throw};
+// TODO: add some error recovery and continuation, eg. return all parse errors at once
+pub fn compile(database: &SourceDatabase) -> Result<(), CompileError> {
+    // sort files to ensure platform-independence
+    // TODO make this the responsibility of the database builder, now fileid are still not deterministic
+    let files_sorted = database.files.keys()
+        .copied()
+        .sorted_by_key(|&file| &database[database[file].directory].path)
+        .collect_vec();
 
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct FilePath(pub Vec<String>);
+    // items only exists to serve as a level of indirection between values,
+    //   so we can easily do the graph solution in a single pass
+    let mut items: Arena<Item, ItemInfo> = Arena::default();
 
-pub struct SourceDatabase {
-    pub paths: IndexSet<FilePath>,
-    // TODO use arena for this too?
-    pub files: IndexMap<FileId, FileInfo>,
+    // parse all files and populate local scopes
+    let mut file_auxiliary = IndexMap::new();
 
-    pub directories: Arena<Directory, DirectoryInfo>,
-    pub root_directory: Directory,
-}
+    for file in files_sorted {
+        let file_info = &database[file];
 
-// TODO distinguish between true and temporary options
-pub struct FileInfo {
-    #[allow(dead_code)]
-    id: FileId,
-    path: FilePath,
-    /// only intended for use in user-visible diagnostic messages
-    path_raw: String,
-    #[allow(dead_code)]
-    directory: Directory,
-    source: String,
-    ast: Option<ast::FileContent>,
-    offsets: FileOffsets,
-    local_scope: Option<Scope<'static>>,
-}
+        // parse
+        let ast = parse_file_content(&file_info.source, &file_info.offsets)
+            .map_err(|e| database.map_parser_error(e))?;
 
-// TODO rename to "FilePath" or "SourcePath"
-new_index_type!(pub Directory);
+        // build local scope
+        // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
+        let mut local_scope = Scope::new_root(file_info.offsets.full_span());
 
-pub struct DirectoryInfo {
-    #[allow(dead_code)]
-    path: FilePath,
-    file: Option<FileId>,
-    children: IndexMap<String, Directory>,
-}
-
-pub type Scope<'s> = scope::Scope<'s, ScopedEntry>;
-
-// TODO pick a better name for this
-#[derive(Debug, Clone)]
-pub enum ScopedEntry {
-    Item(Item),
-    Direct(ScopedEntryDirect),
-}
-
-// TODO transpose or not?
-pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
-pub type ItemKind = TypeOrValue<(), ()>;
-
-#[must_use]
-#[derive(Debug)]
-pub enum CompileSetError {
-    EmptyPath,
-    DuplicatePath(FilePath),
-}
-
-impl SourceDatabase {
-    pub fn new() -> Self {
-        let mut directories = Arena::default();
-        let root_directory = directories.push(DirectoryInfo {
-            path: FilePath(vec![]),
-            file: None,
-            children: Default::default(),
-        });
-
-        SourceDatabase {
-            files: IndexMap::default(),
-            paths: IndexSet::default(),
-            directories,
-            root_directory,
-        }
-    }
-
-    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<(), CompileSetError> {
-        if path.0.is_empty() {
-            throw!(CompileSetError::EmptyPath);
-        }
-        if !self.paths.insert(path.clone()) {
-            throw!(CompileSetError::DuplicatePath(path.clone()));
-        }
-
-        let id = FileId(self.files.len());
-        println!("adding {:?} => {:?}", id, path);
-        let directory = self.get_directory(&path);
-        let info = FileInfo::new(id, path, path_raw, directory, source);
-
-        let slot = &mut self.directories[directory].file;
-        assert_eq!(*slot, None);
-        *slot = Some(id);
-
-        let prev = self.files.insert(id, info);
-        assert!(prev.is_none());
-        Ok(())
-    }
-
-    pub fn add_external_vhdl(&mut self, library: String, source: String) {
-        todo!("compile VHDL library={:?}, source.len={}", library, source.len())
-    }
-
-    pub fn add_external_verilog(&mut self, source: String) {
-        todo!("compile verilog source.len={}", source.len())
-    }
-
-    fn get_directory(&mut self, path: &FilePath) -> Directory {
-        let mut curr_dir = self.root_directory;
-        for (i, path_item) in enumerate(&path.0) {
-            curr_dir = match self.directories[curr_dir].children.get(path_item) {
-                Some(&child) => child,
-                None => {
-                    let curr_path = &path.0[..=i];
-                    let child = self.directories.push(DirectoryInfo {
-                        path: FilePath(curr_path.to_vec()),
-                        file: None,
-                        children: Default::default(),
-                    });
-                    self.directories[curr_dir].children.insert(path_item.clone(), child);
-                    child
-                }
+        for (ast_item_index, ast_item) in enumerate(&ast.items) {
+            let common_info = ast_item.common_info();
+            let vis = match common_info.vis {
+                ast::Visibility::Public(_) => Visibility::Public,
+                ast::Visibility::Private => Visibility::Private,
             };
+
+            let item_reference = ItemReference { file, item_index: ast_item_index };
+            let item = items.push(ItemInfo { item_reference, ty: None });
+            local_scope.maybe_declare(&database, &common_info.id, ScopedEntry::Item(item), vis)?;
         }
-        curr_dir
+
+        // store
+        file_auxiliary.insert_first(file, FileAuxiliary { ast, local_scope });
     }
 
-    pub fn expand_pos(&self, pos: Pos) -> PosFull {
-        self[pos.file].offsets.expand_pos(pos)
+    let mut state = CompileState {
+        database,
+        items,
+        file_auxiliary: &file_auxiliary,
+    };
+
+    // fully resolve all items
+    let item_keys = state.items.keys().collect_vec();
+    for item in item_keys {
+        // TODO extra pass that actually looks at the bodies?
+        //  or just call "typecheck_item_fully" instead?
+        state.resolve_item_type_fully(item)?;
     }
 
-    pub fn expand_span(&self, span: Span) -> SpanFull {
-        self[span.start.file].offsets.expand_span(span)
-    }
+    Ok(())
+}
+
+pub struct CompileState<'d, 'a> {
+    database: &'d SourceDatabase,
+    file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
+    items: Arena<Item, ItemInfo>,
+}
+
+pub struct FileAuxiliary {
+    ast: ast::FileContent,
+    // TODO distinguish scopes properly, there are up to 3:
+    //   * containing items defined in this file
+    //   * containing sibling files
+    //   * including imports
+    local_scope: Scope<'static>
 }
 
 new_index_type!(pub Item);
@@ -164,11 +107,6 @@ pub struct ItemInfo {
     // TODO where to store the actual value? do we just leave this abstract?
 }
 
-pub struct CompileState<'d> {
-    database: &'d SourceDatabase,
-    items: Arena<Item, ItemInfo>,
-}
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ResolveFirst(Item);
 
@@ -176,114 +114,6 @@ pub struct ResolveFirst(Item);
 pub enum ResolveFirstOr<E> {
     ResolveFirst(Item),
     Error(E),
-}
-
-impl SourceDatabase {
-    // TODO: add some error recovery and continuation, eg. return all parse errors at once
-    pub fn compile(mut self) -> Result<(), CompileError> {
-        // sort files to ensure platform-independence
-        // TODO should this be here or at the higher-level path walker?
-        self.files.sort_by(|_, v1, _, v2| {
-            v1.path.cmp(&v2.path)
-        });
-
-        // items only exists to serve as a level of indirection between values,
-        //   so we can easily do the graph solution in a single pass
-        let mut items: Arena<Item, ItemInfo> = Arena::default();
-
-        // TODO split up database into even more immutable and mutable part
-        let files = self.files.keys().copied().collect_vec();
-
-        // parse all files
-        for &file in &files {
-            let file_info = &self[file];
-            let ast = parse_file_content(&file_info.source, &file_info.offsets)
-                .map_err(|e| self.map_parser_error(e))?;
-            self.files.get_mut(&file).unwrap().ast = Some(ast);
-        }
-
-        // build import scope of each file
-        for &file in &files {
-            let file_info = &self[file];
-            let ast = file_info.ast.as_ref().unwrap();
-
-            // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-            let mut local_scope = Scope::new_root(file_info.offsets.full_span());
-
-            for (ast_item_index, ast_item) in enumerate(&ast.items) {
-                let common_info = ast_item.common_info();
-                let vis = match common_info.vis {
-                    ast::Visibility::Public(_) => Visibility::Public,
-                    ast::Visibility::Private => Visibility::Private,
-                };
-
-                let item_reference = ItemReference { file, item_index: ast_item_index };
-                let item = items.push(ItemInfo { item_reference, ty: None });
-                local_scope.maybe_declare(&self, &common_info.id, ScopedEntry::Item(item), vis)?;
-            }
-
-            self.files.get_mut(&file).unwrap().local_scope = Some(local_scope);
-        }
-
-        let mut state = CompileState {
-            database: &self,
-            items,
-        };
-
-        // fully resolve all items
-        let item_keys = state.items.keys().collect_vec();
-        for item in item_keys {
-            // TODO extra pass that actually looks at the bodies?
-            //  or just call "typecheck_item_fully" instead?
-            state.resolve_item_type_fully(item)?;
-        }
-
-
-        Ok(())
-    }
-
-    fn map_parser_error(&self, e: ParseError) -> DiagnosticError {
-        match e {
-            ParseError::InvalidToken { location } => {
-                let span = Span::empty_at(location);
-                self.diagnostic("invalid token")
-                    .add_error(span, "invalid token")
-                    .finish()
-            }
-            ParseError::UnrecognizedEof { location, expected } => {
-                let span = Span::empty_at(location);
-                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
-
-                self.diagnostic("unexpected eof")
-                    .add_error(span, "invalid token")
-                    .footer(Level::Info, format!("expected one of {:?}", expected))
-                    .finish()
-            },
-            ParseError::UnrecognizedToken { token, expected } => {
-                let (start, _, end) = token;
-                let span = Span::new(start, end);
-                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
-
-                self.diagnostic("unexpected token")
-                    .add_error(span, "unexpected token")
-                    .footer(Level::Info, format!("expected one of {:?}", expected))
-                    .finish()
-            },
-            ParseError::ExtraToken { token } => {
-                let (start, _, end) = token;
-                let span = Span::new(start, end);
-
-                self.diagnostic("unexpected extra token")
-                    .add_error(span, "extra token")
-                    .finish()
-            },
-            ParseError::User { .. } => unreachable!("no user errors are generated by the grammer")
-        }
-    }
-
-    pub fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'_> {
-        Diagnostic::new(self, title)
-    }
 }
 
 pub type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
@@ -294,7 +124,7 @@ pub enum FunctionBody {
     TypeConstructor(ItemReference),
 }
 
-impl<'d> CompileState<'d> {
+impl<'d, 'a> CompileState<'d, 'a> {
     fn resolve_item_type_fully(&mut self, item: Item) -> Result<(), CompileError> {
         let mut stack = vec![item];
 
@@ -352,9 +182,8 @@ impl<'d> CompileState<'d> {
         // item lookup
         let item_reference = self.items[item].item_reference;
         let ItemReference { file, item_index: _ } = item_reference;
-        let file_info = &self.database[file];
         let item_ast = self.get_item_ast(item_reference);
-        let scope = file_info.local_scope.as_ref().unwrap();
+        let scope = &self.file_auxiliary.get(&file).unwrap().local_scope;
 
         // actual resolution
         match *item_ast {
@@ -567,7 +396,7 @@ impl<'d> CompileState<'d> {
         let file = self.database[curr_dir].file.ok_or_else(|| {
             self.diagnostic_simple("expected path to file", path.span, "no file exists at this path")
         })?;
-        let file_scope = self.database[file].local_scope.as_ref().unwrap();
+        let file_scope = &self.file_auxiliary.get(&file).unwrap().local_scope;
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
         let value = file_scope.find(&self.database, None, id, vis)?;
@@ -806,10 +635,9 @@ impl<'d> CompileState<'d> {
         )
     }
 
-    fn get_item_ast(&self, item_reference: ItemReference) -> &'d ast::Item {
+    fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
         let ItemReference { file, item_index } = item_reference;
-        let file_info = &self.database[file];
-        let ast = file_info.ast.as_ref().unwrap();
+        let ast = &self.file_auxiliary.get(&file).unwrap().ast;
         &ast.items[item_index]
     }
 
@@ -852,21 +680,6 @@ impl<E: Into<CompileError>> From<E> for ResolveFirstOr<CompileError> {
 impl From<ResolveFirst> for ResolveFirstOr<CompileError> {
     fn from(value: ResolveFirst) -> Self {
         ResolveFirstOr::ResolveFirst(value.0)
-    }
-}
-
-impl FileInfo {
-    pub fn new(id: FileId, path: FilePath, path_raw: String, directory: Directory, source: String) -> Self {
-        FileInfo {
-            id,
-            path,
-            path_raw,
-            directory,
-            offsets: FileOffsets::new(id, &source),
-            source,
-            ast: None,
-            local_scope: None,
-        }
     }
 }
 
@@ -995,19 +808,5 @@ pub trait DiagnosticAddable: Sized {
 
     fn add_info(self, span: Span, label: impl Into<String>) -> Self {
         self.add(Level::Info, span, label)
-    }
-}
-
-impl std::ops::Index<FileId> for SourceDatabase {
-    type Output = FileInfo;
-    fn index(&self, index: FileId) -> &Self::Output {
-        self.files.get(&index).unwrap()
-    }
-}
-
-impl std::ops::Index<Directory> for SourceDatabase {
-    type Output = DirectoryInfo;
-    fn index(&self, index: Directory) -> &Self::Output {
-        &self.directories[index]
     }
 }

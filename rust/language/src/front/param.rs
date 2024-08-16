@@ -1,9 +1,8 @@
-use indexmap::IndexMap;
-
+use crate::front::common::TypeOrValue;
 use crate::front::driver::ItemReference;
 use crate::front::types::Type;
-use crate::front::TypeOrValue;
 use crate::syntax::ast::Identifier;
+use indexmap::IndexMap;
 
 #[derive(Debug, Clone)]
 pub struct GenericParams {

@@ -1,11 +1,10 @@
-use indexmap::IndexMap;
-use num_bigint::BigInt;
-
+use crate::front::common::TypeOrValue;
 use crate::front::driver::{FunctionBody, ItemReference};
 use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
 use crate::front::types::{ModuleTypeInfo, Type};
-use crate::front::TypeOrValue;
 use crate::syntax::ast::{BinaryOp, Identifier};
+use indexmap::IndexMap;
+use num_bigint::BigInt;
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
