@@ -1,18 +1,17 @@
-use std::cmp::min;
-use std::collections::HashMap;
-
 use annotate_snippets::{Level, Renderer, Snippet};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
+use std::cmp::min;
+use std::collections::HashMap;
 
 use crate::error::{CompileError, DiagnosticError};
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::Visibility;
-use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::front::{scope, TypeOrValue};
-use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, Path, RangeLiteral, Spanned, UnaryOp};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, ModulePort, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
 use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
 use crate::syntax::{ast, parse_file_content, ParseError};
 use crate::util::arena::Arena;
@@ -345,6 +344,7 @@ impl<'d> CompileState<'d> {
     }
 
     // TODO split this (and the corresponding functions) into signature and value for extra type safety
+    // TODO should this do both signatures and values, or only the latter?
     fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
         // check that this is indeed a new query
         assert!(self.items[item].ty.is_none());
@@ -357,56 +357,108 @@ impl<'d> CompileState<'d> {
         let scope = file_info.local_scope.as_ref().unwrap();
 
         // actual resolution
-        match item_ast {
-            // TODO why are we handling use items here? can they not be eliminated by scope building
+        match *item_ast {
             // use indirection
-            ast::Item::Use(item_ast) => {
-                let next_item = self.resolve_use_path(&item_ast.path)?;
+            ast::Item::Use(ItemUse { span: _, ref path, as_: _ }) => {
+                // TODO why are we handling use items here? can they not be eliminated by scope building
+                //  this is really weird, use items don't even really have signatures
+                let next_item = self.resolve_use_path(path)?;
                 Ok(self.resolve_item_type(next_item)?)
             }
             // type definitions
-            ast::Item::Type(ItemDefType { span: _, vis: _, id: _, params, inner }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, _args, scope_inner| {
+            ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
+                self.resolve_new_generic_type_def(item_reference, scope, params, |s, _args, scope_inner| {
                     Ok(s.eval_expression_as_ty(scope_inner, inner)?)
                 })
             }
-            ast::Item::Struct(ItemDefStruct { span: _, vis: _, id: _, params, fields }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, args, scope_inner| {
+            ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
+                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
                     // map fields
-                    let mut field_types = vec![];
+                    let mut fields_map = IndexMap::new();
                     for field in fields {
-                        let field_ty = s.eval_expression_as_ty(scope_inner, &field.ty)?;
-                        field_types.push((field.id.string.clone(), field_ty));
+                        let StructField { span: _, id: field_id, ty } = field;
+                        let field_ty = s.eval_expression_as_ty(scope_inner, ty)?;
+
+                        let prev = fields_map.insert(field_id.string.clone(), (field_id, field_ty));
+                        if let Some(prev) = prev {
+                            throw!(s.diagnostic_defined_twice("struct field", span, field_id, prev.0))
+                        }
                     }
 
+                    // result
                     let ty = StructTypeInfo {
                         nominal_type_unique: NominalTypeUnique { item_reference, args },
-                        fields: field_types,
+                        fields: fields_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
                     Ok(Type::Struct(ty))
                 })
             }
-            ast::Item::Enum(ItemDefEnum { span: _, vis: _, id: _, params, variants }) => {
-                self.resolve_new_type_def_item(item_reference, scope, params, |s, args, scope_inner| {
+            ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
+                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
                     // map variants
-                    let mut variant_types = vec![];
+                    let mut variants_map = IndexMap::new();
                     for variant in variants {
-                        let content = variant.content.as_ref()
+                        let EnumVariant { span: _, id: variant_id, content } = variant;
+
+                        let content = content.as_ref()
                             .map(|content| s.eval_expression_as_ty(scope_inner, content))
                             .transpose()?;
-                        variant_types.push((variant.id.string.clone(), content));
+
+                        let prev = variants_map.insert(variant_id.string.clone(), (variant_id, content));
+                        if let Some(prev) = prev {
+                            throw!(s.diagnostic_defined_twice("enum variant", span, variant_id, prev.0))
+                        }
                     }
 
+                    // result
                     let ty = EnumTypeInfo {
                         nominal_type_unique: NominalTypeUnique { item_reference, args },
-                        variants: variant_types,
+                        variants: variants_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
                     Ok(Type::Enum(ty))
                 })
             },
             // value definitions
-            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body: _ }) => {
-                self.diagnostic_todo(item_ast.common_info().span_short, "module definition")
+            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, body: _ }) => {
+                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
+                    // map ports
+                    // TODO extract duplicate code between all these id uniqueness checking places
+                    let mut ports_map = IndexMap::new();
+                    for port in &ports.inner {
+                        let ModulePort { span: _, id: port_id, direction, kind, } = port;
+
+                        let info = PortTypeInfo {
+                            direction: direction.inner,
+                            kind: match &kind.inner {
+                                PortKind::Clock => PortKind::Clock,
+                                PortKind::Normal { sync, ty } => {
+                                    PortKind::Normal {
+                                        sync: match &sync.inner {
+                                            SyncKind::Async => SyncKind::Async,
+                                            SyncKind::Sync(clk) => {
+                                                let clk = s.eval_expression_as_value(scope, clk)?;
+                                                SyncKind::Sync(clk)
+                                            },
+                                        },
+                                        ty: s.eval_expression_as_ty(scope_inner, ty)?,
+                                    }
+                                }
+                            },
+                        };
+
+                        let prev = ports_map.insert(port_id.string.clone(), (port_id, info));
+                        if let Some(prev) = prev {
+                            throw!(s.diagnostic_defined_twice("module port", ports.span, &port_id, prev.0))
+                        }
+                    }
+
+                    // result
+                    let ty = ModuleTypeInfo {
+                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        ports: ports_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
+                    };
+                    Ok(Type::Module(ty))
+                })
             },
             ast::Item::Const(_) => self.diagnostic_todo(item_ast.common_info().span_short, "const definition"),
             ast::Item::Function(_) => self.diagnostic_todo(item_ast.common_info().span_short, "function definition"),
@@ -414,7 +466,7 @@ impl<'d> CompileState<'d> {
         }
     }
 
-    fn resolve_new_type_def_item<T>(
+    fn resolve_new_generic_type_def<T>(
         &mut self,
         defining_item: ItemReference,
         scope_outer: &Scope,
@@ -438,15 +490,8 @@ impl<'d> CompileState<'d> {
 
                 for (param_index, param_ast) in enumerate(&params.inner) {
                     // check parameter names for uniqueness
-                    // TODO this is a weird place to do this, this can already happen during parsing
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
-                        let error = self.diagnostic("duplicate parameter name")
-                            .snippet(param_ast.span)
-                            .add_info(prev.span, "previously defined here")
-                            .add_error(param_ast.id.span, "defined for the second time here")
-                            .finish()
-                            .finish();
-                        throw!(error);
+                        throw!(self.diagnostic_defined_twice("generic parameter", params.span, prev, &param_ast.id))
                     }
 
                     let unique_id = GenericParameterUniqueId { defining_item, param_index };
@@ -665,35 +710,6 @@ impl<'d> CompileState<'d> {
                         }
                     }
                 }
-
-                // TODO support both value function calls and type constructor calls
-                // match &self.values[target_value] {
-                //     ValueInfo::Function(target_value) => {
-                //         let FunctionValue { item_reference, ty, params, body } = target_value;
-                //         // TODO skip these clones
-                //         let params = params.clone();
-                //         let body = body.clone();
-                //
-                //         // define params
-                //         // TODO this is a bit strange, shouldn't the function body have been fully checked at this point?
-                //         let mut body_scope = scope.nest(Visibility::Private);
-                //         let mut param_values = vec![];
-                //         // TODO check param/arg length and type match, return proper errors
-                //         for (param, arg) in zip_eq(&params, &args.inner) {
-                //             // note: args are evaluated in the parent scope
-                //             let arg = self.eval_expression(scope, arg)?;
-                //             // TODO visibility does not really sense here, this scope is never accessible from outside
-                //             body_scope.declare(param, ScopedEntry::Value(arg), Visibility::Private)?;
-                //             param_values.push(arg);
-                //         }
-                //
-                //         // actually run the function
-                //         // TODO time/step/recursion limit?
-                //         let result = self.call_function_body(&body_scope, &body, param_values)?;
-                //         Ok(result)
-                //     }
-                //     _ => throw!(FrontError::ExpectedFunctionExpression((&**target).clone())),
-                // }
             },
         };
         Ok(result)
@@ -788,6 +804,15 @@ impl<'d> CompileState<'d> {
 
     fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'d> {
         self.database.diagnostic(title)
+    }
+
+    fn diagnostic_defined_twice(&self, kind: &str, span: Span, prev: &Identifier, curr: &Identifier) -> DiagnosticError {
+        self.diagnostic(format!("duplicate {:?}", kind))
+            .snippet(span)
+            .add_info(prev.span, "previously defined here")
+            .add_error(curr.span, "defined for the second time here")
+            .finish()
+            .finish()
     }
 
     fn diagnostic_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagnosticError {

@@ -104,7 +104,7 @@ ModulePort: ModulePort = {
         => ModulePort { id, direction, kind, span: loc.span(start, end) },
 }
 
-PortKind: PortKind<Spanned<SyncKind<Identifier>>, Box<Expression>> = {
+PortKind: PortKind<Spanned<SyncKind<Box<Expression>>>, Box<Expression>> = {
     "clock" => PortKind::Clock,
     <sync:Spanned<SyncKind>> <ty:BoxExpr> => PortKind::Normal { sync, ty },
 }
@@ -114,9 +114,9 @@ PortDirection: PortDirection = {
     "output" => PortDirection::Output,
 }
 
-SyncKind: SyncKind<Identifier> = {
+SyncKind: SyncKind<Box<Expression>> = {
     "async" => SyncKind::Async,
-    "sync" "(" <Id> ")" => SyncKind::Sync(<>),
+    "sync" "(" <BoxExpr> ")" => SyncKind::Sync(<>),
 }
 
 // expressions

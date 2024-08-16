@@ -169,8 +169,7 @@ pub struct ModulePort {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    // TODO expand sync to more complicated expressions again
-    pub kind: Spanned<PortKind<Spanned<SyncKind<Identifier>>, Box<Expression>>>,
+    pub kind: Spanned<PortKind<Spanned<SyncKind<Box<Expression>>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone)]

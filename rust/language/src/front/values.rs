@@ -3,8 +3,8 @@ use num_bigint::BigInt;
 
 use crate::front::driver::{FunctionBody, ItemReference};
 use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
+use crate::front::types::{ModuleTypeInfo, Type};
 use crate::front::TypeOrValue;
-use crate::front::types::Type;
 use crate::syntax::ast::{BinaryOp, Identifier};
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
@@ -24,7 +24,7 @@ pub enum Value {
 
     // structures
     Function(FunctionValue),
-    Module(ModuleValue),
+    Module(ModuleValueInfo),
     // Struct(StructValue),
     // Tuple(TupleValue),
     // Enum(EnumValue),
@@ -49,8 +49,9 @@ pub struct FunctionValue {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleValue {
-    // TODO include real content?
+pub struct ModuleValueInfo {
+    pub ty: ModuleTypeInfo,
+    // TODO body
 }
 
 impl ValueRangeInfo {

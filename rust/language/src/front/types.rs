@@ -61,27 +61,27 @@ pub struct NominalTypeUnique {
 #[derive(Debug, Clone)]
 pub struct StructTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
-    pub fields: Vec<(String, Type)>,
+    pub fields: IndexMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
-    pub variants: Vec<(String, Option<Type>)>,
+    pub variants: IndexMap<String, Option<Type>>,
 }
 
 // TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
 //  the end use case would be passing a module constructor as a parameter to another module
 #[derive(Debug, Clone)]
 pub struct ModuleTypeInfo {
-    pub item_reference: ItemReference,
-    pub ports: Vec<(String, PortTypeInfo)>,
+    pub nominal_type_unique: NominalTypeUnique,
+    pub ports: IndexMap<String, PortTypeInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PortTypeInfo {
     pub direction: PortDirection,
-    pub kind: PortKind<SyncKind<usize>, Type>,
+    pub kind: PortKind<SyncKind<Value>, Type>,
 }
 
 impl<T> MaybeConstructor<T> {
