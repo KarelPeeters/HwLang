@@ -1,10 +1,10 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
+use crate::data::source::SourceDatabase;
 use crate::error::DiagnosticError;
 use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::DiagnosticAddable;
-use crate::front::source::SourceDatabase;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
 use crate::throw;

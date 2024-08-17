@@ -1,10 +1,11 @@
 use crate::back::LowerError::NoTopFileFound;
+use crate::data::compiled::CompiledDataBase;
+use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::DiagnosticAddable;
-use crate::front::driver::{CompiledDataBase, Item};
+use crate::front::driver::Item;
 use crate::front::scope::Visibility;
-use crate::front::source::SourceDatabase;
 use crate::front::types::{MaybeConstructor, Type};
 
 #[derive(Debug)]
@@ -30,7 +31,7 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDataBase) -> Resu
     let top_entry = &compiled[top_file].local_scope.find_immediate_str(source, "top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
-            match compiled[item].ty.as_ref().unwrap() {
+            match &compiled[item].ty {
                 MaybeConstructor::Constructor(_) => {
                     let err = source.diagnostic("top should be a module, got a constructor")
                         .add_error(top_entry.defining_span, "defined here")

@@ -1,5 +1,5 @@
+use crate::data::source::SourceDatabase;
 use crate::error::DiagnosticError;
-use crate::front::source::SourceDatabase;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
 use annotate_snippets::{Level, Renderer, Snippet};

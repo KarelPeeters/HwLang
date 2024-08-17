@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use itertools::Itertools;
 use language::back::{lower, LoweredDatabase};
+use language::data::source::{FilePath, SourceDatabase};
 use language::error::CompileError;
 use language::front::driver::compile;
-use language::front::source::{FilePath, SourceDatabase};
 use language::util::io::recurse_for_each_file;
 
 #[derive(Parser, Debug)]

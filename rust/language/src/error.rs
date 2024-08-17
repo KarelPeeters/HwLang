@@ -1,5 +1,5 @@
 use crate::back::LowerError;
-use crate::front::source::CompileSetError;
+use crate::data::source::CompileSetError;
 
 #[must_use]
 #[derive(Debug)]

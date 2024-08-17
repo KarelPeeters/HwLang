@@ -1,9 +1,10 @@
+use crate::data::compiled::{CompiledDataBase, FileAuxiliary, ItemInfo};
+use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::{ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
 use crate::front::scope::{Scope, Visibility};
-use crate::front::source::SourceDatabase;
 use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, ModulePort, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
@@ -29,7 +30,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
 
     // items only exists to serve as a level of indirection between values,
     //   so we can easily do the graph solution in a single pass
-    let mut items: Arena<Item, ItemInfo> = Arena::default();
+    let mut items: Arena<Item, ItemInfoPartial> = Arena::default();
 
     // parse all files and populate local scopes
     let mut file_auxiliary = IndexMap::new();
@@ -53,7 +54,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
             };
 
             let item_reference = ItemReference { file, item_index: ast_item_index };
-            let item = items.push(ItemInfo { item_reference, ty: None });
+            let item = items.push(ItemInfoPartial { item_reference, ty: None });
             local_scope.maybe_declare(&database, &common_info.id, ScopedEntry::Item(item), vis)?;
         }
 
@@ -75,38 +76,27 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
         state.resolve_item_type_fully(item)?;
     }
 
-    Ok(CompiledDataBase {
-        items: state.items,
+    let items = state.items.map_values(|info| ItemInfo {
+        item_reference: info.item_reference,
+        ty: info.ty.as_ref().unwrap().clone(),
+    });
+    let compiled = CompiledDataBase {
+        items,
         file_auxiliary,
-    })
-}
-
-// TODO move this somewhere else, this is more of a public interface
-// TODO separate read-only and clearly done iteminfo struct 
-pub struct CompiledDataBase {
-    pub file_auxiliary: IndexMap<FileId, FileAuxiliary>,
-    pub items: Arena<Item, ItemInfo>,
+    };
+    Ok(compiled)
 }
 
 pub struct CompileState<'d, 'a> {
     database: &'d SourceDatabase,
     file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
-    items: Arena<Item, ItemInfo>,
-}
-
-pub struct FileAuxiliary {
-    pub ast: ast::FileContent,
-    // TODO distinguish scopes properly, there are up to 3:
-    //   * containing items defined in this file
-    //   * containing sibling files
-    //   * including imports
-    pub local_scope: Scope<'static>
+    items: Arena<Item, ItemInfoPartial>,
 }
 
 new_index_type!(pub Item);
 
 #[derive(Debug)]
-pub struct ItemInfo {
+pub struct ItemInfoPartial {
     pub item_reference: ItemReference,
 
     // `None` if this item has not been resolved yet.
@@ -796,20 +786,6 @@ fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
     }
 }
 
-impl std::ops::Index<FileId> for CompiledDataBase {
-    type Output = FileAuxiliary;
-    fn index(&self, index: FileId) -> &Self::Output {
-        &self.file_auxiliary.get(&index).unwrap()
-    }
-}
-
-impl std::ops::Index<Item> for CompiledDataBase {
-    type Output = ItemInfo;
-    fn index(&self, index: Item) -> &Self::Output {
-        &self.items[index]
-    }
-}
-
 impl std::ops::Index<FileId> for CompileState<'_, '_> {
     type Output = FileAuxiliary;
     fn index(&self, index: FileId) -> &Self::Output {
@@ -818,7 +794,7 @@ impl std::ops::Index<FileId> for CompileState<'_, '_> {
 }
 
 impl std::ops::Index<Item> for CompileState<'_, '_> {
-    type Output = ItemInfo;
+    type Output = ItemInfoPartial;
     fn index(&self, index: Item) -> &Self::Output {
         &self.items[index]
     }

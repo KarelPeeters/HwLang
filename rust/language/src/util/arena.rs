@@ -66,7 +66,8 @@ impl Debug for Idx {
     }
 }
 
-#[derive(Clone)]
+// TODO include randomly generated checker index value to avoid accidental mixing?
+//   on clone or value map, switch up the future ID, and keep a list of valid old IDs as well
 pub struct Arena<K: IndexType, T> {
     //TODO for now this is implemented as a map, but this can be improved
     //  to just be a vec using generational indices
@@ -107,6 +108,18 @@ impl<K: IndexType, T> Arena<K, T> {
 
     pub fn retain<F: FnMut(K, &T) -> bool>(&mut self, mut keep: F) {
         self.map.retain(|&i, v| keep(K::new(Idx::new(i)), v))
+    }
+
+    pub fn map_values<U>(&self, mut f: impl FnMut(&T) -> U) -> Arena<K, U> {
+        let new_map = self.map.iter()
+            .map(|(&i, v)| (i, f(v)))
+            .collect();
+
+        Arena {
+            map: new_map,
+            next_i: self.next_i,
+            ph: Default::default(),
+        }
     }
 }
 
