@@ -5,9 +5,8 @@ use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::DiagnosticAddable;
 use crate::front::driver::Item;
-use crate::front::param::GenericArgs;
 use crate::front::scope::Visibility;
-use crate::front::types::{MaybeConstructor, Type};
+use crate::front::types::{GenericArguments, MaybeConstructor, Type};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::util::data::IndexMapExt;
 use indexmap::{IndexMap, IndexSet};
@@ -33,7 +32,7 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Low
 
     // TODO pick some nice traversal order
     let mut todo = VecDeque::new();
-    todo.push_back(ModuleInstance { module: top_module, args: GenericArgs { vec: Vec::new() } });
+    todo.push_back(ModuleInstance { module: top_module, args: GenericArguments { vec: Vec::new() } });
 
     while let Some(instance) = todo.pop_front() {
         let item_info = &compiled[instance.module];
@@ -61,7 +60,7 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Low
 struct ModuleInstance {
     module: Item,
     /// These args are constant and fully evaluated, without any remaining outer generic parameters.
-    args: GenericArgs,
+    args: GenericArguments,
 }
 
 fn generate_module_source(_: &SourceDatabase, _: &CompiledDataBase, _: &ModuleInstance, module_name: &str) -> String {

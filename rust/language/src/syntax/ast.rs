@@ -64,7 +64,7 @@ pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParam>>>,
+    pub params: Option<Spanned<Vec<GenericParameter>>>,
     pub inner: Box<Expression>,
 }
 
@@ -74,7 +74,7 @@ pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParam>>>,
+    pub params: Option<Spanned<Vec<GenericParameter>>>,
     pub fields: Vec<StructField>,
 }
 
@@ -91,7 +91,7 @@ pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParam>>>,
+    pub params: Option<Spanned<Vec<GenericParameter>>>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -107,7 +107,7 @@ pub struct ItemDefFunction {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Spanned<Vec<FunctionParam>>,
+    pub params: Spanned<Vec<FunctionParameter>>,
     pub ret_ty: Option<Expression>,
     pub body: Block,
 }
@@ -117,7 +117,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParam>>>,
+    pub params: Option<Spanned<Vec<GenericParameter>>>,
     pub ports: Spanned<Vec<ModulePort>>,
     pub body: Block,
 }
@@ -144,20 +144,25 @@ pub struct InterfaceField {
 }
 
 #[derive(Debug, Clone)]
-pub struct GenericParam {
+pub struct GenericParameter {
     pub span: Span,
     pub id: Identifier,
-    pub kind: GenericParamKind,
+    pub kind: GenericParameterKind<Expression>,
 }
 
+// TODO this is just TypeOrValue again?
 #[derive(Debug, Clone)]
-pub enum GenericParamKind {
+pub enum GenericParameterKind<T> {
     Type,
-    ValueOfType(Expression)
+    Value {
+        ty: T,
+        // TODO it's weird that span needs to be here
+        ty_span: Span,
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionParam {
+pub struct FunctionParameter {
     pub span: Span,
     // pub is_const: bool,
     pub id: Identifier,

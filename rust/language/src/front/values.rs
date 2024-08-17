@@ -1,5 +1,5 @@
-use crate::front::common::{ItemReference, TypeOrValue};
-use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ModulePortUniqueId, ValueParameter};
+use crate::data::compiled::{FunctionParameter, GenericParameter, ModulePort};
+use crate::front::common::{GenericContainer, ItemReference, TypeOrValue};
 use crate::front::types::ModuleTypeInfo;
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
@@ -10,10 +10,9 @@ use num_bigint::BigInt;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // parameters
-    // TODO replace all of these with just their unique ID, this is not the place to store type info
-    GenericParameter(GenericValueParameter),
-    FunctionParameter(ValueParameter),
-    ModulePort(ModulePortUniqueId),
+    GenericParameter(GenericParameter),
+    FunctionParameter(FunctionParameter),
+    ModulePort(ModulePort),
 
     // basic
     Int(BigInt),
@@ -79,14 +78,14 @@ impl ValueRangeInfo {
 }
 
 impl GenericContainer for Value {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue>) -> Self {
         match *self {
-            Value::GenericParameter(ref value) => match map.get(&value.unique_id) {
-                None => Value::GenericParameter(value.clone()),
+            Value::GenericParameter(param) => match map.get(&param) {
+                None => Value::GenericParameter(param),
                 Some(new) => new.as_ref().unwrap_value().clone(),
             }
-            Value::FunctionParameter(_) => todo!(),
-            Value::ModulePort(_) => todo!(),
+            Value::FunctionParameter(unique_id) => Value::FunctionParameter(unique_id),
+            Value::ModulePort(unique_id) => Value::ModulePort(unique_id),
 
             Value::Int(_) => todo!(),
             Value::Range(_) => todo!(),

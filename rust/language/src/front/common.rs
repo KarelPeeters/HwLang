@@ -1,5 +1,5 @@
+use crate::data::compiled::GenericParameter;
 use crate::front::driver::Item;
-use crate::front::param::{GenericContainer, GenericParameterUniqueId};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::pos::FileId;
@@ -59,8 +59,15 @@ impl<T, V> TypeOrValue<T, V> {
     }
 }
 
+/// A Monad trait, specifically for replacing generic parameters in a type or value with more concrete arguments.
+// TODO replace this a more general "map" trait, where the user can supply their own closure
+pub trait GenericContainer {
+    /// The implementation can assume the replacement has already been kind- and type-checked.
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue>) -> Self;
+}
+
 impl GenericContainer for TypeOrValue {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue>) -> Self {
         match self {
             TypeOrValue::Type(t) => TypeOrValue::Type(t.replace_generic_params(map)),
             TypeOrValue::Value(v) => TypeOrValue::Value(v.replace_generic_params(map)),

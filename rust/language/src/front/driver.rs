@@ -1,13 +1,12 @@
-use crate::data::compiled::{CompiledDataBase, FileAuxiliary, ItemInfo};
+use crate::data::compiled::{CompiledDataBase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
-use crate::front::common::{ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{GenericContainer, ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
-use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter, ModulePortUniqueId};
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
+use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParam, GenericParamKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, ModulePort, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_file_content};
 use crate::util::arena::Arena;
@@ -66,6 +65,9 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
         database,
         items,
         file_auxiliary: &file_auxiliary,
+        generic_params: Arena::default(),
+        function_params: Arena::default(),
+        module_ports: Arena::default(),
     };
 
     // fully resolve all items
@@ -82,6 +84,9 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
     });
     let compiled = CompiledDataBase {
         items,
+        generic_params: state.generic_params,
+        function_params: state.function_params,
+        module_ports: state.module_ports,
         file_auxiliary,
     };
     Ok(compiled)
@@ -91,6 +96,10 @@ pub struct CompileState<'d, 'a> {
     database: &'d SourceDatabase,
     file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
     items: Arena<Item, ItemInfoPartial>,
+
+    generic_params: Arena<GenericParameter, GenericParameterInfo>,
+    function_params: Arena<FunctionParameter, FunctionParameterInfo>,
+    module_ports: Arena<ModulePort, ModulePortInfo>,
 }
 
 new_index_type!(pub Item);
@@ -255,12 +264,19 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let mut scope_ports = scope_inner.nest(ports.span, Visibility::Private);
 
                     // map ports
-                    // TODO extract duplicate code between all these id uniqueness checking places
-                    let mut ports_map = IndexMap::new();
-                    for (port_index, port) in enumerate(&ports.inner) {
-                        let ModulePort { span: _, id: port_id, direction, kind, } = port;
+                    let mut port_name_map = IndexMap::new();
+                    let mut port_vec = vec![];
 
-                        let info = PortTypeInfo {
+                    for port in &ports.inner {
+                        let ast::ModulePort { span: _, id: port_id, direction, kind, } = port;
+
+                        if let Some(prev) = port_name_map.insert(port_id.string.clone(), port_id) {
+                            throw!(s.diagnostic_defined_twice("module port", ports.span, &port_id, prev))
+                        }
+
+                        let module_port_info = ModulePortInfo {
+                            defining_item: item_reference,
+                            defining_id: port_id.clone(),
                             direction: direction.inner,
                             kind: match &kind.inner {
                                 PortKind::Clock => PortKind::Clock,
@@ -278,17 +294,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 }
                             },
                         };
+                        let module_port = s.module_ports.push(module_port_info);
+                        port_vec.push(module_port);
 
-                        let prev = ports_map.insert(port_id.string.clone(), (port_id, info));
-                        if let Some(prev) = prev {
-                            throw!(s.diagnostic_defined_twice("module port", ports.span, &port_id, prev.0))
-                        }
-
-                        let unique_id = ModulePortUniqueId { defining_item: item_reference, param_index: port_index };
                         scope_ports.declare(
                             &s.database,
                             &port_id,
-                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(unique_id)))),
+                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
                             Visibility::Private,
                         )?;
                     }
@@ -296,7 +308,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     // result
                     let ty = ModuleTypeInfo {
                         nominal_type_unique: NominalTypeUnique { item_reference, args },
-                        ports: ports_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
+                        ports: port_vec,
                     };
                     Ok(Type::Module(ty))
                 })
@@ -311,13 +323,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
         &mut self,
         defining_item: ItemReference,
         scope_outer: &Scope,
-        params: &Option<Spanned<Vec<GenericParam>>>,
-        build_ty: impl FnOnce(&mut Self, GenericArgs, &Scope) -> ResolveResult<T>,
+        params: &Option<Spanned<Vec<ast::GenericParameter>>>,
+        build_ty: impl FnOnce(&mut Self, GenericArguments, &Scope) -> ResolveResult<T>,
     ) -> ResolveResult<MaybeConstructor<T>> {
         match params {
             None => {
                 // there are no parameters, just map directly
-                let arguments = GenericArgs { vec: vec![] };
+                let arguments = GenericArguments { vec: vec![] };
                 Ok(MaybeConstructor::Immediate(build_ty(self, arguments, scope_outer)?))
             }
             Some(params) => {
@@ -329,23 +341,29 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let item_span = self.get_item_ast(defining_item).common_info().span_full;
                 let mut scope_inner = scope_outer.nest(item_span, Visibility::Private);
 
-                for (param_index, param_ast) in enumerate(&params.inner) {
+                for param_ast in &params.inner {
                     // check parameter names for uniqueness
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
                         throw!(self.diagnostic_defined_twice("generic parameter", params.span, prev, &param_ast.id))
                     }
 
-                    let unique_id = GenericParameterUniqueId { defining_item, param_index };
-
                     let (param, arg) = match &param_ast.kind {
-                        GenericParamKind::Type => {
-                            let param = GenericTypeParameter { unique_id, id: param_ast.id.clone() };
-                            (GenericParameter::Type(param.clone()), TypeOrValue::Type(Type::Generic(param)))
+                        GenericParameterKind::Type => {
+                            let param = self.generic_params.push(GenericParameterInfo {
+                                defining_item,
+                                defining_id: param_ast.id.clone(),
+                                kind: GenericParameterKind::Type,
+                            });
+                            (param, TypeOrValue::Type(Type::GenericParameter(param)))
                         },
-                        GenericParamKind::ValueOfType(ty_expr) => {
+                        &GenericParameterKind::Value { ty: ref ty_expr, ty_span } => {
                             let ty = self.eval_expression_as_ty(&scope_inner, ty_expr)?;
-                            let param = GenericValueParameter { unique_id, id: param_ast.id.clone(), ty, ty_span: ty_expr.span };
-                            (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::GenericParameter(param)))
+                            let param = self.generic_params.push(GenericParameterInfo {
+                                defining_item,
+                                defining_id: param_ast.id.clone(),
+                                kind: GenericParameterKind::Value { ty, ty_span },
+                            });
+                            (param, TypeOrValue::Value(Value::GenericParameter(param)))
                         }
                     };
 
@@ -358,8 +376,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
 
                 // map inner to actual type
-                let parameters = GenericParams { vec: parameters };
-                let arguments = GenericArgs { vec: arguments };
+                let parameters = GenericParameters { vec: parameters };
+                let arguments = GenericArguments { vec: arguments };
                 let ty_constr = Constructor {
                     parameters,
                     inner: build_ty(self, arguments, &scope_inner)?,
@@ -410,7 +428,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
+    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match expr.inner {
             ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
@@ -456,7 +474,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
-                let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
+                let map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
                     match point {
                         None => Ok(None),
                         Some(point) => Ok(Some(Box::new(self.eval_expression_as_value(scope, point)?))),
@@ -518,21 +536,22 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         }
 
                         // check kind and type match, and collect in replacement map
-                        let mut replacement_map: IndexMap<GenericParameterUniqueId, TypeOrValue> = IndexMap::new();
-                        for (param, arg) in zip_eq(&parameters.vec, &args.inner) {
-                            let arg_evaluated = match param {
-                                GenericParameter::Type(_param) => {
+                        let mut replacement_map: IndexMap<GenericParameter, TypeOrValue> = IndexMap::new();
+                        for (&param, arg) in zip_eq(&parameters.vec, &args.inner) {
+                            let param_info = &self[param].kind;
+                            let arg_evaluated = match param_info {
+                                GenericParameterKind::Type => {
                                     let arg_ty = self.eval_expression_as_ty(scope, arg)?;
                                     // TODO bound-check (once we add type bounds)
                                     TypeOrValue::Type(arg_ty)
                                 }
-                                GenericParameter::Value(param) => {
+                                &GenericParameterKind::Value { ty: ref param_ty, ty_span: param_ty_span } => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    self.check_type_contains(param.ty_span, arg.span, &param.ty, &arg_value)?;
+                                    self.check_type_contains(param_ty_span, arg.span, param_ty, &arg_value)?;
                                     TypeOrValue::Value(arg_value)
                                 }
                             };
-                            replacement_map.insert(param.unique_id(), arg_evaluated);
+                            replacement_map.insert(param, arg_evaluated);
                         }
 
                         // do the actual replacement
@@ -555,7 +574,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         Ok(result)
     }
 
-    fn eval_expression_as_ty(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
+    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             // TODO unify these error strings somewhere
@@ -571,7 +590,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn eval_expression_as_value(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
+    fn eval_expression_as_value(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             ScopedEntryDirect::Constructor(_) => throw!(
@@ -586,7 +605,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn eval_builtin_call(&mut self, scope: &Scope, expr_span: Span, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
+    fn eval_builtin_call(&self, scope: &Scope, expr_span: Span, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
         // TODO disallow calling builtin outside of stdlib?
         match name {
             "type" => {
@@ -664,7 +683,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     fn require_value_true(&self, span_ty: Span, span_value: Span, value: &Value) -> ResolveResult<()> {
-        let result = match try_eval_bool(self, span_value, value) {
+        let result = match self.try_eval_bool(span_value, value) {
             Some(true) => Ok(()),
             Some(false) => Err("value must be true but was false"),
             None => Err("could not prove that value is true"),
@@ -678,6 +697,92 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 .footer(Level::Info, format!("value that must be true: {:?}", value))
                 .finish().into()
         })
+    }
+
+    // TODO what is the general algorithm for this? equivalence graphs?
+    // TODO add boolean-proving cache
+    // TODO it it possible to keep boolean proving and type inference separate? it probably is
+    //   if we don't allow user-defined type selections
+    //   even then, we can probably brute-force our way through those relatively easily
+    // TODO convert lte/gte into +1/-1 fixes instead?
+    // TODO convert inclusive/exclusive into +1/-1 fixes instead?
+    // TODO check lt, lte, gt, gte, ... all together elegantly
+    // TODO return true for vacuous truths, eg. comparisons between empty ranges?
+    fn try_eval_bool(&self, span: Span, value: &Value) -> Option<bool> {
+        match *value {
+            Value::Binary(binary_op, ref left, ref right) => {
+                let left = self.range_of_value(left)?;
+                let right = self.range_of_value(right)?;
+
+                let compare_lt = |allow_eq: bool| {
+                    let end_delta = if left.end_inclusive { 0 } else { 1 };
+                    let left_end = self.value_as_int(left.end.as_ref()?)? - end_delta;
+                    let right_start = self.value_as_int(right.start.as_ref()?)?;
+
+                    if allow_eq {
+                        Some(left_end <= right_start)
+                    } else {
+                        Some(left_end < right_start)
+                    }
+                };
+
+                match binary_op {
+                    BinaryOp::CmpLt => return compare_lt(false),
+                    BinaryOp::CmpLte => return compare_lt(true),
+                    _ => {},
+                }
+
+                // TODO support more binary operators
+                self.diagnostic_todo(span, &format!("try_eval_bool of ({:?}, {:?}, {:?})", binary_op, left, right))
+            }
+            // TODO support more values
+            _ => {},
+        }
+        None
+    }
+
+    fn value_as_int(&self, value: &Value) -> Option<BigInt> {
+        match value {
+            Value::Int(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    fn range_of_value(&self, value: &Value) -> Option<ValueRangeInfo> {
+        // TODO if range ends are themselves params with ranges, assume the worst case
+        //   although that misses things like (n < n+1)
+        fn ty_as_range(ty: &Type) -> Option<ValueRangeInfo> {
+            if let Type::Integer(IntegerTypeInfo { range }) = ty {
+                if let Value::Range(range) = range.as_ref() {
+                    return Some(range.clone());
+                }
+            }
+            None
+        }
+
+        match *value {
+            // params have types which we can use to extract a range
+            Value::GenericParameter(param) => {
+                match &self[param].kind {
+                    GenericParameterKind::Type => unreachable!(),
+                    GenericParameterKind::Value { ty, ty_span: _ } => ty_as_range(ty)
+                }
+            },
+            Value::FunctionParameter(param) => ty_as_range(&self[param].ty),
+            // a single integer corresponds to the range containing only that integer
+            Value::Int(ref value) => Some(ValueRangeInfo {
+                start: Some(Box::new(Value::Int(value.clone()))),
+                end: Some(Box::new(Value::Int(value.clone()))),
+                end_inclusive: true,
+            }),
+            // TODO ports should store their type
+            Value::ModulePort(_) => None,
+            // TODO binary operations should attempt an evaluation
+            Value::Binary(_, _, _) => None,
+            Value::Range(_) => panic!("range can't itself have a range type"),
+            Value::Function(_) => panic!("function can't have a range type"),
+            Value::Module(_) => panic!("module can't have a range type"),
+        }
     }
 
     fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
@@ -705,88 +810,6 @@ impl DiagnosticContext for CompileState<'_, '_> {
     }
 }
 
-// TODO what is the general algorithm for this? equivalence graphs?
-// TODO add boolean-proving cache
-// TODO it it possible to keep boolean proving and type inference separate? it probably is
-//   if we don't allow user-defined type selections
-//   even then, we can probably brute-force our way through those relatively easily
-
-// TODO convert lte/gte into +1/-1 fixes instead?
-// TODO convert inclusive/exclusive into +1/-1 fixes instead?
-// TODO check lt, lte, gt, gte, ... all together elegantly
-// TODO return true for vacuous truths, eg. comparisons between empty ranges?
-fn try_eval_bool(ctx: &impl DiagnosticContext, span: Span, value: &Value) -> Option<bool> {
-    match *value {
-        Value::Binary(binary_op, ref left, ref right) => {
-            let left = range_of_value(left)?;
-            let right = range_of_value(right)?;
-
-            let compare_lt = |allow_eq: bool| {
-                let end_delta = if left.end_inclusive { 0 } else { 1 };
-                let left_end = value_as_int(left.end.as_ref()?)? - end_delta;
-                let right_start = value_as_int(right.start.as_ref()?)?;
-
-                if allow_eq {
-                    Some(left_end <= right_start)
-                } else {
-                    Some(left_end < right_start)
-                }
-            };
-
-            match binary_op {
-                BinaryOp::CmpLt => return compare_lt(false),
-                BinaryOp::CmpLte => return compare_lt(true),
-                // TODO support more binary operators
-                _ => {},
-            }
-
-            ctx.diagnostic_todo(span, &format!("try_eval_bool of ({:?}, {:?}, {:?})", binary_op, left, right))
-        }
-        // TODO support more values
-        _ => {},
-    }
-    None
-}
-
-fn value_as_int(value: &Value) -> Option<BigInt> {
-    match value {
-        Value::Int(value) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
-    // TODO if range ends are themselves params with ranges, assume the worst case
-    //   although that misses things like (n < n+1)
-    fn ty_as_range(ty: &Type) -> Option<ValueRangeInfo> {
-        if let Type::Integer(IntegerTypeInfo { range }) = ty {
-            if let Value::Range(range) = range.as_ref() {
-                return Some(range.clone());
-            }
-        }
-        None
-    }
-
-    match value {
-        // params have types which we can use to extract a range
-        Value::GenericParameter(param) => ty_as_range(&param.ty),
-        Value::FunctionParameter(param) => ty_as_range(&param.ty),
-        // a single integer corresponds to the range containing only that integer
-        Value::Int(value) => Some(ValueRangeInfo {
-            start: Some(Box::new(Value::Int(value.clone()))),
-            end: Some(Box::new(Value::Int(value.clone()))),
-            end_inclusive: true,
-        }),
-        // TODO ports should store their type
-        Value::ModulePort(_) => None,
-        // TODO binary operations should attempt an evaluation
-        Value::Binary(_, _, _) => None,
-        Value::Range(_) => panic!("range can't itself have a range type"),
-        Value::Function(_) => panic!("function can't have a range type"),
-        Value::Module(_) => panic!("module can't have a range type"),
-    }
-}
-
 impl std::ops::Index<FileId> for CompileState<'_, '_> {
     type Output = FileAuxiliary;
     fn index(&self, index: FileId) -> &Self::Output {
@@ -804,5 +827,26 @@ impl std::ops::Index<Item> for CompileState<'_, '_> {
 impl std::ops::IndexMut<Item> for CompileState<'_, '_> {
     fn index_mut(&mut self, index: Item) -> &mut Self::Output {
         &mut self.items[index]
+    }
+}
+
+impl std::ops::Index<GenericParameter> for CompileState<'_, '_> {
+    type Output = GenericParameterInfo;
+    fn index(&self, index: GenericParameter) -> &Self::Output {
+        &self.generic_params[index]
+    }
+}
+
+impl std::ops::Index<FunctionParameter> for CompileState<'_, '_> {
+    type Output = FunctionParameterInfo;
+    fn index(&self, index: FunctionParameter) -> &Self::Output {
+        &self.function_params[index]
+    }
+}
+
+impl std::ops::Index<ModulePort> for CompileState<'_, '_> {
+    type Output = ModulePortInfo;
+    fn index(&self, index: ModulePort) -> &Self::Output {
+        &self.module_ports[index]
     }
 }

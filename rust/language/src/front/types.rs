@@ -1,8 +1,7 @@
-use crate::front::common::ItemReference;
+use crate::data::compiled::{GenericParameter, ModulePort};
 use crate::front::common::TypeOrValue;
-use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
+use crate::front::common::{GenericContainer, ItemReference};
 use crate::front::values::Value;
-use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
 use derivative::Derivative;
 use indexmap::IndexMap;
 
@@ -14,14 +13,24 @@ pub enum MaybeConstructor<T> {
 
 #[derive(Debug, Clone)]
 pub struct Constructor<T> {
-    pub parameters: GenericParams,
+    pub parameters: GenericParameters,
     pub inner: T,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericParameters {
+    pub vec: Vec<GenericParameter>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct GenericArguments {
+    pub vec: Vec<TypeOrValue>,
 }
 
 // TODO push type constructor args into struct, enum, ... types, like Rust?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
-    Generic(GenericTypeParameter),
+    GenericParameter(GenericParameter),
 
     Boolean,
     Bits(Option<Box<Value>>),
@@ -55,7 +64,7 @@ pub struct FunctionTypeInfo {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct NominalTypeUnique {
     pub item_reference: ItemReference,
-    pub args: GenericArgs,
+    pub args: GenericArguments,
     // TODO think about how captured values and types should work
 }
 
@@ -88,13 +97,7 @@ pub struct ModuleTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
     #[derivative(PartialEq = "ignore")]
     #[derivative(Hash = "ignore")]
-    pub ports: IndexMap<String, PortTypeInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PortTypeInfo {
-    pub direction: PortDirection,
-    pub kind: PortKind<SyncKind<Value>, Type>,
+    pub ports: Vec<ModulePort>
 }
 
 impl<T> MaybeConstructor<T> {
@@ -110,10 +113,10 @@ impl<T> MaybeConstructor<T> {
 }
 
 impl GenericContainer for Type {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue<Type, Value>>) -> Self {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue<Type, Value>>) -> Self {
         match *self {
-            Type::Generic(ref generic) => match map.get(&generic.unique_id) {
-                None => Type::Generic(generic.clone()),
+            Type::GenericParameter(param) => match map.get(&param) {
+                None => Type::GenericParameter(param),
                 Some(new) => new.as_ref().unwrap_type().clone(),
             },
             Type::Boolean => Type::Boolean,
@@ -165,10 +168,10 @@ impl GenericContainer for Type {
 }
 
 impl GenericContainer for NominalTypeUnique {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue<Type, Value>>) -> Self {
+    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue<Type, Value>>) -> Self {
         NominalTypeUnique {
             item_reference: self.item_reference.clone(),
-            args: GenericArgs {
+            args: GenericArguments {
                 vec: self.args.vec.iter().map(|t| t.replace_generic_params(map)).collect(),
             },
         }
