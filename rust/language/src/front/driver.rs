@@ -341,11 +341,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             let param = GenericTypeParameter { unique_id, id: param_ast.id.clone() };
                             (GenericParameter::Type(param.clone()), TypeOrValue::Type(Type::Generic(param)))
                         },
-                        GenericParamKind::ValueOfType(ty) => {
-                            let ty = self.eval_expression_as_ty(&scope_inner, ty)?;
-                            let param = GenericValueParameter { unique_id, id: param_ast.id.clone(), ty };
+                        GenericParamKind::ValueOfType(ty_expr) => {
+                            let ty = self.eval_expression_as_ty(&scope_inner, ty_expr)?;
+                            let param = GenericValueParameter { unique_id, id: param_ast.id.clone(), ty, ty_span: ty_expr.span };
                             (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::Generic(param)))
-                        },
+                        }
                     };
 
                     parameters.push(param);
@@ -427,7 +427,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             },
-            ExpressionKind::TypeFunc(_, _) => self.diagnostic_todo(expr.span, "typefunc expression"),
+            ExpressionKind::TypeFunc(_, _) => self.diagnostic_todo(expr.span, "type func expression"),
             ExpressionKind::Block(_) => self.diagnostic_todo(expr.span, "block expression"),
             ExpressionKind::If(_) => self.diagnostic_todo(expr.span, "if expression"),
             ExpressionKind::Loop(_) => self.diagnostic_todo(expr.span, "loop expression"),
@@ -448,11 +448,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 };
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
             }
-            ExpressionKind::BoolLiteral(_) => self.diagnostic_todo(expr.span, "boolliteral expression"),
-            ExpressionKind::StringLiteral(_) => self.diagnostic_todo(expr.span, "stringliteral expression"),
-            ExpressionKind::ArrayLiteral(_) => self.diagnostic_todo(expr.span, "arrayliteral expression"),
-            ExpressionKind::TupleLiteral(_) => self.diagnostic_todo(expr.span, "tupleliteral expression"),
-            ExpressionKind::StructLiteral(_) => self.diagnostic_todo(expr.span, "structliteral expression"),
+            ExpressionKind::BoolLiteral(_) => self.diagnostic_todo(expr.span, "bool literal expression"),
+            ExpressionKind::StringLiteral(_) => self.diagnostic_todo(expr.span, "string literal expression"),
+            ExpressionKind::ArrayLiteral(_) => self.diagnostic_todo(expr.span, "array literal expression"),
+            ExpressionKind::TupleLiteral(_) => self.diagnostic_todo(expr.span, "tuple literal expression"),
+            ExpressionKind::StructLiteral(_) => self.diagnostic_todo(expr.span, "struct literal expression"),
             ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
@@ -478,7 +478,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             Box::new(self.eval_expression_as_value(scope, inner)?),
                         )
                     }
-                    UnaryOp::Not => self.diagnostic_todo(expr.span, "unaryop not expression"),
+                    UnaryOp::Not => self.diagnostic_todo(expr.span, "unary op not expression"),
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
@@ -490,10 +490,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let result = Value::Binary(op, Box::new(left), Box::new(right));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
             },
-            ExpressionKind::TernarySelect(_, _, _) => self.diagnostic_todo(expr.span, "ternaryselect expression"),
-            ExpressionKind::ArrayIndex(_, _) => self.diagnostic_todo(expr.span, "arrayindex expression"),
-            ExpressionKind::DotIdIndex(_, _) => self.diagnostic_todo(expr.span, "dotidindex expression"),
-            ExpressionKind::DotIntIndex(_, _) => self.diagnostic_todo(expr.span, "dotintindex expression"),
+            ExpressionKind::TernarySelect(_, _, _) => self.diagnostic_todo(expr.span, "ternary select expression"),
+            ExpressionKind::ArrayIndex(_, _) => self.diagnostic_todo(expr.span, "array index expression"),
+            ExpressionKind::DotIdIndex(_, _) => self.diagnostic_todo(expr.span, "dot id index expression"),
+            ExpressionKind::DotIntIndex(_, _) => self.diagnostic_todo(expr.span, "dot int index expression"),
             ExpressionKind::Call(ref target, ref args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
@@ -528,7 +528,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 }
                                 GenericParameter::Value(param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    self.check_type_contains(arg.span, &param.ty, &arg_value)?;
+                                    self.check_type_contains(param.ty_span, arg.span, &param.ty, &arg_value)?;
                                     TypeOrValue::Value(arg_value)
                                 }
                             };
@@ -638,18 +638,20 @@ impl<'d, 'a> CompileState<'d, 'a> {
         )
     }
 
-    fn check_type_contains(&self, span: Span, ty: &Type, value: &Value) -> ResolveResult<()> {
+    fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> ResolveResult<()> {
         match (ty, value) {
             (Type::Range, Value::Range(_)) => return Ok(()),
             (Type::Integer(IntegerTypeInfo { range }), value) => {
                 if let Value::Range(range) = range.as_ref() {
                     let &ValueRangeInfo { ref start, ref end, end_inclusive } = range;
                     if let Some(start) = start {
-                        self.require_value_true(span, &Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone())))?;
+                        let cond = Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone()));
+                        self.require_value_true(span_ty, span_value, &cond)?;
                     }
                     if let Some(end) = end {
                         let cmp_op = if end_inclusive { BinaryOp::CmpLte } else { BinaryOp::CmpLt };
-                        self.require_value_true(span, &Value::Binary(cmp_op, Box::new(value.clone()), end.clone()))?;
+                        let cond = Value::Binary(cmp_op, Box::new(value.clone()), end.clone());
+                        self.require_value_true(span_ty, span_value, &cond)?;
                     }
                     return Ok(())
                 }
@@ -657,28 +659,24 @@ impl<'d, 'a> CompileState<'d, 'a> {
             _ => {},
         }
 
-        self.diagnostic_todo(span, &format!("type-check {:?} contains {:?}", ty, value))
+        self.diagnostic_todo(span_value, &format!("type-check {:?} contains {:?}", ty, value))
     }
 
-    fn require_value_true(&self, span: Span, value: &Value) -> ResolveResult<()> {
-        match self.try_eval_bool(value) {
+    fn require_value_true(&self, span_ty: Span, span_value: Span, value: &Value) -> ResolveResult<()> {
+        let result = match try_eval_bool(self, span_value, value) {
             Some(true) => Ok(()),
-            // TODO print the value as a human-readable string here
-            Some(false) => Err(self.diagnostic_simple("value must be true but was false", span, "during type checking here").into()),
-            None => Err(self.diagnostic_simple("value must be true but could not be evaluated", span, "during type checking here").into()),
-        }
-    }
+            Some(false) => Err("value must be true but was false"),
+            None => Err("could not prove that value is true"),
+        };
 
-    fn try_eval_bool(&self, value: &Value) -> Option<bool> {
-        match value {
-            Value::Binary(BinaryOp::CmpLte, left, right) => {
-                if let (Value::Int(left), Value::Int(right)) = (left.as_ref(), right.as_ref()) {
-                    return Some(left <= right);
-                }
-            }
-            _ => {},
-        }
-        None
+        result.map_err(|message| {
+            self.diagnostic(message)
+                .add_error(span_value, "when type checking this value")
+                .add_info(span_ty, "against this type")
+                // TODO include the value as a human-readable string/expression here
+                .footer(Level::Info, format!("value that must be true: {:?}", value))
+                .finish().into()
+        })
     }
 
     fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
@@ -703,5 +701,87 @@ impl From<ResolveFirst> for ResolveFirstOr<CompileError> {
 impl DiagnosticContext for CompileState<'_, '_> {
     fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'_> {
         Diagnostic::new(self.database, title)
+    }
+}
+
+// TODO what is the general algorithm for this? equivalence graphs?
+// TODO add boolean-proving cache
+// TODO it it possible to keep boolean proving and type inference separate? it probably is
+//   if we don't allow user-defined type selections
+//   even then, we can probably brute-force our way through those relatively easily
+
+// TODO convert lte/gte into +1/-1 fixes instead?
+// TODO convert inclusive/exclusive into +1/-1 fixes instead?
+// TODO check lt, lte, gt, gte, ... all together elegantly
+// TODO return true for vacuous truths, eg. comparisons between empty ranges?
+fn try_eval_bool(ctx: &impl DiagnosticContext, span: Span, value: &Value) -> Option<bool> {
+    match *value {
+        Value::Binary(binary_op, ref left, ref right) => {
+            let left = range_of_value(left)?;
+            let right = range_of_value(right)?;
+
+            let compare_lt = |allow_eq: bool| {
+                let end_delta = if left.end_inclusive { 0 } else { 1 };
+                let left_end = value_as_int(left.end.as_ref()?)? - end_delta;
+                let right_start = value_as_int(right.start.as_ref()?)?;
+
+                if allow_eq {
+                    Some(left_end <= right_start)
+                } else {
+                    Some(left_end < right_start)
+                }
+            };
+
+            match binary_op {
+                BinaryOp::CmpLt => return compare_lt(false),
+                BinaryOp::CmpLte => return compare_lt(true),
+                // TODO support more binary operators
+                _ => {},
+            }
+
+            ctx.diagnostic_todo(span, &format!("try_eval_bool of ({:?}, {:?}, {:?})", binary_op, left, right))
+        }
+        // TODO support more values
+        _ => {},
+    }
+    None
+}
+
+fn value_as_int(value: &Value) -> Option<BigInt> {
+    match value {
+        Value::Int(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
+    // TODO if range ends are themselves params with ranges, assume the worst case
+    //   although that misses things like (n < n+1)
+    fn ty_as_range(ty: &Type) -> Option<ValueRangeInfo> {
+        if let Type::Integer(IntegerTypeInfo { range }) = ty {
+            if let Value::Range(range) = range.as_ref() {
+                return Some(range.clone());
+            }
+        }
+        None
+    }
+
+    match value {
+        // params have types which we can use to extract a range
+        Value::Generic(param) => ty_as_range(&param.ty),
+        Value::Parameter(param) => ty_as_range(&param.ty),
+        // a single integer corresponds to the range containing only that integer
+        Value::Int(value) => Some(ValueRangeInfo {
+            start: Some(Box::new(Value::Int(value.clone()))),
+            end: Some(Box::new(Value::Int(value.clone()))),
+            end_inclusive: true,
+        }),
+        // TODO ports should store their type
+        Value::Port(_) => None,
+        // TODO binary operations should attempt an evaluation
+        Value::Binary(_, _, _) => None,
+        Value::Range(_) => panic!("range can't itself have a range type"),
+        Value::Function(_) => panic!("function can't have a range type"),
+        Value::Module(_) => panic!("module can't have a range type"),
     }
 }

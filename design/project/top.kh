@@ -8,8 +8,13 @@
 
 use std::types::bool;
 use std::types::bits;
+use std::types::uint;
+use std::types::int_range;
 
 type TestType = bool;
+
+type foo(n: int_range(3..8)) = bits(n);
+type bar = foo(9);
 
 pub module top ports (
     clk: input clock,

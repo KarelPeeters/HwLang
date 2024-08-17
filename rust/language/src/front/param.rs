@@ -2,6 +2,7 @@ use crate::front::common::ItemReference;
 use crate::front::common::TypeOrValue;
 use crate::front::types::Type;
 use crate::syntax::ast::Identifier;
+use crate::syntax::pos::Span;
 use indexmap::IndexMap;
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ pub struct GenericValueParameter {
     pub unique_id: GenericParameterUniqueId,
     pub id: Identifier,
     pub ty: Type,
+    pub ty_span: Span
 }
 
 #[derive(Debug, Clone)]
