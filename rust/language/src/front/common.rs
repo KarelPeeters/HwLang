@@ -13,6 +13,7 @@ pub struct ItemReference {
 }
 
 // TODO pick a better name for this
+// TODO is this still necessary? can't items also be sorted into types or values immediately? 
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(Item),

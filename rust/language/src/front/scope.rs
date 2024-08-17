@@ -1,5 +1,5 @@
 use annotate_snippets::Level;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 
 use crate::error::DiagnosticError;
 use crate::front::common::ScopedEntry;
@@ -25,6 +25,12 @@ pub struct Scope<'p, V = ScopedEntry> {
 }
 
 pub type ScopeResult<T> = Result<T, DiagnosticError>;
+
+#[derive(Debug)]
+pub struct ScopeFound<V> {
+    pub defining_span: Span,
+    pub value: V,
+}
 
 impl<V: Debug> Scope<'_, V> {
     pub fn new_root(span: Span) -> Scope<'static, V> {
@@ -65,15 +71,20 @@ impl<V: Debug> Scope<'_, V> {
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'a, 's>(&'s self, database: &SourceDatabase, root: Option<&'s Self>, id: &'a ast::Identifier, vis: Visibility) -> ScopeResult<&V> {
+    pub fn find<'s>(
+        &'s self, database: &SourceDatabase,
+        root: Option<&'s Self>,
+        id: &ast::Identifier,
+        vis: Visibility,
+    ) -> ScopeResult<ScopeFound<&'s V>> {
         if let Some(&(ref value, value_span, value_vis)) = self.values.get(&id.string) {
             if vis.can_access(value_vis) {
-                Ok(value)
+                Ok(ScopeFound { defining_span: value_span, value })
             } else {
                 let err = database.diagnostic(format!("cannot access identifier `{}`", id.string))
                     .add_info(value_span, "identifier declared here")
                     .add_error(id.span, "not accessible here")
-                    .footer(Level::Info, format!("Identifier was declared with visibility `{:?}`,\n but the access happens with visibility `{:?}`", value_vis, vis))
+                    .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
                     .finish();
                 throw!(err)
             }
@@ -87,7 +98,31 @@ impl<V: Debug> Scope<'_, V> {
             // TODO add fuzzy-matched suggestions as info
             let err = database.diagnostic(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
-                .add_info(Span::empty_at(self.span.start), "searched in this scope and its parents")
+                .add_info(Span::empty_at(self.span.start), "searched in the scope starting here and its parents")
+                .finish();
+            throw!(err)
+        }
+    }
+
+    pub fn find_immediate_str(
+        &self,
+        database: &SourceDatabase,
+        id: &str,
+        vis: Visibility,
+    ) -> ScopeResult<ScopeFound<&V>> {
+        if let Some(&(ref value, value_span, value_vis)) = self.values.get(id) {
+            if vis.can_access(value_vis) {
+                Ok(ScopeFound { defining_span: value_span, value })
+            } else {
+                let err = database.diagnostic(format!("cannot access identifier `{}` externally", id))
+                    .add_info(value_span, "identifier declared here")
+                    .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
+                    .finish();
+                throw!(err)
+            }
+        } else {
+            let err = database.diagnostic(format!("undeclared identifier `{}`", id))
+                .add_info(Span::empty_at(self.span.start), "searched in the scope starting here")
                 .finish();
             throw!(err)
         }
@@ -112,6 +147,15 @@ impl Visibility {
         match (self, other) {
             (Visibility::Private, Visibility::Private) => Visibility::Private,
             (Visibility::Public, _) | (_, Visibility::Public) => Visibility::Public,
+        }
+    }
+}
+
+impl Display for Visibility {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Visibility::Public => write!(f, "public"),
+            Visibility::Private => write!(f, "private"),
         }
     }
 }

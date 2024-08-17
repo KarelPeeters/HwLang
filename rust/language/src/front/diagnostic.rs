@@ -5,6 +5,8 @@ use crate::syntax::pos::{DifferentFile, Span};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::cmp::min;
 
+// TODO move to more common module
+
 // TODO double-check that this was actually finished in the drop implementation? same for snippet
 // TODO switch to different error collection system to support multiple errors and warnings
 #[must_use]

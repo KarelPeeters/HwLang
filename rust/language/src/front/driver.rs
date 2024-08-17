@@ -19,7 +19,7 @@ use num_bigint::BigInt;
 use std::collections::HashMap;
 
 // TODO: add some error recovery and continuation, eg. return all parse errors at once
-pub fn compile(database: &SourceDatabase) -> Result<(), CompileError> {
+pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileError> {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now fileid are still not deterministic
     let files_sorted = database.files.keys()
@@ -75,7 +75,17 @@ pub fn compile(database: &SourceDatabase) -> Result<(), CompileError> {
         state.resolve_item_type_fully(item)?;
     }
 
-    Ok(())
+    Ok(CompiledDataBase {
+        items: state.items,
+        file_auxiliary,
+    })
+}
+
+// TODO move this somewhere else, this is more of a public interface
+// TODO separate read-only and clearly done iteminfo struct 
+pub struct CompiledDataBase {
+    pub file_auxiliary: IndexMap<FileId, FileAuxiliary>,
+    pub items: Arena<Item, ItemInfo>,
 }
 
 pub struct CompileState<'d, 'a> {
@@ -85,24 +95,24 @@ pub struct CompileState<'d, 'a> {
 }
 
 pub struct FileAuxiliary {
-    ast: ast::FileContent,
+    pub ast: ast::FileContent,
     // TODO distinguish scopes properly, there are up to 3:
     //   * containing items defined in this file
     //   * containing sibling files
     //   * including imports
-    local_scope: Scope<'static>
+    pub local_scope: Scope<'static>
 }
 
 new_index_type!(pub Item);
 
 #[derive(Debug)]
 pub struct ItemInfo {
-    item_reference: ItemReference,
+    pub item_reference: ItemReference,
 
     // `None` if this item has not been resolved yet.
     // For a type: the type
     // For a value: the signature
-    ty: Option<MaybeConstructor<Type>>,
+    pub ty: Option<MaybeConstructor<Type>>,
 
     // TODO where to store the actual value? do we just leave this abstract?
 }
@@ -138,7 +148,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
             match result {
                 Ok(resolved) => {
-                    let slot = &mut self.items[item].ty;
+                    let slot = &mut self[item].ty;
                     assert!(slot.is_none(), "someone else already set the type");
                     *slot = Some(resolved.clone());
                 }
@@ -154,7 +164,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         let mut diag = self.diagnostic("cyclic type dependency");
                         for item in stack {
-                            let item_ast = self.get_item_ast(self.items[item].item_reference);
+                            let item_ast = self.get_item_ast(self[item].item_reference);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
                         }
                         throw!(diag.finish())
@@ -167,7 +177,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     fn resolve_item_type(&self, item: Item) -> Result<MaybeConstructor<Type>, ResolveFirst> {
-        match &self.items[item].ty {
+        match &self[item].ty {
             Some(result) => Ok(result.clone()),
             None => Err(ResolveFirst(item))
         }
@@ -177,10 +187,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
     // TODO should this do both signatures and values, or only the latter?
     fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
         // check that this is indeed a new query
-        assert!(self.items[item].ty.is_none());
+        assert!(self[item].ty.is_none());
 
         // item lookup
-        let item_reference = self.items[item].item_reference;
+        let item_reference = self[item].item_reference;
         let ItemReference { file, item_index: _ } = item_reference;
         let item_ast = self.get_item_ast(item_reference);
         let scope = &self.file_auxiliary.get(&file).unwrap().local_scope;
@@ -396,11 +406,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let file = self.database[curr_dir].file.ok_or_else(|| {
             self.diagnostic_simple("expected path to file", path.span, "no file exists at this path")
         })?;
-        let file_scope = &self.file_auxiliary.get(&file).unwrap().local_scope;
+        let file_scope = &self[file].local_scope;
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let value = file_scope.find(&self.database, None, id, vis)?;
-        match value {
+        match file_scope.find(&self.database, None, id, vis)?.value {
             &ScopedEntry::Item(item) => Ok(item),
             // TODO is this still true?
             ScopedEntry::Direct(_) => unreachable!("file root entries should not exist"),
@@ -415,7 +424,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                match scope.find(&self.database, None, id, Visibility::Private)? {
+                match scope.find(&self.database, None, id, Visibility::Private)?.value {
                     &ScopedEntry::Item(item) => {
                         // TODO properly support value items, and in general fix "type" vs "value" resolution
                         //  maybe through checking the item kind first?
@@ -558,6 +567,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expression_as_ty(&mut self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
+            // TODO unify these error strings somewhere
             ScopedEntryDirect::Constructor(_) => throw!(
                 self.diagnostic_simple("expected type, got constructor", expr.span, "constructor")
             ),
@@ -783,5 +793,39 @@ fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
         Value::Range(_) => panic!("range can't itself have a range type"),
         Value::Function(_) => panic!("function can't have a range type"),
         Value::Module(_) => panic!("module can't have a range type"),
+    }
+}
+
+impl std::ops::Index<FileId> for CompiledDataBase {
+    type Output = FileAuxiliary;
+    fn index(&self, index: FileId) -> &Self::Output {
+        &self.file_auxiliary.get(&index).unwrap()
+    }
+}
+
+impl std::ops::Index<Item> for CompiledDataBase {
+    type Output = ItemInfo;
+    fn index(&self, index: Item) -> &Self::Output {
+        &self.items[index]
+    }
+}
+
+impl std::ops::Index<FileId> for CompileState<'_, '_> {
+    type Output = FileAuxiliary;
+    fn index(&self, index: FileId) -> &Self::Output {
+        self.file_auxiliary.get(&index).unwrap()
+    }
+}
+
+impl std::ops::Index<Item> for CompileState<'_, '_> {
+    type Output = ItemInfo;
+    fn index(&self, index: Item) -> &Self::Output {
+        &self.items[index]
+    }
+}
+
+impl std::ops::IndexMut<Item> for CompileState<'_, '_> {
+    fn index_mut(&mut self, index: Item) -> &mut Self::Output {
+        &mut self.items[index]
     }
 }
