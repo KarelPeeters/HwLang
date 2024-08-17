@@ -3,7 +3,7 @@ use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::{ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
-use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter};
+use crate::front::param::{GenericArgs, GenericContainer, GenericParameter, GenericParameterUniqueId, GenericParams, GenericTypeParameter, GenericValueParameter, ModulePortUniqueId};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, PortTypeInfo, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
@@ -257,7 +257,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     // map ports
                     // TODO extract duplicate code between all these id uniqueness checking places
                     let mut ports_map = IndexMap::new();
-                    for port in &ports.inner {
+                    for (port_index, port) in enumerate(&ports.inner) {
                         let ModulePort { span: _, id: port_id, direction, kind, } = port;
 
                         let info = PortTypeInfo {
@@ -284,10 +284,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             throw!(s.diagnostic_defined_twice("module port", ports.span, &port_id, prev.0))
                         }
 
+                        let unique_id = ModulePortUniqueId { defining_item: item_reference, param_index: port_index };
                         scope_ports.declare(
                             &s.database,
                             &port_id,
-                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Port(port_id.clone())))),
+                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(unique_id)))),
                             Visibility::Private,
                         )?;
                     }
@@ -344,7 +345,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         GenericParamKind::ValueOfType(ty_expr) => {
                             let ty = self.eval_expression_as_ty(&scope_inner, ty_expr)?;
                             let param = GenericValueParameter { unique_id, id: param_ast.id.clone(), ty, ty_span: ty_expr.span };
-                            (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::Generic(param)))
+                            (GenericParameter::Value(param.clone()), TypeOrValue::Value(Value::GenericParameter(param)))
                         }
                     };
 
@@ -768,8 +769,8 @@ fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
 
     match value {
         // params have types which we can use to extract a range
-        Value::Generic(param) => ty_as_range(&param.ty),
-        Value::Parameter(param) => ty_as_range(&param.ty),
+        Value::GenericParameter(param) => ty_as_range(&param.ty),
+        Value::FunctionParameter(param) => ty_as_range(&param.ty),
         // a single integer corresponds to the range containing only that integer
         Value::Int(value) => Some(ValueRangeInfo {
             start: Some(Box::new(Value::Int(value.clone()))),
@@ -777,7 +778,7 @@ fn range_of_value(value: &Value) -> Option<ValueRangeInfo> {
             end_inclusive: true,
         }),
         // TODO ports should store their type
-        Value::Port(_) => None,
+        Value::ModulePort(_) => None,
         // TODO binary operations should attempt an evaluation
         Value::Binary(_, _, _) => None,
         Value::Range(_) => panic!("range can't itself have a range type"),

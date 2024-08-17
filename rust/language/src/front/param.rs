@@ -3,6 +3,7 @@ use crate::front::common::TypeOrValue;
 use crate::front::types::Type;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::Span;
+use derivative::Derivative;
 use indexmap::IndexMap;
 
 #[derive(Debug, Clone)]
@@ -10,7 +11,7 @@ pub struct GenericParams {
     pub vec: Vec<GenericParameter>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct GenericArgs {
     pub vec: Vec<TypeOrValue>
 }
@@ -27,28 +28,62 @@ pub struct GenericParameterUniqueId {
     pub param_index: usize,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct ModulePortUniqueId {
+    pub defining_item: ItemReference,
+    pub param_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct FunctionParameterUniqueId {
+    pub defining_item: ItemReference,
+    pub param_index: usize,
+}
+
+// TODO keep only the unique id, store other info as shared auxiliary somewhere
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct GenericTypeParameter {
     pub unique_id: GenericParameterUniqueId,
+
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub id: Identifier,
+
     // TODO add constraints
 }
 
-// TODO unify generics and other parameters?
-//  in practise this mostly just simplifies the language and AST and keeps the IR code the same
-// TODO remove non-clone fields, they're a bit misplaced here anyway, it will just become a typevar
+// TODO keep only the unique id, store other info as shared auxiliary somewhere
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct GenericValueParameter {
     pub unique_id: GenericParameterUniqueId,
+
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub id: Identifier,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub ty: Type,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub ty_span: Span
 }
 
+// TODO keep only the unique id, store other info as shared auxiliary somewhere
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct ValueParameter {
-    pub defining_item: ItemReference,
+    pub unique_id: FunctionParameterUniqueId,
+
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub id: Identifier,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub ty: Type,
 }
 

@@ -23,7 +23,7 @@ pub enum ScopedEntry {
 // TODO transpose or not?
 pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypeOrValue<T = Type, V = Value> {
     Type(T),
     Value(V),
@@ -58,18 +58,6 @@ impl<T, V> TypeOrValue<T, V> {
         }
     }
 }
-
-impl PartialEq<Self> for TypeOrValue<(), ()> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (TypeOrValue::Type(()), TypeOrValue::Type(())) => true,
-            (TypeOrValue::Value(()), TypeOrValue::Value(())) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for TypeOrValue<(), ()> {}
 
 impl GenericContainer for TypeOrValue {
     fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {

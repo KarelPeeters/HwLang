@@ -1,21 +1,19 @@
 use crate::front::common::{ItemReference, TypeOrValue};
-use crate::front::driver::FunctionBody;
-use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ValueParameter};
-use crate::front::types::{ModuleTypeInfo, Type};
-use crate::syntax::ast::{BinaryOp, Identifier};
+use crate::front::param::{GenericContainer, GenericParameterUniqueId, GenericValueParameter, ModulePortUniqueId, ValueParameter};
+use crate::front::types::ModuleTypeInfo;
+use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // parameters
-    Generic(GenericValueParameter),
-    Parameter(ValueParameter),
-
-    // TODO proper content, think about uniqueness and replacement implications
-    Port(Identifier),
+    // TODO replace all of these with just their unique ID, this is not the place to store type info
+    GenericParameter(GenericValueParameter),
+    FunctionParameter(ValueParameter),
+    ModulePort(ModulePortUniqueId),
 
     // basic
     Int(BigInt),
@@ -32,25 +30,26 @@ pub enum Value {
     // Enum(EnumValue),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ValueRangeInfo {
     pub start: Option<Box<Value>>,
     pub end: Option<Box<Value>>,
     pub end_inclusive: bool,
 }
 
-#[derive(Debug, Clone)]
+// TODO reduce this to just the defining item and generic args
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionValue {
     // only this field is used in hash and eq
     // TODO also include captured values once those exist
     pub item_reference: ItemReference,
-    
-    pub ty: Type,
-    pub params: Vec<Identifier>,
-    pub body: FunctionBody,
+
+    // pub ty: Type,
+    // pub params: Vec<Identifier>,
+    // pub body: FunctionBody,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleValueInfo {
     pub ty: ModuleTypeInfo,
     // TODO body
@@ -82,12 +81,12 @@ impl ValueRangeInfo {
 impl GenericContainer for Value {
     fn replace_generic_params(&self, map: &IndexMap<GenericParameterUniqueId, TypeOrValue>) -> Self {
         match *self {
-            Value::Generic(ref value) => match map.get(&value.unique_id) {
-                None => Value::Generic(value.clone()),
+            Value::GenericParameter(ref value) => match map.get(&value.unique_id) {
+                None => Value::GenericParameter(value.clone()),
                 Some(new) => new.as_ref().unwrap_value().clone(),
             }
-            Value::Parameter(_) => todo!(),
-            Value::Port(_) => todo!(),
+            Value::FunctionParameter(_) => todo!(),
+            Value::ModulePort(_) => todo!(),
 
             Value::Int(_) => todo!(),
             Value::Range(_) => todo!(),

@@ -3,6 +3,7 @@ use crate::front::common::TypeOrValue;
 use crate::front::param::{GenericArgs, GenericContainer, GenericParameterUniqueId, GenericParams, GenericTypeParameter};
 use crate::front::values::Value;
 use crate::syntax::ast::{PortDirection, PortKind, SyncKind};
+use derivative::Derivative;
 use indexmap::IndexMap;
 
 #[derive(Debug, Clone)]
@@ -18,7 +19,7 @@ pub struct Constructor<T> {
 }
 
 // TODO push type constructor args into struct, enum, ... types, like Rust?
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
     Generic(GenericTypeParameter),
 
@@ -35,12 +36,12 @@ pub enum Type {
     Module(ModuleTypeInfo),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct IntegerTypeInfo {
     pub range: Box<Value>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionTypeInfo {
     pub params: Vec<Type>,
     pub ret: Box<Type>,
@@ -50,30 +51,43 @@ pub struct FunctionTypeInfo {
 /// This is a stronger requirement than just requiring the type structures to be the same in two ways:
 /// * Both types need to be defined by the same exact item
 /// * The generic parameters need to match.
-/// This is an additional requirement if some of the parameters don't effect the structure of the type.  
-#[derive(Debug, Clone)]
+/// This is an additional requirement if some of the parameters don't effect the structure of the type.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct NominalTypeUnique {
     pub item_reference: ItemReference,
     pub args: GenericArgs,
+    // TODO think about how captured values and types should work
 }
 
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct StructTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub fields: IndexMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct EnumTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub variants: IndexMap<String, Option<Type>>,
 }
 
 // TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
 //  the end use case would be passing a module constructor as a parameter to another module
 #[derive(Debug, Clone)]
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash)]
 pub struct ModuleTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(Hash = "ignore")]
     pub ports: IndexMap<String, PortTypeInfo>,
 }
 

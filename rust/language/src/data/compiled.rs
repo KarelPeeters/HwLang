@@ -28,6 +28,14 @@ pub struct ItemInfo {
     pub ty: MaybeConstructor<Type>,
 }
 
+impl CompiledDataBase {
+    pub fn get_item_ast(&self, item_reference: ItemReference) -> &ast::Item {
+        let ItemReference { file, item_index } = item_reference;
+        let ast = &self.file_auxiliary.get(&file).unwrap().ast;
+        &ast.items[item_index]
+    }
+}
+
 impl std::ops::Index<FileId> for CompiledDataBase {
     type Output = FileAuxiliary;
     fn index(&self, index: FileId) -> &Self::Output {

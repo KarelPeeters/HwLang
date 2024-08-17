@@ -408,7 +408,7 @@ pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> Exp
     ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right))
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum BinaryOp {
     Add,
     Sub,

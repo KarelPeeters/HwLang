@@ -5,7 +5,7 @@ use std::fmt::{Debug, Formatter};
 pub struct FileId(pub usize);
 
 /// Minimal source code position.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Pos {
     pub file: FileId,
     pub byte: usize,
@@ -24,7 +24,7 @@ pub struct PosFull {
 }
 
 // TODO make this more compact, sharing the file?
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Span {
     /// inclusive
     pub start: Pos,

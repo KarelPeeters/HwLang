@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use itertools::Itertools;
-use language::back::{lower, LoweredDatabase};
+use language::back::lower;
+use language::data::lowered::LoweredDatabase;
 use language::data::source::{FilePath, SourceDatabase};
 use language::error::CompileError;
 use language::front::driver::compile;
@@ -18,8 +19,14 @@ fn main() {
     let args = Args::parse();
 
     match main_inner(&args) {
-        Ok(_) => {
+        Ok(result) => {
             println!("Compilation finished successfully");
+            println!();
+            println!("top module name: {}", result.top_module_name);
+            println!("verilog source:");
+            println!("----------------------------------------");
+            println!("{}", result.verilog_source);
+            println!("----------------------------------------");
         }
         Err(e) => {
             match e {

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 annotate-snippets.workspace = true
 clap.workspace = true
+derivative = "2.2.0"
 indexmap.workspace = true
 itertools.workspace = true
 lalrpop-util.workspace = true
