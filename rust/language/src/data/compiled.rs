@@ -1,12 +1,12 @@
-use crate::front::common::ItemReference;
+use crate::front::common::{ItemReference, TypeOrValue};
 use crate::front::driver::Item;
 use crate::front::scope::Scope;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::new_index_type;
 use crate::syntax::ast;
-use crate::syntax::ast::{GenericParameterKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncKind};
-use crate::syntax::pos::FileId;
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncKind};
+use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
 
@@ -15,13 +15,16 @@ use indexmap::IndexMap;
 pub struct CompiledDataBase {
     pub file_auxiliary: IndexMap<FileId, FileAuxiliary>,
     pub items: Arena<Item, ItemInfo>,
-    pub generic_params: Arena<GenericParameter, GenericParameterInfo>,
+    pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
+    pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
     pub function_params: Arena<FunctionParameter, FunctionParameterInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
 }
 
-// TODO add typed wrappers that distinguish between types and values?
-new_index_type!(pub GenericParameter);
+pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
+
+new_index_type!(pub GenericTypeParameter);
+new_index_type!(pub GenericValueParameter);
 new_index_type!(pub FunctionParameter);
 new_index_type!(pub ModulePort);
 
@@ -40,11 +43,21 @@ pub struct ItemInfo {
 }
 
 #[derive(Debug)]
-pub struct GenericParameterInfo {
+pub struct GenericTypeParameterInfo {
     pub defining_item: ItemReference,
     pub defining_id: Identifier,
 
-    pub kind: GenericParameterKind<Type>,
+    // TODO type constraints once we add those
+}
+
+#[derive(Debug)]
+pub struct GenericValueParameterInfo {
+    pub defining_item: ItemReference,
+    pub defining_id: Identifier,
+
+    pub ty: Type,
+    // TODO it's a bit weird that we're tracking the span here
+    pub ty_span: Span,
 }
 
 #[derive(Debug)]
@@ -86,10 +99,17 @@ impl std::ops::Index<Item> for CompiledDataBase {
     }
 }
 
-impl std::ops::Index<GenericParameter> for CompiledDataBase {
-    type Output = GenericParameterInfo;
-    fn index(&self, index: GenericParameter) -> &Self::Output {
-        &self.generic_params[index]
+impl std::ops::Index<GenericTypeParameter> for CompiledDataBase {
+    type Output = GenericTypeParameterInfo;
+    fn index(&self, index: GenericTypeParameter) -> &Self::Output {
+        &self.generic_type_params[index]
+    }
+}
+
+impl std::ops::Index<GenericValueParameter> for CompiledDataBase {
+    type Output = GenericValueParameterInfo;
+    fn index(&self, index: GenericValueParameter) -> &Self::Output {
+        &self.generic_value_params[index]
     }
 }
 

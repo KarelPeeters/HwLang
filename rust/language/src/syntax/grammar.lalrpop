@@ -90,9 +90,9 @@ GenericParameter: GenericParameter = {
     <start:@L> <id:Id> ":" <kind:GenericParameterKind> <end:@R> => GenericParameter { id, kind, span: loc.span(start, end) },
 }
 
-GenericParameterKind: GenericParameterKind<Expression> = {
-    "type" => GenericParameterKind::Type,
-    <start:@L> <ty:Expr> <end:@R> => GenericParameterKind::Value { ty, ty_span: loc.span(start, end) },
+GenericParameterKind: GenericParameterKind = {
+    <start:@L> "type" <end:@R> => GenericParameterKind::Type(loc.span(start, end)),
+    <ty:Expr> => GenericParameterKind::Value(ty),
 }
 
 FunctionParameter: FunctionParameter = {

@@ -1,4 +1,4 @@
-use crate::data::compiled::{GenericParameter, ModulePort};
+use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, ModulePort};
 use crate::front::common::TypeOrValue;
 use crate::front::common::{GenericContainer, ItemReference};
 use crate::front::values::Value;
@@ -30,7 +30,7 @@ pub struct GenericArguments {
 // TODO push type constructor args into struct, enum, ... types, like Rust?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
-    GenericParameter(GenericParameter),
+    GenericParameter(GenericTypeParameter),
 
     Boolean,
     Bits(Option<Box<Value>>),
@@ -113,51 +113,49 @@ impl<T> MaybeConstructor<T> {
 }
 
 impl GenericContainer for Type {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue<Type, Value>>) -> Self {
+    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         match *self {
-            Type::GenericParameter(param) => match map.get(&param) {
-                None => Type::GenericParameter(param),
-                Some(new) => new.as_ref().unwrap_type().clone(),
-            },
+            Type::GenericParameter(param) =>
+                map_ty.get(&param).cloned().unwrap_or(Type::GenericParameter(param)),
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {
-                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map))))
+                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map_ty, map_value))))
             },
             Type::Array(ref inner, ref len) => {
                 Type::Array(
-                    Box::new(inner.replace_generic_params(map)),
-                    Box::new(len.replace_generic_params(map)),
+                    Box::new(inner.replace_generic_params(map_ty, map_value)),
+                    Box::new(len.replace_generic_params(map_ty, map_value)),
                 )
             }
             Type::Range => Type::Range,
             Type::Integer(ref info) => {
                 Type::Integer(IntegerTypeInfo {
-                    range: Box::new(info.range.replace_generic_params(map)),
+                    range: Box::new(info.range.replace_generic_params(map_ty, map_value)),
                 })
             }
             Type::Function(ref info) => {
                 Type::Function(FunctionTypeInfo {
-                    params: info.params.iter().map(|t| t.replace_generic_params(map)).collect(),
-                    ret: Box::new(info.ret.replace_generic_params(map)),
+                    params: info.params.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
+                    ret: Box::new(info.ret.replace_generic_params(map_ty, map_value)),
                 })
             }
             Type::Tuple(ref types) => {
-                Type::Tuple(types.iter().map(|t| t.replace_generic_params(map)).collect())
+                Type::Tuple(types.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect())
             },
             Type::Struct(ref info) => {
                 Type::Struct(StructTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map),
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map_ty, map_value),
                     fields: info.fields.iter()
-                        .map(|(name, ty)| (name.clone(), ty.replace_generic_params(map)))
+                        .map(|(name, ty)| (name.clone(), ty.replace_generic_params(map_ty, map_value)))
                         .collect(),
                 })
             },
             Type::Enum(ref info) => {
                 Type::Enum(EnumTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map),
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map_ty, map_value),
                     variants: info.variants.iter()
                         .map(|(name, ty)| {
-                            (name.clone(), ty.as_ref().map(|t| t.replace_generic_params(map)))
+                            (name.clone(), ty.as_ref().map(|t| t.replace_generic_params(map_ty, map_value)))
                         })
                         .collect(),
                 })
@@ -168,11 +166,11 @@ impl GenericContainer for Type {
 }
 
 impl GenericContainer for NominalTypeUnique {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue<Type, Value>>) -> Self {
+    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         NominalTypeUnique {
             item_reference: self.item_reference.clone(),
             args: GenericArguments {
-                vec: self.args.vec.iter().map(|t| t.replace_generic_params(map)).collect(),
+                vec: self.args.vec.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
             },
         }
     }

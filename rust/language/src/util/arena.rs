@@ -66,6 +66,7 @@ impl Debug for Idx {
     }
 }
 
+// TODO switch to simpler and faster vec scheme, we're not going to be deleting things from arenas anyway
 // TODO include randomly generated checker index value to avoid accidental mixing?
 //   on clone or value map, switch up the future ID, and keep a list of valid old IDs as well
 pub struct Arena<K: IndexType, T> {

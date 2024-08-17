@@ -1,6 +1,6 @@
-use crate::data::compiled::{FunctionParameter, GenericParameter, ModulePort};
-use crate::front::common::{GenericContainer, ItemReference, TypeOrValue};
-use crate::front::types::ModuleTypeInfo;
+use crate::data::compiled::{FunctionParameter, GenericTypeParameter, GenericValueParameter, ModulePort};
+use crate::front::common::{GenericContainer, ItemReference};
+use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -10,7 +10,7 @@ use num_bigint::BigInt;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // parameters
-    GenericParameter(GenericParameter),
+    GenericParameter(GenericValueParameter),
     FunctionParameter(FunctionParameter),
     ModulePort(ModulePort),
 
@@ -78,12 +78,10 @@ impl ValueRangeInfo {
 }
 
 impl GenericContainer for Value {
-    fn replace_generic_params(&self, map: &IndexMap<GenericParameter, TypeOrValue>) -> Self {
+    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         match *self {
-            Value::GenericParameter(param) => match map.get(&param) {
-                None => Value::GenericParameter(param),
-                Some(new) => new.as_ref().unwrap_value().clone(),
-            }
+            Value::GenericParameter(param) =>
+                map_value.get(&param).cloned().unwrap_or(Value::GenericParameter(param)),
             Value::FunctionParameter(unique_id) => Value::FunctionParameter(unique_id),
             Value::ModulePort(unique_id) => Value::ModulePort(unique_id),
 
@@ -92,8 +90,8 @@ impl GenericContainer for Value {
             Value::Binary(op, ref left, ref right) => {
                 Value::Binary(
                     op,
-                    Box::new(left.replace_generic_params(map)),
-                    Box::new(right.replace_generic_params(map)),
+                    Box::new(left.replace_generic_params(map_ty, map_value)),
+                    Box::new(right.replace_generic_params(map_ty, map_value)),
                 )
             }
 

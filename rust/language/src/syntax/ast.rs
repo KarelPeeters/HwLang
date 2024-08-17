@@ -147,18 +147,13 @@ pub struct InterfaceField {
 pub struct GenericParameter {
     pub span: Span,
     pub id: Identifier,
-    pub kind: GenericParameterKind<Expression>,
+    pub kind: GenericParameterKind,
 }
 
-// TODO this is just TypeOrValue again?
 #[derive(Debug, Clone)]
-pub enum GenericParameterKind<T> {
-    Type,
-    Value {
-        ty: T,
-        // TODO it's weird that span needs to be here
-        ty_span: Span,
-    }
+pub enum GenericParameterKind {
+    Type(Span),
+    Value(Expression),
 }
 
 #[derive(Debug, Clone)]

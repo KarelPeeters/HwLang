@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDataBase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDataBase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::{GenericContainer, ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
@@ -65,7 +65,8 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
         database,
         items,
         file_auxiliary: &file_auxiliary,
-        generic_params: Arena::default(),
+        generic_type_params: Arena::default(),
+        generic_value_params: Arena::default(),
         function_params: Arena::default(),
         module_ports: Arena::default(),
     };
@@ -84,7 +85,8 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
     });
     let compiled = CompiledDataBase {
         items,
-        generic_params: state.generic_params,
+        generic_type_params: state.generic_type_params,
+        generic_value_params: state.generic_value_params,
         function_params: state.function_params,
         module_ports: state.module_ports,
         file_auxiliary,
@@ -97,7 +99,9 @@ pub struct CompileState<'d, 'a> {
     file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
     items: Arena<Item, ItemInfoPartial>,
 
-    generic_params: Arena<GenericParameter, GenericParameterInfo>,
+    // TODO reduce duplication with CompileDatabase
+    generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
+    generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
     function_params: Arena<FunctionParameter, FunctionParameterInfo>,
     module_ports: Arena<ModulePort, ModulePortInfo>,
 }
@@ -348,22 +352,22 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
 
                     let (param, arg) = match &param_ast.kind {
-                        GenericParameterKind::Type => {
-                            let param = self.generic_params.push(GenericParameterInfo {
+                        &GenericParameterKind::Type(_span) => {
+                            let param = self.generic_type_params.push(GenericTypeParameterInfo {
                                 defining_item,
                                 defining_id: param_ast.id.clone(),
-                                kind: GenericParameterKind::Type,
                             });
-                            (param, TypeOrValue::Type(Type::GenericParameter(param)))
+                            (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
                         },
-                        &GenericParameterKind::Value { ty: ref ty_expr, ty_span } => {
+                        GenericParameterKind::Value(ty_expr) => {
                             let ty = self.eval_expression_as_ty(&scope_inner, ty_expr)?;
-                            let param = self.generic_params.push(GenericParameterInfo {
+                            let param = self.generic_value_params.push(GenericValueParameterInfo {
                                 defining_item,
                                 defining_id: param_ast.id.clone(),
-                                kind: GenericParameterKind::Value { ty, ty_span },
+                                ty,
+                                ty_span: ty_expr.span,
                             });
-                            (param, TypeOrValue::Value(Value::GenericParameter(param)))
+                            (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
                         }
                     };
 
@@ -536,26 +540,27 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         }
 
                         // check kind and type match, and collect in replacement map
-                        let mut replacement_map: IndexMap<GenericParameter, TypeOrValue> = IndexMap::new();
+                        let mut map_ty: IndexMap<GenericTypeParameter, Type> = IndexMap::new();
+                        let mut map_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
                         for (&param, arg) in zip_eq(&parameters.vec, &args.inner) {
-                            let param_info = &self[param].kind;
-                            let arg_evaluated = match param_info {
-                                GenericParameterKind::Type => {
+                            match param {
+                                GenericParameter::Type(param) => {
                                     let arg_ty = self.eval_expression_as_ty(scope, arg)?;
-                                    // TODO bound-check (once we add type bounds)
-                                    TypeOrValue::Type(arg_ty)
+                                    // TODO use for bound-check (once we add type bounds)
+                                    let _param_info = &self[param];
+                                    map_ty.insert_first(param, arg_ty)
                                 }
-                                &GenericParameterKind::Value { ty: ref param_ty, ty_span: param_ty_span } => {
+                                GenericParameter::Value(param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    self.check_type_contains(param_ty_span, arg.span, param_ty, &arg_value)?;
-                                    TypeOrValue::Value(arg_value)
+                                    let param_info = &self[param];
+                                    self.check_type_contains(param_info.ty_span, arg.span, &param_info.ty, &arg_value)?;
+                                    map_value.insert_first(param, arg_value)
                                 }
-                            };
-                            replacement_map.insert(param, arg_evaluated);
+                            }
                         }
 
                         // do the actual replacement
-                        let result = inner.replace_generic_params(&replacement_map);
+                        let result = inner.replace_generic_params(&map_ty, &map_value);
                         MaybeConstructor::Immediate(result)
                     }
                     ScopedEntryDirect::Immediate(entry) => {
@@ -762,12 +767,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         match *value {
             // params have types which we can use to extract a range
-            Value::GenericParameter(param) => {
-                match &self[param].kind {
-                    GenericParameterKind::Type => unreachable!(),
-                    GenericParameterKind::Value { ty, ty_span: _ } => ty_as_range(ty)
-                }
-            },
+            Value::GenericParameter(param) => ty_as_range(&self[param].ty),
             Value::FunctionParameter(param) => ty_as_range(&self[param].ty),
             // a single integer corresponds to the range containing only that integer
             Value::Int(ref value) => Some(ValueRangeInfo {
@@ -830,10 +830,17 @@ impl std::ops::IndexMut<Item> for CompileState<'_, '_> {
     }
 }
 
-impl std::ops::Index<GenericParameter> for CompileState<'_, '_> {
-    type Output = GenericParameterInfo;
-    fn index(&self, index: GenericParameter) -> &Self::Output {
-        &self.generic_params[index]
+impl std::ops::Index<GenericTypeParameter> for CompileState<'_, '_> {
+    type Output = GenericTypeParameterInfo;
+    fn index(&self, index: GenericTypeParameter) -> &Self::Output {
+        &self.generic_type_params[index]
+    }
+}
+
+impl std::ops::Index<GenericValueParameter> for CompileState<'_, '_> {
+    type Output = GenericValueParameterInfo;
+    fn index(&self, index: GenericValueParameter) -> &Self::Output {
+        &self.generic_value_params[index]
     }
 }
 
