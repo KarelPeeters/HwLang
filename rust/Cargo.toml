@@ -32,3 +32,4 @@ serde_json = "1.0.118"
 strum = { version = "0.26.3", features = ["derive"] }
 tokio = { version = "1.38.0", features = ["macros", "rt", "io-std"] }
 tower-lsp = "0.20.0"
+unwrap-match = "0.1.0"

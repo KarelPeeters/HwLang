@@ -628,6 +628,7 @@ dependencies = [
  "num-traits",
  "regex",
  "strum",
+ "unwrap-match",
 ]
 
 [[package]]
@@ -1345,6 +1346,12 @@ name = "unicode-xid"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f962df74c8c05a667b5ee8bcf162993134c104e96440b663c8daa176dc772d8c"
+
+[[package]]
+name = "unwrap-match"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "593c0b76584ce9fef70bf7fc4d3034f7a3578ab3e22fd617dd84407689ca1839"
 
 [[package]]
 name = "url"

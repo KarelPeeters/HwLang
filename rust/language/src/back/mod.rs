@@ -1,17 +1,22 @@
-use crate::data::compiled::CompiledDataBase;
+use crate::data::compiled::{CompiledDatabase, ModulePort, ModulePortInfo};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
-use crate::front::diagnostic::DiagnosticAddable;
+use crate::front::diagnostic::{DiagnosticAddable, DiagnosticContext};
 use crate::front::driver::Item;
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, MaybeConstructor, Type};
-use crate::syntax::ast::MaybeIdentifier;
+use crate::front::values::Value;
+use crate::syntax::ast;
+use crate::syntax::ast::{MaybeIdentifier, PortDirection, PortKind, SyncKind};
 use crate::util::data::IndexMapExt;
 use indexmap::{IndexMap, IndexSet};
-use itertools::Itertools;
+use itertools::{enumerate, Itertools};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use std::collections::VecDeque;
+use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
 pub enum LowerError {
@@ -19,7 +24,7 @@ pub enum LowerError {
 }
 
 // TODO make backend configurable between verilog and VHDL?
-pub fn lower(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<LoweredDatabase, CompileError> {
+pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<LoweredDatabase, CompileError> {
     // find top module
     // TODO allow for multiple top-levels, all in a single compilation and with shared common modules
     let top_module = find_top_module(source, compiled)?;
@@ -32,7 +37,7 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Low
 
     // TODO pick some nice traversal order
     let mut todo = VecDeque::new();
-    todo.push_back(ModuleInstance { module: top_module, args: GenericArguments { vec: Vec::new() } });
+    todo.push_back(ModuleInstance { module: top_module, args: None });
 
     while let Some(instance) = todo.pop_front() {
         let item_info = &compiled[instance.module];
@@ -55,21 +60,138 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Low
     Ok(result)
 }
 
+const INDENT: &str = "    ";
+
 // TODO expose the elaborated tree as a user-facing API, next to the ast and the type-checked files
 #[derive(Eq, PartialEq, Hash)]
 struct ModuleInstance {
     module: Item,
     /// These args are constant and fully evaluated, without any remaining outer generic parameters.
-    args: GenericArguments,
+    args: Option<GenericArguments>,
 }
 
-fn generate_module_source(_: &SourceDatabase, _: &CompiledDataBase, _: &ModuleInstance, module_name: &str) -> String {
+// TODO write straight into a single string buffer instead of repeated concatenation
+fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, instance: &ModuleInstance, module_name: &str) -> String {
+    let item_info = &compiled[instance.module];
+    let item_ast = unwrap_match!(compiled.get_item_ast(item_info.item_reference), ast::Item::Module(item_ast) => item_ast);
+
+    let module_info = match &item_info.ty {
+        MaybeConstructor::Immediate(Type::Module(info)) => {
+            assert!(instance.args.is_none());
+            info
+        },
+        MaybeConstructor::Constructor(_) => {
+            source.diagnostic_todo(item_ast.span, "module instance with generic params/args");
+        }
+        _ => unreachable!(),
+    };
+
+    // TODO build this in a single pass?
+    let mut port_string = String::new();
+    for (port_index, &port) in enumerate(&module_info.ports) {
+        if port_index == 0 {
+            port_string.push_str("\n");
+        }
+        let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
+
+        port_string.push_str(INDENT);
+        port_string.push_str(&port_to_verilog(compiled, port, comma_str));
+        port_string.push_str("\n");
+    }
+
     // TODO generate ports
     // TODO generate body
-    format!("module {} ();\nendmodule", module_name)
+    format!("module {module_name} ({port_string});\n{INDENT}// TODO module content\nendmodule")
 }
 
-fn find_top_module(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Item, CompileError> {
+fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &str) -> String {
+    let &ModulePortInfo {
+        defining_item,
+        ref defining_id,
+        direction,
+        ref kind
+    } = &compiled[port];
+
+    let dir_str = match direction {
+        PortDirection::Input => "input",
+        PortDirection::Output => "output",
+    };
+
+    let (ty_str, comment) = match kind {
+        PortKind::Clock => ("".to_owned(), "clock".to_owned()),
+        PortKind::Normal { sync, ty } => {
+            let ty_str = match type_to_verilog(ty) {
+                VerilogType::SingleBit => "".to_string(),
+                VerilogType::MultiBit(n) => format!("[{}:0] ", n - 1),
+            };
+
+            // TODO include full type in comment
+            let comment = match sync {
+                SyncKind::Sync(clk) => {
+                    let clk_port = unwrap_match!(clk, &Value::ModulePort(port) => port);
+                    let clk_port_info = &compiled[clk_port];
+                    assert_eq!(defining_item, clk_port_info.defining_item);
+                    format!("sync({})", &clk_port_info.defining_id.string)
+                },
+                SyncKind::Async => "async".to_owned(),
+            };
+
+            (ty_str, comment)
+        }
+    };
+
+    let name_str = &defining_id.string;
+
+    format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
+}
+
+// TODO signed/unsigned? does it ever matter?
+// TODO does width 0 work properly or should we avoid instantiating those?
+// TODO what is the max bus width allowed in verilog?
+pub enum VerilogType {
+    SingleBit,
+    MultiBit(usize),
+}
+
+fn type_to_verilog(ty: &Type) -> VerilogType {
+    match ty {
+        Type::Boolean => VerilogType::SingleBit,
+        Type::Bits(n) => {
+            match n {
+                None => panic!("infinite bit widths should never materialize in RTL"),
+                Some(n) => VerilogType::MultiBit(value_evaluate_int(n).to_usize().expect("bit width too large")),
+            }
+        }
+        // TODO convert all of these to bit representations
+        Type::Array(_, _) => todo!(),
+        Type::Integer(_) => todo!(),
+        Type::Tuple(_) => todo!(),
+        Type::Struct(_) => todo!(),
+        Type::Enum(_) => todo!(),
+        // invalid RTL types
+        // TODO materialize generics in RTL anyway, where possible? reduces some code duplication
+        //   with optional generics, maybe even always have them? but then if there are different types it gets tricky
+        Type::GenericParameter(_) => panic!("generics should never materialize in RTL"),
+        Type::Range => panic!("ranges should never materialize in RTL"),
+        Type::Function(_) => panic!("functions should never materialize in RTL"),
+        Type::Module(_) => panic!("modules should never materialize in RTL"),
+    }
+}
+
+fn value_evaluate_int(value: &Value) -> BigInt {
+    match value {
+        Value::Int(i) => i.clone(),
+        Value::GenericParameter(_) => todo!(),
+        Value::FunctionParameter(_) => todo!(),
+        Value::ModulePort(_) => todo!(),
+        Value::Range(_) => todo!(),
+        Value::Binary(_, _, _) => todo!(),
+        Value::Function(_) => todo!(),
+        Value::Module(_) => todo!(),
+    }
+}
+
+fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<Item, CompileError> {
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
     let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
@@ -78,7 +200,7 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDataBase) -> Resu
         &ScopedEntry::Item(item) => {
             match &compiled[item].ty {
                 MaybeConstructor::Constructor(_) => {
-                    let err = source.diagnostic("top should be a module, got a constructor")
+                    let err = source.diagnostic("top should be a module without generic parameters, got a constructor")
                         .add_error(top_entry.defining_span, "defined here")
                         .finish();
                     Err(err.into())

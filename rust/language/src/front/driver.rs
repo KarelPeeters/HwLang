@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDataBase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::{GenericContainer, ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
@@ -19,7 +19,7 @@ use num_bigint::BigInt;
 use std::collections::HashMap;
 
 // TODO: add some error recovery and continuation, eg. return all parse errors at once
-pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileError> {
+pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileError> {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now fileid are still not deterministic
     let files_sorted = database.files.keys()
@@ -83,7 +83,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDataBase, CompileErr
         item_reference: info.item_reference,
         ty: info.ty.as_ref().unwrap().clone(),
     });
-    let compiled = CompiledDataBase {
+    let compiled = CompiledDatabase {
         items,
         generic_type_params: state.generic_type_params,
         generic_value_params: state.generic_value_params,

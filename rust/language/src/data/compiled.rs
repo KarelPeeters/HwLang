@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 
 // TODO move this somewhere else, this is more of a public interface
 // TODO separate read-only and clearly done iteminfo struct 
-pub struct CompiledDataBase {
+pub struct CompiledDatabase {
     pub file_auxiliary: IndexMap<FileId, FileAuxiliary>,
     pub items: Arena<Item, ItemInfo>,
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
@@ -77,7 +77,7 @@ pub struct ModulePortInfo {
     pub kind: PortKind<SyncKind<Value>, Type>,
 }
 
-impl CompiledDataBase {
+impl CompiledDatabase {
     pub fn get_item_ast(&self, item_reference: ItemReference) -> &ast::Item {
         let ItemReference { file, item_index } = item_reference;
         let ast = &self.file_auxiliary.get(&file).unwrap().ast;
@@ -85,42 +85,42 @@ impl CompiledDataBase {
     }
 }
 
-impl std::ops::Index<FileId> for CompiledDataBase {
+impl std::ops::Index<FileId> for CompiledDatabase {
     type Output = FileAuxiliary;
     fn index(&self, index: FileId) -> &Self::Output {
         &self.file_auxiliary.get(&index).unwrap()
     }
 }
 
-impl std::ops::Index<Item> for CompiledDataBase {
+impl std::ops::Index<Item> for CompiledDatabase {
     type Output = ItemInfo;
     fn index(&self, index: Item) -> &Self::Output {
         &self.items[index]
     }
 }
 
-impl std::ops::Index<GenericTypeParameter> for CompiledDataBase {
+impl std::ops::Index<GenericTypeParameter> for CompiledDatabase {
     type Output = GenericTypeParameterInfo;
     fn index(&self, index: GenericTypeParameter) -> &Self::Output {
         &self.generic_type_params[index]
     }
 }
 
-impl std::ops::Index<GenericValueParameter> for CompiledDataBase {
+impl std::ops::Index<GenericValueParameter> for CompiledDatabase {
     type Output = GenericValueParameterInfo;
     fn index(&self, index: GenericValueParameter) -> &Self::Output {
         &self.generic_value_params[index]
     }
 }
 
-impl std::ops::Index<FunctionParameter> for CompiledDataBase {
+impl std::ops::Index<FunctionParameter> for CompiledDatabase {
     type Output = FunctionParameterInfo;
     fn index(&self, index: FunctionParameter) -> &Self::Output {
         &self.function_params[index]
     }
 }
 
-impl std::ops::Index<ModulePort> for CompiledDataBase {
+impl std::ops::Index<ModulePort> for CompiledDatabase {
     type Output = ModulePortInfo;
     fn index(&self, index: ModulePort) -> &Self::Output {
         &self.module_ports[index]

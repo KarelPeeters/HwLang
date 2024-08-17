@@ -502,3 +502,10 @@ Examples:
   * investigate this
   * we want to avoid any "unpredictable" or undefined behavior, we want least want to emit "X" if this happens in simulation
 * only allow non-resetting registers in pipelines or similar structures that are dataflow-only
+
+### Documentation
+
+* we want something javadoc/rustdoc/doxygen-like
+* for modules, functions, ...
+* ideally this can completely replace separate documentation, but that might be too ambitious
+* built-in single command, like compilation and the lsp
