@@ -1,19 +1,16 @@
 use crate::error::DiagnosticError;
 use crate::front::source::SourceDatabase;
 use crate::syntax::ast::Identifier;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{DifferentFile, Span};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::cmp::min;
-
-// Diagnostic error formatting
-const SNIPPET_CONTEXT_LINES: usize = 2;
 
 // TODO double-check that this was actually finished in the drop implementation? same for snippet
 // TODO switch to different error collection system to support multiple errors and warnings
 #[must_use]
 pub struct Diagnostic<'d> {
     title: String,
-    snippets: Vec<(Span, Vec<(Level, Span, String)>)>,
+    snippets: Vec<(Span, Vec<Annotation>)>,
     footers: Vec<(Level, String)>,
 
     // This is only stored here to make the finish call slightly neater,
@@ -25,8 +22,20 @@ pub struct Diagnostic<'d> {
 pub struct DiagnosticSnippet<'d> {
     diag: Diagnostic<'d>,
     span: Span,
-    annotations: Vec<(Level, Span, String)>,
+    annotations: Vec<Annotation>,
 }
+
+struct Annotation {
+    level: Level,
+    span: Span,
+    label: String,
+}
+
+/// The number of additional lines to show before and after each snippet range.
+const SNIPPET_CONTEXT_LINES: usize = 2;
+/// The maximum distance between two snippets to merge them into one.
+/// This distance is measured after the context lines have already been added.
+const SNIPPET_MERGE_MAX_DISTANCE: usize = 3;
 
 impl<'d> Diagnostic<'d> {
     pub fn new(database: &'d SourceDatabase, title: impl Into<String>) -> Self {
@@ -55,9 +64,46 @@ impl<'d> Diagnostic<'d> {
         let Self { title, snippets, footers, database } = self;
         assert!(!snippets.is_empty(), "Diagnostic without any snippets is not allowed");
 
+        // combine snippets that are close together
+        // TODO fix O(n^2) complexity
+        let mut snippets_merged: Vec<(Span, Vec<Annotation>)> = vec![];
+
+        for (span, mut annotations) in snippets {
+            // try merging with previous snippet
+            let mut merged = false;
+            for (span_prev, ref mut annotations_prev) in &mut snippets_merged {
+                // calculate distance
+                let span_full = self.database.expand_span(span);
+                let span_prev_full = self.database.expand_span(*span_prev);
+                let distance = span_full
+                    .distance_lines(span_prev_full);
+
+                // check distance
+                let merge = match distance {
+                    Ok(distance) =>
+                        distance <= 2 * SNIPPET_CONTEXT_LINES + SNIPPET_MERGE_MAX_DISTANCE,
+                    Err(DifferentFile) => false,
+                };
+
+                // merge
+                if merge {
+                    *span_prev = span_prev.join(span);
+                    annotations_prev.append(&mut annotations);
+                    merged = true;
+                    break;
+                }
+            }
+
+            // failed to merge, just keep the new snippet
+            if !merged {
+                snippets_merged.push((span, annotations));
+            }
+        }
+
+        // create final message
         let mut message = Level::Error.title(&title);
 
-        for &(span, ref annotations) in &snippets {
+        for &(span, ref annotations) in &snippets_merged {
             let file_info = &database[span.start.file];
             let offsets = &file_info.offsets;
 
@@ -73,9 +119,14 @@ impl<'d> Diagnostic<'d> {
             let mut snippet = Snippet::source(source)
                 .origin(&file_info.path_raw)
                 .line_start(start_line_0 + 1);
-            for (level, span_annotation, label) in annotations {
-                let span_byte = (span_annotation.start.byte - start_byte)..(span_annotation.end.byte - start_byte);
-                snippet = snippet.annotation(level.span(span_byte).label(label));
+            for annotation in annotations {
+                let Annotation { span: span_annotation, level, label } = annotation;
+
+                let delta_start = span_annotation.start.byte - start_byte;
+                let delta_end = span_annotation.end.byte - start_byte;
+                let delta_span = delta_start..delta_end;
+
+                snippet = snippet.annotation(level.span(delta_span).label(label));
             }
 
             message = message.snippet(snippet);
@@ -109,7 +160,7 @@ impl<'d> DiagnosticSnippet<'d> {
 impl DiagnosticAddable for DiagnosticSnippet<'_> {
     fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
         assert!(self.span.contains(span), "DiagnosticSnippet labels must fall within snippet span");
-        self.annotations.push((level, span, label.into()));
+        self.annotations.push(Annotation { level, span, label: label.into() });
         self
     }
 }

@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::fmt::{Debug, Formatter};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -55,10 +56,59 @@ impl Span {
     }
 
     pub fn contains(self, other: Span) -> bool {
-        assert_eq!(self.start.file, self.end.file);
-        assert_eq!(other.start.file, other.end.file);
         assert_eq!(self.start.file, other.start.file);
         self.start.byte <= other.start.byte && other.end.byte <= self.end.byte
+    }
+
+    pub fn join(self, other: Span) -> Span {
+        assert_eq!(self.start.file, other.start.file);
+        let file = self.start.file;
+        Span {
+            start: Pos { file, byte: min(self.start.byte, other.start.byte) },
+            end: Pos { file, byte: min(self.end.byte, other.end.byte) },
+        }
+    }
+}
+
+impl PosFull {
+    pub fn pos(self) -> Pos {
+        Pos {
+            file: self.file,
+            byte: self.byte,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DifferentFile;
+
+impl SpanFull {
+    pub fn span(self) -> Span {
+        Span {
+            start: self.start.pos(),
+            end: self.end.pos(),
+        }
+    }
+
+    pub fn distance_lines(self, other: SpanFull) -> Result<usize, DifferentFile> {
+        if self.start.file == other.start.file {
+            // get proper end-exclusive line ranges
+            let self_end_line_0 = self.end.line_0 + ((self.end.col_0 > 0) as usize);
+            let other_end_line_0 = other.end.line_0 + ((other.end.col_0 > 0) as usize);
+
+            if self_end_line_0 < other.start.line_0 {
+                // self is fully before other
+                Ok(other.start.line_0 - self_end_line_0)
+            } else if self.start.line_0 > other.end.line_0 {
+                // self is fully after other
+                Ok(self.start.line_0 - other_end_line_0)
+            } else {
+                // overlapping
+                Ok(0)
+            }
+        } else {
+            Err(DifferentFile)
+        }
     }
 }
 
