@@ -1,4 +1,3 @@
-use crate::back::LowerError::NoTopFileFound;
 use crate::data::compiled::CompiledDataBase;
 use crate::data::lowered::LoweredDatabase;
 use crate::data::source::SourceDatabase;
@@ -74,7 +73,7 @@ fn generate_module_source(_: &SourceDatabase, _: &CompiledDataBase, _: &ModuleIn
 fn find_top_module(source: &SourceDatabase, compiled: &CompiledDataBase) -> Result<Item, CompileError> {
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
-    let top_file = source[top_dir].file.ok_or(NoTopFileFound)?;
+    let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
     let top_entry = &compiled[top_file].local_scope.find_immediate_str(source, "top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
