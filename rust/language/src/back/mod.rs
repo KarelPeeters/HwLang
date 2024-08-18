@@ -192,7 +192,7 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Resu
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
     let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
-    let top_entry = &compiled[top_file].local_scope.find_immediate_str(source, "top", Visibility::Public)?;
+    let top_entry = compiled[compiled[top_file].local_scope].find_immediate_str(source, "top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
             match &compiled[item].ty {

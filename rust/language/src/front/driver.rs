@@ -3,7 +3,7 @@ use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
-use crate::front::scope::{Scope, Visibility};
+use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
@@ -33,6 +33,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
 
     // parse all files and populate local scopes
     let mut file_auxiliary = IndexMap::new();
+    let mut scopes = Scopes::default();
 
     for file in files_sorted {
         let file_info = &database[file];
@@ -43,7 +44,8 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
 
         // build local scope
         // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-        let mut local_scope = Scope::new_root(file_info.offsets.full_span());
+        let local_scope = scopes.new_root(file_info.offsets.full_span());
+        let local_scope_info = &mut scopes[local_scope];
 
         for (file_item_index, ast_item) in enumerate(&ast.items) {
             let common_info = ast_item.common_info();
@@ -58,7 +60,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
                 ty: None,
                 body: None,
             });
-            local_scope.maybe_declare(&database, &common_info.id, ScopedEntry::Item(item), vis)?;
+            local_scope_info.maybe_declare(&database, &common_info.id, ScopedEntry::Item(item), vis)?;
         }
 
         // store
@@ -73,6 +75,8 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
         generic_value_params: Arena::default(),
         function_params: Arena::default(),
         module_ports: Arena::default(),
+        module_info: IndexMap::new(),
+        scopes,
     };
 
     // resolve all item types (which is mostly their signatures)
@@ -102,21 +106,29 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
         generic_value_params: state.generic_value_params,
         function_params: state.function_params,
         module_ports: state.module_ports,
+        scopes: state.scopes,
         file_auxiliary,
     };
     Ok(compiled)
 }
 
+// TODO create some dedicated auxiliary data structure, with dense and non-dense variants
 struct CompileState<'d, 'a> {
     database: &'d SourceDatabase,
     file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
     items: Arena<Item, ItemInfoPartial>,
 
-    // TODO reduce duplication with CompileDatabase
+    // TODO reduce duplication with CompileDatabase (including all index accessors through a trait)
     generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
     function_params: Arena<FunctionParameter, FunctionParameterInfo>,
     module_ports: Arena<ModulePort, ModulePortInfo>,
+    module_info: IndexMap<Item, ModuleInfo>,
+    scopes: Scopes<ScopedEntry>,
+}
+
+struct ModuleInfo {
+    scope_ports: Scope,
 }
 
 #[derive(Debug)]
@@ -203,7 +215,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         // item lookup
         let item_ast = self.get_item_ast(item);
-        let scope = &self.file_auxiliary.get(&self[item].file).unwrap().local_scope;
+        let scope = self.file_auxiliary.get(&self[item].file).unwrap().local_scope;
 
         // actual resolution
         match *item_ast {
@@ -272,7 +284,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     // TODO get a more accurate span
-                    let mut scope_ports = scope_inner.nest(ports.span, Visibility::Private);
+                    let scope_ports = s.scopes.new_child(scope_inner, ports.span, Visibility::Private);
 
                     // map ports
                     let mut port_name_map = IndexMap::new();
@@ -296,11 +308,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                         sync: match &sync.inner {
                                             SyncKind::Async => SyncKind::Async,
                                             SyncKind::Sync(clk) => {
-                                                let clk = s.eval_expression_as_value(&scope_ports, clk)?;
+                                                let clk = s.eval_expression_as_value(scope_ports, clk)?;
                                                 SyncKind::Sync(clk)
                                             },
                                         },
-                                        ty: s.eval_expression_as_ty(scope_inner, ty)?,
+                                        ty: s.eval_expression_as_ty(scope_ports, ty)?,
                                     }
                                 }
                             },
@@ -308,7 +320,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         let module_port = s.module_ports.push(module_port_info);
                         port_vec.push(module_port);
 
-                        scope_ports.declare(
+                        s.scopes[scope_ports].declare(
                             &s.database,
                             &port_id,
                             ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
@@ -317,11 +329,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
 
                     // result
-                    let ty = ModuleTypeInfo {
+                    let module_info = ModuleInfo { scope_ports };
+                    s.module_info.insert_first(item, module_info);
+
+                    let module_ty_info = ModuleTypeInfo {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         ports: port_vec,
                     };
-                    Ok(Type::Module(ty))
+
+                    Ok(Type::Module(module_ty_info))
                 })
             },
             ast::Item::Const(_) => self.diagnostic_todo(item_ast.common_info().span_short, "const definition"),
@@ -332,25 +348,27 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn resolve_new_generic_type_def<T>(
         &mut self,
-        defining_item: Item,
-        scope_outer: &Scope,
+        item: Item,
+        scope_outer: Scope,
         params: &Option<Spanned<Vec<ast::GenericParameter>>>,
-        build_ty: impl FnOnce(&mut Self, GenericArguments, &Scope) -> ResolveResult<T>,
+        build_ty: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<T>,
     ) -> ResolveResult<MaybeConstructor<T>> {
+        let item_span = self.get_item_ast(item).common_info().span_full;
+        let scope_inner = self.scopes.new_child(scope_outer, item_span, Visibility::Private);
+
         match params {
             None => {
                 // there are no parameters, just map directly
+                // the scope still needs to be "nested" since the builder needs an owned scope
                 let arguments = GenericArguments { vec: vec![] };
-                Ok(MaybeConstructor::Immediate(build_ty(self, arguments, scope_outer)?))
+                Ok(MaybeConstructor::Immediate(build_ty(self, arguments, scope_inner)?))
             }
             Some(params) => {
                 // build inner scope
                 let mut unique: HashMap<&str, &Identifier> = Default::default();
                 let mut parameters = vec![];
                 let mut arguments = vec![];
-
-                let item_span = self.get_item_ast(defining_item).common_info().span_full;
-                let mut scope_inner = scope_outer.nest(item_span, Visibility::Private);
+                let scope_inner = scope_inner;
 
                 for param_ast in &params.inner {
                     // check parameter names for uniqueness
@@ -361,15 +379,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let (param, arg) = match &param_ast.kind {
                         &GenericParameterKind::Type(_span) => {
                             let param = self.generic_type_params.push(GenericTypeParameterInfo {
-                                defining_item,
+                                defining_item: item,
                                 defining_id: param_ast.id.clone(),
                             });
                             (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
                         },
                         GenericParameterKind::Value(ty_expr) => {
-                            let ty = self.eval_expression_as_ty(&scope_inner, ty_expr)?;
+                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr)?;
                             let param = self.generic_value_params.push(GenericValueParameterInfo {
-                                defining_item,
+                                defining_item: item,
                                 defining_id: param_ast.id.clone(),
                                 ty,
                                 ty_span: ty_expr.span,
@@ -383,7 +401,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    scope_inner.declare(&self.database, &param_ast.id, entry, Visibility::Private)?;
+                    self.scopes[scope_inner].declare(&self.database, &param_ast.id, entry, Visibility::Private)?;
                 }
 
                 // map inner to actual type
@@ -391,7 +409,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let arguments = GenericArguments { vec: arguments };
                 let ty_constr = Constructor {
                     parameters,
-                    inner: build_ty(self, arguments, &scope_inner)?,
+                    inner: build_ty(self, arguments, scope_inner)?,
                 };
                 Ok(MaybeConstructor::Constructor(ty_constr))
             }
@@ -434,10 +452,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let file = self.database[curr_dir].file.ok_or_else(|| {
             self.diagnostic_simple("expected path to file", path.span, "no file exists at this path")
         })?;
-        let file_scope = &self[file].local_scope;
+        let file_scope = self[file].local_scope;
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        match file_scope.find(&self.database, None, id, vis)?.value {
+        match self.scopes[file_scope].find(&self.scopes, &self.database, id, vis)?.value {
             &ScopedEntry::Item(item) => Ok(item),
             // TODO is this still true?
             ScopedEntry::Direct(_) => unreachable!("file root entries should not exist"),
@@ -447,12 +465,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&self, scope: &Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
+    fn eval_expression(&self, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match expr.inner {
             ExpressionKind::Dummy => self.diagnostic_todo(expr.span, "dummy expression"),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                match scope.find(&self.database, None, id, Visibility::Private)?.value {
+                match self.scopes[scope].find(&self.scopes, &self.database, id, Visibility::Private)?.value {
                     &ScopedEntry::Item(item) => {
                         // TODO properly support value items, and in general fix "type" vs "value" resolution
                         //  maybe through checking the item kind first?
@@ -594,7 +612,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         Ok(result)
     }
 
-    fn eval_expression_as_ty(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Type> {
+    fn eval_expression_as_ty(&self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             // TODO unify these error strings somewhere
@@ -610,7 +628,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn eval_expression_as_value(&self, scope: &Scope, expr: &Expression) -> ResolveResult<Value> {
+    fn eval_expression_as_value(&self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             ScopedEntryDirect::Constructor(_) => throw!(
@@ -625,7 +643,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn eval_builtin_call(&self, scope: &Scope, expr_span: Span, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
+    fn eval_builtin_call(&self, scope: Scope, expr_span: Span, name: &str, args: &Args) -> ResolveResult<TypeOrValue> {
         // TODO disallow calling builtin outside of stdlib?
         match name {
             "type" => {

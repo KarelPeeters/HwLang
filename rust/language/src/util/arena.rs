@@ -4,8 +4,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
+use crate::util::data::IndexMapExt;
 use indexmap::map::IndexMap;
-
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
 //   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
@@ -40,7 +40,7 @@ macro_rules! new_index_type {
     }
 }
 
-pub trait IndexType: Sized + Debug {
+pub trait IndexType: Sized + Debug + Copy {
     fn idx(&self) -> Idx;
     fn new(idx: Idx) -> Self;
 
@@ -73,17 +73,28 @@ pub struct Arena<K: IndexType, T> {
     //TODO for now this is implemented as a map, but this can be improved
     //  to just be a vec using generational indices
     map: IndexMap<usize, T>,
-    next_i: usize,
+    next_index: usize,
     ph: PhantomData<K>,
 }
 
 #[allow(dead_code)]
 impl<K: IndexType, T> Arena<K, T> {
     pub fn push(&mut self, value: T) -> K {
-        let i = self.next_i;
-        self.next_i += 1;
-        assert!(self.map.insert(i, value).is_none());
-        K::new(Idx::new(i))
+        self.push_with_index(|_| value)
+    }
+
+    pub fn push_with_index(&mut self, value: impl FnOnce(K) -> T) -> K {
+        let index = self.next_index;
+        let key = K::new(Idx::new(index));
+        self.next_index += 1;
+
+        // we could even pass (&mut self) as an argument here:
+        // * next_index is already incremented
+        // * the current value is not yet inserted, that breaks the arena guarantee a bit
+        let value = value(key);
+        self.map.insert_first(index, value);
+
+        key
     }
 
     pub fn replace(&mut self, index: K, new_value: T) -> T {
@@ -118,7 +129,7 @@ impl<K: IndexType, T> Arena<K, T> {
 
         Arena {
             map: new_map,
-            next_i: self.next_i,
+            next_index: self.next_index,
             ph: Default::default(),
         }
     }
@@ -141,7 +152,7 @@ impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
 
 impl<K: IndexType, T> Default for Arena<K, T> {
     fn default() -> Self {
-        Self { map: Default::default(), next_i: 0, ph: PhantomData }
+        Self { map: Default::default(), next_index: 0, ph: PhantomData }
     }
 }
 

@@ -3,13 +3,15 @@ use std::fmt::{Debug, Display, Formatter};
 
 use crate::data::source::SourceDatabase;
 use crate::error::DiagnosticError;
-use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::DiagnosticAddable;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
-use crate::throw;
+use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::{new_index_type, throw};
 use indexmap::map::IndexMap;
+
+new_index_type!(pub Scope);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Visibility {
@@ -18,9 +20,10 @@ pub enum Visibility {
 }
 
 #[derive(Debug)]
-pub struct Scope<'p, V = ScopedEntry> {
+pub struct ScopeInfo<V> {
     span: Span,
-    parent: Option<(&'p Scope<'p, V>, Visibility)>,
+    scope: Scope,
+    parent: Option<(Scope, Visibility)>,
     values: IndexMap<String, (V, Span, Visibility)>,
 }
 
@@ -32,15 +35,37 @@ pub struct ScopeFound<V> {
     pub value: V,
 }
 
-impl<V: Debug> Scope<'_, V> {
-    pub fn new_root(span: Span) -> Scope<'static, V> {
-        Scope { span, parent: None, values: Default::default() }
+pub struct Scopes<V> {
+    arena: Arena<Scope, ScopeInfo<V>>,
+}
+
+// TODO rethink: have a separate scope builder that needs all declarations to be provided before any lookups can start?
+//   more safe and elegant, but makes "a bunch of nested scopes" like in generic params much slower
+impl<V> Scopes<V> {
+    pub fn default() -> Self {
+        Self { arena: Arena::default() }
     }
 
-    pub fn nest(&self, span: Span, vis: Visibility) -> Scope<V> {
-        Scope { span, parent: Some((self, vis)), values: Default::default() }
+    pub fn new_root(&mut self, span: Span) -> Scope {
+        self.arena.push_with_index(|scope| ScopeInfo {
+            span,
+            scope,
+            parent: None,
+            values: Default::default(),
+        })
     }
 
+    pub fn new_child(&mut self, parent: Scope, span: Span, vis: Visibility) -> Scope {
+        self.arena.push_with_index(|child| ScopeInfo {
+            span,
+            scope: child,
+            parent: Some((parent, vis)),
+            values: Default::default(),
+        })
+    }
+}
+
+impl<V> ScopeInfo<V> {
     // TODO make _local_ shadowing configurable: allowed, non-local allowed, not allowed
     // TODO make "identifier" string configurable
     pub fn declare<'a>(&mut self, database: &SourceDatabase, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
@@ -72,8 +97,9 @@ impl<V: Debug> Scope<'_, V> {
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
     pub fn find<'s>(
-        &'s self, database: &SourceDatabase,
-        root: Option<&'s Self>,
+        &'s self,
+        scopes: &'s Scopes<V>,
+        database: &SourceDatabase,
         id: &ast::Identifier,
         vis: Visibility,
     ) -> ScopeResult<ScopeFound<&'s V>> {
@@ -90,10 +116,7 @@ impl<V: Debug> Scope<'_, V> {
             }
         } else if let Some((parent, parent_vis)) = self.parent {
             // TODO does min access make sense?
-            parent.find(database, root, id, Visibility::minimum_access(vis, parent_vis))
-        } else if let Some(root) = root {
-            // TODO do we need vis support here too?
-            root.find(database, None, id, Visibility::Public)
+            scopes[parent].find(scopes, database, id, Visibility::minimum_access(vis, parent_vis))
         } else {
             // TODO add fuzzy-matched suggestions as info
             let err = database.diagnostic(format!("undeclared identifier `{}`", id.string))
@@ -131,6 +154,19 @@ impl<V: Debug> Scope<'_, V> {
     /// The amount of values declared in this scope without taking the parent scope into account.
     pub fn size(&self) -> usize {
         self.values.len()
+    }
+}
+
+impl<V> std::ops::Index<Scope> for Scopes<V> {
+    type Output = ScopeInfo<V>;
+    fn index(&self, index: Scope) -> &Self::Output {
+        &self.arena[index]
+    }
+}
+
+impl<V> std::ops::IndexMut<Scope> for Scopes<V> {
+    fn index_mut(&mut self, index: Scope) -> &mut Self::Output {
+        &mut self.arena[index]
     }
 }
 

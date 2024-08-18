@@ -1,5 +1,5 @@
-use crate::front::common::TypeOrValue;
-use crate::front::scope::Scope;
+use crate::front::common::{ScopedEntry, TypeOrValue};
+use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::new_index_type;
@@ -18,6 +18,7 @@ pub struct CompiledDatabase {
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
     pub function_params: Arena<FunctionParameter, FunctionParameterInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
+    pub scopes: Scopes<ScopedEntry>,
 }
 
 new_index_type!(pub Item);
@@ -34,7 +35,7 @@ pub struct FileAuxiliary {
     //   * containing items defined in this file
     //   * containing sibling files
     //   * including imports
-    pub local_scope: Scope<'static>,
+    pub local_scope: Scope,
 }
 
 pub struct ItemInfo {
@@ -81,7 +82,8 @@ pub struct ModulePortInfo {
 
 #[derive(Debug)]
 pub enum ItemBody {
-    // TODO
+    Bodyless,
+    ModuleBody,
 }
 
 impl CompiledDatabase {
@@ -131,5 +133,12 @@ impl std::ops::Index<ModulePort> for CompiledDatabase {
     type Output = ModulePortInfo;
     fn index(&self, index: ModulePort) -> &Self::Output {
         &self.module_ports[index]
+    }
+}
+
+impl std::ops::Index<Scope> for CompiledDatabase {
+    type Output = ScopeInfo<ScopedEntry>;
+    fn index(&self, index: Scope) -> &Self::Output {
+        &self.scopes[index]
     }
 }
