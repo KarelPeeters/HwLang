@@ -1,5 +1,6 @@
-use crate::data::compiled::{CompiledDatabase, Item, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
 use crate::data::lowered::LoweredDatabase;
+use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
@@ -15,6 +16,7 @@ use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::VecDeque;
+use std::fmt::Write;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
@@ -69,12 +71,13 @@ struct ModuleInstance {
 
 // TODO write straight into a single string buffer instead of repeated concatenation
 fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, instance: &ModuleInstance, module_name: &str) -> String {
-    let item_info = &compiled[instance.module];
-    let item_ast = unwrap_match!(compiled.get_item_ast(instance.module), ast::Item::Module(item_ast) => item_ast);
+    let &ModuleInstance { module: item, args: ref module_args } = instance;
+    let item_info = &compiled[item];
+    let item_ast = unwrap_match!(compiled.get_item_ast(item), ast::Item::Module(item_ast) => item_ast);
 
     let module_info = match &item_info.ty {
         MaybeConstructor::Immediate(Type::Module(info)) => {
-            assert!(instance.args.is_none());
+            assert!(module_args.is_none());
             info
         },
         MaybeConstructor::Constructor(_) => {
@@ -96,9 +99,45 @@ fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, 
         port_string.push_str("\n");
     }
 
-    // TODO generate ports
-    // TODO generate body
-    format!("module {module_name} ({port_string});\n{INDENT}// TODO module content\nendmodule")
+    let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
+    let body_str = module_body_to_verilog(compiled, body).unwrap();
+
+    format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
+}
+
+fn module_body_to_verilog(compiled: &CompiledDatabase, body: &ModuleBody) -> Result<String, std::fmt::Error> {
+    let mut result = String::new();
+    let f = &mut result;
+
+    let ModuleBody { blocks } = body;
+    for (block_index, block) in enumerate(blocks) {
+        if block_index != 0 {
+            write!(f, "\n\n")?;
+        }
+
+        match block {
+            ModuleBlock::Combinatorial(ModuleBlockCombinatorial { statements }) => {
+                // TODO collect RHS expressions and use those instead of this star
+                // TODO add metadata pointing to source as comments
+                writeln!(f, "{INDENT}always(*) begin")?;
+
+                for statement in statements {
+                    match statement {
+                        &CombinatorialStatement::PortPortAssignment(target, value) => {
+                            let target_str = &compiled[target].defining_id.string;
+                            let value_str = &compiled[value].defining_id.string;
+                            writeln!(f, "{INDENT}{INDENT}{target_str} <= {value_str};")?;
+                        }
+                    }
+                }
+
+                writeln!(f, "{INDENT}end")?;
+            }
+            ModuleBlock::Clocked(_) => todo!()
+        }
+    }
+
+    Ok(result)
 }
 
 fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &str) -> String {

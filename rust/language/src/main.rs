@@ -25,7 +25,10 @@ fn main() {
             println!("top module name: {}", result.top_module_name);
             println!("verilog source:");
             println!("----------------------------------------");
-            println!("{}", result.verilog_source);
+            print!("{}", result.verilog_source);
+            if !result.verilog_source.ends_with("\n") {
+                println!();
+            }
             println!("----------------------------------------");
         }
         Err(e) => {

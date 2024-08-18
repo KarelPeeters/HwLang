@@ -62,12 +62,20 @@ Statement: Statement = {
         Statement { kind: StatementKind::Assignment(assignment), span: loc.span(start, end) }
     },
     // combinatorial block
-    <start:@L> "combinatorial" <block:Box<Block>> <end:@R> => {
-        let inner = CombinatorialBlock { block, span: loc.span(start, end) };
+    <start:@L> "combinatorial" <end_keyword:@R> <block:Block> <end:@R> => {
+        let inner = CombinatorialBlock {
+            block,
+            span: loc.span(start, end),
+            span_keyword: loc.span(start, end_keyword),
+        };
         Statement { kind: StatementKind::CombinatorialBlock(inner), span: loc.span(start, end) }
     },
-    <start:@L> "clocked" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Box<Block>> <end:@R> => {
-        let inner = ClockedBlock { clock, reset, block, span: loc.span(start, end) };
+    <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block> <end:@R> => {
+        let inner = ClockedBlock {
+            clock, reset, block,
+            span: loc.span(start, end),
+            span_keyword: loc.span(start, end_keyword),
+        };
         Statement { kind: StatementKind::ClockedBlock(inner), span: loc.span(start, end) }
     },
     // expression

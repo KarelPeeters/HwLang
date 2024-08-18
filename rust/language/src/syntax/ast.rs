@@ -239,15 +239,17 @@ pub struct Assignment {
 #[derive(Debug, Clone)]
 pub struct CombinatorialBlock {
     pub span: Span,
-    pub block: Box<Block>,
+    pub span_keyword: Span,
+    pub block: Block,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClockedBlock {
     pub span: Span,
+    pub span_keyword: Span,
     pub clock: Box<Expression>,
     pub reset: Box<Expression>,
-    pub block: Box<Block>,
+    pub block: Block,
 }
 
 pub type Expression = Spanned<ExpressionKind>;
@@ -450,7 +452,7 @@ pub enum Direction {
     Out,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,

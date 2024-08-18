@@ -1,3 +1,4 @@
+use crate::data::module_body::ModuleBody;
 use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{MaybeConstructor, Type};
@@ -82,8 +83,10 @@ pub struct ModulePortInfo {
 
 #[derive(Debug)]
 pub enum ItemBody {
-    Bodyless,
-    ModuleBody,
+    /// For items that don't have a body.
+    None,
+    Module(ModuleBody),
+    // TODO expand to remaining items
 }
 
 impl CompiledDatabase {

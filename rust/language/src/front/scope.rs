@@ -22,6 +22,7 @@ pub enum Visibility {
 #[derive(Debug)]
 pub struct ScopeInfo<V> {
     span: Span,
+    #[allow(dead_code)]
     scope: Scope,
     parent: Option<(Scope, Visibility)>,
     values: IndexMap<String, (V, Span, Visibility)>,
