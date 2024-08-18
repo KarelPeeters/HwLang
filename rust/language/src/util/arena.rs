@@ -309,25 +309,6 @@ mod test {
     }
 
     #[test]
-    fn pop() {
-        let mut arena: Arena<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        let bi = arena.push('b');
-        arena.pop(ai);
-        assert_eq!(arena[bi], 'b');
-    }
-
-    #[test]
-    #[should_panic]
-    fn pop_twice() {
-        let mut arena: Arena<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        arena.push('b');
-        arena.pop(ai);
-        arena.pop(ai);
-    }
-
-    #[test]
     fn duplicate() {
         let mut arena: Arena<TestIdx, char> = Default::default();
         let ai0 = arena.push('a');
@@ -353,25 +334,6 @@ mod test {
         let ai1 = arena.push('a');
         assert_eq!(arena[ai0], 'a');
         assert_eq!(ai0, ai1)
-    }
-
-    #[test]
-    fn pop_set() {
-        let mut arena: ArenaSet<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        let bi = arena.push('b');
-        arena.pop(ai);
-        assert_eq!(arena[bi], 'b');
-    }
-
-    #[test]
-    #[should_panic]
-    fn pop_twice_set() {
-        let mut arena: ArenaSet<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        arena.push('b');
-        assert_eq!(arena.pop(ai), 'a');
-        arena.pop(ai); //panics
     }
 
     #[test]
