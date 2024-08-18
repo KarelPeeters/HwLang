@@ -7,6 +7,7 @@ use num_bigint::BigInt;
 
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
+// TODO should all values (and types) have (optional) origin spans for easier error messages?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // parameters
@@ -17,7 +18,7 @@ pub enum Value {
     // basic
     Int(BigInt),
     // TODO long-term this should become a standard struct instead of compiler magic
-    Range(ValueRangeInfo),
+    Range(RangeInfo<Box<Value>>),
     // TODO this BinaryOp should probably be separate from the ast one
     Binary(BinaryOp, Box<Value>, Box<Value>),
 
@@ -30,9 +31,9 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ValueRangeInfo {
-    pub start: Option<Box<Value>>,
-    pub end: Option<Box<Value>>,
+pub struct RangeInfo<V> {
+    pub start: Option<V>,
+    pub end: Option<V>,
     pub end_inclusive: bool,
 }
 
@@ -54,8 +55,8 @@ pub struct ModuleValueInfo {
     // TODO body
 }
 
-impl ValueRangeInfo {
-    pub fn new(start: Option<Box<Value>>, end: Option<Box<Value>>, end_inclusive: bool) -> Self {
+impl<V> RangeInfo<V> {
+    pub fn new(start: Option<V>, end: Option<V>, end_inclusive: bool) -> Self {
         let result = Self { start, end, end_inclusive };
         result.assert_valid();
         result
@@ -73,7 +74,7 @@ impl ValueRangeInfo {
         if self.end.is_none() {
             assert!(!self.end_inclusive);
         }
-        // TODO typecheck?
+        // TODO typecheck and assert that start <= end?
     }
 }
 

@@ -6,7 +6,7 @@ use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, Typ
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
-use crate::front::values::{Value, ValueRangeInfo};
+use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncKind, UnaryOp};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_file_content};
@@ -613,7 +613,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let start = map_point(start)?;
                 let end = map_point(end)?;
 
-                let value = Value::Range(ValueRangeInfo::new(start, end, end_inclusive));
+                let value = Value::Range(RangeInfo::new(start, end, end_inclusive));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             },
             ExpressionKind::UnaryOp(op, ref inner) => {
@@ -745,7 +745,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         "bool" if args.inner.len() == 1 =>
                             return Ok(TypeOrValue::Type(Type::Boolean)),
                         "int" if args.inner.len() == 1 => {
-                            let range = Box::new(Value::Range(ValueRangeInfo::unbounded()));
+                            let range = Box::new(Value::Range(RangeInfo::unbounded()));
                             return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
                         }
                         "int_range" if args.inner.len() == 2 => {
@@ -793,7 +793,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             (Type::Range, Value::Range(_)) => return Ok(()),
             (Type::Integer(IntegerTypeInfo { range }), value) => {
                 if let Value::Range(range) = range.as_ref() {
-                    let &ValueRangeInfo { ref start, ref end, end_inclusive } = range;
+                    let &RangeInfo { ref start, ref end, end_inclusive } = range;
                     if let Some(start) = start {
                         let cond = Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone()));
                         self.require_value_true(span_ty, span_value, &cond)?;
@@ -878,10 +878,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn range_of_value(&self, value: &Value) -> Option<ValueRangeInfo> {
+    fn range_of_value(&self, value: &Value) -> Option<RangeInfo<Box<Value>>> {
         // TODO if range ends are themselves params with ranges, assume the worst case
         //   although that misses things like (n < n+1)
-        fn ty_as_range(ty: &Type) -> Option<ValueRangeInfo> {
+        fn ty_as_range(ty: &Type) -> Option<RangeInfo<Box<Value>>> {
             if let Type::Integer(IntegerTypeInfo { range }) = ty {
                 if let Value::Range(range) = range.as_ref() {
                     return Some(range.clone());
@@ -895,7 +895,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             Value::GenericParameter(param) => ty_as_range(&self[param].ty),
             Value::FunctionParameter(param) => ty_as_range(&self[param].ty),
             // a single integer corresponds to the range containing only that integer
-            Value::Int(ref value) => Some(ValueRangeInfo {
+            Value::Int(ref value) => Some(RangeInfo {
                 start: Some(Box::new(Value::Int(value.clone()))),
                 end: Some(Box::new(Value::Int(value.clone()))),
                 end_inclusive: true,

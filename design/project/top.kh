@@ -10,6 +10,7 @@ use std::types::bool;
 use std::types::bits;
 use std::types::uint;
 use std::types::int_range;
+use std::types::uint_bits;
 
 type TestType = bool;
 

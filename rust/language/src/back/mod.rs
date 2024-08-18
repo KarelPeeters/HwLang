@@ -6,15 +6,16 @@ use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::{DiagnosticAddable, DiagnosticContext};
 use crate::front::scope::Visibility;
-use crate::front::types::{GenericArguments, MaybeConstructor, Type};
-use crate::front::values::Value;
+use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{MaybeIdentifier, PortDirection, PortKind, SyncKind};
+use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncKind};
 use crate::util::data::IndexMapExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_traits::{Signed as _, ToPrimitive};
+use std::cmp::max;
 use std::collections::VecDeque;
 use std::fmt::Write;
 use unwrap_match::unwrap_match;
@@ -157,8 +158,12 @@ fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &st
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { sync, ty } => {
             let ty_str = match type_to_verilog(ty) {
-                VerilogType::SingleBit => "".to_string(),
-                VerilogType::MultiBit(n) => format!("[{}:0] ", n - 1),
+                VerilogType::SingleBit =>
+                    "".to_string(),
+                VerilogType::MultiBit(signed, n) => {
+                    assert!(n > 0, "zero-width signals are not allowed in verilog");
+                    format!("{}[{}:0] ", signed.to_verilog_str(), n - 1)
+                },
             };
 
             // TODO include full type in comment
@@ -184,9 +189,28 @@ fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &st
 // TODO signed/unsigned? does it ever matter?
 // TODO does width 0 work properly or should we avoid instantiating those?
 // TODO what is the max bus width allowed in verilog?
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum VerilogType {
     SingleBit,
-    MultiBit(usize),
+    /// Signedness is really just here for documentation purposes,
+    ///   the internal code will always case to the right value anyway
+    /// The width includes the sign bit.
+    MultiBit(Signed, u64),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Signed {
+    Unsigned,
+    Signed,
+}
+
+impl Signed {
+    fn to_verilog_str(self) -> &'static str {
+        match self {
+            Signed::Unsigned => "",
+            Signed::Signed => "signed ",
+        }
+    }
 }
 
 fn type_to_verilog(ty: &Type) -> VerilogType {
@@ -195,12 +219,19 @@ fn type_to_verilog(ty: &Type) -> VerilogType {
         Type::Bits(n) => {
             match n {
                 None => panic!("infinite bit widths should never materialize in RTL"),
-                Some(n) => VerilogType::MultiBit(value_evaluate_int(n).to_usize().expect("bit width too large")),
+                Some(n) => {
+                    let n = value_evaluate_int(n).to_u64().expect("negative or too large to convert to integer");
+                    VerilogType::MultiBit(Signed::Unsigned, n)
+                },
             }
         }
         // TODO convert all of these to bit representations
         Type::Array(_, _) => todo!(),
-        Type::Integer(_) => todo!(),
+        Type::Integer(info) => {
+            let IntegerTypeInfo { range } = info;
+            let range = value_evaluate_int_range(range);
+            verilog_type_for_int_range(range)
+        },
         Type::Tuple(_) => todo!(),
         Type::Struct(_) => todo!(),
         Type::Enum(_) => todo!(),
@@ -217,13 +248,48 @@ fn type_to_verilog(ty: &Type) -> VerilogType {
 fn value_evaluate_int(value: &Value) -> BigInt {
     match value {
         Value::Int(i) => i.clone(),
+        Value::Binary(op, left, right) => {
+            let left = value_evaluate_int(left);
+            let right = value_evaluate_int(right);
+            match op {
+                BinaryOp::Add => left + right,
+                BinaryOp::Sub => left - right,
+                BinaryOp::Mul => left * right,
+                BinaryOp::Div => left / right,
+                BinaryOp::Mod => left % right,
+                BinaryOp::BitAnd => left & right,
+                BinaryOp::BitOr => left | right,
+                BinaryOp::BitXor => left ^ right,
+                BinaryOp::Pow => left.pow(right.to_u32().unwrap()),
+                _ => todo!("evaluate binary value {value:?}")
+            }
+        },
         Value::GenericParameter(_) => todo!(),
         Value::FunctionParameter(_) => todo!(),
         Value::ModulePort(_) => todo!(),
         Value::Range(_) => todo!(),
-        Value::Binary(_, _, _) => todo!(),
         Value::Function(_) => todo!(),
         Value::Module(_) => todo!(),
+    }
+}
+
+fn value_evaluate_int_range(value: &Value) -> std::ops::Range<BigInt> {
+    match value {
+        Value::Range(info) => {
+            let &RangeInfo { ref start, ref end, end_inclusive } = info;
+
+            // unbound ranges should never show up in RTL
+            let start = value_evaluate_int(start.as_ref().unwrap());
+            let end = value_evaluate_int(end.as_ref().unwrap());
+
+            if end_inclusive {
+                start..(end + 1)
+            } else {
+                start..end
+            }
+        },
+        // TODO relax once ranges are less built-in
+        _ => panic!("only range values can be evaluated as ranges"),
     }
 }
 
@@ -286,5 +352,106 @@ fn pick_unique_name(id: &MaybeIdentifier, used_names: &mut IndexSet<String>) -> 
             }
         }
         unreachable!()
+    }
+}
+
+// TODO move this to some common place, we will need it all over the place
+// TODO do we want to save bits for small ranges that are far away from 0? is this common or worth it?
+// Pick signedness and the smallest width such that the entire range can be represented.
+fn verilog_type_for_int_range(range: std::ops::Range<BigInt>) -> VerilogType {
+    assert!(range.start < range.end, "Range needs to contain at least one value, got {range:?}");
+
+    let min_value = range.start;
+    let max_value = range.end - 1u32;
+
+    if min_value < BigInt::ZERO {
+        // signed
+        // prevent max value underflow
+        let max_value = if max_value.is_negative() {
+            BigInt::ZERO
+        } else {
+            max_value
+        };
+        VerilogType::MultiBit(Signed::Signed, max(
+            1 + (min_value + 1u32).bits(),
+            1 + max_value.bits(),
+        ))
+    } else {
+        // unsigned
+        VerilogType::MultiBit(Signed::Unsigned, max_value.bits())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::back::{verilog_type_for_int_range, Signed, VerilogType};
+    use std::ops::Range;
+
+    #[track_caller]
+    fn test_case(range: Range<i64>, signed: Signed, width: u32) {
+        let expected = VerilogType::MultiBit(signed, width.into());
+        let result = verilog_type_for_int_range(range.start.into()..range.end.into());
+        println!("range {:?} => {:?}", range, result);
+        assert_eq!(
+            expected,
+            result,
+            "mismatch for range {range:?}"
+        );
+    }
+
+    #[test]
+    fn int_range_type_manual() {
+        // positive
+        test_case(0..1, Signed::Unsigned, 0);
+        test_case(0..2, Signed::Unsigned, 1);
+        test_case(0..6, Signed::Unsigned, 3);
+        test_case(0..7, Signed::Unsigned, 3);
+        test_case(0..8, Signed::Unsigned, 3);
+        test_case(0..9, Signed::Unsigned, 4);
+
+        // negative
+        test_case(-1..0, Signed::Signed, 1);
+        test_case(-2..0, Signed::Signed, 2);
+        test_case(-6..0, Signed::Signed, 4);
+        test_case(-7..0, Signed::Signed, 4);
+        test_case(-8..0, Signed::Signed, 4);
+        test_case(-9..0, Signed::Signed, 5);
+
+        // mixed
+        test_case(-1..1, Signed::Signed, 1);
+        test_case(-2..1, Signed::Signed, 2);
+        test_case(-1..2, Signed::Signed, 2);
+        test_case(-7..8, Signed::Signed, 4);
+        test_case(-8..7, Signed::Signed, 4);
+        test_case(-8..8, Signed::Signed, 4);
+        test_case(-9..8, Signed::Signed, 5);
+        test_case(-8..9, Signed::Signed, 5);
+    }
+
+    #[test]
+    fn int_range_type_automatic() {
+        // test that the typical 2s complement ranges behave as expected
+        for w in 0u32..32u32 {
+            println!("testing w={w}");
+            // unsigned
+            if w > 1 {
+                // for w=0 this case doesn't make any sense
+                // for w=1 the bit width should actually get smaller
+                test_case(0..2i64.pow(w) - 1, Signed::Unsigned, w);
+            }
+            test_case(0..2i64.pow(w), Signed::Unsigned, w);
+            test_case(0..2i64.pow(w) + 1, Signed::Unsigned, w + 1);
+
+            // singed (only possible if there is room for a sign bit)
+            if w > 0 {
+                if w > 1 {
+                    test_case((-2i64.pow(w - 1) + 1)..2i64.pow(w - 1), Signed::Signed, w);
+                }
+                test_case(-2i64.pow(w - 1)..(2i64.pow(w - 1) - 1), Signed::Signed, w);
+                test_case(-2i64.pow(w - 1)..2i64.pow(w - 1), Signed::Signed, w);
+                test_case((-2i64.pow(w - 1) - 1)..2i64.pow(w - 1), Signed::Signed, w + 1);
+                test_case(-2i64.pow(w - 1)..(2i64.pow(w - 1) + 1), Signed::Signed, w + 1);
+            }
+        }
     }
 }
