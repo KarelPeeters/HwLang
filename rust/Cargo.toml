@@ -27,6 +27,7 @@ log = "0.4.21"
 logos = "0.14.0"
 num-bigint = "0.4.5"
 num-traits = "0.2.19"
+rand = "0.8.5"
 regex = "1.10.5"
 serde_json = "1.0.118"
 strum = { version = "0.26.3", features = ["derive"] }
