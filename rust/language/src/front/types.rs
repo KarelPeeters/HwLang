@@ -1,6 +1,6 @@
-use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, ModulePort};
+use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::front::common::GenericContainer;
 use crate::front::common::TypeOrValue;
-use crate::front::common::{GenericContainer, ItemReference};
 use crate::front::values::Value;
 use derivative::Derivative;
 use indexmap::IndexMap;
@@ -63,7 +63,7 @@ pub struct FunctionTypeInfo {
 /// This is an additional requirement if some of the parameters don't effect the structure of the type.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct NominalTypeUnique {
-    pub item_reference: ItemReference,
+    pub item: Item,
     pub args: GenericArguments,
     // TODO think about how captured values and types should work
 }
@@ -168,7 +168,7 @@ impl GenericContainer for Type {
 impl GenericContainer for NominalTypeUnique {
     fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         NominalTypeUnique {
-            item_reference: self.item_reference.clone(),
+            item: self.item,
             args: GenericArguments {
                 vec: self.args.vec.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
             },

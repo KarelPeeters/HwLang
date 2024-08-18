@@ -111,9 +111,9 @@ impl<K: IndexType, T> Arena<K, T> {
         self.map.retain(|&i, v| keep(K::new(Idx::new(i)), v))
     }
 
-    pub fn map_values<U>(&self, mut f: impl FnMut(&T) -> U) -> Arena<K, U> {
-        let new_map = self.map.iter()
-            .map(|(&i, v)| (i, f(v)))
+    pub fn map_values<U>(self, mut f: impl FnMut(T) -> U) -> Arena<K, U> {
+        let new_map = self.map.into_iter()
+            .map(|(i, v)| (i, f(v)))
             .collect();
 
         Arena {

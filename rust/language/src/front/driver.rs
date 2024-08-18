@@ -1,7 +1,7 @@
-use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, ItemInfo, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ModulePort, ModulePortInfo};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
-use crate::front::common::{GenericContainer, ItemReference, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
@@ -9,9 +9,9 @@ use crate::front::values::{Value, ValueRangeInfo};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncKind, UnaryOp};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_file_content};
+use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
@@ -45,15 +45,19 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
         // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
         let mut local_scope = Scope::new_root(file_info.offsets.full_span());
 
-        for (ast_item_index, ast_item) in enumerate(&ast.items) {
+        for (file_item_index, ast_item) in enumerate(&ast.items) {
             let common_info = ast_item.common_info();
             let vis = match common_info.vis {
                 ast::Visibility::Public(_) => Visibility::Public,
                 ast::Visibility::Private => Visibility::Private,
             };
 
-            let item_reference = ItemReference { file, item_index: ast_item_index };
-            let item = items.push(ItemInfoPartial { item_reference, ty: None });
+            let item = items.push(ItemInfoPartial {
+                file,
+                file_item_index,
+                ty: None,
+                body: None,
+            });
             local_scope.maybe_declare(&database, &common_info.id, ScopedEntry::Item(item), vis)?;
         }
 
@@ -71,17 +75,26 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
         module_ports: Arena::default(),
     };
 
-    // fully resolve all items
+    // resolve all item types (which is mostly their signatures)
+    // TODO randomize order to check for dependency bugs
     let item_keys = state.items.keys().collect_vec();
-    for item in item_keys {
+    for &item in &item_keys {
         // TODO extra pass that actually looks at the bodies?
         //  or just call "typecheck_item_fully" instead?
         state.resolve_item_type_fully(item)?;
     }
 
+    // typecheck all item bodies
+    // TODO should this be a separate pass or mixed with the previous pass?
+    for &item in &item_keys {
+        state.type_check_item_body(item)?;
+    }
+
     let items = state.items.map_values(|info| ItemInfo {
-        item_reference: info.item_reference,
-        ty: info.ty.as_ref().unwrap().clone(),
+        file: info.file,
+        file_item_index: info.file_item_index,
+        ty: info.ty.unwrap(),
+        body: info.body.unwrap(),
     });
     let compiled = CompiledDatabase {
         items,
@@ -94,7 +107,7 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
     Ok(compiled)
 }
 
-pub struct CompileState<'d, 'a> {
+struct CompileState<'d, 'a> {
     database: &'d SourceDatabase,
     file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
     items: Arena<Item, ItemInfoPartial>,
@@ -106,18 +119,17 @@ pub struct CompileState<'d, 'a> {
     module_ports: Arena<ModulePort, ModulePortInfo>,
 }
 
-new_index_type!(pub Item);
-
 #[derive(Debug)]
-pub struct ItemInfoPartial {
-    pub item_reference: ItemReference,
+struct ItemInfoPartial {
+    file: FileId,
+    file_item_index: usize,
 
     // `None` if this item has not been resolved yet.
     // For a type: the type
     // For a value: the signature
-    pub ty: Option<MaybeConstructor<Type>>,
-
-    // TODO where to store the actual value? do we just leave this abstract?
+    ty: Option<MaybeConstructor<Type>>,
+    // TODO store body type-checked information here
+    body: Option<ItemBody>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -164,7 +176,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         // TODO the order is nondeterministic, it depends on which items happened to be visited first
                         let mut diag = self.diagnostic("cyclic type dependency");
                         for stack_item in stack {
-                            let item_ast = self.get_item_ast(self[stack_item].item_reference);
+                            let item_ast = self.get_item_ast(stack_item);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
                         }
                         throw!(diag.finish())
@@ -190,10 +202,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         assert!(self[item].ty.is_none());
 
         // item lookup
-        let item_reference = self[item].item_reference;
-        let ItemReference { file, item_index: _ } = item_reference;
-        let item_ast = self.get_item_ast(item_reference);
-        let scope = &self.file_auxiliary.get(&file).unwrap().local_scope;
+        let item_ast = self.get_item_ast(item);
+        let scope = &self.file_auxiliary.get(&self[item].file).unwrap().local_scope;
 
         // actual resolution
         match *item_ast {
@@ -206,12 +216,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
-                self.resolve_new_generic_type_def(item_reference, scope, params, |s, _args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope, params, |s, _args, scope_inner| {
                     Ok(s.eval_expression_as_ty(scope_inner, inner)?)
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
-                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // map fields
                     let mut fields_map = IndexMap::new();
                     for field in fields {
@@ -226,14 +236,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // result
                     let ty = StructTypeInfo {
-                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        nominal_type_unique: NominalTypeUnique { item, args },
                         fields: fields_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
                     Ok(Type::Struct(ty))
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
-                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // map variants
                     let mut variants_map = IndexMap::new();
                     for variant in variants {
@@ -251,7 +261,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // result
                     let ty = EnumTypeInfo {
-                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        nominal_type_unique: NominalTypeUnique { item, args },
                         variants: variants_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
                     Ok(Type::Enum(ty))
@@ -259,7 +269,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             },
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, body: _ }) => {
-                self.resolve_new_generic_type_def(item_reference, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     // TODO get a more accurate span
                     let mut scope_ports = scope_inner.nest(ports.span, Visibility::Private);
@@ -276,7 +286,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         }
 
                         let module_port_info = ModulePortInfo {
-                            defining_item: item_reference,
+                            defining_item: item,
                             defining_id: port_id.clone(),
                             direction: direction.inner,
                             kind: match &kind.inner {
@@ -308,7 +318,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // result
                     let ty = ModuleTypeInfo {
-                        nominal_type_unique: NominalTypeUnique { item_reference, args },
+                        nominal_type_unique: NominalTypeUnique { item, args },
                         ports: port_vec,
                     };
                     Ok(Type::Module(ty))
@@ -322,7 +332,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn resolve_new_generic_type_def<T>(
         &mut self,
-        defining_item: ItemReference,
+        defining_item: Item,
         scope_outer: &Scope,
         params: &Option<Spanned<Vec<ast::GenericParameter>>>,
         build_ty: impl FnOnce(&mut Self, GenericArguments, &Scope) -> ResolveResult<T>,
@@ -386,6 +396,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 Ok(MaybeConstructor::Constructor(ty_constr))
             }
         }
+    }
+
+    fn type_check_item_body(&mut self, _: Item) -> Result<(), CompileError> {
+        // TODO
+        // assert!(self[item].body.is_none());
+        // match self.get_item_ast(item) {}
+        // self[item].body = Some(_);
+        Ok(())
     }
 
     fn resolve_use_path(&self, path: &Path) -> ResolveResult<Item> {
@@ -782,10 +800,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn get_item_ast(&self, item_reference: ItemReference) -> &'a ast::Item {
-        let ItemReference { file, item_index } = item_reference;
-        let ast = &self.file_auxiliary.get(&file).unwrap().ast;
-        &ast.items[item_index]
+    fn get_item_ast(&self, item: Item) -> &'a ast::Item {
+        let info = &self[item];
+        let ast = &self.file_auxiliary.get(&info.file).unwrap().ast;
+        &ast.items[info.file_item_index]
     }
 }
 

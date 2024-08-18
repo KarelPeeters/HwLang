@@ -1,10 +1,9 @@
-use crate::data::compiled::{CompiledDatabase, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, Item, ModulePort, ModulePortInfo};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
 use crate::front::diagnostic::{DiagnosticAddable, DiagnosticContext};
-use crate::front::driver::Item;
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, MaybeConstructor, Type};
 use crate::front::values::Value;
@@ -40,10 +39,8 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<Low
     todo.push_back(ModuleInstance { module: top_module, args: None });
 
     while let Some(instance) = todo.pop_front() {
-        let item_info = &compiled[instance.module];
-
         // pick name
-        let ast = compiled.get_item_ast(item_info.item_reference);
+        let ast = compiled.get_item_ast(instance.module);
         let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
 
         // generate source
@@ -73,7 +70,7 @@ struct ModuleInstance {
 // TODO write straight into a single string buffer instead of repeated concatenation
 fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, instance: &ModuleInstance, module_name: &str) -> String {
     let item_info = &compiled[instance.module];
-    let item_ast = unwrap_match!(compiled.get_item_ast(item_info.item_reference), ast::Item::Module(item_ast) => item_ast);
+    let item_ast = unwrap_match!(compiled.get_item_ast(instance.module), ast::Item::Module(item_ast) => item_ast);
 
     let module_info = match &item_info.ty {
         MaybeConstructor::Immediate(Type::Module(info)) => {

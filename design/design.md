@@ -509,3 +509,14 @@ Examples:
 * for modules, functions, ...
 * ideally this can completely replace separate documentation, but that might be too ambitious
 * built-in single command, like compilation and the lsp
+
+### Compilation output
+
+* allow the user to select a set of top-level module to export
+  * top-level modules can't have any generic parameters
+  * each one becomes one of the roots of the elaboration tree
+  * dump everything into a single file or spread across multiple?
+
+* parse external verilog and VHDL files, infer sync/async/... from them
+  * allow the user to override this inference during instantiation
+  * be so good at this that people considering using this compiler just for it's verilog/VHDL features, a bit like Zig

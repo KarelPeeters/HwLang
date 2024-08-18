@@ -1,5 +1,4 @@
-use crate::front::common::{ItemReference, TypeOrValue};
-use crate::front::driver::Item;
+use crate::front::common::TypeOrValue;
 use crate::front::scope::Scope;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
@@ -21,12 +20,13 @@ pub struct CompiledDatabase {
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
 }
 
-pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
-
+new_index_type!(pub Item);
 new_index_type!(pub GenericTypeParameter);
 new_index_type!(pub GenericValueParameter);
 new_index_type!(pub FunctionParameter);
 new_index_type!(pub ModulePort);
+
+pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 
 pub struct FileAuxiliary {
     pub ast: ast::FileContent,
@@ -38,13 +38,15 @@ pub struct FileAuxiliary {
 }
 
 pub struct ItemInfo {
-    pub item_reference: ItemReference,
+    pub file: FileId,
+    pub file_item_index: usize,
     pub ty: MaybeConstructor<Type>,
+    pub body: ItemBody,
 }
 
 #[derive(Debug)]
 pub struct GenericTypeParameterInfo {
-    pub defining_item: ItemReference,
+    pub defining_item: Item,
     pub defining_id: Identifier,
 
     // TODO type constraints once we add those
@@ -52,7 +54,7 @@ pub struct GenericTypeParameterInfo {
 
 #[derive(Debug)]
 pub struct GenericValueParameterInfo {
-    pub defining_item: ItemReference,
+    pub defining_item: Item,
     pub defining_id: Identifier,
 
     pub ty: Type,
@@ -62,7 +64,7 @@ pub struct GenericValueParameterInfo {
 
 #[derive(Debug)]
 pub struct FunctionParameterInfo {
-    pub defining_item: ItemReference,
+    pub defining_item: Item,
     pub defining_id: MaybeIdentifier,
 
     pub ty: Type,
@@ -70,18 +72,23 @@ pub struct FunctionParameterInfo {
 
 #[derive(Debug)]
 pub struct ModulePortInfo {
-    pub defining_item: ItemReference,
+    pub defining_item: Item,
     pub defining_id: Identifier,
 
     pub direction: PortDirection,
     pub kind: PortKind<SyncKind<Value>, Type>,
 }
 
+#[derive(Debug)]
+pub enum ItemBody {
+    // TODO
+}
+
 impl CompiledDatabase {
-    pub fn get_item_ast(&self, item_reference: ItemReference) -> &ast::Item {
-        let ItemReference { file, item_index } = item_reference;
-        let ast = &self.file_auxiliary.get(&file).unwrap().ast;
-        &ast.items[item_index]
+    pub fn get_item_ast(&self, item: Item) -> &ast::Item {
+        let info = &self[item];
+        let ast = &self.file_auxiliary.get(&info.file).unwrap().ast;
+        &ast.items[info.file_item_index]
     }
 }
 

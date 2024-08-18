@@ -1,5 +1,5 @@
-use crate::data::compiled::{FunctionParameter, GenericTypeParameter, GenericValueParameter, ModulePort};
-use crate::front::common::{GenericContainer, ItemReference};
+use crate::data::compiled::{FunctionParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::front::common::GenericContainer;
 use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
@@ -41,7 +41,7 @@ pub struct ValueRangeInfo {
 pub struct FunctionValue {
     // only this field is used in hash and eq
     // TODO also include captured values once those exist
-    pub item_reference: ItemReference,
+    pub item: Item,
 
     // pub ty: Type,
     // pub params: Vec<Identifier>,
