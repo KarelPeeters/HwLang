@@ -37,7 +37,8 @@ struct Annotation {
 const SNIPPET_CONTEXT_LINES: usize = 2;
 /// The maximum distance between two snippets to merge them into one.
 /// This distance is measured after the context lines have already been added.
-const SNIPPET_MERGE_MAX_DISTANCE: usize = 3;
+/// If `None`, no merging is done.
+const SNIPPET_MERGE_MAX_DISTANCE: Option<usize> = Some(3);
 
 impl<'d> Diagnostic<'d> {
     pub fn new(database: &'d SourceDatabase, title: impl Into<String>) -> Self {
@@ -67,40 +68,46 @@ impl<'d> Diagnostic<'d> {
         assert!(!snippets.is_empty(), "Diagnostic without any snippets is not allowed");
 
         // combine snippets that are close together
-        // TODO fix O(n^2) complexity
-        let mut snippets_merged: Vec<(Span, Vec<Annotation>)> = vec![];
+        let snippets_merged = if let Some(snippet_merge_max_distance) = SNIPPET_MERGE_MAX_DISTANCE {
+            // TODO fix O(n^2) complexity
+            let mut snippets_merged: Vec<(Span, Vec<Annotation>)> = vec![];
 
-        for (span, mut annotations) in snippets {
-            // try merging with previous snippet
-            let mut merged = false;
-            for (span_prev, ref mut annotations_prev) in &mut snippets_merged {
-                // calculate distance
-                let span_full = self.database.expand_span(span);
-                let span_prev_full = self.database.expand_span(*span_prev);
-                let distance = span_full
-                    .distance_lines(span_prev_full);
+            for (span, mut annotations) in snippets {
+                // try merging with previous snippet
+                let mut merged = false;
+                for (span_prev, ref mut annotations_prev) in &mut snippets_merged {
+                    // calculate distance
+                    let span_full = self.database.expand_span(span);
+                    let span_prev_full = self.database.expand_span(*span_prev);
+                    let distance = span_full
+                        .distance_lines(span_prev_full);
 
-                // check distance
-                let merge = match distance {
-                    Ok(distance) =>
-                        distance <= 2 * SNIPPET_CONTEXT_LINES + SNIPPET_MERGE_MAX_DISTANCE,
-                    Err(DifferentFile) => false,
-                };
+                    // check distance
+                    let merge = match distance {
+                        Ok(distance) =>
+                            distance <= 2 * SNIPPET_CONTEXT_LINES + snippet_merge_max_distance,
+                        Err(DifferentFile) => false,
+                    };
 
-                // merge
-                if merge {
-                    *span_prev = span_prev.join(span);
-                    annotations_prev.append(&mut annotations);
-                    merged = true;
-                    break;
+                    // merge
+                    if merge {
+                        *span_prev = span_prev.join(span);
+                        annotations_prev.append(&mut annotations);
+                        merged = true;
+                        break;
+                    }
+                }
+
+                // failed to merge, just keep the new snippet
+                if !merged {
+                    snippets_merged.push((span, annotations));
                 }
             }
 
-            // failed to merge, just keep the new snippet
-            if !merged {
-                snippets_merged.push((span, annotations));
-            }
-        }
+            snippets_merged
+        } else {
+            snippets
+        };
 
         // create final message
         let mut message = Level::Error.title(&title);

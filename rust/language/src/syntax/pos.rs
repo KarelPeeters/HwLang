@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::fmt::{Debug, Formatter};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -65,7 +65,7 @@ impl Span {
         let file = self.start.file;
         Span {
             start: Pos { file, byte: min(self.start.byte, other.start.byte) },
-            end: Pos { file, byte: min(self.end.byte, other.end.byte) },
+            end: Pos { file, byte: max(self.end.byte, other.end.byte) },
         }
     }
 }
