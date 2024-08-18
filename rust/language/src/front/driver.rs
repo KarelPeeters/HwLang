@@ -131,43 +131,40 @@ pub enum ResolveFirstOr<E> {
 
 pub type ResolveResult<T> = Result<T, ResolveFirstOr<CompileError>>;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum FunctionBody {
-    /// type alias, enum, or struct
-    TypeConstructor(ItemReference),
-}
-
 impl<'d, 'a> CompileState<'d, 'a> {
     fn resolve_item_type_fully(&mut self, item: Item) -> Result<(), CompileError> {
         let mut stack = vec![item];
 
         // TODO avoid repetitive work by switching to async instead?
         while let Some(curr) = stack.pop() {
-            if self.resolve_item_type(curr).is_ok() {
+            if self[curr].ty.is_some() {
+                // already resolved, skip
                 continue;
             }
 
-            let result = self.resolve_item_type_new(curr);
-
-            match result {
+            match self.resolve_item_type_new(curr) {
                 Ok(resolved) => {
-                    let slot = &mut self[item].ty;
-                    assert!(slot.is_none(), "someone else already set the type");
+                    let slot = &mut self[curr].ty;
+                    assert!(slot.is_none(), "someone else already set the type for {curr:?}");
                     *slot = Some(resolved.clone());
                 }
                 Err(ResolveFirstOr::Error(e)) => {
                     throw!(e);
                 }
                 Err(ResolveFirstOr::ResolveFirst(first)) => {
+                    assert!(self[first].ty.is_none(), "request to resolve {first:?} first, but it already has a type");
+
                     stack.push(curr);
                     let cycle_start_index = stack.iter().position(|s| s == &first);
                     stack.push(first);
-                    if let Some(cycle_start_index) = cycle_start_index {
-                        drop(stack.drain(..cycle_start_index));
 
+                    if let Some(cycle_start_index) = cycle_start_index {
+                        drop(stack.drain(..=cycle_start_index));
+
+                        // TODO the order is nondeterministic, it depends on which items happened to be visited first
                         let mut diag = self.diagnostic("cyclic type dependency");
-                        for item in stack {
-                            let item_ast = self.get_item_ast(self[item].item_reference);
+                        for stack_item in stack {
+                            let item_ast = self.get_item_ast(self[stack_item].item_reference);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
                         }
                         throw!(diag.finish())
