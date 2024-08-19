@@ -81,16 +81,14 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
     };
 
     // resolve all item types (which is mostly their signatures)
-    // TODO randomize order to check for dependency bugs
+    // TODO randomize order to check for dependency bugs? but then diagnostics have random orders
     let item_keys = state.items.keys().collect_vec();
     for &item in &item_keys {
-        // TODO extra pass that actually looks at the bodies?
-        //  or just call "typecheck_item_fully" instead?
         state.resolve_item_type_fully(item)?;
     }
 
     // typecheck all item bodies
-    // TODO should this be a separate pass or mixed with the previous pass?
+    // TODO merge this with the previous pass: better for LSP and maybe for local items
     for &item in &item_keys {
         assert!(state[item].body.is_none());
         match state.type_check_item_body(item) {
@@ -217,8 +215,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    // TODO split this (and the corresponding functions) into signature and value for extra type safety
-    // TODO should this do both signatures and values, or only the latter?
     fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
         // check that this is indeed a new query
         assert!(self[item].ty.is_none());
@@ -290,11 +286,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 })
             },
             // value definitions
-            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, body: _ }) => {
+            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
                 self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
-                    // TODO get a more accurate span
-                    let scope_ports = s.scopes.new_child(scope_inner, ports.span, Visibility::Private);
+                    let scope_ports = s.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
                     // map ports
                     let mut port_name_map = IndexMap::new();
@@ -428,7 +423,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn type_check_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
         assert!(self[item].body.is_none());
-        // TODO split this up into a fully separate phase for a bit of extra type safety?
+
         let _item_ty = self[item].ty.as_ref().expect("item should already have been checked");
         let item_span = self.get_item_ast(item).common_info().span_short;
 
@@ -506,7 +501,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                 }
 
-                // TODO body content
                 ItemBody::Module(ModuleBody {
                     blocks: module_blocks,
                 })
@@ -519,6 +513,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn resolve_use_path(&self, path: &Path) -> ResolveResult<Item> {
         // TODO the current path design does not allow private sub-modules
         //   are they really necessary? if all inner items are private it's effectively equivalent
+        //   -> no it's not equivalent, things can also be private from the parent
 
         // TODO allow private visibility in child and sibling paths
         let vis = Visibility::Public;
@@ -708,6 +703,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             // TODO unify these error strings somewhere
+            // TODO maybe move back to central error collection place for easier unit testing?
             ScopedEntryDirect::Constructor(_) => throw!(
                 self.diagnostic_simple("expected type, got constructor", expr.span, "constructor")
             ),
@@ -900,7 +896,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 end: Some(Box::new(Value::Int(value.clone()))),
                 end_inclusive: true,
             }),
-            // TODO ports should store their type
             Value::ModulePort(_) => None,
             // TODO binary operations should attempt an evaluation
             Value::Binary(_, _, _) => None,
