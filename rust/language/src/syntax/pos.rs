@@ -171,6 +171,7 @@ impl FileOffsets {
     }
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
+        // OPTIMIZE: maybe cache the last lookup and check its neighborhood first
         assert_eq!(pos.file, self.file);
         let line_0 = self.line_to_start_byte.binary_search(&pos.byte)
             .unwrap_or_else(|next_line_0| next_line_0 - 1);
@@ -184,6 +185,7 @@ impl FileOffsets {
     }
 
     pub fn expand_span(&self, span: Span) -> SpanFull {
+        // OPTIMIZE: the second position must come after the first and is probably close
         SpanFull {
             start: self.expand_pos(span.start),
             end: self.expand_pos(span.end),

@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use language::syntax::parse_file_content;
-use language::syntax::pos::{FileId, Pos};
+use language::syntax::pos::{FileId, FileOffsets, Pos};
 use language::syntax::token::{tokenize, TokenCategory, Tokenizer};
 use log::error;
 use strum::IntoEnumIterator;
@@ -149,7 +149,8 @@ impl ServerCore {
             }
         };
 
-        let ast = match parse_file_content(FileId::SINGLE, source) {
+        let offsets = FileOffsets::new(FileId::SINGLE, source);
+        let ast = match parse_file_content(source, &offsets) {
             Ok(ast) => ast,
             Err(e) => {
                 self.log_error(format!("failed to parse file: {e:?}")).await;
@@ -159,7 +160,7 @@ impl ServerCore {
 
         let mut result = vec![];
         for item in ast.items {
-            let range = item.span().to_lsp();
+            let range = offsets.expand_span(item.common_info().span_full).to_lsp();
             self.log_info(format!("sending range {range:?}")).await;
             result.push(DocumentHighlight {
                 range,
@@ -237,12 +238,10 @@ impl ServerCore {
             }
         };
 
-        let mut data = vec![];
-        let mut prev_start = Pos {
-            file: FileId::SINGLE,
-            line: 1,
-            col: 1,
-        };
+        let mut semantic_tokens = vec![];
+
+        let offsets = FileOffsets::new(FileId::SINGLE, source);
+        let mut prev_start = offsets.full_span().start;
 
         // TODO check client multi-line token capability
         // TODO check that both client and server support utf8-encoding
@@ -259,28 +258,31 @@ impl ServerCore {
             let start = token.span.start;
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
-                let delta_line = start.line - prev_start.line;
-                let delta_start = if start.line == prev_start.line {
-                    start.col - prev_start.col
+                let start_full = offsets.expand_pos(start);
+                let prev_start_full = offsets.expand_pos(prev_start);
+
+                let delta_line = start_full.line_0 - prev_start_full.line_0;
+                let delta_start = if start_full.line_0 == prev_start_full.line_0 {
+                    start_full.col_0 - prev_start_full.col_0
                 } else {
-                    start.col - 1
+                    start_full.col_0
                 };
 
-                let data_token = SemanticToken {
+                let semantic_token = SemanticToken {
                     delta_line: delta_line as u32,
                     delta_start: delta_start as u32,
                     length: token.string.len() as u32,
                     token_type: semantic_index as u32,
                     token_modifiers_bitset: 0,
                 };
-                data.push(data_token);
+                semantic_tokens.push(semantic_token);
 
                 // only update start if the token was actually included
                 prev_start = token.span.start;
             }
         }
 
-        let result = SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data });
+        let result = SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: semantic_tokens });
         Ok(Some(result))
     }
 
