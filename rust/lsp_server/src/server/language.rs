@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use language::syntax::parse_file_content;
-use language::syntax::pos::{FileId, FileOffsets, Pos};
-use language::syntax::token::{tokenize, TokenCategory, Tokenizer};
+use language::syntax::pos::{FileId, FileOffsets};
+use language::syntax::token::{TokenCategory, Tokenizer};
 use log::error;
 use strum::IntoEnumIterator;
 use tower_lsp::jsonrpc;
@@ -255,10 +255,8 @@ impl ServerCore {
                 }
             };
 
-            let start = token.span.start;
-
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
-                let start_full = offsets.expand_pos(start);
+                let start_full = offsets.expand_pos(token.span.start);
                 let prev_start_full = offsets.expand_pos(prev_start);
 
                 let delta_line = start_full.line_0 - prev_start_full.line_0;

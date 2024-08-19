@@ -1,8 +1,7 @@
-use language::syntax::token::TokenCategory;
 use tower_lsp::jsonrpc;
 use tower_lsp::lsp_types::{
     CompletionOptions, DefinitionOptions, DocumentHighlightOptions, InitializeParams, InitializeResult,
-    InitializedParams, MessageType, OneOf, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+    InitializedParams, MessageType, OneOf, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions,
 };

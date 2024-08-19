@@ -3,7 +3,7 @@ use tower_lsp::jsonrpc;
 use tower_lsp::jsonrpc::Error;
 use tower_lsp::lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    MessageType, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, TextEdit,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, TextEdit,
     VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
 };
 

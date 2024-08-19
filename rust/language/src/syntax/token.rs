@@ -17,6 +17,7 @@ pub struct Token<S> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct InvalidToken {
     pub pos: Pos,
+    // TODO remove string from this? we have better error infrastructure by now
     pub prefix: String,
 }
 
@@ -27,9 +28,9 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidT
 }
 
 // TODO implement recovery by matching without start anchor?
-// TODO error check regex overlap in advance at test-time using
+// TODO error check regex overlap in advance at test-time using ... (called from a unit test too)
 //   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
-// TODO use lazy_static to compile the regexes only once?
+// TODO remove string here? only deal with offset, simplifying the lifetime
 pub struct Tokenizer<'s> {
     compiled: &'static CompiledRegex,
     file: FileId,
@@ -75,9 +76,9 @@ impl<'s> Iterator for Tokenizer<'s> {
         };
 
         let match_str = &self.left[..m.len];
+
         self.left = &self.left[m.len..];
-        
-        self.curr_byte += match_str.len();
+        self.curr_byte += m.len;
         let end = Pos { file: self.file, byte: self.curr_byte };
         let span = Span::new(start, end);
 
@@ -138,7 +139,10 @@ fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<Pi
     for index in matches.iter() {
         match_count += 1;
 
-        let range = regex_vec[index].find(left).unwrap().range();
+        let range = regex_vec[index]
+            .find(left)
+            .expect("regex should match, it was one of the matching indices")
+            .range();
         assert_eq!(range.start, 0);
         let len = range.end;
 
@@ -175,7 +179,7 @@ fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<Pi
     }
 
     if unique {
-        assert!(match_count == 1);
+        assert_eq!(match_count, 1);
     }
     result
 }
