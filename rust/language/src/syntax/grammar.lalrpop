@@ -1,16 +1,99 @@
 use crate::syntax::ast::*;
 use crate::syntax::LocationBuilder;
+use crate::syntax::token::{TokenType, InvalidToken};
 
-grammar(loc: &LocationBuilder);
+// TODO move this boilerplate stuff to the bottom
+grammar<'s>(loc: &LocationBuilder, input: &'s str);
 
-match {
-    // Skip whitespace and comments
-    r"\s*" => { },
-    r"//[^\n\r]*[\n\r]*" => { }, // `// comment`
-    r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/" => { }, // `/* comment */`
+// TODO skip whitespace and comment tokens again
+extern {
+    type Location = usize;
+    type Error = InvalidToken;
 
-    // pass everything else through
-    _,
+    enum TokenType<&'s str> {
+        TokenWhiteSpace => TokenType::WhiteSpace(<&'s str>),
+        TokenLineComment => TokenType::LineComment(<&'s str>),
+        TokenBlockComment => TokenType::BlockComment(<&'s str>),
+        TokenIdentifier => TokenType::Identifier(<&'s str>),
+        TokenIntLiteralDecimal => TokenType::IntLiteralDecimal(<&'s str>),
+        TokenIntPatternHexadecimal => TokenType::IntPatternHexadecimal(<&'s str>),
+        TokenIntPatternBinary => TokenType::IntPatternBinary(<&'s str>),
+        TokenStringLiteral => TokenType::StringLiteral(<&'s str>),
+        "use" => TokenType::Use,
+        "as" => TokenType::As,
+        "type" => TokenType::Type,
+        "struct" => TokenType::Struct,
+        "enum" => TokenType::Enum,
+        "ports" => TokenType::Ports,
+        "module" => TokenType::Module,
+        "function" => TokenType::Function,
+        "combinatorial" => TokenType::Combinatorial,
+        "clock" => TokenType::Clock,
+        "clocked" => TokenType::Clocked,
+        "const" => TokenType::Const,
+        "val" => TokenType::Val,
+        "var" => TokenType::Var,
+        "input" => TokenType::Input,
+        "output" => TokenType::Output,
+        "async" => TokenType::Async,
+        "sync" => TokenType::Sync,
+        "return" => TokenType::Return,
+        "break" => TokenType::Break,
+        "continue" => TokenType::Continue,
+        "true" => TokenType::True,
+        "false" => TokenType::False,
+        "if" => TokenType::If,
+        "else" => TokenType::Else,
+        "loop" => TokenType::Loop,
+        "for" => TokenType::For,
+        "in" => TokenType::In,
+        "while" => TokenType::While,
+        "pub" => TokenType::Public,
+        ";" => TokenType::Semi,
+        ":" => TokenType::Colon,
+        "," => TokenType::Comma,
+        "->" => TokenType::Arrow,
+        "_" => TokenType::Underscore,
+        "::" => TokenType::ColonColon,
+        "{" => TokenType::OpenC,
+        "}" => TokenType::CloseC,
+        "(" => TokenType::OpenR,
+        ")" => TokenType::CloseR,
+        "[" => TokenType::OpenS,
+        "]" => TokenType::CloseS,
+        "." => TokenType::Dot,
+        ".." => TokenType::Dots,
+        "..=" => TokenType::DotsEq,
+        "&&" => TokenType::AmperAmper,
+        "||" => TokenType::PipePipe,
+        "==" => TokenType::EqEq,
+        "!=" => TokenType::Neq,
+        ">=" => TokenType::Gte,
+        ">" => TokenType::Gt,
+        "<=" => TokenType::Lte,
+        "<" => TokenType::Lt,
+        "&" => TokenType::Amper,
+        "^" => TokenType::Circumflex,
+        "|" => TokenType::Pipe,
+        "<<" => TokenType::LtLt,
+        ">>" => TokenType::GtGt,
+        "+" => TokenType::Plus,
+        "-" => TokenType::Minus,
+        "*" => TokenType::Star,
+        "/" => TokenType::Slash,
+        "%" => TokenType::Percent,
+        "!" => TokenType::Bang,
+        "**" => TokenType::StarStar,
+        "=" => TokenType::Eq,
+        "+=" => TokenType::PlusEq,
+        "-=" => TokenType::MinusEq,
+        "*=" => TokenType::StarEq,
+        "/=" => TokenType::SlashEq,
+        "%=" => TokenType::PercentEq,
+        "&=" => TokenType::AmperEq,
+        "^=" => TokenType::CircumflexEq,
+        "|=" => TokenType::BarEq,
+    }
 }
 
 pub FileContent: FileContent = {
@@ -237,7 +320,7 @@ ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
     // assoc left
     <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Id>
         => ExpressionKind::DotIdIndex(target, index),
-    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<r"[0-9]+">>
+    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<TokenIntLiteralDecimal>>
         => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
     ExprLevelStructureInit<AtomicInner>,
 }
@@ -276,14 +359,14 @@ ExprLevelAtomic: ExpressionKind = {
     // literals
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
-    <string:r"0x[0-9a-fA-F_?]+">
+    <string:TokenIntPatternHexadecimal>
         => ExpressionKind::IntPattern(IntPattern::Hex(string[2..].to_owned())),
-    <string:r"0b[0-9a-fA-F_?]+">
+    <string:TokenIntPatternBinary>
         => ExpressionKind::IntPattern(IntPattern::Bin(string[2..].to_owned())),
-    <string:r"[0-9]+">
+    <string:TokenIntLiteralDecimal>
         => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
     // TODO escape sequences and string formatting expressions
-    <full:r#""[^"]*""#> => {
+    <full:TokenStringLiteral> => {
         let string = full[1..full.len()-1].to_owned();
         ExpressionKind::StringLiteral(string.to_owned())
     },
@@ -319,7 +402,7 @@ ElseIfPair: ElseIfPair = {
 
 // terminals
 Id: Identifier = {
-    <start:@L> <string:r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)"> <end:@R>
+    <start:@L> <string:TokenIdentifier> <end:@R>
         => Identifier { string: string.to_owned(), span: loc.span(start, end) },
 }
 

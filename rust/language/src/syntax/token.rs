@@ -210,6 +210,13 @@ macro_rules! declare_tokens {
                     $(TokenType::$l_token => $l_cat,)*
                 }
             }
+            
+            pub fn map<T>(self, f: impl FnOnce(S) -> T) -> TokenType<T> {
+                match self {
+                    $(TokenType::$r_token(s) => TokenType::$r_token(f(s)),)*
+                    $(TokenType::$l_token => TokenType::$l_token,)*
+                }
+            }
         }
     };
 }
@@ -270,6 +277,7 @@ declare_tokens! {
         Module("module", TC::Keyword, TP::Normal),
         Function("function", TC::Keyword, TP::Normal),
         Combinatorial("combinatorial", TC::Keyword, TP::Normal),
+        Clock("clock", TC::Keyword, TP::Normal),
         Clocked("clocked", TC::Keyword, TP::Normal),
         Const("const", TC::Keyword, TP::Normal),
         Val("val", TC::Keyword, TP::Normal),
@@ -360,5 +368,20 @@ mod test {
             span: Span { start: Pos { file, byte: 0 }, end: Pos { file: file, byte: 1 } },
         }]), tokenize(file, "\n"));
         assert!(tokenize(file, "test foo function \"foo\"").is_ok());
+    }
+
+    // TODO turn this into a test case that checks whether the grammer is up-to-date
+    #[test]
+    fn print_grammer_enum() {
+        for (token_type, pattern, pattern_kind, _) in TOKEN_PATTERNS {
+            match pattern_kind {
+                PatternKind::Regex => {
+                    println!("Token{:?} => TokenType::{:?},", token_type, token_type)
+                }
+                PatternKind::Literal => {
+                    println!("{:?} => TokenType::{:?},", pattern, token_type)
+                }
+            }
+        }
     }
 }

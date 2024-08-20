@@ -3,7 +3,7 @@ use lalrpop_util::lalrpop_mod;
 use pos::Pos;
 
 use crate::syntax::pos::{FileId, FileOffsets, Span};
-use crate::syntax::token::tokenize;
+use crate::syntax::token::{TokenCategory, TokenType, Tokenizer};
 use crate::util::Never;
 
 pub mod ast;
@@ -12,7 +12,8 @@ pub mod token;
 
 lalrpop_mod!(grammar, "/syntax/grammar.rs");
 
-pub type ParseError = lalrpop_util::ParseError<Pos, String, Never>;
+// TODO convert to diagnostic
+pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, Never>;
 
 /// Utility struct for the grammer file.
 pub struct LocationBuilder {
@@ -29,24 +30,26 @@ impl LocationBuilder {
 }
 
 pub fn parse_file_content(src: &str, offsets: &FileOffsets) -> Result<ast::FileContent, ParseError> {
+    // constant a tokenizer to match the format lalrpop is expecting
     let file = offsets.file();
-    
-    // test the tokenizer
-    // TODO this will go away once we're actually using the tokenizer for parsing
-    match tokenize(file, src) {
-        Ok(_) => {},
-        Err(e) => {
-            return Err(ParseError::InvalidToken { location: e.pos });
-        },
-    }
+    let tokenizer = Tokenizer::new(file, src)
+        .filter(|token| match token {
+            Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),
+            Err(_) => true,
+        })
+        .map(|token| token.map(|token| (token.span.start.byte, token.ty, token.span.end.byte)));
+
+    // utility converter to include the file in positions and spans
+    let location_builder = LocationBuilder { file };
 
     // actual parsing
-    let location_builder = LocationBuilder { file };
-    grammar::FileContentParser::new()
-        .parse(&location_builder, &src)
-        .map_err(|e| {
-            e.map_location(|byte| Pos { file, byte })
-                .map_token(|token| token.1.to_owned())
-                .map_error(|_| unreachable!("no custom errors used in the grammer"))
-        })
+    let result = grammar::FileContentParser::new()
+        .parse(&location_builder, &src, tokenizer);
+
+    // convert the error back to our own formats
+    result.map_err(|e| {
+        e.map_location(|byte| Pos { file, byte })
+            .map_token(|token| token.map(str::to_owned))
+            .map_error(|_| unreachable!("no custom errors used in the grammer"))
+    })
 }
