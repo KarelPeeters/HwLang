@@ -9,8 +9,7 @@ use crate::syntax::pos::{FileId, Pos, Span};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Token<S> {
-    pub ty: TokenType,
-    pub string: S,
+    pub ty: TokenType<S>,
     pub span: Span,
 }
 
@@ -83,8 +82,7 @@ impl<'s> Iterator for Tokenizer<'s> {
         let span = Span::new(start, end);
 
         Some(Ok(Token {
-            ty: TOKEN_PATTERNS[m.index].0,
-            string: match_str,
+            ty: TOKEN_PATTERNS[m.index].0(match_str),
             span,
         }))
     }
@@ -102,8 +100,8 @@ impl CompiledRegex {
             .iter()
             .map(|(_, pattern, kind, _)| {
                 let bare = match kind {
-                    PK::Regex => pattern.to_string(),
-                    PK::Literal => regex::escape(pattern),
+                    PatternKind::Regex => pattern.to_string(),
+                    PatternKind::Literal => regex::escape(pattern),
                 };
                 // surround in non-capturing group to make sure that the start-of-string "^" binds correctly
                 format!("^(?:{bare})")
@@ -185,21 +183,31 @@ fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<Pi
 }
 
 macro_rules! declare_tokens {
-    ($($token:ident($string:literal, $kind:expr, $cat:expr, $prio:expr),)*) => {
+    (
+        regex {
+            $($r_token:ident($r_string:literal, $r_cat:expr, $r_prio:expr),)*
+        }
+        literal {
+            $($l_token:ident($l_string:literal, $l_cat:expr, $l_prio:expr),)*
+        }
+    ) => {
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-        pub enum TokenType {
-            $($token,)*
+        pub enum TokenType<S> {
+            $($r_token(S),)*
+            $($l_token,)*
         }
 
-        const TOKEN_PATTERNS: &[(TokenType, &'static str, PatternKind, TokenPriority)] = &[
-            $((TokenType::$token, $string, $kind, $prio),)*
+        const TOKEN_PATTERNS: &[(fn (&str) -> TokenType<&str>, &'static str, PatternKind, TokenPriority)] = &[
+            $((|s| TokenType::$r_token(s), $r_string, PatternKind::Regex, $r_prio),)*
+            $((|_| TokenType::$l_token, $l_string, PatternKind::Literal, $l_prio),)*
         ];
 
         // TODO function vs array?
-        impl TokenType {
+        impl<S> TokenType<S> {
             pub fn category(self) -> TokenCategory {
                 match self {
-                    $(TokenType::$token => $cat,)*
+                    $(TokenType::$r_token(_) => $r_cat,)*
+                    $(TokenType::$l_token => $l_cat,)*
                 }
             }
         }
@@ -231,114 +239,116 @@ pub enum TokenPriority {
     Low = 0,
 }
 
-use PatternKind as PK;
 use TokenCategory as TC;
 use TokenPriority as TP;
 
 // TODO move to separate file
 declare_tokens! {
-    // ignored
-    WhiteSpace(r"\s+", PK::Regex, TC::WhiteSpace, TP::Unique),
-    LineComment(r"//[^\n\r]*", PK::Regex, TC::Comment, TP::Normal),
-    BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", PK::Regex, TC::Comment, TP::Normal),
+    regex {
+        // ignored
+        WhiteSpace(r"\s+", TC::WhiteSpace, TP::Unique),
+        LineComment(r"//[^\n\r]*", TC::Comment, TP::Normal),
+        BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", TC::Comment, TP::Normal),
 
-    // patterns
-    Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", PK::Regex, TC::Identifier, TP::Low),
-    IntLiteralDecimal(r"[0-9]+", PK::Regex, TC::IntegerLiteral, TP::Unique),
-    IntPatternHexadecimal(r"0x[0-9a-fA-F_?]+", PK::Regex, TC::IntegerLiteral, TP::Unique),
-    IntPatternBinary(r"0b[0-9a-fA-F_?]+", PK::Regex, TC::IntegerLiteral, TP::Unique),
+        // patterns
+        Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", TC::Identifier, TP::Low),
+        IntLiteralDecimal(r"[0-9]+", TC::IntegerLiteral, TP::Unique),
+        IntPatternHexadecimal(r"0x[0-9a-fA-F_?]+", TC::IntegerLiteral, TP::Unique),
+        IntPatternBinary(r"0b[0-9a-fA-F_?]+", TC::IntegerLiteral, TP::Unique),
 
-    // TODO better string literal pattern with escape codes and string formatting expressions
-    StringLiteral(r#""[^"]*""#, PK::Regex, TC::StringLiteral, TP::Unique),
-
-    // keywords
-    Use("use", PK::Literal, TC::Keyword, TP::Normal),
-    As("as", PK::Literal, TC::Keyword, TP::Normal),
-    Type("type", PK::Literal, TC::Keyword, TP::Normal),
-    Struct("struct", PK::Literal, TC::Keyword, TP::Normal),
-    Enum("enum", PK::Literal, TC::Keyword, TP::Normal),
-    Ports("ports", PK::Literal, TC::Keyword, TP::Normal),
-    Module("module", PK::Literal, TC::Keyword, TP::Normal),
-    Function("function", PK::Literal, TC::Keyword, TP::Normal),
-    Combinatorial("combinatorial", PK::Literal, TC::Keyword, TP::Normal),
-    Clocked("clocked", PK::Literal, TC::Keyword, TP::Normal),
-    Const("const", PK::Literal, TC::Keyword, TP::Normal),
-    Val("val", PK::Literal, TC::Keyword, TP::Normal),
-    Var("var", PK::Literal, TC::Keyword, TP::Normal),
-    Input("input", PK::Literal, TC::Keyword, TP::Normal),
-    Output("output", PK::Literal, TC::Keyword, TP::Normal),
-    Async("async", PK::Literal, TC::Keyword, TP::Normal),
-    Sync("sync", PK::Literal, TC::Keyword, TP::Normal),
-    Return("return", PK::Literal, TC::Keyword, TP::Normal),
-    Break("break", PK::Literal, TC::Keyword, TP::Normal),
-    Continue("continue", PK::Literal, TC::Keyword, TP::Normal),
-    True("true", PK::Literal, TC::Keyword, TP::Normal),
-    False("false", PK::Literal, TC::Keyword, TP::Normal),
-    If("if", PK::Literal, TC::Keyword, TP::Normal),
-    Else("else", PK::Literal, TC::Keyword, TP::Normal),
-    Loop("loop", PK::Literal, TC::Keyword, TP::Normal),
-    For("for", PK::Literal, TC::Keyword, TP::Normal),
-    In("in", PK::Literal, TC::Keyword, TP::Normal),
-    While("while", PK::Literal, TC::Keyword, TP::Normal),
-    Public("pub", PK::Literal, TC::Keyword, TP::Normal),
-
-    // misc symbols
-    Semi(";", PK::Literal, TC::Symbol, TP::Normal),
-    Colon(":", PK::Literal, TC::Symbol, TP::Normal),
-    Comma(",", PK::Literal, TC::Symbol, TP::Normal),
-    Arrow("->", PK::Literal, TC::Symbol, TP::Normal),
-    Underscore("_", PK::Literal, TC::Symbol, TP::Normal),
-    ColonColon("::", PK::Literal, TC::Symbol, TP::Normal),
-
-    // braces
-    OpenC("{", PK::Literal, TC::Symbol, TP::Normal),
-    CloseC("}", PK::Literal, TC::Symbol, TP::Normal),
-    OpenR("(", PK::Literal, TC::Symbol, TP::Normal),
-    CloseR(")", PK::Literal, TC::Symbol, TP::Normal),
-    OpenS("[", PK::Literal, TC::Symbol, TP::Normal),
-    CloseS("]", PK::Literal, TC::Symbol, TP::Normal),
-
-    // operators
-    Dot(".", PK::Literal, TC::Symbol, TP::Normal),
-    Dots("..", PK::Literal, TC::Symbol, TP::Normal),
-    DotsEq("..=", PK::Literal, TC::Symbol, TP::Normal),
-    AmperAmper("&&", PK::Literal, TC::Symbol, TP::Normal),
-    PipePipe("||", PK::Literal, TC::Symbol, TP::Normal),
-    EqEq("==", PK::Literal, TC::Symbol, TP::Normal),
-    Neq("!=", PK::Literal, TC::Symbol, TP::Normal),
-    Gte(">=", PK::Literal, TC::Symbol, TP::Normal),
-    Gt(">", PK::Literal, TC::Symbol, TP::Normal),
-    Lte("<=", PK::Literal, TC::Symbol, TP::Normal),
-    Lt("<", PK::Literal, TC::Symbol, TP::Normal),
-    Amper("&", PK::Literal, TC::Symbol, TP::Normal),
-    Circumflex("^", PK::Literal, TC::Symbol, TP::Normal),
-    Pipe("|", PK::Literal, TC::Symbol, TP::Normal),
-    LtLt("<<", PK::Literal, TC::Symbol, TP::Normal),
-    GtGt(">>", PK::Literal, TC::Symbol, TP::Normal),
-    Plus("+", PK::Literal, TC::Symbol, TP::Normal),
-    Minus("-", PK::Literal, TC::Symbol, TP::Normal),
-    Star("*", PK::Literal, TC::Symbol, TP::Normal),
-    Slash("/", PK::Literal, TC::Symbol, TP::Normal),
-    Percent("%", PK::Literal, TC::Symbol, TP::Normal),
-    Bang("!", PK::Literal, TC::Symbol, TP::Normal),
-    StarStar("**", PK::Literal, TC::Symbol, TP::Normal),
-
-    // assignment operators
-    Eq("=", PK::Literal, TC::Symbol, TP::Normal),
-    PlusEq("+=", PK::Literal, TC::Symbol, TP::Normal),
-    MinusEq("-=", PK::Literal, TC::Symbol, TP::Normal),
-    StarEq("*=", PK::Literal, TC::Symbol, TP::Normal),
-    SlashEq("/=", PK::Literal, TC::Symbol, TP::Normal),
-    PercentEq("%=", PK::Literal, TC::Symbol, TP::Normal),
-    AmperEq("&=", PK::Literal, TC::Symbol, TP::Normal),
-    CircumflexEq("^=", PK::Literal, TC::Symbol, TP::Normal),
-    BarEq("|=", PK::Literal, TC::Symbol, TP::Normal),
+        // TODO better string literal pattern with escape codes and string formatting expressions
+        StringLiteral(r#""[^"]*""#, TC::StringLiteral, TP::Unique),
+    }
+    literal {
+        // keywords
+        Use("use", TC::Keyword, TP::Normal),
+        As("as", TC::Keyword, TP::Normal),
+        Type("type", TC::Keyword, TP::Normal),
+        Struct("struct", TC::Keyword, TP::Normal),
+        Enum("enum", TC::Keyword, TP::Normal),
+        Ports("ports", TC::Keyword, TP::Normal),
+        Module("module", TC::Keyword, TP::Normal),
+        Function("function", TC::Keyword, TP::Normal),
+        Combinatorial("combinatorial", TC::Keyword, TP::Normal),
+        Clocked("clocked", TC::Keyword, TP::Normal),
+        Const("const", TC::Keyword, TP::Normal),
+        Val("val", TC::Keyword, TP::Normal),
+        Var("var", TC::Keyword, TP::Normal),
+        Input("input", TC::Keyword, TP::Normal),
+        Output("output", TC::Keyword, TP::Normal),
+        Async("async", TC::Keyword, TP::Normal),
+        Sync("sync", TC::Keyword, TP::Normal),
+        Return("return", TC::Keyword, TP::Normal),
+        Break("break", TC::Keyword, TP::Normal),
+        Continue("continue", TC::Keyword, TP::Normal),
+        True("true", TC::Keyword, TP::Normal),
+        False("false", TC::Keyword, TP::Normal),
+        If("if", TC::Keyword, TP::Normal),
+        Else("else", TC::Keyword, TP::Normal),
+        Loop("loop", TC::Keyword, TP::Normal),
+        For("for", TC::Keyword, TP::Normal),
+        In("in", TC::Keyword, TP::Normal),
+        While("while", TC::Keyword, TP::Normal),
+        Public("pub", TC::Keyword, TP::Normal),
+    
+        // misc symbols
+        Semi(";", TC::Symbol, TP::Normal),
+        Colon(":", TC::Symbol, TP::Normal),
+        Comma(",", TC::Symbol, TP::Normal),
+        Arrow("->", TC::Symbol, TP::Normal),
+        Underscore("_", TC::Symbol, TP::Normal),
+        ColonColon("::", TC::Symbol, TP::Normal),
+    
+        // braces
+        OpenC("{", TC::Symbol, TP::Normal),
+        CloseC("}", TC::Symbol, TP::Normal),
+        OpenR("(", TC::Symbol, TP::Normal),
+        CloseR(")", TC::Symbol, TP::Normal),
+        OpenS("[", TC::Symbol, TP::Normal),
+        CloseS("]", TC::Symbol, TP::Normal),
+    
+        // operators
+        Dot(".", TC::Symbol, TP::Normal),
+        Dots("..", TC::Symbol, TP::Normal),
+        DotsEq("..=", TC::Symbol, TP::Normal),
+        AmperAmper("&&", TC::Symbol, TP::Normal),
+        PipePipe("||", TC::Symbol, TP::Normal),
+        EqEq("==", TC::Symbol, TP::Normal),
+        Neq("!=", TC::Symbol, TP::Normal),
+        Gte(">=", TC::Symbol, TP::Normal),
+        Gt(">", TC::Symbol, TP::Normal),
+        Lte("<=", TC::Symbol, TP::Normal),
+        Lt("<", TC::Symbol, TP::Normal),
+        Amper("&", TC::Symbol, TP::Normal),
+        Circumflex("^", TC::Symbol, TP::Normal),
+        Pipe("|", TC::Symbol, TP::Normal),
+        LtLt("<<", TC::Symbol, TP::Normal),
+        GtGt(">>", TC::Symbol, TP::Normal),
+        Plus("+", TC::Symbol, TP::Normal),
+        Minus("-", TC::Symbol, TP::Normal),
+        Star("*", TC::Symbol, TP::Normal),
+        Slash("/", TC::Symbol, TP::Normal),
+        Percent("%", TC::Symbol, TP::Normal),
+        Bang("!", TC::Symbol, TP::Normal),
+        StarStar("**", TC::Symbol, TP::Normal),
+    
+        // assignment operators
+        Eq("=", TC::Symbol, TP::Normal),
+        PlusEq("+=", TC::Symbol, TP::Normal),
+        MinusEq("-=", TC::Symbol, TP::Normal),
+        StarEq("*=", TC::Symbol, TP::Normal),
+        SlashEq("/=", TC::Symbol, TP::Normal),
+        PercentEq("%=", TC::Symbol, TP::Normal),
+        AmperEq("&=", TC::Symbol, TP::Normal),
+        CircumflexEq("^=", TC::Symbol, TP::Normal),
+        BarEq("|=", TC::Symbol, TP::Normal),
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::syntax::pos::{FileId, Pos, Span};
-    use crate::syntax::token::{tokenize, Token, TokenType};
+    use crate::syntax::token::{tokenize, PatternKind, Token, TokenType, TOKEN_PATTERNS};
 
     #[test]
     fn empty_tokenize() {
@@ -346,8 +356,7 @@ mod test {
         
         assert_eq!(Ok(vec![]), tokenize(file, ""));
         assert_eq!(Ok(vec![Token {
-            ty: TokenType::WhiteSpace,
-            string: "\n",
+            ty: TokenType::WhiteSpace("\n"),
             span: Span { start: Pos { file, byte: 0 }, end: Pos { file: file, byte: 1 } },
         }]), tokenize(file, "\n"));
         assert!(tokenize(file, "test foo function \"foo\"").is_ok());

@@ -68,6 +68,10 @@ impl Span {
             end: Pos { file, byte: max(self.end.byte, other.end.byte) },
         }
     }
+
+    pub fn len_bytes(self) -> usize {
+        self.end.byte - self.start.byte
+    }
 }
 
 impl PosFull {

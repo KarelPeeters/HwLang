@@ -269,7 +269,7 @@ impl ServerCore {
                 let semantic_token = SemanticToken {
                     delta_line: delta_line as u32,
                     delta_start: delta_start as u32,
-                    length: token.string.len() as u32,
+                    length: token.span.len_bytes() as u32,
                     token_type: semantic_index as u32,
                     token_modifiers_bitset: 0,
                 };
