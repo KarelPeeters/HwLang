@@ -7,6 +7,7 @@ edition.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 hwl_language.workspace = true
+indexmap.workspace = true
 itertools.workspace = true
 log.workspace = true
 lsp-server.workspace = true

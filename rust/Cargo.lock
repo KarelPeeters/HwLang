@@ -391,6 +391,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "hwl_language",
+    "indexmap 2.4.0",
  "itertools 0.13.0",
  "log",
  "lsp-server",

@@ -1,7 +1,7 @@
 use crossbeam_channel::SendError;
-use hwl_lsp_server::server::state::{ServerState, Settings};
-use hwl_lsp_server::util::from_json;
-use lsp_server::{Connection, Message, ProtocolError};
+use hwl_lsp_server::server::settings::Settings;
+use hwl_lsp_server::server::state::ServerState;
+use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
 
@@ -26,7 +26,14 @@ fn main() -> Result<(), TopError> {
                 return Err(TopError::Protocol(e_protocol));
             }
         };
-        let initialization_params = from_json::<InitializeParams>("InitializeParams", &initialization_params)?;
+        let initialization_params = match serde_json::from_value::<InitializeParams>(initialization_params.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                let response = Response::new_err(initialize_id, ErrorCode::ParseError as _, format!("failed to parse initialization parameters: {e:?}"));
+                connection.sender.send(Message::Response(response)).map_err(|e| TopError::SendError(e))?;
+                return Err(TopError::Anyhow(e.into()));
+            }
+        };
 
         let settings = Settings::new(initialization_params);
         let server_capabilities = settings.server_capabilities();
@@ -64,9 +71,10 @@ fn main() -> Result<(), TopError> {
     Ok(())
 }
 
+
 #[derive(Debug)]
 #[allow(dead_code)]
-enum TopError {
+pub enum TopError {
     Protocol(ProtocolError),
     IO(std::io::Error),
     Both(std::io::Error, ProtocolError),
