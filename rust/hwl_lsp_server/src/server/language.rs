@@ -1,7 +1,7 @@
+use hwl_language::syntax::parse_file_content;
+use hwl_language::syntax::pos::{FileId, FileOffsets};
+use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
-use language::syntax::parse_file_content;
-use language::syntax::pos::{FileId, FileOffsets};
-use language::syntax::token::{TokenCategory, Tokenizer};
 use log::error;
 use strum::IntoEnumIterator;
 use tower_lsp::jsonrpc;

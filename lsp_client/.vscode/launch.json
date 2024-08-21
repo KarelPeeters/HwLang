@@ -8,9 +8,9 @@
 			"name": "Launch Client",
 			"runtimeExecutable": "${execPath}",
 			"args": [
-				"--extensionDevelopmentPath=${workspaceRoot}",
-				"--disable-extensions",
-			],
+				"--extensionDevelopmentPath=${workspaceRoot}"
+              // "--disable-extensions",
+            ],
 			"outFiles": [
 				"${workspaceRoot}/client/out/**/*.js",
 				"${workspaceRoot}/server/out/**/*.js"

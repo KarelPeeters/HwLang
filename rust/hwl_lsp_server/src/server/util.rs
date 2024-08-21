@@ -1,4 +1,4 @@
-use language::syntax::pos::{PosFull, SpanFull};
+use hwl_language::syntax::pos::{PosFull, SpanFull};
 use tower_lsp::lsp_types::{Position, Range};
 
 pub trait ToLsp {

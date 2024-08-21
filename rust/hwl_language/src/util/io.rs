@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs::DirEntry;
-use std::{fs, io};
 use std::path::Path;
+use std::{fs, io};
 
 pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&[OsString], &DirEntry)) -> io::Result<()> {
     let mut stack = vec![];

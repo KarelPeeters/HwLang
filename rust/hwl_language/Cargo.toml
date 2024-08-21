@@ -1,5 +1,5 @@
 [package]
-name = "language"
+name = "hwl_language"
 version.workspace = true
 edition.workspace = true
 

@@ -33,6 +33,10 @@
 		{
 			"type": "cargo",
 			"command": "build",
+          "args": [
+            "-p",
+            "hwl_lsp_server"
+          ],
 			"problemMatcher": [
 				"$rustc"
 			],

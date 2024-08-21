@@ -3,15 +3,9 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  * ------------------------------------------------------------------------------------------ */
 
-import * as path from 'path';
-import { workspace, ExtensionContext } from 'vscode';
+import {ExtensionContext, workspace} from 'vscode';
 
-import {
-	LanguageClient,
-	LanguageClientOptions,
-	ServerOptions,
-	TransportKind
-} from 'vscode-languageclient/node';
+import {LanguageClient, LanguageClientOptions, ServerOptions} from 'vscode-languageclient/node';
 
 let client: LanguageClient;
 
@@ -25,7 +19,7 @@ export function activate(context: ExtensionContext) {
 	// Otherwise the run options are used
 
 	// TODO get this from a proper location
-	const binary_path = "C:/Documents/Programming/HDL/hwlang/rust/target/debug/lsp_server.exe";
+    const binary_path = "C:/Documents/Programming/HDL/hwlang/rust/target/debug/hwl_lsp_server.exe";
 
 	const serverOptions: ServerOptions = {
 		// run: { module: serverModule, transport: TransportKind.ipc },
@@ -46,8 +40,13 @@ export function activate(context: ExtensionContext) {
 			{ pattern: "**/*.kh" },
 		],
 		synchronize: {
-			// Notify the server about file changes to '.clientrc files contained in the workspace
-			fileEvents: workspace.createFileSystemWatcher('**/kh_config.toml')
+            // Notify the server about relevant file changes in the workspace
+            // TODO move this to the server, it knows better
+            // TODO double-check whether this also notifies for deletion, creation and movement
+            //   the end goal is to have a consistent view of the file system in the LSP server
+            // TODO how does the LSP server get all initial file contents? just its own traversal?
+            // TODO add a custom LSP acion to force a full refresh
+            fileEvents: workspace.createFileSystemWatcher('**/{*.kh,.kh_config.toml}')
 		}
 	};
 

@@ -2,13 +2,13 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use clap::Parser;
+use hwl_language::back::lower;
+use hwl_language::data::lowered::LoweredDatabase;
+use hwl_language::data::source::{FilePath, SourceDatabase};
+use hwl_language::error::CompileError;
+use hwl_language::front::driver::compile;
+use hwl_language::util::io::recurse_for_each_file;
 use itertools::Itertools;
-use language::back::lower;
-use language::data::lowered::LoweredDatabase;
-use language::data::source::{FilePath, SourceDatabase};
-use language::error::CompileError;
-use language::front::driver::compile;
-use language::util::io::recurse_for_each_file;
 
 #[derive(Parser, Debug)]
 struct Args {

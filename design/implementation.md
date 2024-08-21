@@ -10,3 +10,8 @@ Web demo:
 * a good search term for this is "webassembly language server protocol"
 * Maybe just use VSCode: https://code.visualstudio.com/blogs/2024/06/07/wasm-part2
 * https://www.hiro.so/blog/write-clarity-smart-contracts-with-zero-installations-how-we-built-an-in-browser-language-server-using-wasm
+
+Relevant projects:
+
+* Rust-Analyzer for LSP architecture
+  ideas https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md
