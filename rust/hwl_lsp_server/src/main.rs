@@ -1,64 +1,55 @@
+use crossbeam_channel::SendError;
+use hwl_lsp_server::server::state::{ServerState, Settings};
 use hwl_lsp_server::util::from_json;
 use lsp_server::{Connection, Message, ProtocolError};
-use lsp_types::{InitializeParams, InitializeResult, ServerCapabilities, ServerInfo};
+use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
 
-struct ServerState {}
-
-impl ServerState {
-    pub fn new(_init: InitializeParams) -> Self {
-        ServerState {}
-    }
-
-    pub fn capabilities(&self) -> ServerCapabilities {
-        Default::default()
-    }
-}
-
 fn main() -> Result<(), TopError> {
-    // TODO allow runtime selection of different protocols
-    eprintln!("Starting LSP server");
+    eprintln!("LSP server started");
 
+    // open connection
+    // TODO allow runtime selection of different protocols
     let (connection, io_threads) = Connection::stdio();
 
-    let (initialize_id, initialization_params) = match connection.initialize_start() {
-        Ok(d) => d,
-        Err(e_protocol) => {
-            if e_protocol.channel_is_disconnected() {
-                match io_threads.join() {
-                    Ok(()) => {}
-                    Err(e_io) => return Err(TopError::Both(e_io, e_protocol)),
+    // initialization
+    let settings = {
+        let (initialize_id, initialization_params) = match connection.initialize_start() {
+            Ok(d) => d,
+            Err(e_protocol) => {
+                if e_protocol.channel_is_disconnected() {
+                    match io_threads.join() {
+                        Ok(()) => {}
+                        Err(e_io) => return Err(TopError::Both(e_io, e_protocol)),
+                    }
                 }
+                return Err(TopError::Protocol(e_protocol));
             }
-            return Err(TopError::Protocol(e_protocol));
-        }
+        };
+        let initialization_params = from_json::<InitializeParams>("InitializeParams", &initialization_params)?;
+
+        let settings = Settings::new(initialization_params);
+        let server_capabilities = settings.server_capabilities();
+        let initialize_result = InitializeResult {
+            capabilities: server_capabilities.clone(),
+            server_info: Some(ServerInfo {
+                name: env!("CARGO_PKG_NAME").to_string(),
+                version: Some(format!("{}-dev", env!("CARGO_PKG_VERSION"))),
+            }),
+        };
+        connection.initialize_finish(initialize_id, to_value(initialize_result).unwrap())?;
+
+        settings
     };
-    let initialization_params = from_json::<InitializeParams>("InitializeParams", &initialization_params)?;
+    let mut state = ServerState::new(settings, connection.sender);
 
-    let state = ServerState::new(initialization_params);
-
-    let initialize_result = InitializeResult {
-        capabilities: state.capabilities(),
-        server_info: Some(ServerInfo {
-            name: "hwl_lsp_server".to_owned(),
-            version: Some(format!("{}-dev", env!("CARGO_PKG_VERSION"))),
-        }),
-    };
-    connection.initialize_finish(initialize_id, to_value(initialize_result).unwrap())?;
-
+    // main loop
     loop {
         match connection.receiver.recv() {
             Ok(msg) => {
-                match msg {
-                    Message::Request(msg) => {
-                        eprintln!("received request: {msg:?}")
-                    }
-                    Message::Response(_) => {
-                        eprintln!("received response: {msg:?}")
-                    }
-                    Message::Notification(_) => {
-                        eprintln!("received notification: {msg:?}")
-                    }
+                match state.handle_message(msg) {
+                    Ok(()) => {}
+                    Err(e) => return Err(TopError::SendError(e)),
                 }
             }
             Err(_) => {
@@ -70,7 +61,6 @@ fn main() -> Result<(), TopError> {
     }
 
     io_threads.join()?;
-
     Ok(())
 }
 
@@ -81,6 +71,7 @@ enum TopError {
     IO(std::io::Error),
     Both(std::io::Error, ProtocolError),
     Anyhow(anyhow::Error),
+    SendError(SendError<Message>),
 }
 
 impl From<ProtocolError> for TopError {

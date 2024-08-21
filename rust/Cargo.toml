@@ -16,7 +16,9 @@ hwl_language = { path = "hwl_language" }
 
 # external dependencies
 annotate-snippets = "0.11.4"
+anyhow = "1.0.86"
 clap = { version = "4.5.7", features = ["derive"] }
+crossbeam-channel = "0.5.13"
 derivative = "2.2.0"
 indexmap = "2.2.6"
 itertools = "0.13.0"
@@ -35,4 +37,3 @@ serde = "1.0.208"
 serde_json = "1.0.125"
 strum = { version = "0.26.3", features = ["derive"] }
 unwrap-match = "0.1.0"
-anyhow = "1.0.86"

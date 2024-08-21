@@ -389,6 +389,7 @@ name = "hwl_lsp_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossbeam-channel",
  "hwl_language",
  "itertools 0.13.0",
  "log",
