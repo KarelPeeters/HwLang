@@ -1,3 +1,4 @@
+use crate::server::document::OpenFileInfo;
 use crate::server::settings::Settings;
 use crossbeam_channel::{SendError, Sender};
 use indexmap::IndexMap;
@@ -9,7 +10,7 @@ use lsp_types::{notification, request, Uri};
 pub struct ServerState {
     sender: Sender<Message>,
     pub settings: Settings,
-    pub open_files: IndexMap<Uri, String>
+    pub open_files: IndexMap<Uri, OpenFileInfo>
 }
 
 pub trait RequestHandler<R: Request> {

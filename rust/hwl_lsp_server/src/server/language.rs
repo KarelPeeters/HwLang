@@ -1,5 +1,6 @@
+use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestHandler, ServerState};
-use hwl_language::syntax::pos::{FileId, FileOffsets};
+use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
@@ -16,47 +17,63 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let TextDocumentIdentifier { uri } = text_document;
 
-        let source = match self.open_files.get(&uri) {
+        let info = match self.open_files.get_mut(&uri) {
             Some(source) => source,
             None => return Err(format!("file not open {uri:?}")),
         };
+        let info = info.get_full();
 
         let mut semantic_tokens = vec![];
+        let mut prev_start_simple = info.offsets.full_span(FileId::SINGLE).start;
 
-        let offsets = FileOffsets::new(FileId::SINGLE, source);
-        let mut prev_start = offsets.full_span().start;
-
-        for token in Tokenizer::new(FileId::SINGLE, source) {
+        for token in Tokenizer::new(FileId::SINGLE, &info.text) {
             let token = match token {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?
-                Err(_) => break,
+                // TODO make tokenization error visible to user?
+                Err(e) => {
+                    eprintln!("tokenization failed: {e:?}");
+                    break;
+                },
             };
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
-                let start_full = offsets.expand_pos(token.span.start);
-                let prev_start_full = offsets.expand_pos(prev_start);
+                let start = info.offsets.expand_pos(token.span.start);
+                let prev_start = info.offsets.expand_pos(prev_start_simple);
 
-                // TODO convert to utf-16 offsets
                 // TODO check client multi-line token capability
-                let delta_line = start_full.line_0 - prev_start_full.line_0;
-                let delta_start = if start_full.line_0 == prev_start_full.line_0 {
-                    start_full.col_0 - prev_start_full.col_0
+                // TODO extract position encoding to a common location
+                let delta_line = start.line_0 - prev_start.line_0;
+                let delta_col = if start.line_0 == prev_start.line_0 {
+                    prev_start.col_0..start.col_0
                 } else {
-                    start_full.col_0
+                    0..start.col_0
+                };
+                let start_line_byte = info.offsets.line_start_byte(start.line_0);
+
+                let (encoded_delta_start, encoded_length) = match self.settings.position_encoding {
+                    PositionEncoding::Utf8 => (
+                        delta_col.end - delta_col.start,
+                        token.span.len_bytes()
+                    ),
+                    PositionEncoding::Utf16 => (
+                        info.text[start_line_byte..][delta_col].encode_utf16().count(),
+                        info.text[token.span.start.byte..token.span.end.byte].encode_utf16().count(),
+                    ),
                 };
 
+                // TODO check int overflow
                 let semantic_token = SemanticToken {
                     delta_line: delta_line as u32,
-                    delta_start: delta_start as u32,
-                    length: token.span.len_bytes() as u32,
+                    delta_start: encoded_delta_start as u32,
+                    length: encoded_length as u32,
                     token_type: semantic_index as u32,
                     token_modifiers_bitset: 0,
                 };
                 semantic_tokens.push(semantic_token);
 
                 // only update start if the token was actually included
-                prev_start = token.span.start;
+                prev_start_simple = token.span.start;
             }
         }
 

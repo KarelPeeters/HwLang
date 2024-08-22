@@ -1,6 +1,6 @@
 use crate::error::DiagnosticError;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
-use crate::syntax::pos::{FileId, FileOffsets, Pos, PosFull, Span, SpanFull};
+use crate::syntax::pos::{FileId, FileLineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::syntax::ParseError;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
@@ -37,7 +37,7 @@ pub struct FileInfo {
     pub path_raw: String,
 
     pub source: String,
-    pub offsets: FileOffsets,
+    pub offsets: FileLineOffsets,
 }
 
 // TODO rename to "FilePath" or "SourcePath"
@@ -66,6 +66,7 @@ impl SourceDatabase {
         }
     }
 
+    // TODO parse immediately?
     pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<(), CompileSetError> {
         if path.0.is_empty() {
             throw!(CompileSetError::EmptyPath);
@@ -78,7 +79,7 @@ impl SourceDatabase {
             id: file_id,
             directory,
             path_raw,
-            offsets: FileOffsets::new(file_id, &source),
+            offsets: FileLineOffsets::new(&source),
             source,
         };
 

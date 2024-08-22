@@ -4,17 +4,33 @@ use lsp_types::{InitializeParams, PositionEncodingKind, SemanticTokensFullOption
 pub struct Settings {
     pub initialize_params: InitializeParams,
     pub server_capabilities: ServerCapabilities,
+
+    pub position_encoding: PositionEncoding,
 }
+
+#[derive(Debug, Copy, Clone)]
+pub enum PositionEncoding {
+    Utf8,
+    Utf16,
+}
+
+const NO_WORK_DONE: WorkDoneProgressOptions = WorkDoneProgressOptions { work_done_progress: None };
 
 impl Settings {
     pub fn new(initialize_params: InitializeParams) -> Self {
-        const NO_WORK_DONE: WorkDoneProgressOptions = WorkDoneProgressOptions { work_done_progress: None };
+        // default to utf-16 (as required by the spec), but prefer utf-8 if the client supports it
+        let mut position_encoding = PositionEncoding::Utf16;
+        if let Some(general) = &initialize_params.capabilities.general {
+            if let Some(position_encodings) = &general.position_encodings {
+                if position_encodings.contains(&PositionEncodingKind::UTF8) {
+                    position_encoding = PositionEncoding::Utf8;
+                }
+            }
+        }
 
         // TODO for all of these, first check that the server supports them
-
         let server_capabilities = ServerCapabilities {
-            // TODO use utf-8 if the client supports it, should be faster on both sides
-            position_encoding: Some(PositionEncodingKind::UTF16),
+            position_encoding: Some(position_encoding.to_lsp()),
             // TODO support incremental (and maybe even will_save-type notifications)
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
@@ -28,10 +44,19 @@ impl Settings {
             ..Default::default()
         };
 
-        Self { initialize_params, server_capabilities }
+        Self { initialize_params, server_capabilities, position_encoding }
     }
 
     pub fn server_capabilities(&self) -> &ServerCapabilities {
         &self.server_capabilities
+    }
+}
+
+impl PositionEncoding {
+    pub fn to_lsp(self) -> PositionEncodingKind {
+        match self {
+            PositionEncoding::Utf8 => PositionEncodingKind::UTF8,
+            PositionEncoding::Utf16 => PositionEncodingKind::UTF16,
+        }
     }
 }

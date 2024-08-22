@@ -40,12 +40,12 @@ pub fn compile(database: &SourceDatabase) -> Result<CompiledDatabase, CompileErr
         let file_info = &database[file];
 
         // parse
-        let ast = parse_file_content(&file_info.source, &file_info.offsets)
+        let ast = parse_file_content(file, &file_info.source)
             .map_err(|e| database.map_parser_error(e))?;
 
         // build local scope
         // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-        let local_scope = scopes.new_root(file_info.offsets.full_span());
+        let local_scope = scopes.new_root(file_info.offsets.full_span(file));
         let local_scope_info = &mut scopes[local_scope];
 
         for (file_item_index, ast_item) in enumerate(&ast.items) {

@@ -130,18 +130,17 @@ impl Debug for Span {
     }
 }
 
-pub struct FileOffsets {
-    file: FileId,
+pub struct FileLineOffsets {
     total_bytes: usize,
     line_to_start_byte: Vec<usize>,
 }
 
-impl FileOffsets {
+impl FileLineOffsets {
     // This set of line endings was chosen because it matches what the LSP protocol wants,
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
 
-    pub fn new(file: FileId, src: &str) -> Self {
+    pub fn new(src: &str) -> Self {
         let mut line_to_start_byte = vec![0];
 
         let mut prev_was_carriage_return = false;
@@ -153,15 +152,10 @@ impl FileOffsets {
             prev_was_carriage_return = b == b'\r';
         }
 
-        FileOffsets {
-            file,
+        FileLineOffsets {
             total_bytes: src.len(),
             line_to_start_byte
         }
-    }
-
-    pub fn file(&self) -> FileId {
-        self.file
     }
 
     pub fn total_bytes(&self) -> usize {
@@ -172,16 +166,15 @@ impl FileOffsets {
         self.line_to_start_byte.len()
     }
 
-    pub fn full_span(&self) -> Span {
+    pub fn full_span(&self, file: FileId) -> Span {
         Span {
-            start: Pos { file: self.file, byte: 0 },
-            end: Pos { file: self.file, byte: self.total_bytes },
+            start: Pos { file, byte: 0 },
+            end: Pos { file, byte: self.total_bytes },
         }
     }
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
         // OPTIMIZE: maybe cache the last lookup and check its neighborhood first
-        assert_eq!(pos.file, self.file);
         let line_0 = self.line_to_start_byte.binary_search(&pos.byte)
             .unwrap_or_else(|next_line_0| next_line_0 - 1);
         let col_0 = pos.byte - self.line_to_start_byte[line_0];

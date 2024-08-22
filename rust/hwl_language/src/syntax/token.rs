@@ -1,5 +1,3 @@
-use std::cmp::min;
-
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::{Regex, RegexSet, SetMatches};
@@ -65,10 +63,11 @@ impl<'s> Iterator for Tokenizer<'s> {
         let m = match pick_match(matches, &self.compiled.vec, self.left) {
             None => {
                 self.errored = true;
-                let left_context = &self.left[..min(self.left.len(), ERROR_CONTEXT_LENGTH)];
+
+                let left_context = self.left.chars().take(ERROR_CONTEXT_LENGTH).collect();
                 return Some(Err(InvalidToken {
                     pos: Pos { file: self.file, byte: self.curr_byte },
-                    prefix: left_context.to_owned(),
+                    prefix: left_context,
                 }));
             }
             Some(match_index) => match_index,
@@ -249,11 +248,10 @@ pub enum TokenPriority {
 use TokenCategory as TC;
 use TokenPriority as TP;
 
-// TODO move to separate file
 declare_tokens! {
     regex {
         // ignored
-        WhiteSpace(r"\s+", TC::WhiteSpace, TP::Unique),
+        WhiteSpace(r"[ \t\n\r]+", TC::WhiteSpace, TP::Unique),
         LineComment(r"//[^\n\r]*", TC::Comment, TP::Normal),
         BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", TC::Comment, TP::Normal),
 
@@ -365,7 +363,7 @@ mod test {
         assert_eq!(Ok(vec![]), tokenize(file, ""));
         assert_eq!(Ok(vec![Token {
             ty: TokenType::WhiteSpace("\n"),
-            span: Span { start: Pos { file, byte: 0 }, end: Pos { file: file, byte: 1 } },
+            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 1 } },
         }]), tokenize(file, "\n"));
         assert!(tokenize(file, "test foo function \"foo\"").is_ok());
     }

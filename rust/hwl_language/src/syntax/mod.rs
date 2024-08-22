@@ -2,7 +2,7 @@ use lalrpop_util::lalrpop_mod;
 
 use pos::Pos;
 
-use crate::syntax::pos::{FileId, FileOffsets, Span};
+use crate::syntax::pos::{FileId, Span};
 use crate::syntax::token::{TokenCategory, TokenType, Tokenizer};
 use crate::util::Never;
 
@@ -29,9 +29,8 @@ impl LocationBuilder {
     }
 }
 
-pub fn parse_file_content(src: &str, offsets: &FileOffsets) -> Result<ast::FileContent, ParseError> {
-    // constant a tokenizer to match the format lalrpop is expecting
-    let file = offsets.file();
+pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, ParseError> {
+    // construct a tokenizer to match the format lalrpop is expecting
     let tokenizer = Tokenizer::new(file, src)
         .filter(|token| match token {
             Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),
