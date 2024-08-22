@@ -2,9 +2,9 @@ use crate::data::source::SourceDatabase;
 use crate::error::DiagnosticError;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
+use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::cmp::min;
-
 // TODO move to more common module
 
 // TODO double-check that this was actually finished in the drop implementation? same for snippet
@@ -145,7 +145,9 @@ impl<'d> Diagnostic<'d> {
             message = message.footer(level.title(footer));
         }
 
-        let renderer = Renderer::styled();
+        // format into string
+        let renderer = Renderer::styled()
+            .emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))));
         let string = renderer.render(message).to_string();
         DiagnosticError { string }
     }
