@@ -137,15 +137,20 @@ pub struct FileOffsets {
 }
 
 impl FileOffsets {
+    // This set of line endings was chosen because it matches what the LSP protocol wants,
+    // and we don't really care that much about the specifics.
+    pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
+
     pub fn new(file: FileId, src: &str) -> Self {
         let mut line_to_start_byte = vec![0];
 
-        // iterating over bytes here is fine: we only care about the ascii newline
+        let mut prev_was_carriage_return = false;
         for (i, b) in src.as_bytes().iter().copied().enumerate() {
-            if b == b'\n' {
-                // the next line starts after this byte
+            if b == b'\r' || (b == b'\n' && !prev_was_carriage_return) {
+                // the next line starts _after_ this byte
                 line_to_start_byte.push(i + 1);
             }
+            prev_was_carriage_return = b == b'\r';
         }
 
         FileOffsets {
