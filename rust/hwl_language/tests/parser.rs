@@ -25,12 +25,12 @@ fn parse_types() {
 
 #[test]
 fn parse_util() {
-    test_parse("../../design/project/std/util.kh")
+    test_parse("../../design/project/util/test.kh")
 }
 
 #[test]
-fn parse_new() {
-    test_parse("../../design/sketches/new.kh")
+fn parse_top() {
+    test_parse("../../design/project/top.kh")
 }
 
 #[test]
