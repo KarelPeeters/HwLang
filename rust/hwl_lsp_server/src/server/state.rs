@@ -13,12 +13,19 @@ pub struct ServerState {
 }
 
 pub trait RequestHandler<R: Request> {
+    // TODO better handling, but not just exposing compiler errors: they should be rendered, not errors in the protocol
     fn handle_request(&mut self, params: R::Params) -> Result<R::Result, String>;
 }
 
 pub trait NotificationHandler<N: Notification> {
     // TODO error handling
     fn handle_notification(&mut self, params: N::Params);
+}
+
+macro_rules! handle_notification {
+    ($self:ident, $params:expr, $ty:ty) => {
+        handle_notification_impl::<$ty>($params, |p| <Self as NotificationHandler<$ty>>::handle_notification($self, p))
+    };
 }
 
 impl ServerState {
@@ -55,12 +62,10 @@ impl ServerState {
         Ok(())
     }
 
-    // TODO macros to generate these dispatches? or does a &dyn vec work too?
     fn dispatch_request(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, ResponseError> {
         match method {
-            request::SemanticTokensFullRequest::METHOD => {
-                self.handle_request_impl::<request::SemanticTokensFullRequest>(params)
-            }
+            request::SemanticTokensFullRequest::METHOD =>
+                handle_request_impl::<request::SemanticTokensFullRequest>(params, |p| self.handle_request(p)),
             _ => {
                 Err(ResponseError {
                     code: ErrorCode::MethodNotFound as _,
@@ -73,45 +78,49 @@ impl ServerState {
 
     fn dispatch_notification(&mut self, method: &str, params: serde_json::Value) -> Result<(), serde_json::Error> {
         match method {
-            notification::DidOpenTextDocument::METHOD => {
-                let params = parse_params_notification::<notification::DidOpenTextDocument>(params)?;
-                <ServerState as NotificationHandler<notification::DidOpenTextDocument>>::handle_notification(self, params);
-            }
-            notification::DidCloseTextDocument::METHOD => {
-                let params = parse_params_notification::<notification::DidCloseTextDocument>(params)?;
-                <ServerState as NotificationHandler<notification::DidCloseTextDocument>>::handle_notification(self, params);
-            }
-            notification::DidChangeTextDocument::METHOD => {
-                let params = parse_params_notification::<notification::DidChangeTextDocument>(params)?;
-                <ServerState as NotificationHandler<notification::DidChangeTextDocument>>::handle_notification(self, params);
-            }
+            notification::DidOpenTextDocument::METHOD =>
+                handle_notification!(self, params, notification::DidOpenTextDocument),
+            notification::DidCloseTextDocument::METHOD =>
+                handle_notification!(self, params, notification::DidCloseTextDocument),
+            notification::DidChangeTextDocument::METHOD =>
+                handle_notification!(self, params, notification::DidChangeTextDocument),
             _ => {
-                eprintln!("ignoring notification: {method}")
-            }
-        }
-
-        Ok(())
-    }
-
-    fn handle_request_impl<R: Request>(&mut self, params: serde_json::Value) -> Result<serde_json::Value, ResponseError> {
-        match parse_params_request::<request::SemanticTokensFullRequest>(params) {
-            Ok(params) => {
-                match self.handle_request(params) {
-                    Ok(res) => Ok(serde_json::to_value(res).unwrap()),
-                    Err(e) => Err(ResponseError {
-                        code: ErrorCode::InternalError as _,
-                        message: format!("failed to handle request: {e}"),
-                        data: None,
-                    }),
-                }
-            }
-            Err(e) => Err(ResponseError {
-                code: ErrorCode::InvalidParams as _,
-                message: format!("failed to parse parameters: {e:?}"),
-                data: None,
-            }),
+                // ignoring notifications is usually fine
+                eprintln!("ignoring notification: {method}");
+                Ok(())
+            },
         }
     }
+}
+
+fn handle_request_impl<R: Request>(params: serde_json::Value, f: impl FnOnce(R::Params) -> Result<R::Result, String>) -> Result<serde_json::Value, ResponseError> {
+    match parse_params_request::<R>(params) {
+        Ok(params) => {
+            match f(params) {
+                Ok(res) => Ok(serde_json::to_value(res).unwrap()),
+                Err(e) => Err(ResponseError {
+                    code: ErrorCode::InternalError as _,
+                    message: format!("failed to handle request: {e}"),
+                    data: None,
+                }),
+            }
+        }
+        Err(e) => Err(ResponseError {
+            code: ErrorCode::InvalidParams as _,
+            message: format!("failed to parse parameters: {e:?}"),
+            data: None,
+        }),
+    }
+}
+
+fn handle_notification_impl<N: Notification>(params: serde_json::Value, f: impl FnOnce(N::Params)) -> Result<(), serde_json::Error> {
+    // TODO error handling
+    match parse_params_notification::<N>(params) {
+        Ok(params) => f(params),
+        Err(e) => eprintln!("failed to parse parameters: {e:?}"),
+    }
+
+    Ok(())
 }
 
 fn parse_params_request<R: Request>(params: serde_json::Value) -> serde_json::Result<R::Params> {
