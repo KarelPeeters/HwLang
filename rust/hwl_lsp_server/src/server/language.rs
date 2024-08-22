@@ -29,8 +29,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         for token in Tokenizer::new(FileId::SINGLE, source) {
             let token = match token {
                 Ok(token) => token,
-                // TODO should this be an error or just an empty/partial tokenization list?
-                Err(e) => return Err(format!("failed to tokenize file {uri:?}: {e:?}"))
+                // TODO support error recovery in the tokenizer?
+                Err(_) => break,
             };
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
