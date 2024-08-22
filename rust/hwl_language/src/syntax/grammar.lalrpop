@@ -1,6 +1,6 @@
 use crate::syntax::ast::*;
 use crate::syntax::LocationBuilder;
-use crate::syntax::token::{TokenType, InvalidToken};
+use crate::syntax::token::{TokenType, TokenError};
 
 // TODO move this boilerplate stuff to the bottom
 grammar<'s>(loc: &LocationBuilder, input: &'s str);
@@ -8,7 +8,7 @@ grammar<'s>(loc: &LocationBuilder, input: &'s str);
 // TODO skip whitespace and comment tokens again
 extern {
     type Location = usize;
-    type Error = InvalidToken;
+    type Error = TokenError;
 
     enum TokenType<&'s str> {
         TokenWhiteSpace => TokenType::WhiteSpace(<&'s str>),

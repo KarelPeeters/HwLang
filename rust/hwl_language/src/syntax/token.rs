@@ -11,16 +11,17 @@ pub struct Token<S> {
     pub span: Span,
 }
 
+// TODO remove string from this? we have better error infrastructure by now
 #[derive(Debug, Eq, PartialEq)]
-pub struct InvalidToken {
-    pub pos: Pos,
-    // TODO remove string from this? we have better error infrastructure by now
-    pub prefix: String,
+pub enum TokenError {
+    InvalidToken { pos: Pos, prefix: String },
+    BlockCommentMissingEnd { start: Pos, eof: Pos },
+    BlockCommentUnexpectedEnd { pos: Pos, prefix: String },
 }
 
 const ERROR_CONTEXT_LENGTH: usize = 16;
 
-pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, InvalidToken> {
+pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenError> {
     Tokenizer::new(file, source).try_collect()
 }
 
@@ -46,44 +47,107 @@ impl<'s> Tokenizer<'s> {
             errored: false,
         }
     }
+
+    fn skip(&mut self, n: usize) {
+        self.left = &self.left[n..];
+        self.curr_byte += n;
+    }
+
+    fn curr_pos(&self) -> Pos {
+        Pos { file: self.file, byte: self.curr_byte }
+    }
+
+    fn prefix(&self) -> String {
+        self.left.chars().take(ERROR_CONTEXT_LENGTH).collect()
+    }
+
+    /// Block comments are handled separately. They're allowed to nest, which means they're not a regular language and 
+    /// they can't be parsed using a Regex engine.
+    fn handle_block_comment(&mut self) -> Option<Result<Token<&'s str>, TokenError>> {
+        let start = self.curr_pos();
+
+        if self.left.starts_with("*/") {
+            self.errored = true;
+            return Some(Err(TokenError::BlockCommentUnexpectedEnd {
+                pos: start,
+                prefix: self.prefix(),
+            }));
+        } else if self.left.starts_with("/*") {
+            let left_start = self.left;
+            self.skip(2);
+
+            let mut depth: usize = 1;
+            while depth > 0 {
+                if self.left.starts_with("/*") {
+                    depth += 1;
+                    self.skip(2);
+                } else if self.left.starts_with("*/") {
+                    depth -= 1;
+                    self.skip(2);
+                } else if self.left.len() > 0 {
+                    let c = self.left.chars().next().expect("nonempty string must contain char");
+                    self.skip(c.len_utf8())
+                } else {
+                    // hit end of source
+                    self.errored = true;
+                    return Some(Err(TokenError::BlockCommentMissingEnd {
+                        start,
+                        eof: self.curr_pos(),
+                    }));
+                }
+            }
+
+            let span = Span::new(start, self.curr_pos());
+            return Some(Ok(Token {
+                ty: TokenType::BlockComment(&left_start[..span.len_bytes()]),
+                span,
+            }));
+        }
+
+        None
+    }
+
+    fn handle_pattern_token(&mut self) -> Result<Token<&'s str>, TokenError> {
+        let start = self.curr_pos();
+        let matches = self.compiled.set.matches(self.left);
+
+        let m = match pick_match(matches, &self.compiled.vec, self.left) {
+            None => {
+                self.errored = true;
+                return Err(TokenError::InvalidToken {
+                    pos: self.curr_pos(),
+                    prefix: self.prefix(),
+                });
+            }
+            Some(match_index) => match_index,
+        };
+
+        let match_str = &self.left[..m.len];
+        self.skip(m.len);
+        let span = Span::new(start, self.curr_pos());
+
+        Ok(Token {
+            ty: TOKEN_PATTERNS[m.index].0(match_str),
+            span,
+        })
+    }
 }
 
 impl<'s> Iterator for Tokenizer<'s> {
-    type Item = Result<Token<&'s str>, InvalidToken>;
+    type Item = Result<Token<&'s str>, TokenError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         assert!(!self.errored, "Cannot continue calling next on tokenizer that returned an error");
         if self.left.is_empty() {
             return None;
         }
-        
-        let start = Pos { file: self.file, byte: self.curr_byte };
-        let matches = self.compiled.set.matches(self.left);
-        
-        let m = match pick_match(matches, &self.compiled.vec, self.left) {
-            None => {
-                self.errored = true;
 
-                let left_context = self.left.chars().take(ERROR_CONTEXT_LENGTH).collect();
-                return Some(Err(InvalidToken {
-                    pos: Pos { file: self.file, byte: self.curr_byte },
-                    prefix: left_context,
-                }));
-            }
-            Some(match_index) => match_index,
-        };
-
-        let match_str = &self.left[..m.len];
-
-        self.left = &self.left[m.len..];
-        self.curr_byte += m.len;
-        let end = Pos { file: self.file, byte: self.curr_byte };
-        let span = Span::new(start, end);
-
-        Some(Ok(Token {
-            ty: TOKEN_PATTERNS[m.index].0(match_str),
-            span,
-        }))
+        let start = self.curr_pos();
+        if let Some(result) = self.handle_block_comment() {
+            return Some(result);
+        }
+        assert_eq!(start, self.curr_pos());
+        Some(self.handle_pattern_token())
     }
 }
 
@@ -183,6 +247,9 @@ fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<Pi
 
 macro_rules! declare_tokens {
     (
+        custom {
+            $($c_token:ident($c_cat:expr),)*
+        }
         regex {
             $($r_token:ident($r_string:literal, $r_cat:expr, $r_prio:expr),)*
         }
@@ -192,11 +259,13 @@ macro_rules! declare_tokens {
     ) => {
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
         pub enum TokenType<S> {
+            $($c_token(S),)*
             $($r_token(S),)*
             $($l_token,)*
         }
 
         const TOKEN_PATTERNS: &[(fn (&str) -> TokenType<&str>, &'static str, PatternKind, TokenPriority)] = &[
+            // intentionally omit custom
             $((|s| TokenType::$r_token(s), $r_string, PatternKind::Regex, $r_prio),)*
             $((|_| TokenType::$l_token, $l_string, PatternKind::Literal, $l_prio),)*
         ];
@@ -205,6 +274,7 @@ macro_rules! declare_tokens {
         impl<S> TokenType<S> {
             pub fn category(self) -> TokenCategory {
                 match self {
+                    $(TokenType::$c_token(_) => $c_cat,)*
                     $(TokenType::$r_token(_) => $r_cat,)*
                     $(TokenType::$l_token => $l_cat,)*
                 }
@@ -212,6 +282,7 @@ macro_rules! declare_tokens {
             
             pub fn map<T>(self, f: impl FnOnce(S) -> T) -> TokenType<T> {
                 match self {
+                    $(TokenType::$c_token(s) => TokenType::$c_token(f(s)),)*
                     $(TokenType::$r_token(s) => TokenType::$r_token(f(s)),)*
                     $(TokenType::$l_token => TokenType::$l_token,)*
                 }
@@ -249,11 +320,13 @@ use TokenCategory as TC;
 use TokenPriority as TP;
 
 declare_tokens! {
+    custom {
+        BlockComment(TC::Comment),
+    }
     regex {
         // ignored
         WhiteSpace(r"[ \t\n\r]+", TC::WhiteSpace, TP::Unique),
         LineComment(r"//[^\n\r]*", TC::Comment, TP::Normal),
-        BlockComment(r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/", TC::Comment, TP::Normal),
 
         // patterns
         Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", TC::Identifier, TP::Low),
@@ -357,7 +430,7 @@ mod test {
     use crate::syntax::token::{tokenize, PatternKind, Token, TokenType, TOKEN_PATTERNS};
 
     #[test]
-    fn empty_tokenize() {
+    fn basic_tokenize() {
         let file = FileId::SINGLE;
         
         assert_eq!(Ok(vec![]), tokenize(file, ""));
@@ -366,6 +439,22 @@ mod test {
             span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 1 } },
         }]), tokenize(file, "\n"));
         assert!(tokenize(file, "test foo function \"foo\"").is_ok());
+    }
+
+    #[test]
+    fn comment() {
+        let file = FileId::SINGLE;
+        assert_eq!(Ok(vec![Token {
+            ty: TokenType::BlockComment("/**/"),
+            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 4 } },
+        }]), tokenize(file, "/**/"));
+
+        assert_eq!(Ok(vec![Token {
+            ty: TokenType::BlockComment("/*/**/*/"),
+            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 8 } },
+        }]), tokenize(file, "/*/**/*/"));
+
+        assert!(tokenize(file, "/*/**/").is_err());
     }
 
     // TODO turn this into a test case that checks whether the grammer is up-to-date
