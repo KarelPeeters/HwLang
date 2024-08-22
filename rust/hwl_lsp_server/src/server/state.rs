@@ -74,12 +74,16 @@ impl ServerState {
     fn dispatch_notification(&mut self, method: &str, params: serde_json::Value) -> Result<(), serde_json::Error> {
         match method {
             notification::DidOpenTextDocument::METHOD => {
-                let params = parse_params_notifaction::<notification::DidOpenTextDocument>(params)?;
+                let params = parse_params_notification::<notification::DidOpenTextDocument>(params)?;
                 <ServerState as NotificationHandler<notification::DidOpenTextDocument>>::handle_notification(self, params);
             }
             notification::DidCloseTextDocument::METHOD => {
-                let params = parse_params_notifaction::<notification::DidCloseTextDocument>(params)?;
+                let params = parse_params_notification::<notification::DidCloseTextDocument>(params)?;
                 <ServerState as NotificationHandler<notification::DidCloseTextDocument>>::handle_notification(self, params);
+            }
+            notification::DidChangeTextDocument::METHOD => {
+                let params = parse_params_notification::<notification::DidChangeTextDocument>(params)?;
+                <ServerState as NotificationHandler<notification::DidChangeTextDocument>>::handle_notification(self, params);
             }
             _ => {
                 eprintln!("ignoring notification: {method}")
@@ -114,6 +118,6 @@ fn parse_params_request<R: Request>(params: serde_json::Value) -> serde_json::Re
     serde_json::from_value::<R::Params>(params)
 }
 
-fn parse_params_notifaction<N: Notification>(params: serde_json::Value) -> serde_json::Result<N::Params> {
+fn parse_params_notification<N: Notification>(params: serde_json::Value) -> serde_json::Result<N::Params> {
     serde_json::from_value::<N::Params>(params)
 }

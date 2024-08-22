@@ -1,6 +1,6 @@
 use crate::server::state::{NotificationHandler, ServerState};
-use lsp_types::notification::{DidCloseTextDocument, DidOpenTextDocument};
-use lsp_types::{DidCloseTextDocumentParams, DidOpenTextDocumentParams, TextDocumentIdentifier, TextDocumentItem};
+use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument};
+use lsp_types::{DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, VersionedTextDocumentIdentifier};
 
 impl NotificationHandler<DidOpenTextDocument> for ServerState {
     fn handle_notification(&mut self, params: DidOpenTextDocumentParams) {
@@ -21,5 +21,19 @@ impl NotificationHandler<DidCloseTextDocument> for ServerState {
         let prev = self.open_files.swap_remove(&uri);
         // TODO proper error handling for this?
         assert!(prev.is_some());
+    }
+}
+
+impl NotificationHandler<DidChangeTextDocument> for ServerState {
+    fn handle_notification(&mut self, params: DidChangeTextDocumentParams) {
+        let DidChangeTextDocumentParams { text_document, content_changes } = params;
+        let VersionedTextDocumentIdentifier { uri, version: _ } = text_document;
+
+        let file = self.open_files.get_mut(&uri).unwrap();
+        for change in content_changes {
+            let TextDocumentContentChangeEvent { range, range_length, text } = change;
+            assert!(range.is_none() && range_length.is_none());
+            *file = text.clone();
+        }
     }
 }

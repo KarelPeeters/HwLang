@@ -1,3 +1,4 @@
+use crate::server::language::semantic_token_legend;
 use lsp_types::{InitializeParams, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, WorkDoneProgressOptions};
 
 pub struct Settings {
@@ -18,7 +19,7 @@ impl Settings {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                 work_done_progress_options: NO_WORK_DONE,
-                legend: Default::default(),
+                legend: semantic_token_legend(),
                 // TODO support ranges
                 range: None,
                 // TODO support delta
