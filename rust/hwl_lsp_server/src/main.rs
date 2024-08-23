@@ -1,4 +1,5 @@
 use crossbeam_channel::SendError;
+use hwl_lsp_server::server::lifecycle::LifecycleState;
 use hwl_lsp_server::server::settings::{Settings, SettingsError};
 use hwl_lsp_server::server::state::ServerState;
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
@@ -62,7 +63,13 @@ fn main() -> Result<(), TopError> {
     // TODO handle shutdown and exit commands
     loop {
         match connection.receiver.recv() {
-            Ok(msg) => state.handle_message(msg)?,
+            Ok(msg) => {
+                state.handle_message(msg)?;
+                match state.lifecycle_state {
+                    LifecycleState::Running | LifecycleState::Shutdown => {}
+                    LifecycleState::Exit => break,
+                }
+            },
             Err(_) => {
                 // Receive error, which means the input channel was closed
                 // no need to raise an error here, this could happen in normal operation
@@ -72,6 +79,7 @@ fn main() -> Result<(), TopError> {
         }
     }
 
+    // TODO monitor the client process ID, and stop the server if it every dies somehow without closing the IO channel
     io_threads.join()?;
     Ok(())
 }

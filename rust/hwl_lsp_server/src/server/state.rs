@@ -1,4 +1,5 @@
 use crate::server::document::OpenFileInfo;
+use crate::server::lifecycle::LifecycleState;
 use crate::server::settings::Settings;
 use crossbeam_channel::{SendError, Sender};
 use indexmap::IndexMap;
@@ -11,10 +12,12 @@ use std::collections::HashSet;
 pub struct ServerState {
     sender: Sender<Message>,
     pub settings: Settings,
-    pub open_files: IndexMap<Uri, OpenFileInfo>,
+    pub lifecycle_state: LifecycleState,
 
     next_id: u64,
     request_ids_expecting_null_response: HashSet<String>,
+
+    pub open_files: IndexMap<Uri, OpenFileInfo>,
 }
 
 pub trait RequestHandler<R: Request> {
@@ -25,6 +28,12 @@ pub trait RequestHandler<R: Request> {
 pub trait NotificationHandler<N: Notification> {
     // TODO error handling
     fn handle_notification(&mut self, params: N::Params);
+}
+
+macro_rules! handle_request {
+    ($self:ident, $params:expr, $ty:ty) => {
+        handle_request_impl::<$ty>($params, |p| <Self as RequestHandler<$ty>>::handle_request($self, p))
+    };
 }
 
 macro_rules! handle_notification {
@@ -38,9 +47,10 @@ impl ServerState {
         Self {
             settings,
             sender,
-            open_files: IndexMap::new(),
+            lifecycle_state: LifecycleState::Running,
             next_id: 0,
             request_ids_expecting_null_response: HashSet::new(),
+            open_files: IndexMap::new(),
         }
     }
 
@@ -92,6 +102,12 @@ impl ServerState {
             Message::Request(msg) => {
                 eprintln!("received request: {msg:?}");
 
+                match self.lifecycle_state {
+                    LifecycleState::Running => {}
+                    LifecycleState::Shutdown => todo!("respond with error here"),
+                    LifecycleState::Exit => panic!("the main loop should already have exited"),
+                }
+
                 let response = match self.dispatch_request(&msg.method, msg.params) {
                     Ok(result) => Response::new_ok(msg.id, result),
                     Err(error) => Response::new_err(msg.id, error.code, error.message),
@@ -115,7 +131,9 @@ impl ServerState {
     fn dispatch_request(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, ResponseError> {
         match method {
             request::SemanticTokensFullRequest::METHOD =>
-                handle_request_impl::<request::SemanticTokensFullRequest>(params, |p| self.handle_request(p)),
+                handle_request!(self, params, request::SemanticTokensFullRequest),
+            request::Shutdown::METHOD =>
+                handle_request!(self, params, request::Shutdown),
             _ => {
                 Err(ResponseError {
                     code: ErrorCode::MethodNotFound as _,
@@ -134,6 +152,8 @@ impl ServerState {
                 handle_notification!(self, params, notification::DidCloseTextDocument),
             notification::DidChangeTextDocument::METHOD =>
                 handle_notification!(self, params, notification::DidChangeTextDocument),
+            notification::Exit::METHOD =>
+                handle_notification!(self, params, notification::Exit),
             _ => {
                 // ignoring notifications is usually fine
                 eprintln!("ignoring notification: {method}");
