@@ -1,5 +1,5 @@
 use crate::server::settings::PositionEncoding;
-use crate::server::state::{RequestHandler, ServerState};
+use crate::server::state::{RequestError, RequestHandler, ServerState};
 use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
@@ -8,7 +8,7 @@ use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokens
 use strum::IntoEnumIterator;
 
 impl RequestHandler<SemanticTokensFullRequest> for ServerState {
-    fn handle_request(&mut self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>, String> {
+    fn handle_request(&mut self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>, RequestError> {
         let SemanticTokensParams {
             work_done_progress_params: _,
             partial_result_params: _,
@@ -19,7 +19,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let info = match self.virtual_file_system.get_full(&uri) {
             Some(source) => source,
-            None => return Err(format!("file not open {uri:?}")),
+            // TODO do we need to support this for non-opened files too?
+            None => return Err(RequestError::Invalid(format!("file {uri:?} is not open"))),
         };
 
         let mut semantic_tokens = vec![];

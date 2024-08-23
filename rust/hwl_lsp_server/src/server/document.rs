@@ -1,5 +1,6 @@
-use crate::server::state::{NotificationHandler, ServerState};
+use crate::server::state::{NotificationError, NotificationHandler, ServerState};
 use hwl_language::syntax::pos::FileLineOffsets;
+use hwl_language::throw;
 use indexmap::IndexMap;
 use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};
 use lsp_types::{DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier};
@@ -72,26 +73,35 @@ impl VirtualFileContent {
 }
 
 impl NotificationHandler<DidOpenTextDocument> for ServerState {
-    fn handle_notification(&mut self, params: DidOpenTextDocumentParams) {
+    fn handle_notification(&mut self, params: DidOpenTextDocumentParams) -> Result<(), NotificationError> {
         let DidOpenTextDocumentParams { text_document } = params;
         let TextDocumentItem { uri, text, language_id: _, version: _ } = text_document;
 
-        assert!(self.open_files.insert(uri.clone()));
+        if !self.open_files.insert(uri.clone()) {
+            throw!(NotificationError::Invalid(format!("trying to open file {uri:?} which is already open")))
+        }
+
         self.virtual_file_system.set_text_maybe_create(&uri, text);
+
+        Ok(())
     }
 }
 
 impl NotificationHandler<DidCloseTextDocument> for ServerState {
-    fn handle_notification(&mut self, params: DidCloseTextDocumentParams) {
+    fn handle_notification(&mut self, params: DidCloseTextDocumentParams) -> Result<(), NotificationError> {
         let DidCloseTextDocumentParams { text_document } = params;
         let TextDocumentIdentifier { uri } = text_document;
 
-        assert!(self.open_files.remove(&uri));
+        if !self.open_files.remove(&uri) {
+            throw!(NotificationError::Invalid(format!("trying to close file {uri:?} which is not open")))
+        }
+
+        Ok(())
     }
 }
 
 impl NotificationHandler<DidChangeTextDocument> for ServerState {
-    fn handle_notification(&mut self, params: DidChangeTextDocumentParams) {
+    fn handle_notification(&mut self, params: DidChangeTextDocumentParams) -> Result<(), NotificationError> {
         let DidChangeTextDocumentParams { text_document, content_changes } = params;
         let VersionedTextDocumentIdentifier { uri, version: _ } = text_document;
 
@@ -100,11 +110,13 @@ impl NotificationHandler<DidChangeTextDocument> for ServerState {
             assert!(range.is_none() && range_length.is_none());
             self.virtual_file_system.set_text_maybe_create(&uri, text);
         }
+
+        Ok(())
     }
 }
 
 impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
-    fn handle_notification(&mut self, params: DidChangeWatchedFilesParams) {
+    fn handle_notification(&mut self, params: DidChangeWatchedFilesParams) -> Result<(), NotificationError> {
         let DidChangeWatchedFilesParams { changes } = params;
         for change in changes {
             let FileEvent { uri, typ } = change;
@@ -117,8 +129,12 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
                 FileChangeType::DELETED => {
                     self.virtual_file_system.delete(&uri);
                 }
-                _ => panic!("unknown file change type {typ:?} for uri {uri:?}")
+                _ => {
+                    throw!(NotificationError::Invalid(format!("unknown file change type {typ:?} for uri {uri:?}")))
+                }
             };
         }
+
+        Ok(())
     }
 }

@@ -1,7 +1,6 @@
 use crossbeam_channel::SendError;
-use hwl_lsp_server::server::lifecycle::LifecycleState;
 use hwl_lsp_server::server::settings::{Settings, SettingsError};
-use hwl_lsp_server::server::state::ServerState;
+use hwl_lsp_server::server::state::{HandleMessageOutcome, ServerState};
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
@@ -61,27 +60,28 @@ fn main() -> Result<(), TopError> {
 
     // main loop
     // TODO handle shutdown and exit commands
-    loop {
+    let exit_code = loop {
         match connection.receiver.recv() {
             Ok(msg) => {
-                state.handle_message(msg)?;
-                match state.lifecycle_state {
-                    LifecycleState::Running | LifecycleState::Shutdown => {}
-                    LifecycleState::Exit => break,
+                let outcome = state.handle_message(msg)?;
+
+                match outcome {
+                    HandleMessageOutcome::Continue => {}
+                    HandleMessageOutcome::Exit(exit_code) => break exit_code,
                 }
             },
             Err(_) => {
                 // Receive error, which means the input channel was closed
                 // no need to raise an error here, this could happen in normal operation
                 // TODO should the server not have sent a shutdown before?
-                break;
+                break 2;
             }
         }
-    }
+    };
 
     // TODO monitor the client process ID, and stop the server if it every dies somehow without closing the IO channel
     io_threads.join()?;
-    Ok(())
+    std::process::exit(exit_code);
 }
 
 

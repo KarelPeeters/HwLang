@@ -1,30 +1,10 @@
-use crate::server::state::{NotificationHandler, RequestHandler, ServerState};
-use lsp_types::notification::Exit;
+use crate::server::state::{RequestError, RequestHandler, ServerState};
 use lsp_types::request::Shutdown;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum LifecycleState {
-    Running,
-    Shutdown,
-    Exit,
-}
-
 impl RequestHandler<Shutdown> for ServerState {
-    fn handle_request(&mut self, _: ()) -> Result<(), String> {
-        if self.lifecycle_state != LifecycleState::Running {
-            return Err(format!("tried to shutdown server which is not running but in state {:?}", self.lifecycle_state));
-        }
-        self.lifecycle_state = LifecycleState::Shutdown;
+    fn handle_request(&mut self, _: ()) -> Result<(), RequestError> {
+        assert!(!self.has_received_shutdown_request, "this should have been checked in the main loop already");
+        self.has_received_shutdown_request = true;
         Ok(())
-    }
-}
-
-impl NotificationHandler<Exit> for ServerState {
-    fn handle_notification(&mut self, _: ()) {
-        if self.lifecycle_state != LifecycleState::Shutdown {
-            // TODO proper error handling
-            panic!("tried to shutdown server which is not shutdown but in state {:?}", self.lifecycle_state);
-        }
-        self.lifecycle_state = LifecycleState::Exit;
     }
 }
