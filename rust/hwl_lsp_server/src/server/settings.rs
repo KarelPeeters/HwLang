@@ -16,8 +16,11 @@ pub enum PositionEncoding {
 
 const NO_WORK_DONE: WorkDoneProgressOptions = WorkDoneProgressOptions { work_done_progress: None };
 
+#[derive(Debug)]
+pub struct SettingsError(pub String);
+
 impl Settings {
-    pub fn new(initialize_params: InitializeParams) -> Self {
+    pub fn new(initialize_params: InitializeParams) -> Result<Self, SettingsError> {
         // default to utf-16 (as required by the spec), but prefer utf-8 if the client supports it
         let mut position_encoding = PositionEncoding::Utf16;
         if let Some(general) = &initialize_params.capabilities.general {
@@ -26,6 +29,17 @@ impl Settings {
                     position_encoding = PositionEncoding::Utf8;
                 }
             }
+        }
+
+        let mut watch_dynamic = false;
+        if let Some(workspace) = &initialize_params.capabilities.workspace {
+            if let Some(did_change_watched_files) = workspace.did_change_watched_files {
+                watch_dynamic = did_change_watched_files.dynamic_registration == Some(true);
+            }
+        }
+        // TODO support watching file changes ourself? but then how does synchronization work?
+        if !watch_dynamic {
+            return Err(SettingsError("this server requires dynamic watched files registration".to_string()));
         }
 
         // TODO for all of these, first check that the server supports them
@@ -44,7 +58,7 @@ impl Settings {
             ..Default::default()
         };
 
-        Self { initialize_params, server_capabilities, position_encoding }
+        Ok(Self { initialize_params, server_capabilities, position_encoding })
     }
 
     pub fn server_capabilities(&self) -> &ServerCapabilities {

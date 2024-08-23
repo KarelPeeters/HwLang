@@ -1,5 +1,5 @@
 use crossbeam_channel::SendError;
-use hwl_lsp_server::server::settings::Settings;
+use hwl_lsp_server::server::settings::{Settings, SettingsError};
 use hwl_lsp_server::server::state::ServerState;
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
@@ -30,12 +30,19 @@ fn main() -> Result<(), TopError> {
             Ok(p) => p,
             Err(e) => {
                 let response = Response::new_err(initialize_id, ErrorCode::ParseError as _, format!("failed to parse initialization parameters: {e:?}"));
-                connection.sender.send(Message::Response(response)).map_err(|e| TopError::SendError(e))?;
+                connection.sender.send(Message::Response(response))?;
                 return Err(TopError::Anyhow(e.into()));
             }
         };
 
-        let settings = Settings::new(initialization_params);
+        let settings = match Settings::new(initialization_params) {
+            Ok(settings) => settings,
+            Err(e) => {
+                let response = Response::new_err(initialize_id, ErrorCode::RequestFailed as i32, e.0.clone());
+                connection.sender.send(Message::Response(response))?;
+                return Err(TopError::Settings(e));
+            }
+        };
         let server_capabilities = settings.server_capabilities();
         let initialize_result = InitializeResult {
             capabilities: server_capabilities.clone(),
@@ -49,19 +56,17 @@ fn main() -> Result<(), TopError> {
         settings
     };
     let mut state = ServerState::new(settings, connection.sender);
+    state.initial_registrations()?;
 
     // main loop
+    // TODO handle shutdown and exit commands
     loop {
         match connection.receiver.recv() {
-            Ok(msg) => {
-                match state.handle_message(msg) {
-                    Ok(()) => {}
-                    Err(e) => return Err(TopError::SendError(e)),
-                }
-            }
+            Ok(msg) => state.handle_message(msg)?,
             Err(_) => {
                 // Receive error, which means the input channel was closed
                 // no need to raise an error here, this could happen in normal operation
+                // TODO should the server not have sent a shutdown before?
                 break;
             }
         }
@@ -80,6 +85,7 @@ pub enum TopError {
     Both(std::io::Error, ProtocolError),
     Anyhow(anyhow::Error),
     SendError(SendError<Message>),
+    Settings(SettingsError),
 }
 
 impl From<ProtocolError> for TopError {
@@ -99,3 +105,16 @@ impl From<anyhow::Error> for TopError {
         TopError::Anyhow(value)
     }
 }
+
+impl From<SendError<Message>> for TopError {
+    fn from(value: SendError<Message>) -> Self {
+        TopError::SendError(value)
+    }
+}
+
+impl From<SettingsError> for TopError {
+    fn from(value: SettingsError) -> Self {
+        TopError::Settings(value)
+    }
+}
+

@@ -2,15 +2,19 @@ use crate::server::document::OpenFileInfo;
 use crate::server::settings::Settings;
 use crossbeam_channel::{SendError, Sender};
 use indexmap::IndexMap;
-use lsp_server::{ErrorCode, Message, Response, ResponseError};
-use lsp_types::notification::Notification;
-use lsp_types::request::Request;
-use lsp_types::{notification, request, Uri};
+use lsp_server::{ErrorCode, Message, RequestId, Response, ResponseError};
+use lsp_types::notification::{DidChangeWatchedFiles, Notification};
+use lsp_types::request::{RegisterCapability, Request};
+use lsp_types::{notification, request, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, Registration, RegistrationParams, Uri};
+use std::collections::HashSet;
 
 pub struct ServerState {
     sender: Sender<Message>,
     pub settings: Settings,
-    pub open_files: IndexMap<Uri, OpenFileInfo>
+    pub open_files: IndexMap<Uri, OpenFileInfo>,
+
+    next_id: u64,
+    request_ids_expecting_null_response: HashSet<String>,
 }
 
 pub trait RequestHandler<R: Request> {
@@ -35,7 +39,52 @@ impl ServerState {
             settings,
             sender,
             open_files: IndexMap::new(),
+            next_id: 0,
+            request_ids_expecting_null_response: HashSet::new(),
         }
+    }
+
+    pub fn initial_registrations(&mut self) -> Result<(), SendError<Message>> {
+        // subscript to file changes
+        let params = RegistrationParams {
+            registrations: vec![
+                Registration {
+                    id: self.next_unique_id(),
+                    method: DidChangeWatchedFiles::METHOD.to_string(),
+                    register_options: Some(serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![
+                            FileSystemWatcher {
+                                // TODO use relative?
+                                glob_pattern: GlobPattern::String("**/{*.kh,.kh_config.toml}".to_owned()),
+                                kind: None,
+                            }
+                        ],
+                    }).unwrap()),
+                }
+            ],
+        };
+        self.send_request::<RegisterCapability>(params)?;
+
+        Ok(())
+    }
+
+    fn next_unique_id(&mut self) -> String {
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        id
+    }
+
+    // TODO support non-void requests
+    pub fn send_request<R: Request<Result=()>>(&mut self, args: R::Params) -> Result<(), SendError<Message>> {
+        let id = self.next_unique_id();
+        let req = lsp_server::Request {
+            id: RequestId::from(id.clone()),
+            method: R::METHOD.to_owned(),
+            params: serde_json::to_value(args).unwrap(),
+        };
+        self.sender.send(Message::Request(req))?;
+        assert!(self.request_ids_expecting_null_response.insert(id));
+        Ok(())
     }
 
     pub fn handle_message(&mut self, msg: Message) -> Result<(), SendError<Message>> {
