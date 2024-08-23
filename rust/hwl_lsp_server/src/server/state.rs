@@ -1,8 +1,7 @@
-use crate::server::document::OpenFileInfo;
+use crate::server::document::VirtualFileSystem;
 use crate::server::lifecycle::LifecycleState;
 use crate::server::settings::Settings;
 use crossbeam_channel::{SendError, Sender};
-use indexmap::IndexMap;
 use lsp_server::{ErrorCode, Message, RequestId, Response, ResponseError};
 use lsp_types::notification::{DidChangeWatchedFiles, Notification};
 use lsp_types::request::{RegisterCapability, Request};
@@ -17,7 +16,8 @@ pub struct ServerState {
     next_id: u64,
     request_ids_expecting_null_response: HashSet<String>,
 
-    pub open_files: IndexMap<Uri, OpenFileInfo>,
+    pub open_files: HashSet<Uri>,
+    pub virtual_file_system: VirtualFileSystem,
 }
 
 pub trait RequestHandler<R: Request> {
@@ -50,7 +50,8 @@ impl ServerState {
             lifecycle_state: LifecycleState::Running,
             next_id: 0,
             request_ids_expecting_null_response: HashSet::new(),
-            open_files: IndexMap::new(),
+            open_files: HashSet::new(),
+            virtual_file_system: VirtualFileSystem::new(),
         }
     }
 

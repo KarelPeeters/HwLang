@@ -17,11 +17,10 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let TextDocumentIdentifier { uri } = text_document;
 
-        let info = match self.open_files.get_mut(&uri) {
+        let info = match self.virtual_file_system.get_full(&uri) {
             Some(source) => source,
             None => return Err(format!("file not open {uri:?}")),
         };
-        let info = info.get_full();
 
         let mut semantic_tokens = vec![];
         let mut prev_start_simple = info.offsets.full_span(FileId::SINGLE).start;
