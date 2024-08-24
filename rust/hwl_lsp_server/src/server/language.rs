@@ -1,5 +1,5 @@
+use crate::engine::vfs::{Content, FileDoesNotExist};
 use crate::server::dispatch::RequestHandler;
-use crate::server::document::{Content, FileDoesNotExist};
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use hwl_language::syntax::pos::{FileId, LineOffsets};

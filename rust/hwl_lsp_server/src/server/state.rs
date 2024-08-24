@@ -1,4 +1,5 @@
-use crate::server::document::{VfsError, VirtualFileSystem};
+use crate::engine::vfs::VfsError;
+use crate::engine::vfs::VirtualFileSystem;
 use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
 use crossbeam_channel::SendError;
@@ -45,7 +46,7 @@ impl ServerState {
     pub fn new(settings: Settings, sender: ServerSender) -> Self {
         // TODO support multiple workspaces through a list of VFSs instead of just a single one
         let vfs = VirtualFileSystemWrapper::new(settings.initialize_params.root_uri.clone().unwrap());
-        
+
         Self {
             settings,
             sender,
