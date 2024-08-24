@@ -44,7 +44,7 @@ impl ServerState {
                 handle_notification!(self, params, notification::DidChangeTextDocument),
             notification::DidChangeWatchedFiles::METHOD =>
                 handle_notification!(self, params, notification::DidChangeWatchedFiles),
-            notification::WillSaveTextDocument::METHOD => {
+            notification::WillSaveTextDocument::METHOD | notification::DidSaveTextDocument::METHOD => {
                 // ignored, this doesn't have any effect
                 Ok(())
             }
