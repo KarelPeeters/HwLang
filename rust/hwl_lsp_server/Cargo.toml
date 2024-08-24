@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 crossbeam-channel.workspace = true
+fluent-uri.workspace = true
 hwl_language.workspace = true
 indexmap.workspace = true
 itertools.workspace = true

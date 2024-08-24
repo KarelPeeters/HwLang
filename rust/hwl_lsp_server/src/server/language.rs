@@ -1,7 +1,7 @@
 use crate::server::dispatch::RequestHandler;
 use crate::server::document::{Content, FileDoesNotExist};
 use crate::server::settings::PositionEncoding;
-use crate::server::state::{RequestError, ServerState};
+use crate::server::state::{RequestError, RequestResult, ServerState};
 use hwl_language::syntax::pos::{FileId, LineOffsets};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::throw;
@@ -11,7 +11,7 @@ use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokens
 use strum::IntoEnumIterator;
 
 impl RequestHandler<SemanticTokensFullRequest> for ServerState {
-    fn handle_request(&mut self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>, RequestError> {
+    fn handle_request(&mut self, params: SemanticTokensParams) -> RequestResult<Option<SemanticTokensResult>> {
         let SemanticTokensParams {
             work_done_progress_params: _,
             partial_result_params: _,
@@ -20,7 +20,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let TextDocumentIdentifier { uri } = text_document;
 
-        let source = match self.virtual_file_system.get(&uri) {
+        let source = match self.vfs.inner()?.get(&uri) {
             Ok(Content::Text(text)) => text,
             // TODO at least try parsing, or do we not need to support this for non-opened files?
             Ok(Content::Unknown(_)) =>
@@ -28,12 +28,12 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             Err(e) => {
                 let _: FileDoesNotExist = e;
                 throw!(RequestError::Invalid(format!("file {uri:?} does not exist")))
-            } 
+            }
         };
 
         // TODO cache offsets somewhere
         let offsets = LineOffsets::new(&source);
-        
+
         let mut semantic_tokens = vec![];
         let mut prev_start_simple = offsets.full_span(FileId::SINGLE).start;
 

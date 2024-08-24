@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use hwl_language::back::lower;
+use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::{FilePath, SourceDatabase};
 use hwl_language::error::CompileError;
@@ -51,7 +52,7 @@ fn main_inner(args: &Args) -> Result<LoweredDatabase, CompileError> {
     // TODO make parsing a separate step?
     recurse_for_each_file(&root, &mut |stack, f| {
         let path = f.path();
-        if path.extension() != Some(OsStr::new("kh")) {
+        if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
             return;
         }
 

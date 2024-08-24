@@ -390,6 +390,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "fluent-uri",
  "hwl_language",
  "indexmap 2.4.0",
  "itertools 0.13.0",

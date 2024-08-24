@@ -1,38 +1,38 @@
-use crate::server::document::VirtualFileSystem;
+use crate::server::document::{VfsError, VirtualFileSystem};
+use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
-use crossbeam_channel::{SendError, Sender};
+use crossbeam_channel::SendError;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
-use lsp_types::request::{RegisterCapability, Request};
-use lsp_types::{notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, MessageType, Registration, RegistrationParams, ShowMessageParams, Uri};
+use lsp_types::request::RegisterCapability;
+use lsp_types::{notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, Registration, RegistrationParams, Uri};
 use std::collections::HashSet;
 
 pub struct ServerState {
-    sender: Sender<Message>,
     pub settings: Settings,
+    pub sender: ServerSender,
+
     pub has_received_shutdown_request: bool,
 
-    next_id: u64,
-    request_ids_expecting_null_response: HashSet<String>,
-
     pub open_files: HashSet<Uri>,
-    pub virtual_file_system: VirtualFileSystem,
+    pub vfs: VirtualFileSystemWrapper,
 }
 
-// TODO unify these?
+pub struct VirtualFileSystemWrapper {
+    inner: Option<VirtualFileSystem>,
+    root: Uri,
+}
+
+// TODO move these to some common place
+// TODO rename these to something better
+pub type RequestResult<T> = Result<T, RequestError>;
+
 #[derive(Debug)]
 pub enum RequestError {
     ParamParse(serde_json::Error),
     MethodNotImplemented,
     Invalid(String),
-}
-
-// TODO unify these?
-#[derive(Debug)]
-pub enum NotificationError {
-    ParamParse(serde_json::Error),
-    MethodNotImplemented,
-    Invalid(String),
+    Vfs(VfsError),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -42,15 +42,16 @@ pub enum HandleMessageOutcome {
 }
 
 impl ServerState {
-    pub fn new(settings: Settings, sender: Sender<Message>) -> Self {
+    pub fn new(settings: Settings, sender: ServerSender) -> Self {
+        // TODO support multiple workspaces through a list of VFSs instead of just a single one
+        let vfs = VirtualFileSystemWrapper::new(settings.initialize_params.root_uri.clone().unwrap());
+        
         Self {
             settings,
             sender,
             has_received_shutdown_request: false,
-            next_id: 0,
-            request_ids_expecting_null_response: HashSet::new(),
             open_files: HashSet::new(),
-            virtual_file_system: VirtualFileSystem::new(),
+            vfs,
         }
     }
 
@@ -59,7 +60,7 @@ impl ServerState {
         let params = RegistrationParams {
             registrations: vec![
                 Registration {
-                    id: self.next_unique_id(),
+                    id: self.sender.next_unique_id(),
                     method: notification::DidChangeWatchedFiles::METHOD.to_string(),
                     register_options: Some(serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
                         watchers: vec![
@@ -73,36 +74,8 @@ impl ServerState {
                 }
             ],
         };
-        self.send_request::<RegisterCapability>(params)?;
+        self.sender.send_request::<RegisterCapability>(params)?;
 
-        Ok(())
-    }
-
-    fn next_unique_id(&mut self) -> String {
-        let id = self.next_id.to_string();
-        self.next_id += 1;
-        id
-    }
-
-    // TODO support non-void requests
-    pub fn send_request<R: Request<Result=()>>(&mut self, args: R::Params) -> Result<(), SendError<Message>> {
-        let id = self.next_unique_id();
-        let request = lsp_server::Request {
-            id: RequestId::from(id.clone()),
-            method: R::METHOD.to_owned(),
-            params: serde_json::to_value(args).unwrap(),
-        };
-        self.sender.send(Message::Request(request))?;
-        assert!(self.request_ids_expecting_null_response.insert(id));
-        Ok(())
-    }
-
-    pub fn send_notification<N: Notification>(&mut self, args: N::Params) -> Result<(), SendError<Message>> {
-        let notification = lsp_server::Notification {
-            method: notification::ShowMessage::METHOD.to_owned(),
-            params: serde_json::to_value(args).unwrap(),
-        };
-        self.sender.send(Message::Notification(notification))?;
         Ok(())
     }
 
@@ -110,39 +83,20 @@ impl ServerState {
         match msg {
             Message::Request(request) => {
                 eprintln!("received request: {request:?}");
-                let method = &request.method;
 
                 // evaluate the request
                 let result = if self.has_received_shutdown_request {
                     Err(RequestError::Invalid("no requests allowed after shutdown".to_owned()))
                 } else {
-                    self.dispatch_request(method, request.params)
+                    self.dispatch_request(&request.method, request.params)
                 };
 
-                // format the result
+                // send response back
                 let response = match result {
                     Ok(result) => Response::new_ok(request.id, result),
-                    Err(e) => {
-                        let (code, message) = match e {
-                            RequestError::ParamParse(e) => (
-                                ErrorCode::InvalidParams,
-                                format!("failed to parse request {method:?} parameters: {e:?}")
-                            ),
-                            RequestError::MethodNotImplemented => (
-                                ErrorCode::MethodNotFound,
-                                format!("method not implemented for request {method:?}")
-                            ),
-                            RequestError::Invalid(reason) => (
-                                ErrorCode::InvalidRequest,
-                                format!("invalid request {method:?}: {reason:?}"),
-                            ),
-                        };
-                        Response::new_err(request.id, code as i32, message)
-                    }
+                    Err(e) => e.to_response(request.id, &request.method),
                 };
-
-                // send response
-                self.sender.send(Message::Response(response))?;
+                self.sender.send_response(response)?;
             }
             Message::Response(_) => {
                 // We don't expect to receive any yet, if there are any we can safely ignore them.
@@ -150,8 +104,10 @@ impl ServerState {
             }
             Message::Notification(notification) => {
                 eprintln!("received notification: {notification:?}");
+                let method = &notification.method;
 
-                if notification.method == notification::Exit::METHOD {
+                // handle exit notification
+                if method == notification::Exit::METHOD {
                     return if self.has_received_shutdown_request {
                         Ok(HandleMessageOutcome::Exit(0))
                     } else {
@@ -159,27 +115,75 @@ impl ServerState {
                     };
                 }
 
-                let method = &notification.method;
-                match self.dispatch_notification(method, notification.params) {
+                // evaluate notification
+                let result = self.dispatch_notification(method, notification.params);
+
+                // maybe send error back
+                match result {
                     Ok(()) => {}
-                    Err(e) => {
-                        let message = match e {
-                            NotificationError::ParamParse(e) =>
-                                format!("failed to parse parameters of notification {method:?}: {e:?}"),
-                            NotificationError::MethodNotImplemented =>
-                                format!("method not implemented for notification {method:?}"),
-                            NotificationError::Invalid(reason) =>
-                                format!("invalid notification {method:?}: {reason:?}"),
-                        };
-                        self.send_notification::<notification::ShowMessage>(ShowMessageParams {
-                            typ: MessageType::ERROR,
-                            message,
-                        })?;
-                    }
+                    Err(e) => self.sender.send_notification_error(e, &format!("notification {method:?}"))?,
                 }
             }
         }
 
         Ok(HandleMessageOutcome::Continue)
+    }
+
+    pub fn do_background_work(&mut self) -> RequestResult<()> {
+        if self.vfs.inner()?.get_and_clear_changed() {
+            eprintln!("file system changed, updating diagnostics");
+        }
+
+        Ok(())
+    }
+}
+
+impl VirtualFileSystemWrapper {
+    pub fn new(root: Uri) -> Self {
+        Self {
+            inner: None,
+            root,
+        }
+    }
+
+    pub fn inner(&mut self) -> Result<&mut VirtualFileSystem, VfsError> {
+        if self.inner.is_none() {
+            self.inner = Some(VirtualFileSystem::new(self.root.clone())?);
+        }
+        Ok(self.inner.as_mut().unwrap())
+    }
+}
+
+impl RequestError {
+    pub fn to_response(self, id: RequestId, method: &str) -> Response {
+        let (code, message) = self.to_code_message();
+        Response::new_err(id, code as i32, format!("error during request {method:?}: {message}"))
+    }
+
+    pub fn to_code_message(self) -> (ErrorCode, String) {
+        match self {
+            RequestError::ParamParse(e) => (
+                ErrorCode::InvalidParams,
+                format!("failed to parameters: {e:?}")
+            ),
+            RequestError::MethodNotImplemented => (
+                ErrorCode::MethodNotFound,
+                "method not implemented".to_string()
+            ),
+            RequestError::Invalid(reason) => (
+                ErrorCode::InvalidRequest,
+                format!("invalid request {reason:?}"),
+            ),
+            RequestError::Vfs(e) => (
+                ErrorCode::InternalError,
+                format!("vfs error {e:?}"),
+            )
+        }
+    }
+}
+
+impl From<VfsError> for RequestError {
+    fn from(value: VfsError) -> Self {
+        RequestError::Vfs(value)
     }
 }

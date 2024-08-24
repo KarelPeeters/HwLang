@@ -21,7 +21,8 @@ pub struct SettingsError(pub String);
 
 impl Settings {
     pub fn new(initialize_params: InitializeParams) -> Result<Self, SettingsError> {
-        // default to utf-16 (as required by the spec), but prefer utf-8 if the client supports it
+        // figure out position encoding
+        //   default to utf-16 (as required by the spec), but prefer utf-8 if the client supports it
         let mut position_encoding = PositionEncoding::Utf16;
         if let Some(general) = &initialize_params.capabilities.general {
             if let Some(position_encodings) = &general.position_encodings {
@@ -31,6 +32,7 @@ impl Settings {
             }
         }
 
+        // make sure the client can watch files for us
         let mut watch_dynamic = false;
         if let Some(workspace) = &initialize_params.capabilities.workspace {
             if let Some(did_change_watched_files) = workspace.did_change_watched_files {

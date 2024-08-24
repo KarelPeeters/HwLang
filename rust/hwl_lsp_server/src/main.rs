@@ -1,6 +1,7 @@
-use crossbeam_channel::SendError;
-use hwl_lsp_server::server::settings::{Settings, SettingsError};
-use hwl_lsp_server::server::state::{HandleMessageOutcome, ServerState};
+use crossbeam_channel::{RecvError, SendError, TryRecvError};
+use hwl_lsp_server::server::sender::ServerSender;
+use hwl_lsp_server::server::settings::Settings;
+use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
@@ -14,35 +15,25 @@ fn main() -> Result<(), TopError> {
 
     // initialization
     let settings = {
-        let (initialize_id, initialization_params) = match connection.initialize_start() {
-            Ok(d) => d,
-            Err(e_protocol) => {
-                if e_protocol.channel_is_disconnected() {
-                    match io_threads.join() {
-                        Ok(()) => {}
-                        Err(e_io) => return Err(TopError::Both(e_io, e_protocol)),
-                    }
-                }
-                return Err(TopError::Protocol(e_protocol));
-            }
-        };
+        let (initialize_id, initialization_params) = connection.initialize_start()?;
         let initialization_params = match serde_json::from_value::<InitializeParams>(initialization_params.clone()) {
             Ok(p) => p,
             Err(e) => {
-                let response = Response::new_err(initialize_id, ErrorCode::ParseError as _, format!("failed to parse initialization parameters: {e:?}"));
-                connection.sender.send(Message::Response(response))?;
-                return Err(TopError::Anyhow(e.into()));
+                let mut sender = ServerSender::new(connection.sender);
+                sender.send_notification_error(RequestError::ParamParse(e), "initialization")?;
+                return Ok(());
             }
         };
 
         let settings = match Settings::new(initialization_params) {
             Ok(settings) => settings,
             Err(e) => {
-                let response = Response::new_err(initialize_id, ErrorCode::RequestFailed as i32, e.0.clone());
-                connection.sender.send(Message::Response(response))?;
-                return Err(TopError::Settings(e));
+                let mut sender = ServerSender::new(connection.sender);
+                sender.send_response(Response::new_err(initialize_id, ErrorCode::RequestFailed as i32, e.0.clone()))?;
+                return Ok(());
             }
         };
+
         let server_capabilities = settings.server_capabilities();
         let initialize_result = InitializeResult {
             capabilities: server_capabilities.clone(),
@@ -51,32 +42,56 @@ fn main() -> Result<(), TopError> {
                 version: Some(format!("{}-dev", env!("CARGO_PKG_VERSION"))),
             }),
         };
+
         connection.initialize_finish(initialize_id, to_value(initialize_result).unwrap())?;
 
         settings
     };
-    let mut state = ServerState::new(settings, connection.sender);
+
+    let mut state = ServerState::new(settings, ServerSender::new(connection.sender));
+
     state.initial_registrations()?;
+    // state.init_vfs()?;
 
     // main loop
-    // TODO handle shutdown and exit commands
-    let exit_code = loop {
-        match connection.receiver.recv() {
-            Ok(msg) => {
-                let outcome = state.handle_message(msg)?;
+    let exit_code = 'outer: loop {
+        let mut msg = connection.receiver.recv();
 
-                match outcome {
-                    HandleMessageOutcome::Continue => {}
-                    HandleMessageOutcome::Exit(exit_code) => break exit_code,
+        // inner loop to handle a bunch of non-blocking events at once
+        'inner: loop {
+            match msg {
+                Ok(msg) => {
+                    let outcome = state.handle_message(msg)?;
+                    match outcome {
+                        HandleMessageOutcome::Continue => {}
+                        HandleMessageOutcome::Exit(exit_code) => break 'outer exit_code,
+                    }
+                },
+                Err(e) => {
+                    let _: RecvError = e;
+                    // Receive error, which means the input channel was closed
+                    // no need to raise an error here, this could happen in normal operation
+                    // TODO should the server not have sent a shutdown before?
+                    break 'outer 2;
                 }
-            },
-            Err(_) => {
-                // Receive error, which means the input channel was closed
-                // no need to raise an error here, this could happen in normal operation
-                // TODO should the server not have sent a shutdown before?
-                break 2;
             }
+
+            // immediately get the next message if any non-blocking messages are available
+            msg = match connection.receiver.try_recv() {
+                Ok(msg) => Ok(msg),
+                Err(TryRecvError::Empty) => break 'inner,
+                Err(TryRecvError::Disconnected) => Err(RecvError),
+            };
         }
+
+        // there are no more messages immediately available, spend some time doing other things
+        // (eg. incremental compilation, collecting and pushing diagnostics, ...)
+        match state.do_background_work() {
+            Ok(()) => {}
+            Err(e) => {
+                state.sender.send_notification_error(e, "background work")?;
+            }
+        };
     };
 
     // TODO monitor the client process ID, and stop the server if it every dies somehow without closing the IO channel
@@ -84,33 +99,17 @@ fn main() -> Result<(), TopError> {
     std::process::exit(exit_code);
 }
 
-
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum TopError {
-    Protocol(ProtocolError),
     IO(std::io::Error),
-    Both(std::io::Error, ProtocolError),
-    Anyhow(anyhow::Error),
     SendError(SendError<Message>),
-    Settings(SettingsError),
-}
-
-impl From<ProtocolError> for TopError {
-    fn from(value: ProtocolError) -> Self {
-        TopError::Protocol(value)
-    }
+    Protocol(ProtocolError),
+    InitJson(String),
 }
 
 impl From<std::io::Error> for TopError {
     fn from(value: std::io::Error) -> Self {
         TopError::IO(value)
-    }
-}
-
-impl From<anyhow::Error> for TopError {
-    fn from(value: anyhow::Error) -> Self {
-        TopError::Anyhow(value)
     }
 }
 
@@ -120,9 +119,8 @@ impl From<SendError<Message>> for TopError {
     }
 }
 
-impl From<SettingsError> for TopError {
-    fn from(value: SettingsError) -> Self {
-        TopError::Settings(value)
+impl From<ProtocolError> for TopError {
+    fn from(value: ProtocolError) -> Self {
+        TopError::Protocol(value)
     }
 }
-

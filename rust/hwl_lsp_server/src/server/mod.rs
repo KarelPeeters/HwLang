@@ -1,5 +1,6 @@
 pub mod state;
 pub mod settings;
+pub mod sender;
 
 pub mod dispatch;
 
