@@ -1,3 +1,4 @@
+use crate::server::logger::Logger;
 use crate::server::state::RequestError;
 use crossbeam_channel::{SendError, Sender};
 use lsp_server::{Message, RequestId, Response};
@@ -8,19 +9,20 @@ use std::collections::HashSet;
 
 pub struct ServerSender {
     sender: Sender<Message>,
-
     next_id: u64,
     request_ids_expecting_null_response: HashSet<String>,
+    pub logger: Logger,    
 }
 
 pub type SendResult<T = ()> = Result<T, SendError<Message>>;
 
 impl ServerSender {
-    pub fn new(sender: Sender<Message>) -> Self {
+    pub fn new(sender: Sender<Message>, logger: Logger) -> Self {
         Self {
+            sender,
             next_id: 0,
             request_ids_expecting_null_response: HashSet::new(),
-            sender,
+            logger,
         }
     }
 
@@ -38,12 +40,16 @@ impl ServerSender {
             method: R::METHOD.to_owned(),
             params: serde_json::to_value(args).unwrap(),
         };
+
+        self.logger.log(format!("<== {request:?}"));
         self.sender.send(Message::Request(request))?;
+
         assert!(self.request_ids_expecting_null_response.insert(id));
         Ok(())
     }
 
     pub fn send_response(&mut self, response: Response) -> SendResult {
+        self.logger.log(format!("<== {response:?}"));
         self.sender.send(Message::Response(response))
     }
 
@@ -52,7 +58,10 @@ impl ServerSender {
             method: notification::ShowMessage::METHOD.to_owned(),
             params: serde_json::to_value(args).unwrap(),
         };
+
+        self.logger.log(format!("<== {notification:?}"));
         self.sender.send(Message::Notification(notification))?;
+
         Ok(())
     }
 

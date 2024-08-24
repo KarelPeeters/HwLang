@@ -373,7 +373,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let mut unique: HashMap<&str, &Identifier> = Default::default();
                 let mut parameters = vec![];
                 let mut arguments = vec![];
-                let scope_inner = scope_inner;
 
                 for param_ast in &params.inner {
                     // check parameter names for uniqueness

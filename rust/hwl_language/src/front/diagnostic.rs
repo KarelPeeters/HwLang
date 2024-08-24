@@ -210,9 +210,10 @@ pub trait DiagnosticContext {
     fn diagnostic_todo(&self, span: Span, feature: &str) -> ! {
         let message = format!("feature not yet implemented: '{}'", feature);
         let err = self.diagnostic(&message)
+
             .add_error(span, "used here")
             .finish();
-        println!("{}", err.string);
+        eprintln!("{}", err.string);
         panic!("{}", message)
     }
 }

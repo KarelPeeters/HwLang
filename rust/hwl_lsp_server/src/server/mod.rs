@@ -1,7 +1,8 @@
-pub mod state;
-pub mod settings;
+pub mod logger;
 pub mod sender;
 
+pub mod settings;
+pub mod state;
 pub mod dispatch;
 
 // The different parts of the LSP protocol are spread over the following modules, mirroring the chapters in

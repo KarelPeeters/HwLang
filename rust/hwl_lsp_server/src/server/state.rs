@@ -3,6 +3,7 @@ use crate::engine::vfs::VirtualFileSystem;
 use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
 use crossbeam_channel::SendError;
+use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
@@ -57,7 +58,8 @@ impl ServerState {
     }
 
     pub fn initial_registrations(&mut self) -> Result<(), SendError<Message>> {
-        // subscript to file changes
+        // subscribe to file changes
+        let pattern = format!("**/{{*.{}}}", LANGUAGE_FILE_EXTENSION);
         let params = RegistrationParams {
             registrations: vec![
                 Registration {
@@ -67,7 +69,7 @@ impl ServerState {
                         watchers: vec![
                             FileSystemWatcher {
                                 // TODO use relative?
-                                glob_pattern: GlobPattern::String("**/{*.kh,.kh_config.toml}".to_owned()),
+                                glob_pattern: GlobPattern::String(pattern),
                                 kind: None,
                             }
                         ],
@@ -133,9 +135,14 @@ impl ServerState {
     pub fn do_background_work(&mut self) -> RequestResult<()> {
         if self.vfs.inner()?.get_and_clear_changed() {
             eprintln!("file system changed, updating diagnostics");
+            // TODO actually do diagnostics
         }
 
         Ok(())
+    }
+
+    pub fn log(&mut self, msg: impl Into<String>) {
+        self.sender.logger.log(msg);
     }
 }
 

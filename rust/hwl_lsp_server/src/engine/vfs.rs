@@ -1,13 +1,17 @@
 use crate::server::document;
+use crate::server::document::uri_to_path;
+use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_language::util::io::{recurse_for_each_file, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 /// The name and the general principle come from the VFS of rust-analyzer.
 pub struct VirtualFileSystem {
-    map: IndexMap<Uri, Content>,
-    has_changed: bool,
     root: PathBuf,
+    map: IndexMap<PathBuf, Content>,
+    has_changed: bool,
 }
 
 pub enum Content {
@@ -19,18 +23,15 @@ pub enum Content {
 pub enum VfsError {
     InvalidPathUri(Uri),
     NonUtf8Path(Uri),
-    FileAlreadyExists(Uri),
-    FileDoesNotExist(Uri),
-    Io(std::io::Error),
+    FileAlreadyExists(Uri, PathBuf),
+    FileDoesNotExist(Uri, PathBuf),
+    Io(IoErrorWithPath),
 }
 
-#[derive(Debug)]
-pub struct FileAlreadyExists;
-#[derive(Debug)]
-pub struct FileDoesNotExist;
+pub type VfsResult<T> = Result<T, VfsError>;
 
 impl VirtualFileSystem {
-    pub fn new(root: Uri) -> Result<Self, VfsError> {
+    pub fn new(root: Uri) -> VfsResult<Self> {
         eprintln!("new VFS with root {:?} {:?} {:?}", root.as_str(), root, root.path());
 
         let root_path = document::uri_to_path(&root)?;
@@ -41,49 +42,63 @@ impl VirtualFileSystem {
         };
 
         // initialize files from disk
-        // recurse_for_each_file(&root_path, &mut |steps, f| {
-        //     let path = f.path();
-        //     if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
-        //         return;
-        //     }
-        //
-        //     eprintln!("would read file at {:?}", path);
-        // })?;
+        recurse_for_each_file(&root_path, &mut |steps, f| {
+            let path = f.path();
+            if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
+                return;
+            }
+
+            eprintln!("would read file at {:?}", path);
+        })?;
 
         Ok(vfs)
     }
 
-    pub fn create(&mut self, uri: &Uri, content: Content) -> Result<(), FileAlreadyExists> {
+    pub fn create(&mut self, uri: &Uri, content: Content) -> VfsResult<()> {
         self.has_changed = true;
-        let prev = self.map.insert(uri.clone(), content);
+
+        let path = uri_to_path(uri)?;
+        let prev = self.map.insert(path.clone(), content);
+
         match prev {
             None => Ok(()),
-            Some(_) => Err(FileAlreadyExists),
+            Some(_) => Err(VfsError::FileAlreadyExists(uri.clone(), path)),
         }
     }
 
     // TODO support incremental updates (and even incremental derived data updates?)
-    pub fn update(&mut self, uri: &Uri, content: Content) -> Result<(), FileDoesNotExist> {
+    pub fn update(&mut self, uri: &Uri, content: Content) -> VfsResult<()> {
         self.has_changed = true;
-        let slot = self.map.get_mut(uri).ok_or(FileDoesNotExist)?;
+
+        let path = uri_to_path(uri)?;
+        let slot = self.map.get_mut(&path)
+            .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path))?;
         *slot = content;
+
         Ok(())
     }
 
-    pub fn delete(&mut self, uri: &Uri) -> Result<(), FileDoesNotExist> {
+    pub fn delete(&mut self, uri: &Uri) -> VfsResult<()> {
         self.has_changed = true;
-        match self.map.swap_remove(uri) {
+
+        let path = uri_to_path(uri)?;
+        let prev = self.map.swap_remove(&path);
+
+        match prev {
             Some(_) => Ok(()),
-            None => Err(FileDoesNotExist),
+            None => Err(VfsError::FileDoesNotExist(uri.clone(), path)),
         }
     }
 
-    pub fn exists(&self, uri: &Uri) -> bool {
-        self.map.contains_key(uri)
+    pub fn exists(&self, uri: &Uri) -> VfsResult<bool> {
+        let path = uri_to_path(uri)?;
+        Ok(self.map.contains_key(&path))
     }
 
-    pub fn get(&self, uri: &Uri) -> Result<&Content, FileDoesNotExist> {
-        self.map.get(uri).ok_or(FileDoesNotExist)
+    pub fn get(&self, uri: &Uri) -> VfsResult<&Content> {
+        let path = uri_to_path(uri)?;
+        self.map.get(&path)
+            .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path))
     }
 
     pub fn get_and_clear_changed(&mut self) -> bool {
@@ -91,8 +106,8 @@ impl VirtualFileSystem {
     }
 }
 
-impl From<std::io::Error> for VfsError {
-    fn from(value: std::io::Error) -> Self {
+impl From<IoErrorWithPath> for VfsError {
+    fn from(value: IoErrorWithPath) -> Self {
         VfsError::Io(value)
     }
 }

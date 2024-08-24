@@ -1,4 +1,4 @@
-use crate::engine::vfs::{Content, FileDoesNotExist};
+use crate::engine::vfs::Content;
 use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestError, RequestResult, ServerState};
@@ -25,10 +25,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             // TODO at least try parsing, or do we not need to support this for non-opened files?
             Ok(Content::Unknown(_)) =>
                 throw!(RequestError::Invalid(format!("file {uri:?} might not be text"))),
-            Err(e) => {
-                let _: FileDoesNotExist = e;
-                throw!(RequestError::Invalid(format!("file {uri:?} does not exist")))
-            }
+            Err(e) => throw!(e),
         };
 
         // TODO cache offsets somewhere

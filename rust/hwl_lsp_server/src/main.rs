@@ -1,13 +1,17 @@
 use crossbeam_channel::{RecvError, SendError, TryRecvError};
+use hwl_lsp_server::server::logger::Logger;
 use hwl_lsp_server::server::sender::ServerSender;
 use hwl_lsp_server::server::settings::Settings;
 use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
+use std::path::Path;
 
 fn main() -> Result<(), TopError> {
-    eprintln!("LSP server started");
+    // TODO make this configurable through env var at least
+    let mut logger = Logger::new(false, Some(Path::new("log.txt")));
+    logger.log("server started");
 
     // open connection
     // TODO allow runtime selection of different protocols
@@ -19,7 +23,7 @@ fn main() -> Result<(), TopError> {
         let initialization_params = match serde_json::from_value::<InitializeParams>(initialization_params.clone()) {
             Ok(p) => p,
             Err(e) => {
-                let mut sender = ServerSender::new(connection.sender);
+                let mut sender = ServerSender::new(connection.sender, logger);
                 sender.send_notification_error(RequestError::ParamParse(e), "initialization")?;
                 return Ok(());
             }
@@ -28,7 +32,7 @@ fn main() -> Result<(), TopError> {
         let settings = match Settings::new(initialization_params) {
             Ok(settings) => settings,
             Err(e) => {
-                let mut sender = ServerSender::new(connection.sender);
+                let mut sender = ServerSender::new(connection.sender, logger);
                 sender.send_response(Response::new_err(initialize_id, ErrorCode::RequestFailed as i32, e.0.clone()))?;
                 return Ok(());
             }
@@ -48,19 +52,20 @@ fn main() -> Result<(), TopError> {
         settings
     };
 
-    let mut state = ServerState::new(settings, ServerSender::new(connection.sender));
-
+    let mut state = ServerState::new(settings, ServerSender::new(connection.sender, logger));
     state.initial_registrations()?;
-    // state.init_vfs()?;
 
     // main loop
     let exit_code = 'outer: loop {
+        state.log("waiting for message");
         let mut msg = connection.receiver.recv();
 
         // inner loop to handle a bunch of non-blocking events at once
         'inner: loop {
             match msg {
                 Ok(msg) => {
+                    state.log(format!("==> {:?}", msg));
+                    
                     let outcome = state.handle_message(msg)?;
                     match outcome {
                         HandleMessageOutcome::Continue => {}
@@ -82,12 +87,16 @@ fn main() -> Result<(), TopError> {
                 Err(TryRecvError::Empty) => break 'inner,
                 Err(TryRecvError::Disconnected) => Err(RecvError),
             };
+            state.log("got another non-blocking message");
         }
 
         // there are no more messages immediately available, spend some time doing other things
         // (eg. incremental compilation, collecting and pushing diagnostics, ...)
+        state.log("doing background work");
         match state.do_background_work() {
-            Ok(()) => {}
+            Ok(()) => {
+                state.log("finished background work");
+            }
             Err(e) => {
                 state.sender.send_notification_error(e, "background work")?;
             }
@@ -95,7 +104,10 @@ fn main() -> Result<(), TopError> {
     };
 
     // TODO monitor the client process ID, and stop the server if it every dies somehow without closing the IO channel
+    // TODO do we need to close channels?
+    state.log("joining io threads");
     io_threads.join()?;
+    state.log(format!("exiting with code {exit_code}"));
     std::process::exit(exit_code);
 }
 

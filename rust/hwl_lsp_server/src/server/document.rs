@@ -1,9 +1,10 @@
-use crate::engine::vfs::{Content, FileDoesNotExist, VfsError};
+use crate::engine::vfs::{Content, VfsError};
 use crate::server::dispatch::NotificationHandler;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use fluent_uri::enc::EStr;
 use fluent_uri::HostData;
 use hwl_language::throw;
+use hwl_language::util::io::IoErrorExt;
 use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};
 use lsp_types::{DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier};
 use std::path::PathBuf;
@@ -18,10 +19,10 @@ impl NotificationHandler<DidOpenTextDocument> for ServerState {
         }
 
         let vfs = self.vfs.inner()?;
-        if vfs.exists(&uri) {
-            vfs.update(&uri, Content::Text(text)).unwrap();
+        if vfs.exists(&uri)? {
+            vfs.update(&uri, Content::Text(text)).expect("cannot fail");
         } else {
-            vfs.create(&uri, Content::Text(text)).unwrap();
+            vfs.create(&uri, Content::Text(text)).expect("cannot fail");
         }
 
         Ok(())
@@ -67,26 +68,29 @@ impl NotificationHandler<DidChangeTextDocument> for ServerState {
 impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
     fn handle_notification(&mut self, params: DidChangeWatchedFilesParams) -> RequestResult<()> {
         let DidChangeWatchedFilesParams { changes } = params;
+
+        let vfs = self.vfs.inner()?;
+        
         for change in changes {
             let FileEvent { uri, typ } = change;
             match typ {
-                // TODO assert that file does not yet exist for created
-                FileChangeType::CREATED | FileChangeType::CHANGED => {
-                    // let text = std::fs::read_to_string(uri.path())
-                    eprintln!("file at {:?} {:?} changed, we have to read it", uri, println!("{}", uri.path()));
+                FileChangeType::CREATED => {
+                    let path = uri_to_path(&uri)?;
+                    let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
+                    vfs.create(&uri, Content::Unknown(content)).map_err(VfsError::from)?;
+                }
+                FileChangeType::CHANGED => {
+                    let path = uri_to_path(&uri)?;
+                    let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
+                    vfs.update(&uri, Content::Unknown(content)).map_err(VfsError::from)?;
                 },
                 FileChangeType::DELETED => {
-                    match self.vfs.inner()?.delete(&uri) {
+                    match vfs.delete(&uri) {
                         Ok(()) => {}
-                        Err(e) => {
-                            let _: FileDoesNotExist = e;
-                            throw!(RequestError::Invalid(format!("deleted file that does not yet exist file change type {typ:?} for uri {uri:?}")))
-                        }
+                        Err(e) => throw!(e),
                     }
                 }
-                _ => {
-                    throw!(RequestError::Invalid(format!("unknown file change type {typ:?} for uri {uri:?}")))
-                }
+                _ => throw!(RequestError::Invalid(format!("unknown file change type {typ:?} for uri {uri:?}"))),
             };
         }
 
@@ -108,12 +112,19 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
         && uri.fragment().is_none();
 
     if !uri_ok {
-        return Err(VfsError::InvalidPathUri(uri.clone()));
+        throw!(VfsError::InvalidPathUri(uri.clone()));
     }
     // TODO always do decoding or only for some LSP clients? does the protocol really not specify this?
     let path = uri.path().as_estr().decode().into_string()
         .map_err(|_| VfsError::NonUtf8Path(uri.clone()))?
         .into_owned();
+
+    // TODO this is probably wrong on linux
+    let path = match path.strip_prefix('/') {
+        Some(path) => path,
+        None => throw!(VfsError::InvalidPathUri(uri.clone())),
+    };
+    
     Ok(PathBuf::from(path))
 }
 
