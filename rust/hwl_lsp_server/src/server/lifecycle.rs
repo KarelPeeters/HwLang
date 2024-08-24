@@ -1,4 +1,5 @@
-use crate::server::state::{RequestError, RequestHandler, ServerState};
+use crate::server::dispatch::RequestHandler;
+use crate::server::state::{RequestError, ServerState};
 use lsp_types::request::Shutdown;
 
 impl RequestHandler<Shutdown> for ServerState {

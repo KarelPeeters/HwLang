@@ -1,4 +1,5 @@
-use crate::server::state::{NotificationError, NotificationHandler, ServerState};
+use crate::server::dispatch::NotificationHandler;
+use crate::server::state::{NotificationError, ServerState};
 use hwl_language::throw;
 use indexmap::IndexMap;
 use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};

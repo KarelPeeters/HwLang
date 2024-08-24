@@ -1,6 +1,7 @@
+use crate::server::dispatch::RequestHandler;
 use crate::server::document::{Content, FileDoesNotExist};
 use crate::server::settings::PositionEncoding;
-use crate::server::state::{RequestError, RequestHandler, ServerState};
+use crate::server::state::{RequestError, ServerState};
 use hwl_language::syntax::pos::{FileId, LineOffsets};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::throw;
