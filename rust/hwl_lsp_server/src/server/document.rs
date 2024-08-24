@@ -1,74 +1,57 @@
 use crate::server::state::{NotificationError, NotificationHandler, ServerState};
-use hwl_language::syntax::pos::FileLineOffsets;
 use hwl_language::throw;
 use indexmap::IndexMap;
 use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};
 use lsp_types::{DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier};
 
-// Name and the general principle from the VFS of rust-analyzer.
+/// The name and the general principle come from the VFS of rust-analyzer.
 pub struct VirtualFileSystem {
-    map: IndexMap<Uri, VirtualFileContent>,
+    map: IndexMap<Uri, Content>,
 }
 
-pub struct VirtualFileContent {
-    // TODO support binary content?
-    text: String,
-    cached_line_offsets: Option<FileLineOffsets>,
+pub enum Content {
+    Unknown(Vec<u8>),
+    Text(String),
 }
 
-pub struct VirtualFileContentInit<'i> {
-    pub text: &'i str,
-    pub offsets: &'i FileLineOffsets,
-}
+#[derive(Debug)]
+pub struct FileAlreadyExists;
+#[derive(Debug)]
+pub struct FileDoesNotExist;
 
 impl VirtualFileSystem {
     pub fn new() -> Self {
         Self { map: IndexMap::default() }
     }
 
-    // TODO are there ordering guarantees between create and open? can we add some extra assertions here?
-    pub fn set_text_maybe_create(&mut self, uri: &Uri, text: String) {
-        // TODO check if text is the same before invaliding?
-        self.map.insert(uri.clone(), VirtualFileContent {
-            text,
-            cached_line_offsets: None,
-        });
-    }
-
-    pub fn delete(&mut self, uri: &Uri) {
-        assert!(self.map.swap_remove(uri).is_some());
-    }
-
-    pub fn get_full(&mut self, uri: &Uri) -> Option<VirtualFileContentInit> {
-        let content = self.map.get_mut(uri)?;
-        let line_offsets = content.cached_line_offsets.get_or_insert_with(|| FileLineOffsets::new(&content.text));
-        Some(VirtualFileContentInit {
-            text: &content.text,
-            offsets: line_offsets,
-        })
-    }
-}
-
-impl VirtualFileContent {
-    // pub fn new(text: String) -> Self {
-    //     Self {
-    //         content: text,
-    //         is
-    //         cached_line_offsets: None,
-    //     }
-    // }
-
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.cached_line_offsets = None;
-    }
-
-    pub fn get_full(&mut self) -> VirtualFileContentInit {
-        let offsets = self.cached_line_offsets.get_or_insert_with(|| FileLineOffsets::new(&self.text));
-        VirtualFileContentInit {
-            text: &self.text,
-            offsets,
+    pub fn create(&mut self, uri: &Uri, content: Content) -> Result<(), FileAlreadyExists> {
+        let prev = self.map.insert(uri.clone(), content);
+        match prev {
+            None => Ok(()),
+            Some(_) => Err(FileAlreadyExists),
         }
+    }
+
+    // TODO support incremental updates (and even incremental derived data updates?)
+    pub fn update(&mut self, uri: &Uri, content: Content) -> Result<(), FileDoesNotExist> {
+        let slot = self.map.get_mut(uri).ok_or(FileDoesNotExist)?;
+        *slot = content;
+        Ok(())
+    }
+
+    pub fn delete(&mut self, uri: &Uri) -> Result<(), FileDoesNotExist> {
+        match self.map.swap_remove(uri) {
+            Some(_) => Ok(()),
+            None => Err(FileDoesNotExist),
+        }
+    }
+
+    pub fn exists(&self, uri: &Uri) -> bool {
+        self.map.contains_key(uri)
+    }
+
+    pub fn get(&self, uri: &Uri) -> Result<&Content, FileDoesNotExist> {
+        self.map.get(uri).ok_or(FileDoesNotExist)
     }
 }
 
@@ -81,7 +64,11 @@ impl NotificationHandler<DidOpenTextDocument> for ServerState {
             throw!(NotificationError::Invalid(format!("trying to open file {uri:?} which is already open")))
         }
 
-        self.virtual_file_system.set_text_maybe_create(&uri, text);
+        if self.virtual_file_system.exists(&uri) {
+            self.virtual_file_system.update(&uri, Content::Text(text)).unwrap();
+        } else {
+            self.virtual_file_system.create(&uri, Content::Text(text)).unwrap();
+        }
 
         Ok(())
     }
@@ -96,6 +83,8 @@ impl NotificationHandler<DidCloseTextDocument> for ServerState {
             throw!(NotificationError::Invalid(format!("trying to close file {uri:?} which is not open")))
         }
 
+        // leave the file content in the VFS
+
         Ok(())
     }
 }
@@ -105,10 +94,16 @@ impl NotificationHandler<DidChangeTextDocument> for ServerState {
         let DidChangeTextDocumentParams { text_document, content_changes } = params;
         let VersionedTextDocumentIdentifier { uri, version: _ } = text_document;
 
+        if !self.open_files.contains(&uri) {
+            throw!(NotificationError::Invalid(format!("trying to change file {uri:?} which is not open")))
+        }
+
         for change in content_changes {
             let TextDocumentContentChangeEvent { range, range_length, text } = change;
             assert!(range.is_none() && range_length.is_none());
-            self.virtual_file_system.set_text_maybe_create(&uri, text);
+
+            self.virtual_file_system.update(&uri, Content::Text(text))
+                .expect("file is open so it must exist in the VFS too");
         }
 
         Ok(())
@@ -127,7 +122,13 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
                     eprintln!("file at {:?} changed, we have to read it", uri);
                 },
                 FileChangeType::DELETED => {
-                    self.virtual_file_system.delete(&uri);
+                    match self.virtual_file_system.delete(&uri) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let _: FileDoesNotExist = e;
+                            throw!(NotificationError::Invalid(format!("deleted file that does not yet exist file change type {typ:?} for uri {uri:?}")))
+                        }
+                    }
                 }
                 _ => {
                     throw!(NotificationError::Invalid(format!("unknown file change type {typ:?} for uri {uri:?}")))

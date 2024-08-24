@@ -130,12 +130,12 @@ impl Debug for Span {
     }
 }
 
-pub struct FileLineOffsets {
+pub struct LineOffsets {
     total_bytes: usize,
     line_to_start_byte: Vec<usize>,
 }
 
-impl FileLineOffsets {
+impl LineOffsets {
     // This set of line endings was chosen because it matches what the LSP protocol wants,
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
@@ -152,7 +152,7 @@ impl FileLineOffsets {
             prev_was_carriage_return = b == b'\r';
         }
 
-        FileLineOffsets {
+        LineOffsets {
             total_bytes: src.len(),
             line_to_start_byte
         }

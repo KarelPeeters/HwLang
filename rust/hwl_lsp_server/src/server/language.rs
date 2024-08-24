@@ -1,7 +1,9 @@
+use crate::server::document::{Content, FileDoesNotExist};
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestError, RequestHandler, ServerState};
-use hwl_language::syntax::pos::FileId;
+use hwl_language::syntax::pos::{FileId, LineOffsets};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
+use hwl_language::throw;
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
 use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult, TextDocumentIdentifier};
@@ -17,16 +19,24 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let TextDocumentIdentifier { uri } = text_document;
 
-        let info = match self.virtual_file_system.get_full(&uri) {
-            Some(source) => source,
-            // TODO do we need to support this for non-opened files too?
-            None => return Err(RequestError::Invalid(format!("file {uri:?} is not open"))),
+        let source = match self.virtual_file_system.get(&uri) {
+            Ok(Content::Text(text)) => text,
+            // TODO at least try parsing, or do we not need to support this for non-opened files?
+            Ok(Content::Unknown(_)) =>
+                throw!(RequestError::Invalid(format!("file {uri:?} might not be text"))),
+            Err(e) => {
+                let _: FileDoesNotExist = e;
+                throw!(RequestError::Invalid(format!("file {uri:?} does not exist")))
+            } 
         };
 
+        // TODO cache offsets somewhere
+        let offsets = LineOffsets::new(&source);
+        
         let mut semantic_tokens = vec![];
-        let mut prev_start_simple = info.offsets.full_span(FileId::SINGLE).start;
+        let mut prev_start_simple = offsets.full_span(FileId::SINGLE).start;
 
-        for token in Tokenizer::new(FileId::SINGLE, &info.text) {
+        for token in Tokenizer::new(FileId::SINGLE, &source) {
             let token = match token {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?
@@ -38,8 +48,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             };
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
-                let start = info.offsets.expand_pos(token.span.start);
-                let prev_start = info.offsets.expand_pos(prev_start_simple);
+                let start = offsets.expand_pos(token.span.start);
+                let prev_start = offsets.expand_pos(prev_start_simple);
 
                 // TODO check client multi-line token capability
                 // TODO extract position encoding to a common location
@@ -49,7 +59,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                 } else {
                     0..start.col_0
                 };
-                let start_line_byte = info.offsets.line_start_byte(start.line_0);
+                let start_line_byte = offsets.line_start_byte(start.line_0);
 
                 let (encoded_delta_start, encoded_length) = match self.settings.position_encoding {
                     PositionEncoding::Utf8 => (
@@ -57,8 +67,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                         token.span.len_bytes()
                     ),
                     PositionEncoding::Utf16 => (
-                        info.text[start_line_byte..][delta_col].encode_utf16().count(),
-                        info.text[token.span.start.byte..token.span.end.byte].encode_utf16().count(),
+                        source[start_line_byte..][delta_col].encode_utf16().count(),
+                        source[token.span.start.byte..token.span.end.byte].encode_utf16().count(),
                     ),
                 };
 
