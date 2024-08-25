@@ -1,9 +1,8 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
-use crate::data::diagnostic::DiagnosticAddable;
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::data::source::SourceDatabase;
-use crate::error::DiagnosticError;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
@@ -28,7 +27,7 @@ pub struct ScopeInfo<V> {
     values: IndexMap<String, (V, Span, Visibility)>,
 }
 
-pub type ScopeResult<T> = Result<T, DiagnosticError>;
+pub type ScopeResult<T> = Result<T, Diagnostic>;
 
 #[derive(Debug)]
 pub struct ScopeFound<V> {
@@ -69,11 +68,11 @@ impl<V> Scopes<V> {
 impl<V> ScopeInfo<V> {
     // TODO make _local_ shadowing configurable: allowed, non-local allowed, not allowed
     // TODO make "identifier" string configurable
-    pub fn declare<'a>(&mut self, database: &SourceDatabase, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
+    pub fn declare<'a>(&mut self, id: &ast::Identifier, var: V, vis: Visibility) -> ScopeResult<()> {
         if let Some(&(_, prev_span, _)) = self.values.get(&id.string) {
             // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
 
-            let err = database.diagnostic("identifier declared twice")
+            let err = Diagnostic::new("identifier declared twice")
                 .add_info(prev_span, "previously declared here")
                 .add_error(id.span, "declared again here")
                 .finish();
@@ -85,10 +84,10 @@ impl<V> ScopeInfo<V> {
         }
     }
 
-    pub fn maybe_declare(&mut self, database: &SourceDatabase, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ScopeResult<()> {
+    pub fn maybe_declare(&mut self, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> ScopeResult<()> {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
-                self.declare(database, id, var, vis),
+                self.declare(id, var, vis),
             ast::MaybeIdentifier::Dummy(_) =>
                 Ok(())
         }
@@ -108,7 +107,7 @@ impl<V> ScopeInfo<V> {
             if vis.can_access(value_vis) {
                 Ok(ScopeFound { defining_span: value_span, value })
             } else {
-                let err = database.diagnostic(format!("cannot access identifier `{}`", id.string))
+                let err = Diagnostic::new(format!("cannot access identifier `{}`", id.string))
                     .add_info(value_span, "identifier declared here")
                     .add_error(id.span, "not accessible here")
                     .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
@@ -120,7 +119,7 @@ impl<V> ScopeInfo<V> {
             scopes[parent].find(scopes, database, id, Visibility::minimum_access(vis, parent_vis))
         } else {
             // TODO add fuzzy-matched suggestions as info
-            let err = database.diagnostic(format!("undeclared identifier `{}`", id.string))
+            let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here and its parents")
                 .finish();
@@ -130,7 +129,6 @@ impl<V> ScopeInfo<V> {
 
     pub fn find_immediate_str(
         &self,
-        database: &SourceDatabase,
         id: &str,
         vis: Visibility,
     ) -> ScopeResult<ScopeFound<&V>> {
@@ -138,14 +136,14 @@ impl<V> ScopeInfo<V> {
             if vis.can_access(value_vis) {
                 Ok(ScopeFound { defining_span: value_span, value })
             } else {
-                let err = database.diagnostic(format!("cannot access identifier `{}` externally", id))
+                let err = Diagnostic::new(format!("cannot access identifier `{}` externally", id))
                     .add_info(value_span, "identifier declared here")
                     .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
                     .finish();
                 throw!(err)
             }
         } else {
-            let err = database.diagnostic(format!("undeclared identifier `{}`", id))
+            let err = Diagnostic::new(format!("undeclared identifier `{}`", id))
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here")
                 .finish();
             throw!(err)

@@ -1,11 +1,11 @@
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use hwl_language::back::lower;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::lowered::LoweredDatabase;
-use hwl_language::data::source::{FilePath, SourceDatabase};
+use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
 use hwl_language::error::CompileError;
 use hwl_language::front::driver::compile;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
@@ -17,9 +17,17 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    let Args { root } = Args::parse();
 
-    match main_inner(&args) {
+    let source_database = match build_source_database(&root) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("building source database failed: {e:?}");
+            std::process::exit(1);
+        }
+    };
+
+    match main_inner(&source_database) {
         Ok(result) => {
             println!("Compilation finished successfully");
             println!();
@@ -34,7 +42,10 @@ fn main() {
         }
         Err(e) => {
             match e {
-                CompileError::SnippetError(e) => eprintln!("{}", e.string),
+                CompileError::SnippetError(e) => {
+                    let e_str = e.to_string(&source_database, Default::default());
+                    eprintln!("{}", e_str)
+                },
                 _ => eprintln!("{:?}", e),
             }
             eprintln!("Compilation failed");
@@ -43,9 +54,13 @@ fn main() {
     }
 }
 
-fn main_inner(args: &Args) -> Result<LoweredDatabase, CompileError> {
-    let Args { root } = args;
+fn main_inner(source_database: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
+    let compiled_database = compile(&source_database)?;
+    let lowered_database = lower(&source_database, &compiled_database)?;
+    Ok(lowered_database)
+}
 
+fn build_source_database(root: &Path) -> Result<SourceDatabase, CompileSetError> {
     let mut source_database = SourceDatabase::new();
 
     // TODO proper error handling for IO and string conversion errors
@@ -69,8 +84,5 @@ fn main_inner(args: &Args) -> Result<LoweredDatabase, CompileError> {
         println!("Warning: no input files found");
     }
 
-    let compiled_database = compile(&source_database)?;
-    let lowered_database = lower(&source_database, &compiled_database)?;
-
-    Ok(lowered_database)
+    Ok(source_database)
 }

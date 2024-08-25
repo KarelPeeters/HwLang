@@ -55,7 +55,7 @@ impl ServerSender {
 
     pub fn send_notification<N: Notification>(&mut self, args: N::Params) -> SendResult {
         let notification = lsp_server::Notification {
-            method: notification::ShowMessage::METHOD.to_owned(),
+            method: N::METHOD.to_owned(),
             params: serde_json::to_value(args).unwrap(),
         };
 

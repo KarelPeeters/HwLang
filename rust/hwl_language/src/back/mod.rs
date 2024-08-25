@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::{DiagnosticAddable, DiagnosticContext};
+use crate::data::diagnostic::Diagnostic;
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
@@ -82,7 +82,7 @@ fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, 
             info
         },
         MaybeConstructor::Constructor(_) => {
-            source.diagnostic_todo(item_ast.span, "module instance with generic params/args");
+            source.panic_todo(item_ast.span, "module instance with generic params/args");
         }
         _ => unreachable!(),
     };
@@ -297,24 +297,26 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Resu
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
     let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
-    let top_entry = compiled[compiled[top_file].local_scope].find_immediate_str(source, "top", Visibility::Public)?;
+    let top_entry = compiled[compiled[top_file].local_scope].find_immediate_str("top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
             match &compiled[item].ty {
                 MaybeConstructor::Constructor(_) => {
-                    let err = source.diagnostic("top should be a module without generic parameters, got a constructor")
-                        .add_error(top_entry.defining_span, "defined here")
-                        .finish();
-                    Err(err.into())
+                    Err(Diagnostic::new_simple(
+                        "top should be a module without generic parameters, got a constructor",
+                        top_entry.defining_span,
+                        "defined here",
+                    ).into())
                 }
                 MaybeConstructor::Immediate(ty) => {
                     if let Type::Module(_) = ty {
                         Ok(item)
                     } else {
-                        let err = source.diagnostic("top should be a module, got a non-module type")
-                            .add_error(top_entry.defining_span, "defined here")
-                            .finish();
-                        Err(err.into())
+                        Err(Diagnostic::new_simple(
+                            "top should be a module, got a non-module type",
+                            top_entry.defining_span,
+                            "defined here",
+                        ).into())
                     }
                 }
             }
@@ -322,10 +324,11 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Resu
         ScopedEntry::Direct(_) => {
             // TODO include "got" string
             // TODO is this even ever possible? direct should only be inside of scopes
-            let err = source.diagnostic("top should be an item, got a direct")
-                .add_error(top_entry.defining_span, "defined here")
-                .finish();
-            Err(err.into())
+            Err(Diagnostic::new_simple(
+                "top should be an item, got a direct",
+                top_entry.defining_span,
+                "defined here",
+            ).into())
         }
     }
 }

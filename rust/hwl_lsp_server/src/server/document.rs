@@ -1,4 +1,4 @@
-use crate::engine::vfs::{Content, VfsError};
+use crate::engine::vfs::{Content, VfsError, VfsResult};
 use crate::server::dispatch::NotificationHandler;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use fluent_uri::enc::EStr;
@@ -7,7 +7,8 @@ use hwl_language::throw;
 use hwl_language::util::io::IoErrorExt;
 use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};
 use lsp_types::{DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 impl NotificationHandler<DidOpenTextDocument> for ServerState {
     fn handle_notification(&mut self, params: DidOpenTextDocumentParams) -> RequestResult<()> {
@@ -115,9 +116,7 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
         throw!(VfsError::InvalidPathUri(uri.clone()));
     }
     // TODO always do decoding or only for some LSP clients? does the protocol really not specify this?
-    let path = uri.path().as_estr().decode().into_string()
-        .map_err(|_| VfsError::NonUtf8Path(uri.clone()))?
-        .into_owned();
+    let path = uri.path().as_estr().decode().into_string().unwrap();
 
     // TODO this is probably wrong on linux
     let path = match path.strip_prefix('/') {
@@ -128,3 +127,22 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
     Ok(PathBuf::from(path))
 }
 
+/*
+FailedToConvertPathToUri(
+    "c:/Documents/Programming/HDL/hwlang/design/project\\top.kh",
+    "file:///c:/Documents/Programming/HDL/hwlang/design/project\\top.kh",
+    ParseError { index: 58, kind: UnexpectedChar })
+*/
+
+// TODO steal all of this from rust-analyzer
+pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
+    if !path.is_absolute() {
+        throw!(VfsError::ExpectedAbsolutePath(path.to_owned()));
+    }
+
+    let path_str = path.to_str().unwrap();
+    let uri_str = format!("file:///{}", path_str)
+        .replace('\\', "/");
+    Uri::from_str(&uri_str)
+        .map_err(|e| VfsError::FailedToConvertPathToUri(path.to_owned(), uri_str, e))
+}

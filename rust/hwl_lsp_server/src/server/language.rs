@@ -1,7 +1,8 @@
+use crate::engine::encode::encode_span_to_lsp;
 use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestResult, ServerState};
-use hwl_language::syntax::pos::{FileId, LineOffsets, Pos, Span};
+use hwl_language::syntax::pos::{FileId, LineOffsets, Span};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
@@ -22,7 +23,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         let offsets = LineOffsets::new(&source);
 
         let mut semantic_tokens = vec![];
-        let mut prev_start_simple = offsets.full_span(FileId::SINGLE).start;
+        let mut prev_start_simple = lsp_types::Position { line: 0, character: 0 };
 
         for token in Tokenizer::new(FileId::SINGLE, &source) {
             let token = match token {
@@ -66,44 +67,36 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 }
 
 fn to_semantic_token(
-    position_encoding: PositionEncoding,
+    encoding: PositionEncoding,
     source: &str,
     offsets: &LineOffsets,
-    prev_start_simple: &mut Pos,
+    prev_start: &mut lsp_types::Position,
     span: Span,
-    semantic_index: usize,
+    semantic_index: u32,
 ) -> SemanticToken {
-    let start = offsets.expand_pos(span.start);
-    let prev_start = offsets.expand_pos(*prev_start_simple);
+    let range = encode_span_to_lsp(encoding, offsets, source, span);
 
     // TODO extract position encoding to a common location
-    let delta_line = start.line_0 - prev_start.line_0;
-    let delta_col = if start.line_0 == prev_start.line_0 {
-        prev_start.col_0..start.col_0
+    let delta_line = range.start.line - prev_start.line;
+    let delta_start = if range.start.line == prev_start.line {
+        range.start.character - prev_start.character
     } else {
-        0..start.col_0
-    };
-    let start_line_byte = offsets.line_start(start.line_0);
-
-    let (encoded_delta_start, encoded_length) = match position_encoding {
-        PositionEncoding::Utf8 => (
-            delta_col.end - delta_col.start,
-            span.len_bytes()
-        ),
-        PositionEncoding::Utf16 => (
-            source[start_line_byte..][delta_col].encode_utf16().count(),
-            source[span.start.byte..span.end.byte].encode_utf16().count(),
-        ),
+        range.start.character
     };
 
-    *prev_start_simple = span.start;
+    let encoded_length = match encoding {
+        PositionEncoding::Utf8 => span.len_bytes(),
+        PositionEncoding::Utf16 => source[span.range_bytes()].encode_utf16().count(),
+    };
+
+    *prev_start = range.start;
 
     // TODO check int overflow
     SemanticToken {
-        delta_line: delta_line as u32,
-        delta_start: encoded_delta_start as u32,
+        delta_line,
+        delta_start,
         length: encoded_length as u32,
-        token_type: semantic_index as u32,
+        token_type: semantic_index,
         token_modifiers_bitset: 0,
     }
 }
@@ -134,6 +127,7 @@ pub fn semantic_token_legend() -> SemanticTokensLegend {
     }
 }
 
-pub fn semantic_token_index(category: TokenCategory) -> Option<usize> {
-    semantic_token_map(category).map(|_| category as usize)
+pub fn semantic_token_index(category: TokenCategory) -> Option<u32> {
+    // TODO this is super cursed, (why) is this correct?
+    semantic_token_map(category).map(|_| category as u32)
 }

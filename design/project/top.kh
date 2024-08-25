@@ -20,6 +20,8 @@ type TestType = bool;
 //type a = b;
 //type b = a;
 
+type foo(n: int_range(0..5)) = bits(n);
+
 pub module top ports (
     clk: input clock,
     reset: input async bool,

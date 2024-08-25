@@ -1,14 +1,28 @@
 use crossbeam_channel::{RecvError, SendError, TryRecvError};
+use hwl_language::throw;
 use hwl_lsp_server::server::logger::Logger;
 use hwl_lsp_server::server::sender::ServerSender;
 use hwl_lsp_server::server::settings::Settings;
-use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
+use hwl_lsp_server::server::state::{HandleMessageOutcome, OrSendError, RequestError, ServerState};
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
+use std::any::Any;
 use std::path::Path;
 
 fn main() -> Result<(), TopError> {
+    std::panic::catch_unwind(|| main_inner()).unwrap_or_else(|e| {
+        let s = match e.downcast::<String>() {
+            Err(e) => format!("{:?} with type {:?}", e, e.type_id()),
+            Ok(e_str) => format!("{:?}", e_str),
+        };
+
+        std::fs::write("panic.txt", s).unwrap();
+        Err(TopError::Panic)
+    })
+}
+
+fn main_inner() -> Result<(), TopError> {
     // TODO make this configurable through env var at least
     let mut logger = Logger::new(false, Some(Path::new("log.txt")));
     logger.log("server started");
@@ -98,7 +112,12 @@ fn main() -> Result<(), TopError> {
                 state.log("finished background work");
             }
             Err(e) => {
-                state.sender.send_notification_error(e, "background work")?;
+                match e {
+                    OrSendError::SendError(e) => throw!(e),
+                    OrSendError::Error(e) => {
+                        state.sender.send_notification_error(e, "background work")?;
+                    }
+                }
             }
         };
     };
@@ -117,6 +136,7 @@ pub enum TopError {
     SendError(SendError<Message>),
     Protocol(ProtocolError),
     InitJson(String),
+    Panic,
 }
 
 impl From<std::io::Error> for TopError {

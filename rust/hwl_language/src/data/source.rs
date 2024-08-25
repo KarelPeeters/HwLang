@@ -1,5 +1,4 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
-use crate::error::DiagnosticError;
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticStringSettings};
 use crate::syntax::pos::{FileId, LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::syntax::ParseError;
 use crate::util::arena::Arena;
@@ -18,6 +17,7 @@ pub struct SourceDatabase {
     pub root_directory: Directory,
 }
 
+// TODO rename
 #[derive(Debug, Clone)]
 pub enum CompileSetError {
     EmptyPath,
@@ -68,7 +68,7 @@ impl SourceDatabase {
     }
 
     // TODO parse immediately?
-    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<(), CompileSetError> {
+    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<FileId, CompileSetError> {
         if path.0.is_empty() {
             throw!(CompileSetError::EmptyPath);
         }
@@ -92,7 +92,7 @@ impl SourceDatabase {
         *slot = Some(file_id);
 
         self.files.insert_first(file_id, info);
-        Ok(())
+        Ok(file_id)
     }
 
     pub fn add_external_vhdl(&mut self, library: String, source: String) {
@@ -123,8 +123,15 @@ impl SourceDatabase {
         curr_dir
     }
 
-    pub fn diagnostic(&self, title: impl Into<String>) -> Diagnostic<'_> {
-        Diagnostic::new(self, title)
+    // TODO get rid of this as a concept, the LSP hates this
+    #[track_caller]
+    pub fn panic_todo(&self, span: Span, feature: &str) -> ! {
+        let message = format!("feature not yet implemented: '{}'", feature);
+        let err = Diagnostic::new(&message)
+            .add_error(span, "used here")
+            .finish();
+        eprintln!("{}", err.to_string(self, DiagnosticStringSettings::default()));
+        panic!("{}", message)
     }
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
@@ -135,11 +142,11 @@ impl SourceDatabase {
         self[span.start.file].offsets.expand_span(span)
     }
 
-    pub fn map_parser_error(&self, e: ParseError) -> DiagnosticError {
+    pub fn map_parser_error(&self, e: ParseError) -> Diagnostic {
         match e {
             ParseError::InvalidToken { location } => {
                 let span = Span::empty_at(location);
-                self.diagnostic("invalid token")
+                Diagnostic::new("invalid token")
                     .add_error(span, "invalid token")
                     .finish()
             }
@@ -147,7 +154,7 @@ impl SourceDatabase {
                 let span = Span::empty_at(location);
                 let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
 
-                self.diagnostic("unexpected eof")
+                Diagnostic::new("unexpected eof")
                     .add_error(span, "invalid token")
                     .footer(Level::Info, format!("expected one of {:?}", expected))
                     .finish()
@@ -157,7 +164,7 @@ impl SourceDatabase {
                 let span = Span::new(start, end);
                 let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
 
-                self.diagnostic("unexpected token")
+                Diagnostic::new("unexpected token")
                     .add_error(span, "unexpected token")
                     .footer(Level::Info, format!("expected one of {:?}", expected))
                     .finish()
@@ -166,7 +173,7 @@ impl SourceDatabase {
                 let (start, _, end) = token;
                 let span = Span::new(start, end);
 
-                self.diagnostic("unexpected extra token")
+                Diagnostic::new("unexpected extra token")
                     .add_error(span, "extra token")
                     .finish()
             }

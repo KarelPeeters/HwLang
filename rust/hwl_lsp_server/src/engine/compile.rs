@@ -1,17 +1,76 @@
-use crate::server::state::{RequestResult, ServerState};
-use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
-use hwl_language::data::compiled::CompiledDatabase;
-use hwl_language::data::source::{FilePath, SourceDatabase};
-use hwl_language::error::CompileResult;
+use crate::engine::encode::encode_span_to_lsp;
+use crate::engine::vfs::VfsResult;
+use crate::server::document::abs_path_to_uri;
+use crate::server::settings::PositionEncoding;
+use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
+use annotate_snippets::Level;
+use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
+use hwl_language::data::diagnostic::{Annotation, Diagnostic};
+use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
 use hwl_language::front::driver::compile;
-use hwl_language::try_inner;
-use std::path::Component;
+use hwl_language::syntax::pos::FileId;
+use hwl_language::{throw, try_inner};
+use indexmap::IndexMap;
+use lsp_types::{notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri};
+use std::cmp::Ordering;
+use std::fmt::Write;
+use std::path::{Component, PathBuf};
 
 impl ServerState {
-    pub fn compile_project(&mut self) -> RequestResult<CompileResult<()>> {
-        // build source database
+    pub fn compile_project_and_send_diagnostics(&mut self) -> Result<(), OrSendError<RequestError>> {
+        if self.vfs.inner().map_err(RequestError::from)?.get_and_clear_changed() {
+            eprintln!("file system changed, updating diagnostics");
+
+            let (source, abs_path_map) = match self.build_source_database()? {
+                Ok(v) => v,
+                Err(e) => throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
+            };
+
+            match compile(&source) {
+                Ok(_compiled_database) => {
+                    // TODO maybe keep the database somewhere for later use in extra LSP features
+                    self.log("project compilation succeeded");
+
+                    // explicitly clear all diagnostics
+                    for path in abs_path_map.values() {
+                        let uri = abs_path_to_uri(path).map_err(|e| OrSendError::Error(e.into()))?;
+                        self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
+                            uri,
+                            diagnostics: vec![],
+                            version: None,
+                        }).map_err(OrSendError::SendError)?;
+                    }
+                }
+                Err(diag) => {
+                    self.log(format!("project compilation failed: {:#?}", diag));
+
+                    // TODO be careful about how this should work with multiple files
+                    let (uri, diag) = diagnostic_to_lsp(
+                        self.settings.position_encoding,
+                        &source,
+                        &abs_path_map,
+                        diag,
+                    ).map_err(|e| OrSendError::Error(e.into()))?;
+
+                    self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
+                        uri,
+                        diagnostics: vec![diag],
+                        // TODO version
+                        version: None,
+                    }).map_err(OrSendError::SendError)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn build_source_database(&mut self) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), CompileSetError>> {
         let vfs = self.vfs.inner()?;
+        let vfs_root = vfs.root().clone();
+
         let mut source = SourceDatabase::new();
+        let mut abs_path_map: IndexMap<FileId, PathBuf> = IndexMap::new();
 
         for (path, content) in vfs.iter() {
             let mut steps = vec![];
@@ -27,17 +86,113 @@ impl ServerState {
 
             // remove final extension
             let last = steps.last_mut().unwrap();
-            *last = last.strip_suffix(LANGUAGE_FILE_EXTENSION)
+            *last = last.strip_suffix(&format!(".{LANGUAGE_FILE_EXTENSION}"))
                 .expect("only language source files should be in the VFS")
                 .to_owned();
 
             let text = content.get_text(path)?;
-            try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
+            let file_id = try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
+            abs_path_map.insert(file_id, vfs_root.join(&path));
         }
 
-        // actual compilation
-        let _: CompiledDatabase = try_inner!(compile(&source));
+        Ok(Ok((source, abs_path_map)))
+    }
+}
 
-        Ok(Ok(()))
+fn diagnostic_to_lsp(
+    encoding: PositionEncoding,
+    source: &SourceDatabase,
+    abs_path_map: &IndexMap<FileId, PathBuf>,
+    diagnostic: Diagnostic,
+) -> VfsResult<(Uri, lsp_types::Diagnostic)> {
+    let Diagnostic { title, snippets, footers } = diagnostic;
+
+    // find the file with the highest level annotation, that's probably the main one
+    let mut top_annotation: Option<&Annotation> = None;
+    for (_, annotations) in &snippets {
+        for annotation in annotations {
+            let is_better = match &top_annotation {
+                None => true,
+                // TODO better level comparison function
+                Some(prev) => compare_level(annotation.level, prev.level).is_gt(),
+            };
+            if is_better {
+                top_annotation = Some(annotation);
+            }
+        }
+    }
+    let top_annotation = top_annotation.unwrap();
+
+    // do the actual conversion
+    // TODO check client capabilities
+    let mut related_information = vec![];
+    for (_, annotations) in &snippets {
+        for annotation in annotations {
+            if annotation == top_annotation {
+                continue;
+            }
+            let &Annotation { level, span, ref label } = annotation;
+
+            let file = span.start.file;
+            let file_info = &source[file];
+            related_information.push(DiagnosticRelatedInformation {
+                location: Location {
+                    uri: abs_path_to_uri(abs_path_map.get(&file).unwrap())?,
+                    range: encode_span_to_lsp(encoding, &file_info.offsets, &file_info.source, span),
+                },
+                message: format!("{}: {}", level_to_str(level), label),
+            });
+        }
+    }
+
+    let top_file = top_annotation.span.start.file;
+    let top_file_info = &source[top_file];
+    let top_uri = abs_path_to_uri(abs_path_map.get(&top_file).unwrap())?;
+
+    let mut top_message = format!("{}\n{}", title, top_annotation.label);
+    for (footer_level, footer_message) in footers {
+        write!(&mut top_message, "\n{}: {}", level_to_str(footer_level), footer_message).unwrap();
+    }
+
+    let diag = lsp_types::Diagnostic {
+        range: encode_span_to_lsp(encoding, &top_file_info.offsets, &top_file_info.source, top_annotation.span),
+        severity: Some(level_to_severity(top_annotation.level)),
+        code: None,
+        code_description: None,
+        source: Some(LSP_SERVER_NAME.to_owned()),
+        message: top_message,
+        related_information: Some(related_information),
+        // TODO set tags once we support those
+        tags: None,
+        // TODO data for auto-fixes
+        data: None,
+    };
+
+    // return
+    // TODO maybe get the path name from the source map?
+    Ok((top_uri, diag))
+}
+
+fn compare_level(left: Level, right: Level) -> Ordering {
+    (left as u8).cmp(&(right as u8)).reverse()
+}
+
+fn level_to_severity(level: Level) -> DiagnosticSeverity {
+    match level {
+        Level::Error => DiagnosticSeverity::ERROR,
+        Level::Warning => DiagnosticSeverity::WARNING,
+        Level::Info => DiagnosticSeverity::INFORMATION,
+        Level::Note => DiagnosticSeverity::INFORMATION,
+        Level::Help => DiagnosticSeverity::HINT,
+    }
+}
+
+fn level_to_str(level: Level) -> &'static str {
+    match level {
+        Level::Error => "error",
+        Level::Warning => "warning",
+        Level::Info => "info",
+        Level::Note => "note",
+        Level::Help => "help",
     }
 }

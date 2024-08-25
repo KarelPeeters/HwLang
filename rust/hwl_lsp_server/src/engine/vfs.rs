@@ -26,12 +26,14 @@ pub enum Content {
 #[derive(Debug)]
 pub enum VfsError {
     InvalidPathUri(Uri),
-    NonUtf8Path(Uri),
     FileAlreadyExists(Uri, PathBuf),
     FileDoesNotExist(Uri, PathBuf),
     PathDoesNotStartWithRoot(Uri, PathBuf, PathBuf),
     Io(IoErrorWithPath),
     NonUtf8Content(PathBuf, Utf8Error),
+    NonUtf8Path(PathBuf),
+    ExpectedAbsolutePath(PathBuf),
+    FailedToConvertPathToUri(PathBuf, String, fluent_uri::ParseError),
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
