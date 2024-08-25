@@ -8,7 +8,7 @@ use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::{FilePath, SourceDatabase};
 use hwl_language::error::CompileError;
 use hwl_language::front::driver::compile;
-use hwl_language::util::io::recurse_for_each_file;
+use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
 
 #[derive(Parser, Debug)]
@@ -53,14 +53,16 @@ fn main_inner(args: &Args) -> Result<LoweredDatabase, CompileError> {
     recurse_for_each_file(&root, &mut |stack, f| {
         let path = f.path();
         if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
-            return;
+            return Ok(());
         }
 
         let mut stack = stack.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
         stack.push(path.file_stem().unwrap().to_str().unwrap().to_owned());
 
-        let source = std::fs::read_to_string(&path).unwrap();
+        let source = std::fs::read_to_string(&path).map_err(|e| e.with_path(path.clone()))?;
         source_database.add_file(FilePath(stack), path.to_str().unwrap().to_owned(), source).unwrap();
+
+        Ok(())
     }).unwrap();
 
     if source_database.files.len() == 0 {

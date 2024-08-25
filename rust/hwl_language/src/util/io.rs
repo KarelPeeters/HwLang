@@ -3,7 +3,7 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&[OsString], &DirEntry)) -> Result<(), IoErrorWithPath> {
+pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), IoErrorWithPath>) -> Result<(), IoErrorWithPath> {
     let mut stack = vec![];
     recurse_for_each_file_impl(dir, &mut stack, f)
 }
@@ -11,7 +11,7 @@ pub fn recurse_for_each_file(dir: &Path, f: &mut impl FnMut(&[OsString], &DirEnt
 pub fn recurse_for_each_file_impl(
     root: &Path,
     stack: &mut Vec<OsString>,
-    f: &mut impl FnMut(&[OsString], &DirEntry)
+    f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), IoErrorWithPath>
 ) -> Result<(), IoErrorWithPath> {
     if root.is_dir() {
         let read_dir = fs::read_dir(root)
@@ -25,7 +25,7 @@ pub fn recurse_for_each_file_impl(
                 recurse_for_each_file_impl(&next, stack, f)?;
                 stack.pop();
             } else {
-                f(&stack, &entry);
+                f(&stack, &entry)?;
             }
         }
     }

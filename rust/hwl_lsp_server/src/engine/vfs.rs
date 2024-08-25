@@ -1,8 +1,8 @@
-use crate::server::document;
 use crate::server::document::uri_to_path;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::throw;
-use hwl_language::util::io::{recurse_for_each_file, IoErrorWithPath};
+use hwl_language::util::data::IndexMapExt;
+use hwl_language::util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
 use std::ffi::OsStr;
@@ -12,7 +12,7 @@ use std::str::Utf8Error;
 /// The name and the general principle come from the VFS of rust-analyzer.
 pub struct VirtualFileSystem {
     root: PathBuf,
-    map: IndexMap<PathBuf, Content>,
+    map_rel: IndexMap<PathBuf, Content>,
     has_changed: bool,
 }
 
@@ -29,6 +29,7 @@ pub enum VfsError {
     NonUtf8Path(Uri),
     FileAlreadyExists(Uri, PathBuf),
     FileDoesNotExist(Uri, PathBuf),
+    PathDoesNotStartWithRoot(Uri, PathBuf, PathBuf),
     Io(IoErrorWithPath),
     NonUtf8Content(Uri, PathBuf, Utf8Error),
 }
@@ -39,21 +40,28 @@ impl VirtualFileSystem {
     pub fn new(root: Uri) -> VfsResult<Self> {
         eprintln!("new VFS with root {:?} {:?} {:?}", root.as_str(), root, root.path());
 
-        let root_path = document::uri_to_path(&root)?;
-        let vfs = VirtualFileSystem {
-            map: IndexMap::default(),
+        let root_path = uri_to_path(&root)?;
+        let mut vfs = VirtualFileSystem {
+            map_rel: IndexMap::default(),
             has_changed: true,
             root: root_path.clone(),
         };
 
         // initialize files from disk
-        recurse_for_each_file(&root_path, &mut |steps, f| {
+        recurse_for_each_file(&root_path, &mut |_, f| {
             let path = f.path();
             if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
-                return;
+                return Ok(());
             }
 
-            eprintln!("would read file at {:?}", path);
+            let path_rel = path.strip_prefix(&root_path).unwrap();
+            let source = std::fs::read(&path)
+                .map_err(|e| e.with_path(path.clone()))?;
+
+            vfs.map_rel.insert_first(path_rel.to_owned(), Content::Unknown(source));
+
+            eprintln!("read file {:?}", path_rel);
+            Ok(())
         })?;
 
         Ok(vfs)
@@ -62,8 +70,8 @@ impl VirtualFileSystem {
     pub fn create(&mut self, uri: &Uri, content: Content) -> VfsResult<()> {
         self.has_changed = true;
 
-        let path = uri_to_path(uri)?;
-        let prev = self.map.insert(path.clone(), content);
+        let path = self.uri_to_relative_path(uri)?;
+        let prev = self.map_rel.insert(path.clone(), content);
 
         match prev {
             None => Ok(()),
@@ -75,8 +83,8 @@ impl VirtualFileSystem {
     pub fn update(&mut self, uri: &Uri, content: Content) -> VfsResult<()> {
         self.has_changed = true;
 
-        let path = uri_to_path(uri)?;
-        let slot = self.map.get_mut(&path)
+        let path = self.uri_to_relative_path(uri)?;
+        let slot = self.map_rel.get_mut(&path)
             .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path))?;
         *slot = content;
 
@@ -86,8 +94,8 @@ impl VirtualFileSystem {
     pub fn delete(&mut self, uri: &Uri) -> VfsResult<()> {
         self.has_changed = true;
 
-        let path = uri_to_path(uri)?;
-        let prev = self.map.swap_remove(&path);
+        let path = self.uri_to_relative_path(uri)?;
+        let prev = self.map_rel.swap_remove(&path);
 
         match prev {
             Some(_) => Ok(()),
@@ -96,13 +104,13 @@ impl VirtualFileSystem {
     }
 
     pub fn exists(&self, uri: &Uri) -> VfsResult<bool> {
-        let path = uri_to_path(uri)?;
-        Ok(self.map.contains_key(&path))
+        let path = self.uri_to_relative_path(uri)?;
+        Ok(self.map_rel.contains_key(&path))
     }
 
     pub fn get_text(&mut self, uri: &Uri) -> VfsResult<&str> {
-        let path = uri_to_path(uri)?;
-        let content = self.map.get_mut(&path)
+        let path = self.uri_to_relative_path(uri)?;
+        let content = self.map_rel.get_mut(&path)
             .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path.clone()))?;
 
         if let Content::Unknown(bytes) = content {
@@ -124,6 +132,22 @@ impl VirtualFileSystem {
 
     pub fn get_and_clear_changed(&mut self) -> bool {
         std::mem::take(&mut self.has_changed)
+    }
+
+    fn uri_to_relative_path(&self, uri: &Uri) -> VfsResult<PathBuf> {
+        let path = uri_to_path(uri)?;
+        match path.strip_prefix(&self.root) {
+            Ok(rel) => Ok(rel.to_owned()),
+            Err(_) => Err(VfsError::PathDoesNotStartWithRoot(uri.clone(), path, self.root.clone())),
+        }
+    }
+
+    pub fn root(&self) -> &PathBuf {
+        &self.root
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item=(&PathBuf, &Content)> {
+        self.map_rel.iter()
     }
 }
 
