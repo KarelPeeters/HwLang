@@ -4,12 +4,14 @@ use crate::data::source::CompileSetError;
 #[must_use]
 #[derive(Debug)]
 pub enum CompileError {
-    // TODO this is not really a catagory, maybe this should be pushed to different sub-error types?
+    CompileSetError(CompileSetError),
+    // TODO this is not really a category, maybe this should be pushed to different sub-error types?
     //   maybe even with some fancy additional generics for the builder
     SnippetError(DiagnosticError),
-    CompileSetError(CompileSetError),
-    LowerError(LowerError)
+    LowerError(LowerError),
 }
+
+pub type CompileResult<T> = Result<T, CompileError>;
 
 #[must_use]
 #[derive(Debug)]

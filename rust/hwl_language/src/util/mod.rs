@@ -10,3 +10,13 @@ pub enum Never {}
 macro_rules! throw {
     ($e:expr) => { return Err($e.into()) };
 }
+
+#[macro_export]
+macro_rules! try_opt_result {
+    ($e:expr) => { 
+        match $e {
+            Some(v) => v,
+            None => return Ok(None),
+        }
+    };
+}
