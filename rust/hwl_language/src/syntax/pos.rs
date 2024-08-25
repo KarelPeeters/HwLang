@@ -72,6 +72,10 @@ impl Span {
     pub fn len_bytes(self) -> usize {
         self.end.byte - self.start.byte
     }
+
+    pub fn range_bytes(self) -> std::ops::Range<usize> {
+        self.start.byte..self.end.byte
+    }
 }
 
 impl PosFull {
@@ -143,13 +147,12 @@ impl LineOffsets {
     pub fn new(src: &str) -> Self {
         let mut line_to_start_byte = vec![0];
 
-        let mut prev_was_carriage_return = false;
         for (i, b) in src.as_bytes().iter().copied().enumerate() {
-            if b == b'\r' || (b == b'\n' && !prev_was_carriage_return) {
+            let b_next = src.as_bytes().get(i + 1).copied();
+            if b == b'\n' || (b == b'\r' && b_next != Some(b'\n')) {
                 // the next line starts _after_ this byte
                 line_to_start_byte.push(i + 1);
             }
-            prev_was_carriage_return = b == b'\r';
         }
 
         LineOffsets {
