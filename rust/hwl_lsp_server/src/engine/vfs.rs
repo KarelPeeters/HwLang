@@ -1,11 +1,13 @@
 use crate::server::document;
 use crate::server::document::uri_to_path;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_language::throw;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
 use std::ffi::OsStr;
 use std::path::PathBuf;
+use std::str::Utf8Error;
 
 /// The name and the general principle come from the VFS of rust-analyzer.
 pub struct VirtualFileSystem {
@@ -16,7 +18,9 @@ pub struct VirtualFileSystem {
 
 pub enum Content {
     Unknown(Vec<u8>),
+
     Text(String),
+    NonUtf8(Utf8Error),
 }
 
 #[derive(Debug)]
@@ -26,6 +30,7 @@ pub enum VfsError {
     FileAlreadyExists(Uri, PathBuf),
     FileDoesNotExist(Uri, PathBuf),
     Io(IoErrorWithPath),
+    NonUtf8Content(Uri, PathBuf, Utf8Error),
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -95,10 +100,26 @@ impl VirtualFileSystem {
         Ok(self.map.contains_key(&path))
     }
 
-    pub fn get(&self, uri: &Uri) -> VfsResult<&Content> {
+    pub fn get_text(&mut self, uri: &Uri) -> VfsResult<&str> {
         let path = uri_to_path(uri)?;
-        self.map.get(&path)
-            .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path))
+        let content = self.map.get_mut(&path)
+            .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path.clone()))?;
+
+        if let Content::Unknown(bytes) = content {
+            let bytes = std::mem::take(bytes);
+            *content = match String::from_utf8(bytes) {
+                Ok(text) => Content::Text(text),
+                Err(e) => Content::NonUtf8(e.utf8_error()),
+            };
+        }
+
+        match *content {
+            Content::Text(ref text) => Ok(text),
+            // TODO proper diagnostic that points to the actual place in the file
+            //  (shared with the normal compiler)
+            Content::NonUtf8(e) => throw!(VfsError::NonUtf8Content(uri.clone(), path, e)),
+            Content::Unknown(_) => unreachable!(),
+        }
     }
 
     pub fn get_and_clear_changed(&mut self) -> bool {

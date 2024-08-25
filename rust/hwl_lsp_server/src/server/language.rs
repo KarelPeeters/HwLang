@@ -1,10 +1,8 @@
-use crate::engine::vfs::Content;
 use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
-use crate::server::state::{RequestError, RequestResult, ServerState};
+use crate::server::state::{RequestResult, ServerState};
 use hwl_language::syntax::pos::{FileId, LineOffsets};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
-use hwl_language::throw;
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
 use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult, TextDocumentIdentifier};
@@ -17,17 +15,9 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             partial_result_params: _,
             text_document,
         } = params;
-
         let TextDocumentIdentifier { uri } = text_document;
 
-        let source = match self.vfs.inner()?.get(&uri) {
-            Ok(Content::Text(text)) => text,
-            // TODO at least try parsing, or do we not need to support this for non-opened files?
-            Ok(Content::Unknown(_)) =>
-                throw!(RequestError::Invalid(format!("file {uri:?} might not be text"))),
-            Err(e) => throw!(e),
-        };
-
+        let source = self.vfs.inner()?.get_text(&uri)?;
         // TODO cache offsets somewhere
         let offsets = LineOffsets::new(&source);
 
