@@ -466,7 +466,23 @@ impl<T> Spanned<T> {
         }
     }
 }
- 
+
+impl MaybeIdentifier {
+    pub fn span(&self) -> Span {
+        match self {
+            MaybeIdentifier::Dummy(span) => *span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+
+    pub fn string(&self) -> Option<&str> {
+        match self {
+            MaybeIdentifier::Dummy(_span) => None,
+            MaybeIdentifier::Identifier(id) => Some(&id.string),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ItemCommonInfo {
     pub span_full: Span,
@@ -501,4 +517,31 @@ impl Item {
                 ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
         }
     } 
+}
+
+impl BinaryOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Mod => "%",
+            BinaryOp::Pow => "**",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::BoolAnd => "&&",
+            BinaryOp::BoolOr => "||",
+            BinaryOp::Shl => "<<",
+            BinaryOp::Shr => ">>",
+            BinaryOp::CmpEq => "==",
+            BinaryOp::CmpNeq => "!=",
+            BinaryOp::CmpLt => "<",
+            BinaryOp::CmpLte => "<=",
+            BinaryOp::CmpGt => ">",
+            BinaryOp::CmpGte => ">=",
+            BinaryOp::In => "in",
+        }
+    }
 }

@@ -15,7 +15,7 @@ pub struct Pos {
 ///
 /// The line and column are stored as zero-based,
 /// whenever visible to the end user they should be displayed as one-based
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct PosFull {
     pub file: FileId,
     pub byte: usize,
@@ -124,6 +124,12 @@ impl SpanFull {
 impl Debug for Pos {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("Pos([{}]:{})", self.file.0, self.byte))
+    }
+}
+
+impl Debug for PosFull {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("PosFull([{}]:{}:{})", self.file.0, self.line_0 + 1, self.col_0 + 1))
     }
 }
 
