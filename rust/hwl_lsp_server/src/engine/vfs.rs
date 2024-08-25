@@ -6,7 +6,7 @@ use hwl_language::util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath}
 use indexmap::IndexMap;
 use lsp_types::Uri;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 
 /// The name and the general principle come from the VFS of rust-analyzer.
@@ -31,7 +31,7 @@ pub enum VfsError {
     FileDoesNotExist(Uri, PathBuf),
     PathDoesNotStartWithRoot(Uri, PathBuf, PathBuf),
     Io(IoErrorWithPath),
-    NonUtf8Content(Uri, PathBuf, Utf8Error),
+    NonUtf8Content(PathBuf, Utf8Error),
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -112,22 +112,7 @@ impl VirtualFileSystem {
         let path = self.uri_to_relative_path(uri)?;
         let content = self.map_rel.get_mut(&path)
             .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path.clone()))?;
-
-        if let Content::Unknown(bytes) = content {
-            let bytes = std::mem::take(bytes);
-            *content = match String::from_utf8(bytes) {
-                Ok(text) => Content::Text(text),
-                Err(e) => Content::NonUtf8(e.utf8_error()),
-            };
-        }
-
-        match *content {
-            Content::Text(ref text) => Ok(text),
-            // TODO proper diagnostic that points to the actual place in the file
-            //  (shared with the normal compiler)
-            Content::NonUtf8(e) => throw!(VfsError::NonUtf8Content(uri.clone(), path, e)),
-            Content::Unknown(_) => unreachable!(),
-        }
+        content.get_text(&path)
     }
 
     pub fn get_and_clear_changed(&mut self) -> bool {
@@ -146,8 +131,28 @@ impl VirtualFileSystem {
         &self.root
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=(&PathBuf, &Content)> {
-        self.map_rel.iter()
+    pub fn iter(&mut self) -> impl Iterator<Item=(&PathBuf, &mut Content)> {
+        self.map_rel.iter_mut()
+    }
+}
+
+impl Content {
+    pub fn get_text(&mut self, path: &Path) -> VfsResult<&str> {
+        if let Content::Unknown(bytes) = self {
+            let bytes = std::mem::take(bytes);
+            *self = match String::from_utf8(bytes) {
+                Ok(text) => Content::Text(text),
+                Err(e) => Content::NonUtf8(e.utf8_error()),
+            };
+        }
+
+        match *self {
+            Content::Text(ref text) => Ok(text),
+            // TODO proper diagnostic that points to the actual place in the file
+            //  (shared with the normal compiler)
+            Content::NonUtf8(e) => throw!(VfsError::NonUtf8Content(path.to_owned(), e)),
+            Content::Unknown(_) => unreachable!(),
+        }
     }
 }
 

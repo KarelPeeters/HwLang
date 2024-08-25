@@ -24,7 +24,7 @@ pub enum CompileSetError {
     DuplicatePath(FilePath),
 }
 
-/// Path relative to the root of the source database.
+/// Path relative to the root of the source database, without the trailing extension.
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
 

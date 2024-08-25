@@ -4,6 +4,8 @@ use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
 use crossbeam_channel::SendError;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_language::error::CompileError;
+use hwl_language::throw;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
@@ -35,6 +37,7 @@ pub enum RequestError {
     MethodNotImplemented,
     Invalid(String),
     Vfs(VfsError),
+    Internal(String),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -135,7 +138,23 @@ impl ServerState {
     pub fn do_background_work(&mut self) -> RequestResult<()> {
         if self.vfs.inner()?.get_and_clear_changed() {
             eprintln!("file system changed, updating diagnostics");
-            // TODO actually do diagnostics
+
+            match self.compile_project()? {
+                Ok(()) => {}
+                Err(e) => {
+                    match e {
+                        CompileError::CompileSetError(e) =>
+                            throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
+                        // TODO split this out into a separate error type
+                        CompileError::LowerError(_) =>
+                            throw!(RequestError::Internal("lower error, we're not lowering".to_owned())),
+                        CompileError::SnippetError(diag) => {
+                            // keep diagnostics in a nice format, delay formatting to string
+                            self.log(format!("diagnostic: {diag:?}"));
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -185,7 +204,11 @@ impl RequestError {
             RequestError::Vfs(e) => (
                 ErrorCode::InternalError,
                 format!("vfs error {e:?}"),
-            )
+            ),
+            RequestError::Internal(e) => (
+                ErrorCode::InternalError,
+                format!("internal error {e:?}"),
+            ),
         }
     }
 }

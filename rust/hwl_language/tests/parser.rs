@@ -37,5 +37,6 @@ fn parse_top() {
 fn parse_std_all() {
     recurse_for_each_file(Path::new("../../design/project/std"), &mut |_, entry| {
         test_parse(entry.path());
+        Ok(())
     }).unwrap();
 }

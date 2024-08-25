@@ -20,3 +20,13 @@ macro_rules! try_opt_result {
         }
     };
 }
+
+#[macro_export]
+macro_rules! try_inner {
+    ($e:expr) => { 
+        match $e {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e.into())),
+        }
+    };
+}
