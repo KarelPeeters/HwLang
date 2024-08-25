@@ -6,6 +6,7 @@ pub struct Settings {
     pub server_capabilities: ServerCapabilities,
 
     pub position_encoding: PositionEncoding,
+    pub supports_multi_line_semantic_tokens: bool,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -36,12 +37,20 @@ impl Settings {
         let mut watch_dynamic = false;
         if let Some(workspace) = &initialize_params.capabilities.workspace {
             if let Some(did_change_watched_files) = workspace.did_change_watched_files {
-                watch_dynamic = did_change_watched_files.dynamic_registration == Some(true);
+                watch_dynamic = did_change_watched_files.dynamic_registration.unwrap_or(false);
             }
         }
         // TODO support watching file changes ourself? but then how does synchronization work?
         if !watch_dynamic {
             return Err(SettingsError("this server requires dynamic watched files registration".to_string()));
+        }
+
+        // check if the client supports multi-line tokens
+        let mut supports_multi_line_semantic_tokens = false;
+        if let Some(text_document) = &initialize_params.capabilities.text_document {
+            if let Some(semantic_tokens) = &text_document.semantic_tokens {
+                supports_multi_line_semantic_tokens = semantic_tokens.multiline_token_support.unwrap_or(false);
+            }
         }
 
         // TODO for all of these, first check that the server supports them
@@ -60,7 +69,12 @@ impl Settings {
             ..Default::default()
         };
 
-        Ok(Self { initialize_params, server_capabilities, position_encoding })
+        Ok(Self {
+            initialize_params,
+            server_capabilities,
+            position_encoding,
+            supports_multi_line_semantic_tokens,
+        })
     }
 
     pub fn server_capabilities(&self) -> &ServerCapabilities {

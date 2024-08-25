@@ -136,7 +136,30 @@ impl Debug for Span {
 
 pub struct LineOffsets {
     total_bytes: usize,
-    line_to_start_byte: Vec<usize>,
+    line_info: Vec<LineInfo>,
+}
+
+// TODO get this more compact by using u32?
+//   we can even get rid of the the 2_char bit and store a single default per file plus a set of exceptions
+//   or maybe simpler, a separate bitset
+#[derive(Debug, Copy, Clone)]
+struct LineInfo(usize);
+
+impl LineInfo {
+    pub fn new(start_byte: usize, follows_2_char_ending: bool) -> Self {
+        assert_eq!(start_byte & (1 << (usize::BITS - 1)), 0);
+        LineInfo(start_byte | (follows_2_char_ending as usize) << (usize::BITS - 1))
+    }
+
+    /// The byte index at which this line starts.
+    pub fn start_byte(&self) -> usize {
+        self.0 & !(1 << (usize::BITS - 1))
+    }
+
+    /// Whether the previous line ends with "\r\n".
+    pub fn follows_2_char_ending(&self) -> bool {
+        self.0 & (1 << (usize::BITS - 1)) != 0
+    }
 }
 
 impl LineOffsets {
@@ -144,20 +167,34 @@ impl LineOffsets {
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
 
+    // TODO switch to memchr, benchmark the difference
     pub fn new(src: &str) -> Self {
-        let mut line_to_start_byte = vec![0];
+        let mut line_info = vec![LineInfo::new(0, false)];
+        let mut follows_2_char_ending = false;
 
-        for (i, b) in src.as_bytes().iter().copied().enumerate() {
-            let b_next = src.as_bytes().get(i + 1).copied();
-            if b == b'\n' || (b == b'\r' && b_next != Some(b'\n')) {
-                // the next line starts _after_ this byte
-                line_to_start_byte.push(i + 1);
+        for (i, b) in src.bytes().enumerate() {
+            match b {
+                b'\r' => {
+                    let b_next = src.as_bytes().get(i + 1).copied();
+                    if b_next == Some(b'\n') {
+                        assert!(!follows_2_char_ending);
+                        follows_2_char_ending = true;
+                    } else {
+                        line_info.push(LineInfo::new(i + 1, follows_2_char_ending));
+                        follows_2_char_ending = false;
+                    }
+                }
+                b'\n' => {
+                    line_info.push(LineInfo::new(i + 1, follows_2_char_ending));
+                    follows_2_char_ending = false;
+                }
+                _ => {}
             }
         }
 
         LineOffsets {
             total_bytes: src.len(),
-            line_to_start_byte
+            line_info
         }
     }
 
@@ -166,7 +203,7 @@ impl LineOffsets {
     }
 
     pub fn line_count(&self) -> usize {
-        self.line_to_start_byte.len()
+        self.line_info.len()
     }
 
     pub fn full_span(&self, file: FileId) -> Span {
@@ -178,9 +215,9 @@ impl LineOffsets {
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
         // OPTIMIZE: maybe cache the last lookup and check its neighborhood first
-        let line_0 = self.line_to_start_byte.binary_search(&pos.byte)
+        let line_0 = self.line_info.binary_search_by_key(&pos.byte, |info| info.start_byte())
             .unwrap_or_else(|next_line_0| next_line_0 - 1);
-        let col_0 = pos.byte - self.line_to_start_byte[line_0];
+        let col_0 = pos.byte - self.line_info[line_0].start_byte();
         PosFull {
             file: pos.file,
             byte: pos.byte,
@@ -197,7 +234,70 @@ impl LineOffsets {
         }
     }
 
-    pub fn line_start_byte(&self, line_0: usize) -> usize {
-        self.line_to_start_byte[line_0]
+    pub fn line_start(&self, line_0: usize) -> usize {
+        self.line_info[line_0].start_byte()
+    }
+
+    pub fn line_end(&self, line_0: usize, include_terminator: bool) -> usize {
+        self.line_info.get(line_0 + 1)
+            .map_or(self.total_bytes, |info| {
+                if include_terminator {
+                    // range runs until the next line starts
+                    info.start_byte()
+                } else if info.follows_2_char_ending() {
+                    // exclude the two character line ending
+                    info.start_byte() - 2
+                } else {
+                    // exclude the single character line ending
+                    info.start_byte() - 1
+                }
+            })
+    }
+
+    pub fn line_range(&self, line_0: usize, include_terminator: bool) -> std::ops::Range<usize> {
+        self.line_start(line_0)..self.line_end(line_0, include_terminator)
+    }
+
+    pub fn split_lines(&self, span: SpanFull, include_terminator: bool) -> impl Iterator<Item=SpanFull> + '_ {
+        assert_eq!(span.start.file, span.end.file);
+        let file = span.start.file;
+
+        (span.start.line_0..=span.end.line_0).filter_map(move |line_0| {
+            // start from the entire line
+            let range = self.line_range(line_0, include_terminator);
+            let mut start = range.start;
+            let mut end = range.end;
+
+            // limit the range to the span
+            if line_0 == span.start.line_0 {
+                start = max(start, span.start.byte);
+            }
+            if line_0 == span.end.line_0 {
+                end = min(end, span.end.byte);
+            }
+
+            // skip less-than-empty ranges
+            // they can happen when the span starts in the middle of the newline terminator
+            if start > end {
+                return None;
+            }
+
+            // emit the now clean, single-line span
+            let span = SpanFull {
+                start: PosFull {
+                    file,
+                    byte: start,
+                    line_0,
+                    col_0: start - self.line_info[line_0].start_byte(),
+                },
+                end: PosFull {
+                    file,
+                    byte: end,
+                    line_0,
+                    col_0: end - self.line_info[line_0].start_byte(),
+                },
+            };
+            Some(span)
+        })
     }
 }

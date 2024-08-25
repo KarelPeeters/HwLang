@@ -120,8 +120,8 @@ impl<'d> Diagnostic<'d> {
             let span_snippet = offsets.expand_span(span);
             let start_line_0 = span_snippet.start.line_0.saturating_sub(SNIPPET_CONTEXT_LINES);
             let end_line_0 = min(span_snippet.end.line_0 + SNIPPET_CONTEXT_LINES, offsets.line_count() - 1);
-            let start_byte = offsets.line_start_byte(start_line_0);
-            let end_byte = offsets.line_start_byte(end_line_0);
+            let start_byte = offsets.line_start(start_line_0);
+            let end_byte = offsets.line_end(end_line_0, false);
             let source = &file_info.source[start_byte..end_byte];
 
             // create snippet
