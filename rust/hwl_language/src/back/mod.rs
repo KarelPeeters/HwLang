@@ -1,10 +1,10 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
+use crate::data::diagnostic::{DiagnosticAddable, DiagnosticContext};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
 use crate::error::CompileError;
 use crate::front::common::ScopedEntry;
-use crate::front::diagnostic::{DiagnosticAddable, DiagnosticContext};
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};

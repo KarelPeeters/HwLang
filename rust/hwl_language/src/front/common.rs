@@ -3,6 +3,8 @@ use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use indexmap::IndexMap;
 
+// TODO move all common stuff to the data module, since multiple stages depend on it
+
 // TODO pick a better name for this
 // TODO is this still necessary? can't items also be sorted into types or values immediately? 
 #[derive(Debug, Clone)]

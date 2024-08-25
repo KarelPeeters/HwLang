@@ -1,5 +1,5 @@
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::error::DiagnosticError;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::syntax::ParseError;
 use crate::util::arena::Arena;

@@ -1,9 +1,9 @@
 use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ModulePort, ModulePortInfo};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
 use crate::error::{CompileError, CompileResult};
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticContext};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};

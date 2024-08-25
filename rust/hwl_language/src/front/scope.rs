@@ -1,9 +1,9 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
+use crate::data::diagnostic::DiagnosticAddable;
 use crate::data::source::SourceDatabase;
 use crate::error::DiagnosticError;
-use crate::front::diagnostic::DiagnosticAddable;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
