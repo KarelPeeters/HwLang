@@ -19,13 +19,14 @@ use std::path::{Component, PathBuf};
 impl ServerState {
     pub fn compile_project_and_send_diagnostics(&mut self) -> Result<(), OrSendError<RequestError>> {
         if self.vfs.inner().map_err(RequestError::from)?.get_and_clear_changed() {
-            eprintln!("file system changed, updating diagnostics");
+            self.log("file system changed, updating diagnostics");
 
             let (source, abs_path_map) = match self.build_source_database()? {
                 Ok(v) => v,
                 Err(e) => throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
             };
 
+            self.log("source database built, compiling");
             match compile(&source) {
                 Ok(_compiled_database) => {
                     // TODO maybe keep the database somewhere for later use in extra LSP features

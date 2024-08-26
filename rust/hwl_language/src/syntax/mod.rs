@@ -3,8 +3,7 @@ use lalrpop_util::lalrpop_mod;
 use pos::Pos;
 
 use crate::syntax::pos::{FileId, Span};
-use crate::syntax::token::{TokenCategory, TokenType, Tokenizer};
-use crate::util::Never;
+use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 
 pub mod ast;
 pub mod pos;
@@ -12,8 +11,7 @@ pub mod token;
 
 lalrpop_mod!(grammar, "/syntax/grammar.rs");
 
-// TODO convert to diagnostic
-pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, Never>;
+pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, TokenError>;
 
 /// Utility struct for the grammer file.
 pub struct LocationBuilder {
@@ -49,6 +47,5 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
     result.map_err(|e| {
         e.map_location(|byte| Pos { file, byte })
             .map_token(|token| token.map(str::to_owned))
-            .map_error(|_| unreachable!("no custom errors used in the grammer"))
     })
 }
