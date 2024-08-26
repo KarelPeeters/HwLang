@@ -967,6 +967,20 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
 
                 match op {
+                    BinaryOp::Add => {
+                        let range = RangeInfo {
+                            start: option_pair(left.start.as_ref(), right.start.as_ref())
+                                .map(|(left_start, right_start)|
+                                    Box::new(Value::Binary(BinaryOp::Add, left_start.clone(), right_start.clone()))
+                                ),
+                            end: option_pair(left.end.as_ref(), right.end.as_ref())
+                                .map(|(left_end, right_end)|
+                                    Box::new(Value::Binary(BinaryOp::Add, left_end.clone(), right_end.clone()))
+                                ),
+                            end_inclusive: false,
+                        };
+                        Ok(Some(range))
+                    }
                     BinaryOp::Sub => {
                         let range = RangeInfo {
                             start: option_pair(left.start.as_ref(), right.end.as_ref())
