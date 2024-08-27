@@ -118,21 +118,18 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
     // TODO always do decoding or only for some LSP clients? does the protocol really not specify this?
     let path = uri.path().as_estr().decode().into_string().unwrap();
 
-    // TODO this is probably wrong on linux
-    let path = match path.strip_prefix('/') {
-        Some(path) => path,
-        None => throw!(VfsError::InvalidPathUri(uri.clone())),
+    // TODO this is sketchy
+    let path = if cfg!(windows) {
+        match path.strip_prefix('/') {
+            Some(path) => path,
+            None => throw!(VfsError::InvalidPathUri(uri.clone())),
+        }
+    } else {
+        &*path
     };
-    
+
     Ok(PathBuf::from(path))
 }
-
-/*
-FailedToConvertPathToUri(
-    "c:/Documents/Programming/HDL/hwlang/design/project\\top.kh",
-    "file:///c:/Documents/Programming/HDL/hwlang/design/project\\top.kh",
-    ParseError { index: 58, kind: UnexpectedChar })
-*/
 
 // TODO steal all of this from rust-analyzer
 pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
@@ -141,8 +138,12 @@ pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
     }
 
     let path_str = path.to_str().unwrap();
-    let uri_str = format!("file:///{}", path_str)
-        .replace('\\', "/");
+    let uri_str = if cfg!(windows) {
+        format!("file:///{}", path_str).replace('\\', "/")
+    } else {
+        format!("file://{}", path_str)
+    };
+
     Uri::from_str(&uri_str)
         .map_err(|e| VfsError::FailedToConvertPathToUri(path.to_owned(), uri_str, e))
 }
