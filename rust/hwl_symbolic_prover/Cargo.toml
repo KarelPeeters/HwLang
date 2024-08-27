@@ -1,0 +1,9 @@
+[package]
+name = "hwl_symbolic_prover"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+num-bigint.workspace = true
+num-traits.workspace = true
+rand.workspace = true

@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 egg = "0.9.5"
+itertools.workspace = true

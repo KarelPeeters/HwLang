@@ -269,6 +269,7 @@ name = "egg_experiment"
 version = "0.1.0"
 dependencies = [
  "egg",
+ "itertools 0.13.0",
 ]
 
 [[package]]
@@ -401,6 +402,15 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+]
+
+[[package]]
+name = "hwl_symbolic_prover"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "rand",
 ]
 
 [[package]]
