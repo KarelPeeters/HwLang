@@ -1,10 +1,11 @@
 from typing import List
 
-import z3
-from z3 import BoolRef
+import z3  # type: ignore
 
 
-def prove_all(known: List[BoolRef], to_prove: List[BoolRef]):
+z3.set_option(verbose = 20)
+
+def prove_all(known: List[z3.BoolRef], to_prove: List[z3.BoolRef]):
     s = z3.Solver()
     s.add(*known)
 
@@ -46,16 +47,33 @@ def prove_all(known: List[BoolRef], to_prove: List[BoolRef]):
 # type derp(a: uint, b: uint, c: int_range(a..a+b)) = ...
 
 a = z3.Int("a")
-b = z3.Int("b")
+# b = z3.Int("b")
+
+# this function assumes that (exp >= 0 and not (base == 0 and exp == 0))
+int_sort = z3.IntSort()
+power = z3.RecFunction("power", int_sort, int_sort, int_sort)
+power_base = z3.FreshConst(int_sort)
+power_exp = z3.FreshConst(int_sort)
+z3.RecAddDefinition(
+    power,
+    [power_base, power_exp],
+    z3.If(
+        (power_base <= 0) | (power_exp < 0),
+        0,
+        z3.If(
+            power_exp == 0,
+            1,
+            power_base * power(power_base, power_exp-1),
+        )
+    )
+)
 
 prove_all(
     known=[
-        a >= 0,
-        b >= 0,
+        a >= 1,
+        # b >= 10,
     ],
     to_prove=[
-        # a + b >= a,
-        b >= a,
-        a + 2 * b >= a,
-    ]
+        power(2, a) >= 0,
+    ],
 )
