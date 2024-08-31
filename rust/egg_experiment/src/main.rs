@@ -14,15 +14,18 @@ fn main() {
 
     // note: >= and other comparisons always have "0" as the right-hand-side
     let expr_known = vec![
-        "(>= a)",
-        "(>= b)",
+        // "(>= a)",
+        // "(>= b)",
+        "(+ a (+ b (- a)))"
     ];
     let expr_to_prove = vec![
-        "(>= a)",
-        "(>= (- (+ a b) a))",
+        // "(>= a)",
+        // "(>= (+ (+ a b) (- a)))",
+        // "(>= (** 2 a))",
     ];
 
-    let mut egraph = EGraph::new(());
+    let mut egraph = EGraph::new(())
+        .with_explanations_enabled();
 
     println!("Mapping expressions");
     let mut map_expr = |e: &&str| {
@@ -38,20 +41,21 @@ fn main() {
     let runner = Runner::default()
         .with_explanations_enabled()
         .with_egraph(egraph)
+        .with_node_limit(32)
         .run(&rules);
-    // runner.print_report();
+    runner.print_report();
     let egraph = runner.egraph;
 
     println!("Resulting egraph:");
-    for class in egraph.classes() {
-        print!("  Id({:?})", class.id);
+    for class in egraph.classes().sorted_by_key(|c| c.id) {
+        print!("  Id({:?}) {}", class.id, egraph.id_to_expr(class.id));
         println!(":");
         for node in &class.nodes {
             println!("     {:?}", node);
         }
     }
 
-    egraph.dot().to_svg("ignored/egraph.svg").unwrap();
+    // egraph.dot().to_svg("ignored/egraph.svg").unwrap();
 
     println!("checking proof");
     let mut all_known_true = true;
@@ -74,9 +78,9 @@ fn main() {
         }
     }
     if all_known_true {
-        println!("=> success, all to prove conditions are true")
+        println!("=> success")
     } else {
-        println!("=> failed, count not prove everything to be true")
+        println!("=> failed")
     }
 
     // let is_true = !runner.egraph.equivs(&expr_test, &expr_true).is_empty();
@@ -125,17 +129,20 @@ fn rules() -> Vec<Rewrite<SymbolLang, ()>> {
     let mut rules: Vec<Rewrite<SymbolLang, ()>> = vec![];
     rules.push(rewrite!("commute-add"; "(+ ?x ?y)" => "(+ ?y ?x)"));
     rules.push(rewrite!("commute-mul"; "(* ?x ?y)" => "(* ?y ?x)"));
-    rules.extend(rewrite!("distribute-add-mul"; "(+ (* ?x ?y) (* ?x ?z))" <=> "(* ?x (+ ?y ?z))"));
+    rules.extend(rewrite!("assoc-add"; "(+ (+ ?x ?y) ?z)" <=> "(+ ?x (+ ?y ?z))"));
+    rules.extend(rewrite!("assoc-mul"; "(* (* ?x ?y) ?z)" <=> "(* ?x (* ?y ?z))"));
+    rules.extend(rewrite!("distr-add-mul"; "(* ?x (+ ?y ?z))" <=> "(+ (* ?x ?y) (* ?x ?z))"));
 
-    rules.push(rewrite!("cancel-add-sub"; "(- (+ ?x ?y) ?y)" => "?x"));
+    rules.push(rewrite!("cancel-add-neg"; "(+ ?x (- ?x))" => "0"));
 
     rules.push(rewrite!("add-0"; "(+ ?x 0)" => "?x"));
     rules.push(rewrite!("mul-0"; "(* ?x 0)" => "0"));
     rules.push(rewrite!("mul-1"; "(* ?x 1)" => "?x"));
+    rules.push(rewrite!("neg-0"; "(- 0)" => "0"));
 
-    rules.push(rewrite!("reflex-eq"; "(= ?x ?x)" => "1"));
     rules.push(rewrite!("select-0"; "(s 0 ?x ?y)" => "?x"));
     rules.push(rewrite!("select-1"; "(s 1 ?x ?y)" => "?y"));
+    rules.push(rewrite!("select-same"; "(s ?x ?y ?y)" => "?y"));
 
     rules
 }
