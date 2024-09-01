@@ -21,6 +21,7 @@ pub enum Value {
     Range(RangeInfo<Box<Value>>),
     // TODO this BinaryOp should probably be separate from the ast one
     Binary(BinaryOp, Box<Value>, Box<Value>),
+    UnaryNot(Box<Value>),
 
     // structures
     Function(FunctionValue),
@@ -83,8 +84,10 @@ impl GenericContainer for Value {
         match *self {
             Value::GenericParameter(param) =>
                 map_value.get(&param).cloned().unwrap_or(Value::GenericParameter(param)),
-            Value::FunctionParameter(unique_id) => Value::FunctionParameter(unique_id),
-            Value::ModulePort(unique_id) => Value::ModulePort(unique_id),
+            Value::FunctionParameter(unique_id) =>
+                Value::FunctionParameter(unique_id),
+            Value::ModulePort(unique_id) =>
+                Value::ModulePort(unique_id),
 
             Value::Int(_) => todo!(),
             Value::Range(_) => todo!(),
@@ -95,6 +98,8 @@ impl GenericContainer for Value {
                     Box::new(right.replace_generic_params(map_ty, map_value)),
                 )
             }
+            Value::UnaryNot(ref inner) =>
+                Value::UnaryNot(Box::new(inner.replace_generic_params(map_ty, map_value))),
 
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),

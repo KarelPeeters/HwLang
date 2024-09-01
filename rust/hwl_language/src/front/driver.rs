@@ -674,7 +674,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         )
                     }
                     UnaryOp::Not =>
-                        throw!(Diagnostic::new_todo(expr.span, "unary op not expression")),
+                        Value::UnaryNot(Box::new(self.eval_expression_as_value(scope, inner)?)),
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
@@ -1063,6 +1063,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     _ => Ok(None),
                 }
             },
+            Value::UnaryNot(_) => Ok(None),
             Value::Range(_) => panic!("range can't itself have a range type"),
             Value::Function(_) => panic!("function can't have a range type"),
             Value::Module(_) => panic!("module can't have a range type"),
@@ -1109,6 +1110,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let right = self.value_to_readable_str(right);
                 let symbol = op.symbol();
                 format!("({} {} {})", left, symbol, right)
+            }
+            Value::UnaryNot(ref inner) => {
+                let inner = self.value_to_readable_str(inner);
+                format!("(!{})", inner)
             }
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),

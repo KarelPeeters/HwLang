@@ -30,7 +30,7 @@ pub module top ports (
 ) {
     combinatorial {
         // leds = invert(4, button);
-        leds = buttons;
+        leds = !buttons;
     }
 
 //    clocked(clk, reset) {

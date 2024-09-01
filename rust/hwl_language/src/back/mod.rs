@@ -270,6 +270,7 @@ fn value_evaluate_int(value: &Value) -> BigInt {
                 _ => todo!("evaluate binary value {value:?}")
             }
         },
+        Value::UnaryNot(_) => todo!(),
         Value::GenericParameter(_) => todo!(),
         Value::FunctionParameter(_) => todo!(),
         Value::ModulePort(_) => todo!(),
