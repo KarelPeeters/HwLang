@@ -4,5 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-egg = "0.9.5"
+#egg = "0.9.5"
+egg = { path = "../../../egg" }
+env_logger.workspace = true
 itertools.workspace = true
