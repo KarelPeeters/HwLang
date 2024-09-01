@@ -44,3 +44,4 @@ Websites and blog posts:
   * Other
     * https://matklad.github.io/2023/02/21/why-SAT-is-hard.html
     * https://matklad.github.io/2020/03/22/fast-simple-rust-interner.html
+* Refinement types: https://arxiv.org/pdf/2010.07763
