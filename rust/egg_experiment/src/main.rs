@@ -1,10 +1,16 @@
-use egg::{rewrite, Analysis, AstSize, Condition, DidMerge, Extractor, Id, Language, Rewrite, Runner, Subst, SymbolLang, Var};
+use egg::{rewrite, Analysis, AstSize, Condition, CostFunction, DidMerge, Extractor, Id, Rewrite, Runner, Subst, SymbolLang, Var};
 use itertools::Itertools;
 use std::cmp::min;
 use std::str::FromStr;
 
 fn main() {
     let mut rules: Vec<Rewrite<SymbolLang, _>> = vec![];
+
+    let expr = "(+ (* a (+ a b)) (- (* a b)))";
+    let expr = expr.parse().unwrap();
+
+    let max = AstSize.cost_rec(&expr) * 2;
+    let build_check = |base, vars| build_check(max, base, vars);
 
     rules.push(rewrite!("commute-add"; "(+ ?x ?y)" => "(+ ?y ?x)" if build_check(1, "?x ?y")));
     rules.extend(rewrite!("assoc-add"; "(+ (+ ?x ?y) ?z)" <=> "(+ ?x (+ ?y ?z))" if build_check(2, "?x ?y ?z")));
@@ -17,10 +23,7 @@ fn main() {
     rules.push(rewrite!("distr-add-mul-back"; "(* (+ ?x ?y) ?z)" => "(+ (* ?x ?z) (* ?y ?z))" if build_check(3, "?x ?y ?z ?z")));
     rules.push(rewrite!("mul-0"; "(* ?x 0)" => "0" if build_check(0, "")));
     rules.push(rewrite!("mul-1"; "(* ?x 1)" => "?x" if build_check(0, "?x")));
-
-    let expr = "(+ (* a (+ a b)) (- (* a b)))";
-
-    let expr = expr.parse().unwrap();
+    
     let runner: Runner<SymbolLang, AstSizeAnalysis> = Runner::new(AstSizeAnalysis)
         .with_explanations_enabled()
         .with_expr(&expr)
@@ -47,13 +50,8 @@ type EGraph = egg::EGraph<SymbolLang, AstSizeAnalysis>;
 
 struct AstSizeAnalysis;
 
-fn node_size(egraph: &EGraph, s: &SymbolLang) -> u32 {
-    let SymbolLang { op: _, children } = s;
-    children.iter().copied().fold(1, |a, c| a + egraph[c].data)
-}
-
 // TODO try without analysis if this doesn't work
-fn build_check(base: u32, vars: &str) -> impl Condition<SymbolLang, AstSizeAnalysis> {
+fn build_check(max: usize, base: usize, vars: &str) -> impl Condition<SymbolLang, AstSizeAnalysis> {
     let vars = if vars.is_empty() {
         vec![]
     } else {
@@ -63,26 +61,25 @@ fn build_check(base: u32, vars: &str) -> impl Condition<SymbolLang, AstSizeAnaly
     };
 
     struct ConditionImpl {
-        base: u32,
+        base: usize,
         vars: Vec<Var>,
+        max: usize,
     }
 
     impl Condition<SymbolLang, AstSizeAnalysis> for ConditionImpl {
         fn check(&self, egraph: &mut egg::EGraph<SymbolLang, AstSizeAnalysis>, eclass: Id, subst: &Subst) -> bool {
+            // TODO expand this check to include any "definitely minimal" representation
             let min_size = egraph[eclass].data;
+            if min_size == 1 {
+                return false;
+            }
 
             let operand_sum = self.vars.iter()
                 .map(|&v| egraph[*subst.get(v).unwrap()].data)
-                .sum::<u32>();
+                .sum::<usize>();
             let new_size = self.base + operand_sum;
 
-            // let expr = egraph.id_to_expr(eclass);
-            // println!("checking Id({}) expr={} subst_id={:?} new_size={}", eclass, expr, subst, new_size);
-
-            // new_size <= old_min_size
-            // TODO also require at most twice as complex as the most complex expression originally was
-            new_size <= min(2 + 2 * min_size, 32)
-            // true
+            new_size <= self.max
         }
 
         fn vars(&self) -> Vec<Var> {
@@ -90,14 +87,15 @@ fn build_check(base: u32, vars: &str) -> impl Condition<SymbolLang, AstSizeAnaly
         }
     }
 
-    ConditionImpl { base, vars }
+    ConditionImpl { max, base, vars }
 }
 
 impl Analysis<SymbolLang> for AstSizeAnalysis {
-    type Data = u32;
+    type Data = usize;
 
     fn make(egraph: &mut EGraph, s: &SymbolLang) -> Self::Data {
-        node_size(egraph, s)
+        let SymbolLang { op: _, children } = s;
+        children.iter().copied().fold(1, |a, c| a + egraph[c].data)
     }
 
     fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> DidMerge {
@@ -105,25 +103,5 @@ impl Analysis<SymbolLang> for AstSizeAnalysis {
         let merge = DidMerge(new != *a, new != b);
         *a = new;
         merge
-    }
-
-    fn modify(egraph: &mut EGraph, id: Id) {
-        let nodes = &mut egraph[id].nodes;
-
-        // if equivalent to a leaf node, only keep leafs
-        // TODO does this never reduce power? what if a node is equivalent to multiple leafs, can new ones be found?
-        if nodes.iter().any(|n| n.is_leaf()) {
-            nodes.retain(|n| n.is_leaf());
-            return;
-        }
-
-        // only keep nodes that are simple enough
-        // let nodes = &egraph[id].nodes;
-        // let mut keep_mask = nodes.iter().map(|n| node_size(egraph, n) <= 16).collect_vec();
-
-        // let nodes = &mut egraph[id].nodes;
-        // let mut keep_iter = keep_mask.into_iter();
-        // nodes.retain_mut(|n| keep_iter.next().unwrap());
-        // assert_eq!(None, keep_iter.next());
     }
 }
