@@ -3,13 +3,14 @@ use crate::data::diagnostic::Diagnostic;
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
-use crate::error::CompileError;
+use crate::error::{CompileError, CompileResult};
 use crate::front::common::ScopedEntry;
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncKind};
+use crate::throw;
 use crate::util::data::IndexMapExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
@@ -26,7 +27,7 @@ pub enum LowerError {
 }
 
 // TODO make backend configurable between verilog and VHDL?
-pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<LoweredDatabase, CompileError> {
+pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> CompileResult<LoweredDatabase> {
     // find top module
     // TODO allow for multiple top-levels, all in a single compilation and with shared common modules
     let top_module = find_top_module(source, compiled)?;
@@ -47,7 +48,7 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<Low
         let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
 
         // generate source
-        let verilog_source = generate_module_source(source, compiled, &instance, &module_name);
+        let verilog_source = generate_module_source(compiled, &instance, &module_name)?;
         verilog_sources_rev.push(verilog_source);
 
         // insert in deduplication map
@@ -71,7 +72,11 @@ struct ModuleInstance {
 }
 
 // TODO write straight into a single string buffer instead of repeated concatenation
-fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, instance: &ModuleInstance, module_name: &str) -> String {
+fn generate_module_source(
+    compiled: &CompiledDatabase,
+    instance: &ModuleInstance,
+    module_name: &str,
+) -> CompileResult<String> {
     let &ModuleInstance { module: item, args: ref module_args } = instance;
     let item_info = &compiled[item];
     let item_ast = unwrap_match!(compiled.get_item_ast(item), ast::Item::Module(item_ast) => item_ast);
@@ -82,7 +87,7 @@ fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, 
             info
         },
         MaybeConstructor::Constructor(_) => {
-            source.panic_todo(item_ast.span, "module instance with generic params/args");
+            throw!(Diagnostic::new_todo(item_ast.span, "module instance with generic params/args"))
         }
         _ => unreachable!(),
     };
@@ -103,7 +108,8 @@ fn generate_module_source(source: &SourceDatabase, compiled: &CompiledDatabase, 
     let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
     let body_str = module_body_to_verilog(compiled, body).unwrap();
 
-    format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
+    let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
+    Ok(full_str)
 }
 
 fn module_body_to_verilog(compiled: &CompiledDatabase, body: &ModuleBody) -> Result<String, std::fmt::Error> {

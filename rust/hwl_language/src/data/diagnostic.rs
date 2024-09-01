@@ -3,6 +3,7 @@ use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
+use std::backtrace::Backtrace;
 use std::cmp::min;
 
 #[must_use]
@@ -78,6 +79,18 @@ impl Diagnostic {
             .add_info(prev.span, "previously defined here")
             .add_error(curr.span, "defined for the second time here")
             .finish()
+            .finish()
+    }
+
+    /// Utility diagnostic constructor for features that are not yet implemented.
+    #[track_caller]
+    pub fn new_todo(span: Span, feature: &str) -> Diagnostic {
+        let message = format!("feature not yet implemented: '{}'", feature);
+        let backtrace = Backtrace::force_capture();
+
+        Diagnostic::new(&message)
+            .add_error(span, "used here")
+            .footer(Level::Info, backtrace.to_string())
             .finish()
     }
 

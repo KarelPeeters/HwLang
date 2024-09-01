@@ -1,4 +1,4 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticStringSettings};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::syntax::token::TokenError;
 use crate::syntax::ParseError;
@@ -122,17 +122,6 @@ impl SourceDatabase {
             };
         }
         curr_dir
-    }
-
-    // TODO get rid of this as a concept, the LSP hates this
-    #[track_caller]
-    pub fn panic_todo(&self, span: Span, feature: &str) -> ! {
-        let message = format!("feature not yet implemented: '{}'", feature);
-        let err = Diagnostic::new(&message)
-            .add_error(span, "used here")
-            .finish();
-        eprintln!("{}", err.to_string(self, DiagnosticStringSettings::default()));
-        panic!("{}", message)
     }
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
