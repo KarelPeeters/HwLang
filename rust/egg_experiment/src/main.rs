@@ -2,6 +2,7 @@ use egg::{rewrite, Analysis, AstSize, Condition, CostFunction, DidMerge, Extract
 use itertools::Itertools;
 use std::cmp::min;
 use std::str::FromStr;
+use std::time::Duration;
 
 fn main() {
     let mut rules: Vec<Rewrite<SymbolLang, _>> = vec![];
@@ -9,8 +10,8 @@ fn main() {
     let expr = "(+ (* a (+ a b)) (- (* a b)))";
     let expr = expr.parse().unwrap();
 
-    let max = AstSize.cost_rec(&expr) * 2;
-    let build_check = |base, vars| build_check(max, base, vars);
+    let max_ast_size = AstSize.cost_rec(&expr) * 2;
+    let build_check = |base, vars| build_check(max_ast_size, base, vars);
 
     rules.push(rewrite!("commute-add"; "(+ ?x ?y)" => "(+ ?y ?x)" if build_check(1, "?x ?y")));
     rules.extend(rewrite!("assoc-add"; "(+ (+ ?x ?y) ?z)" <=> "(+ ?x (+ ?y ?z))" if build_check(2, "?x ?y ?z")));
@@ -23,12 +24,13 @@ fn main() {
     rules.push(rewrite!("distr-add-mul-back"; "(* (+ ?x ?y) ?z)" => "(+ (* ?x ?z) (* ?y ?z))" if build_check(3, "?x ?y ?z ?z")));
     rules.push(rewrite!("mul-0"; "(* ?x 0)" => "0" if build_check(0, "")));
     rules.push(rewrite!("mul-1"; "(* ?x 1)" => "?x" if build_check(0, "?x")));
-    
+
     let runner: Runner<SymbolLang, AstSizeAnalysis> = Runner::new(AstSizeAnalysis)
         .with_explanations_enabled()
         .with_expr(&expr)
         .with_iter_limit(usize::MAX)
         .with_node_limit(usize::MAX)
+        .with_time_limit(Duration::MAX)
         .run(&rules);
 
     runner.print_report();
@@ -50,7 +52,6 @@ type EGraph = egg::EGraph<SymbolLang, AstSizeAnalysis>;
 
 struct AstSizeAnalysis;
 
-// TODO try without analysis if this doesn't work
 fn build_check(max: usize, base: usize, vars: &str) -> impl Condition<SymbolLang, AstSizeAnalysis> {
     let vars = if vars.is_empty() {
         vec![]
@@ -68,7 +69,6 @@ fn build_check(max: usize, base: usize, vars: &str) -> impl Condition<SymbolLang
 
     impl Condition<SymbolLang, AstSizeAnalysis> for ConditionImpl {
         fn check(&self, egraph: &mut egg::EGraph<SymbolLang, AstSizeAnalysis>, eclass: Id, subst: &Subst) -> bool {
-            // TODO expand this check to include any "definitely minimal" representation
             let min_size = egraph[eclass].data;
             if min_size == 1 {
                 return false;
