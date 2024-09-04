@@ -11,6 +11,8 @@ Web demo:
 * a good search term for this is "webassembly language server protocol"
 * Maybe just use VSCode: https://code.visualstudio.com/blogs/2024/06/07/wasm-part2
 * https://www.hiro.so/blog/write-clarity-smart-contracts-with-zero-installations-how-we-built-an-in-browser-language-server-using-wasm
+* https://code.visualstudio.com/api/extension-guides/web-extensions
+* https://code.visualstudio.com/api/extension-guides/web-extensions#language-server-protocol-in-web-extensions
 
 Relevant projects:
 
