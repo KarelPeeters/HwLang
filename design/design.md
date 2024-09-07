@@ -30,6 +30,10 @@
 * New RTL languages (see also https://github.com/drom/awesome-hdl) 
   * MyHDL
   * Chisel
+* Blog posts:
+  * https://www.jandecaluwe.com/hdldesign/counting.html
+  * https://www.jandecaluwe.com/hdldesign/signal-assignments.html
+  * More generally everything at https://www.jandecaluwe.com/hdldesign
 
 ## Specifics
 
@@ -512,7 +516,7 @@ Examples:
 
 ### Compilation output
 
-* allow the user to select a set of top-level module to export
+* allow the user to select a set of top-level modules to export
   * top-level modules can't have any generic parameters
   * each one becomes one of the roots of the elaboration tree
   * dump everything into a single file or spread across multiple?
@@ -520,3 +524,169 @@ Examples:
 * parse external verilog and VHDL files, infer sync/async/... from them
   * allow the user to override this inference during instantiation
   * be so good at this that people considering using this compiler just for it's verilog/VHDL features, a bit like Zig
+
+## Resets
+
+* Modules should not hardcode async/reset sync styles, this decision should be left to their instantiates.
+* Some modules might need to enforce one style or the other (eg. IPs, interaction with state machines, ...),
+  so this dynamic-ness needs to be optional.
+* Make `reset` a separate signal type like `async`, `sync`, and `clock`?
+* _Maybe_ make a clock and the corresponding reset a single type?
+  * Slightly unrelated, but can struct fields just be async/sync/clock/... as well? Or is that only for interfaces?
+    * What actually is the difference between interfaces and structs if anything?
+
+## Assignments registers, reset, outputs and read-backs
+
+* Variables and output ports should behave as they do in programming languages:
+  * assignments always happen immediately (called "blocking assignment" in legacy RTL languages)
+  * assignments from other clocked blocks are only visible after the clock cycle has fully ended
+  * this is basically a double-buffer timing model, probably exactly what verilator uses
+
+Clock block register syntax:
+
+Some options:
+
+```
+// basic
+// + short
+// - unintuitive: hard to read and regs and vars differ in semantics 
+clocked(clk, reset) {
+    val a = 0; // local variable, immutable 
+    var b = 0; // local variable, mutable
+    reg c = 0; // register that survives accross clock cycles
+    
+    // ... generic code
+}
+
+// full state-machine-like
+// + intuitive to read
+// - reg/wire is not immediatly obvious (but we can still force people to use reg for things that survive @)
+//       note: regs can be immutable, we really need the full 2x2 matrix 
+// - boilerplate
+clocked(clk, reset) {
+    var c = 0;
+    val b = 0;
+    loop {
+        @;
+        val a = 0;
+    }
+}
+
+// outside
+// + short
+// - regs are forced to have too much scope
+// - _when_ regs are reset is not obvious
+reg c = 0;
+clocked(clk, reset) {
+    val a = 0;
+    var b = 0;
+}
+
+// separate sibling block
+// + semantics are pretty clear
+// - ugly and looks weird
+// - breaks the usual conventions in that scopes are only ever nested
+clocked(clk, reset) {
+    reg a = 0;
+    reg b = 0;
+} {
+    val c = a + b;
+    a = c;
+}
+
+// separate inner block
+// + very clear semantics and scoping
+// - slightly ugly, what keyword do we use for the inner one?
+clocked(clk, reset) {
+    reg a = 0;
+    clocked {
+        val c = a + b:
+        a = c;
+    }
+}
+```
+
+## Flexibility and the `any` type/value
+
+* generic/function parameters and consequently local variables should be allowed to have type/value `any` (keyword)
+  * this mean that those values are not checked at _compile_ time, only at _codegen_ time
+  * ports might need this too, especially for their width
+  * this applies at every level
+  * a huge disadvantage is that this kind of breaks compatibility and full type checking,
+    so strongly recommend against using this in the docs
+  * this is easy to implement: the type checker already needs the ability to skip types to prevent cascading
+
+* this is useful to allow implementing a fully generic pipeline module, including backpressure:
+
+```
+module pipeline(
+    X: type,
+    Y: type,
+    N: uint,
+    stages: Array((Any) -> (Any), N),
+) ports (
+    // TODO use a generic "handshake" interface here
+    clk: input clock,
+    x: input sync(clk) X,
+    x_valid: input bit,
+    x_ready: output bit,
+    y: input sync(clk) Y,
+    y_valid: output bit,
+    y_ready: input bit,
+) {
+    clocked(clk) {
+        reg inner: sync(clk) Array((bit, Any), N+1) = Array.repeat((0, undef), N+1);
+        // TODO implement this better, with skid buffers, bubbles, ... 
+        if (y_ready && x_valid) {
+            x_ready = 1;
+            (y_valid, y) = inner[N+1];
+            for (i in reversed(0..N)) {
+                inner[i+1] = functions[i](inner[i]);
+            }
+            inner[0] = x;
+        } else {
+          x_ready = 0;
+          y_valid = 0;
+        }
+    }
+}
+```
+
+## Generics
+
+[//]: # (TODO expand)
+
+* Generics are defined on _items_ (functions, modules, types, ...)
+  * generics are also implicitly visible in inner items
+* Do we also want to add packages with generic params that encapsulate multiple items that can share generic-derived
+  constants?
+
+## Interface design
+
+[//]: # (TODO expand)
+
+* Module ports can be interfaces.
+* Interfaces can have functions/procedures defined on them that abstract away their ports.
+* Interfaces can have directions, eg. master/slave, input/output, ...
+* Ideally interfaces can even implement traits, which enables even easier reuse!
+
+## Functions and procedures
+
+[//]: # (TODO expand)
+
+* Initial sketch:
+  * Functions are pure: their results only depend on their parameters, and they have no side effects (except for asserts
+    and logging).
+  * Procedures are stateful: they can interact with ports, actually consume clock cycles.
+* More clearly disambiguate the different orthogonal concepts:
+  * pure vs side-effects
+  * leaky vs non-leaky scope
+  * combinatorial vs clock-cycle-consuming
+
+## External interaction
+
+* Do we want to allow embedding scripts straight into the RTL?
+  * eg. python to calculate some coefficients
+* How should constraints be handled?
+  * They should be declared within the module they apply to for proper composition.
+  * How do we solve the O(N) tool vendor problem? Allow mapping though a compiler extension API? 
