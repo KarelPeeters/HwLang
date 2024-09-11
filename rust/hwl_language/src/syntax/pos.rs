@@ -140,6 +140,7 @@ impl Debug for Span {
     }
 }
 
+#[derive(Clone)]
 pub struct LineOffsets {
     total_bytes: usize,
     line_info: Vec<LineInfo>,

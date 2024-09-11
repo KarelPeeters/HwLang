@@ -11,6 +11,7 @@ use itertools::{enumerate, Itertools};
 
 /// The full set of source files that are part of this compilation.
 /// Immutable once all files have been added.
+#[derive(Clone)]
 pub struct SourceDatabase {
     // TODO use arena for this too?
     pub files: IndexMap<FileId, FileInfo>,
@@ -29,6 +30,7 @@ pub enum CompileSetError {
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FilePath(pub Vec<String>);
 
+#[derive(Clone)]
 pub struct FileInfo {
     #[allow(dead_code)]
     pub id: FileId,
@@ -45,6 +47,7 @@ pub struct FileInfo {
 // TODO rename to "FilePath" or "SourcePath"
 new_index_type!(pub Directory);
 
+#[derive(Clone)]
 pub struct DirectoryInfo {
     #[allow(dead_code)]
     pub path: FilePath,

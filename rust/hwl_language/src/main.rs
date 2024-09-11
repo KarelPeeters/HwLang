@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use hwl_language::back::lower;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
-use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
 use hwl_language::error::CompileError;
@@ -15,10 +15,12 @@ use itertools::Itertools;
 #[derive(Parser, Debug)]
 struct Args {
     root: PathBuf,
+    #[arg(long)]
+    print_diagnostics_immediatly: bool,
 }
 
 fn main() {
-    let Args { root } = Args::parse();
+    let Args { root, print_diagnostics_immediatly } = Args::parse();
 
     // collect source
     let source_database = match build_source_database(&root) {
@@ -29,14 +31,28 @@ fn main() {
         }
     };
 
+    // build diagnostic handler
+    let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediatly {
+        let source_database = source_database.clone();
+        let handler = move |diag: &Diagnostic| {
+            let s = diag.clone().to_string(&source_database, DiagnosticStringSettings::default());
+            eprintln!("{}", s);
+        };
+        Some(Box::new(handler))
+    } else {
+        None
+    };
+    
     // run compilation
-    let diag = Diagnostics::new();
+    let diag = Diagnostics::new(handler);
     let main_result = main_inner(&diag, &source_database);
 
     // print diagnostics
-    for diag in diag.finish() {
-        let s = diag.to_string(&source_database, DiagnosticStringSettings::default());
-        eprintln!("{}", s);
+    if !print_diagnostics_immediatly {
+        for diag in diag.finish() {
+            let s = diag.to_string(&source_database, DiagnosticStringSettings::default());
+            eprintln!("{}", s);
+        }
     }
 
     // print result

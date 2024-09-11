@@ -27,16 +27,24 @@ pub type DiagnosticResult<T> = Result<T, DiagnosticError>;
 pub type DiagnosticResultPartial<T> = Result<T, (T, DiagnosticError)>;
 
 pub struct Diagnostics {
+    handler: Option<Box<dyn Fn(&Diagnostic)>>,
     diagnostics: RefCell<Vec<Diagnostic>>,
 }
 
 impl Diagnostics {
-    pub fn new() -> Self {
-        Self { diagnostics: RefCell::new(vec![]) }
+    pub fn new(handler: Option<Box<dyn Fn(&Diagnostic)>>) -> Self {
+        Self {
+            handler,
+            diagnostics: RefCell::new(vec![]),
+        }
     }
 
     // TODO this is wrongly designed, continuing and whether we want a DiagnosticError are orthogonal
     pub fn report_and_continue(&self, diag: Diagnostic) {
+        if let Some(handler) = &self.handler {
+            handler(&diag);
+        }
+        
         self.diagnostics.borrow_mut().push(diag);
     }
 
@@ -57,14 +65,14 @@ impl Diagnostics {
 
 // TODO separate errors and warnings
 #[must_use]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub title: String,
     pub snippets: Vec<(Span, Vec<Annotation>)>,
     pub footers: Vec<(Level, String)>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
     pub level: Level,
     pub span: Span,
