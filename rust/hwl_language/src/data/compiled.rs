@@ -1,3 +1,4 @@
+use crate::data::diagnostic::DiagnosticResult;
 use crate::data::module_body::ModuleBody;
 use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
@@ -8,12 +9,13 @@ use crate::syntax::ast;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncKind};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
+use crate::util::ResultExt;
 use indexmap::IndexMap;
 
 // TODO move this somewhere else, this is more of a public interface
 // TODO separate read-only and clearly done iteminfo struct 
 pub struct CompiledDatabase {
-    pub file_auxiliary: IndexMap<FileId, FileAuxiliary>,
+    pub file_auxiliary: IndexMap<FileId, DiagnosticResult<FileAuxiliary>>,
     pub items: Arena<Item, ItemInfo>,
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
@@ -42,8 +44,8 @@ pub struct FileAuxiliary {
 pub struct ItemInfo {
     pub file: FileId,
     pub file_item_index: usize,
-    pub ty: MaybeConstructor<Type>,
-    pub body: ItemBody,
+    pub ty: DiagnosticResult<MaybeConstructor<Type>>,
+    pub body: DiagnosticResult<ItemBody>,
 }
 
 #[derive(Debug)]
@@ -90,17 +92,18 @@ pub enum ItemBody {
 }
 
 impl CompiledDatabase {
-    pub fn get_item_ast(&self, item: Item) -> &ast::Item {
+    pub fn get_item_ast(&self, item: Item) -> DiagnosticResult<&ast::Item> {
         let info = &self[item];
-        let ast = &self.file_auxiliary.get(&info.file).unwrap().ast;
-        &ast.items[info.file_item_index]
+        self.file_auxiliary.get(&info.file).unwrap()
+            .as_ref_ok()
+            .map(|aux| &aux.ast.items[info.file_item_index])
     }
 }
 
 impl std::ops::Index<FileId> for CompiledDatabase {
-    type Output = FileAuxiliary;
+    type Output = DiagnosticResult<FileAuxiliary>;
     fn index(&self, index: FileId) -> &Self::Output {
-        &self.file_auxiliary.get(&index).unwrap()
+        self.file_auxiliary.get(&index).unwrap()
     }
 }
 

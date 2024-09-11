@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use hwl_language::back::lower;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
 use hwl_language::error::CompileError;
@@ -19,6 +20,7 @@ struct Args {
 fn main() {
     let Args { root } = Args::parse();
 
+    // collect source
     let source_database = match build_source_database(&root) {
         Ok(db) => db,
         Err(e) => {
@@ -27,7 +29,18 @@ fn main() {
         }
     };
 
-    match main_inner(&source_database) {
+    // run compilation
+    let diag = Diagnostics::new();
+    let main_result = main_inner(&diag, &source_database);
+
+    // print diagnostics
+    for diag in diag.finish() {
+        let s = diag.to_string(&source_database, DiagnosticStringSettings::default());
+        eprintln!("{}", s);
+    }
+
+    // print result
+    match main_result {
         Ok(result) => {
             println!("Compilation finished successfully");
             println!();
@@ -41,22 +54,16 @@ fn main() {
             println!("----------------------------------------");
         }
         Err(e) => {
-            match e {
-                CompileError::SnippetError(e) => {
-                    let e_str = e.to_string(&source_database, Default::default());
-                    eprintln!("{}", e_str)
-                },
-                _ => eprintln!("{:?}", e),
-            }
+            eprintln!("{:?}", e);
             eprintln!("Compilation failed");
             std::process::exit(1);
         }
     }
 }
 
-fn main_inner(source_database: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
-    let compiled_database = compile(&source_database)?;
-    let lowered_database = lower(&source_database, &compiled_database)?;
+fn main_inner(diag: &Diagnostics, source_database: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
+    let compiled_database = compile(diag, &source_database);
+    let lowered_database = lower(diag, &source_database, &compiled_database)?;
     Ok(lowered_database)
 }
 

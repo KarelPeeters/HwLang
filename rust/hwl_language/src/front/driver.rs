@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticError, DiagnosticResult, Diagnostics};
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
@@ -11,6 +11,7 @@ use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_file_content};
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
 use crate::{throw, try_opt_result};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
@@ -19,12 +20,9 @@ use num_bigint::BigInt;
 use num_traits::{One, Signed};
 use std::collections::HashMap;
 
-type DiagnosticResult<T> = Result<T, Diagnostic>;
-
-// TODO: add some error recovery and continuation, eg. return all parse errors at once
-pub fn compile(database: &SourceDatabase) -> DiagnosticResult<CompiledDatabase> {
+pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> CompiledDatabase {
     // sort files to ensure platform-independence
-    // TODO make this the responsibility of the database builder, now fileid are still not deterministic
+    // TODO make this the responsibility of the database builder, now file ids are still not deterministic
     let files_sorted = database.files.keys()
         .copied()
         .sorted_by_key(|&file| &database[database[file].directory].path)
@@ -42,35 +40,53 @@ pub fn compile(database: &SourceDatabase) -> DiagnosticResult<CompiledDatabase> 
         let file_info = &database[file];
 
         // parse
-        let ast = parse_file_content(file, &file_info.source)
-            .map_err(|e| database.map_parser_error(e))?;
+        let aux = match parse_file_content(file, &file_info.source) {
+            Ok(ast) => {
+                // build local scope
+                // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
+                let local_scope = scopes.new_root(file_info.offsets.full_span(file));
+                let local_scope_info = &mut scopes[local_scope];
 
-        // build local scope
-        // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-        let local_scope = scopes.new_root(file_info.offsets.full_span(file));
-        let local_scope_info = &mut scopes[local_scope];
+                let mut last_err = None;
 
-        for (file_item_index, ast_item) in enumerate(&ast.items) {
-            let common_info = ast_item.common_info();
-            let vis = match common_info.vis {
-                ast::Visibility::Public(_) => Visibility::Public,
-                ast::Visibility::Private => Visibility::Private,
-            };
+                for (file_item_index, ast_item) in enumerate(&ast.items) {
+                    let common_info = ast_item.common_info();
+                    let vis = match common_info.vis {
+                        ast::Visibility::Public(_) => Visibility::Public,
+                        ast::Visibility::Private => Visibility::Private,
+                    };
 
-            let item = items.push(ItemInfoPartial {
-                file,
-                file_item_index,
-                ty: None,
-                body: None,
-            });
-            local_scope_info.maybe_declare(&common_info.id, ScopedEntry::Item(item), vis)?;
-        }
+                    let item = items.push(ItemInfoPartial {
+                        file,
+                        file_item_index,
+                        ty: None,
+                        body: None,
+                    });
 
-        // store
-        file_auxiliary.insert_first(file, FileAuxiliary { ast, local_scope });
+                    match local_scope_info.maybe_declare(diagnostics, &common_info.id, ScopedEntry::Item(item), vis) {
+                        Ok(()) => {}
+                        // don't break the loop, at least collect all declaration errors first
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+
+                // TODO make this even more granular, only error out the items with clashing names
+                if let Some(e) = last_err {
+                    Err(e)
+                } else {
+                    Ok(FileAuxiliary { ast, local_scope })
+                }
+            }
+            Err(e) => {
+                Err(diagnostics.report(database.map_parser_error_to_diagnostic(e)))
+            },
+        };
+
+        file_auxiliary.insert_first(file, aux);
     }
 
     let mut state = CompileState {
+        diag: diagnostics,
         database,
         items,
         file_auxiliary: &file_auxiliary,
@@ -87,21 +103,23 @@ pub fn compile(database: &SourceDatabase) -> DiagnosticResult<CompiledDatabase> 
     // TODO randomize order to check for dependency bugs? but then diagnostics have random orders
     let item_keys = state.items.keys().collect_vec();
     for &item in &item_keys {
-        state.resolve_item_type_fully(item)?;
+        state.resolve_item_type_fully(item);
     }
 
     // typecheck all item bodies
     // TODO merge this with the previous pass: better for LSP and maybe for local items
     for &item in &item_keys {
         assert!(state[item].body.is_none());
-        match state.type_check_item_body(item) {
-            Ok(body) => {
-                assert!(state[item].body.is_none());
-                state[item].body = Some(body);
-            }
-            Err(ResolveFirstOr::ResolveFirst(_)) => panic!("all type resolutions should have happened already"),
-            Err(ResolveFirstOr::Error(e)) => throw!(e),
-        }
+        let body = match state.type_check_item_body(item) {
+            Ok(body) => Ok(body),
+            Err(ResolveError::Diagnostic(e)) => Err(e),
+            // TODO replace panics with internal compiler errors
+            Err(ResolveError::ResolveFirst(_)) => panic!("all types should be resolved by now"),
+        };
+
+        let slot = &mut state[item].body;
+        assert!(slot.is_none());
+        *slot = Some(body);
     }
 
     let items = state.items.map_values(|info| ItemInfo {
@@ -110,7 +128,8 @@ pub fn compile(database: &SourceDatabase) -> DiagnosticResult<CompiledDatabase> 
         ty: info.ty.unwrap(),
         body: info.body.unwrap(),
     });
-    let compiled = CompiledDatabase {
+
+    CompiledDatabase {
         items,
         generic_type_params: state.generic_type_params,
         generic_value_params: state.generic_value_params,
@@ -118,14 +137,15 @@ pub fn compile(database: &SourceDatabase) -> DiagnosticResult<CompiledDatabase> 
         module_ports: state.module_ports,
         scopes: state.scopes,
         file_auxiliary,
-    };
-    Ok(compiled)
+    }
 }
 
 // TODO create some dedicated auxiliary data structure, with dense and non-dense variants
 struct CompileState<'d, 'a> {
+    diag: &'d Diagnostics,
+    
     database: &'d SourceDatabase,
-    file_auxiliary: &'a IndexMap<FileId, FileAuxiliary>,
+    file_auxiliary: &'a IndexMap<FileId, DiagnosticResult<FileAuxiliary>>,
     items: Arena<Item, ItemInfoPartial>,
 
     // TODO reduce duplication with CompileDatabase (including all index accessors through a trait)
@@ -152,21 +172,21 @@ struct ItemInfoPartial {
     // `None` if this item has not been resolved yet.
     // For a type: the type
     // For a value: the signature
-    ty: Option<MaybeConstructor<Type>>,
+    ty: Option<DiagnosticResult<MaybeConstructor<Type>>>,
     // `None` if this items body has not been checked yet.
-    body: Option<ItemBody>,
+    body: Option<DiagnosticResult<ItemBody>>,
 }
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct ResolveFirst(Item);
 
 #[derive(Debug, Copy, Clone)]
-pub enum ResolveFirstOr<E> {
-    ResolveFirst(Item),
-    Error(E),
+pub struct ResolveFirst(Item);
+
+#[derive(Debug)]
+pub enum ResolveError {
+    Diagnostic(DiagnosticError),
+    ResolveFirst(ResolveFirst),
 }
 
-pub type ResolveResult<T> = Result<T, ResolveFirstOr<Diagnostic>>;
+pub type ResolveResult<T> = Result<T, ResolveError>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum EvalTrueError {
@@ -185,7 +205,7 @@ impl EvalTrueError {
 }
 
 impl<'d, 'a> CompileState<'d, 'a> {
-    fn resolve_item_type_fully(&mut self, item: Item) -> DiagnosticResult<()> {
+    fn resolve_item_type_fully(&mut self, item: Item) {
         let mut stack = vec![item];
 
         // TODO avoid repetitive work by switching to async instead?
@@ -195,44 +215,60 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 continue;
             }
 
-            match self.resolve_item_type_new(curr) {
-                Ok(resolved) => {
-                    let slot = &mut self[curr].ty;
-                    assert!(slot.is_none(), "someone else already set the type for {curr:?}");
-                    *slot = Some(resolved.clone());
-                }
-                Err(ResolveFirstOr::Error(e)) => {
-                    throw!(e);
-                }
-                Err(ResolveFirstOr::ResolveFirst(first)) => {
+            let resolved = match self.resolve_item_type_new(curr) {
+                Ok(resolved) => Ok(resolved),
+                Err(ResolveError::Diagnostic(e)) => Err(e),
+                Err(ResolveError::ResolveFirst(ResolveFirst(first))) => {
                     assert!(self[first].ty.is_none(), "request to resolve {first:?} first, but it already has a type");
 
+                    // push curr failed attempt back on the stack
                     stack.push(curr);
+
+                    // check for cycle
                     let cycle_start_index = stack.iter().position(|s| s == &first);
-                    stack.push(first);
-
                     if let Some(cycle_start_index) = cycle_start_index {
-                        drop(stack.drain(..=cycle_start_index));
+                        // cycle detected, report error
+                        let cycle = &stack[cycle_start_index..];
 
+                        // build diagnostic
                         // TODO the order is nondeterministic, it depends on which items happened to be visited first
                         let mut diag = Diagnostic::new("cyclic type dependency");
-                        for stack_item in stack {
-                            let item_ast = self.get_item_ast(stack_item);
+                        for &stack_item in cycle {
+                            let item_ast = self.get_item_ast(stack_item).expect("cycle xor diagnostic");
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
                         }
-                        throw!(diag.finish())
+                        let err = self.diag.report(diag.finish());
+
+                        // set slot of all involved items
+                        for &stack_item in cycle {
+                            let slot = &mut self[stack_item].ty;
+                            assert!(slot.is_none(), "someone else already set the type for {curr:?}");
+                            *slot = Some(Err(err));
+                        }
+
+                        // remove cycle from the stack
+                        drop(stack.drain(cycle_start_index..));
+                        continue
+                    } else {
+                        // no cycle, visit the next item
+                        stack.push(first);
+                        continue
                     }
                 }
-            }
-        }
+            };
 
-        Ok(())
+            // managed to resolve the current item, store its type
+            let slot = &mut self[curr].ty;
+            assert!(slot.is_none(), "someone else already set the type for {curr:?}");
+            *slot = Some(resolved);
+        }
     }
 
-    fn resolve_item_type(&self, item: Item) -> Result<MaybeConstructor<Type>, ResolveFirst> {
-        match &self[item].ty {
-            Some(result) => Ok(result.clone()),
-            None => Err(ResolveFirst(item))
+    fn resolve_item_type(&self, item: Item) -> ResolveResult<&MaybeConstructor<Type>> {
+        match self[item].ty {
+            Some(Ok(ref r)) => Ok(r),
+            Some(Err(e)) => Err(ResolveError::Diagnostic(e)),
+            None => Err(ResolveError::ResolveFirst(ResolveFirst(item))),
         }
     }
 
@@ -241,8 +277,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         assert!(self[item].ty.is_none());
 
         // item lookup
-        let item_ast = self.get_item_ast(item);
-        let scope = self.file_auxiliary.get(&self[item].file).unwrap().local_scope;
+        let item_ast = self.get_item_ast(item)?;
+        let scope = self.file_auxiliary.get(&self[item].file).unwrap().as_ref()?.local_scope;
 
         // actual resolution
         match *item_ast {
@@ -251,7 +287,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 // TODO why are we handling use items here? can they not be eliminated by scope building
                 //  this is really weird, use items don't even really have signatures
                 let next_item = self.resolve_use_path(path)?;
-                Ok(self.resolve_item_type(next_item)?)
+                Ok(self.resolve_item_type(next_item)?.clone())
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
@@ -269,7 +305,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         let prev = fields_map.insert(field_id.string.clone(), (field_id, field_ty));
                         if let Some(prev) = prev {
-                            throw!(Diagnostic::new_defined_twice("struct field", span, field_id, prev.0))
+                            let diag = Diagnostic::new_defined_twice("struct field", span, field_id, prev.0);
+                            throw!(s.diag.report(diag))
                         }
                     }
 
@@ -294,7 +331,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         let prev = variants_map.insert(variant_id.string.clone(), (variant_id, content));
                         if let Some(prev) = prev {
-                            throw!(Diagnostic::new_defined_twice("enum variant", span, variant_id, prev.0))
+                            let diag = Diagnostic::new_defined_twice("enum variant", span, variant_id, prev.0);
+                            throw!(s.diag.report(diag))
                         }
                     }
 
@@ -320,7 +358,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         let ast::ModulePort { span: _, id: port_id, direction, kind, } = port;
 
                         if let Some(prev) = port_name_map.insert(port_id.string.clone(), port_id) {
-                            throw!(Diagnostic::new_defined_twice("module port", ports.span, &port_id, prev))
+                            let diag = Diagnostic::new_defined_twice("module port", ports.span, &port_id, prev);
+                            throw!(s.diag.report(diag))
                         }
 
                         let module_port_info = ModulePortInfo {
@@ -347,6 +386,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         port_vec.push(module_port);
 
                         s.scopes[scope_ports].declare(
+                            s.diag,
                             &port_id,
                             ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
                             Visibility::Private,
@@ -366,11 +406,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 })
             },
             ast::Item::Const(_) =>
-                throw!(Diagnostic::new_todo(item_ast.common_info().span_short, "const definition")),
+                throw!(self.diag.report_todo(item_ast.common_info().span_short, "const definition")),
             ast::Item::Function(_) =>
-                throw!(Diagnostic::new_todo(item_ast.common_info().span_short, "function definition")),
+                throw!(self.diag.report_todo(item_ast.common_info().span_short, "function definition")),
             ast::Item::Interface(_) =>
-                throw!(Diagnostic::new_todo(item_ast.common_info().span_short, "interface definition")),
+                throw!(self.diag.report_todo(item_ast.common_info().span_short, "interface definition")),
         }
     }
 
@@ -381,7 +421,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         params: &Option<Spanned<Vec<ast::GenericParameter>>>,
         build_ty: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<T>,
     ) -> ResolveResult<MaybeConstructor<T>> {
-        let item_span = self.get_item_ast(item).common_info().span_full;
+        let item_span = self.get_item_ast(item)?.common_info().span_full;
         let scope_inner = self.scopes.new_child(scope_outer, item_span, Visibility::Private);
 
         match params {
@@ -400,7 +440,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 for param_ast in &params.inner {
                     // check parameter names for uniqueness
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
-                        throw!(Diagnostic::new_defined_twice("generic parameter", params.span, prev, &param_ast.id))
+                        let diag = Diagnostic::new_defined_twice("generic parameter", params.span, prev, &param_ast.id);
+                        throw!(self.diag.report(diag));
                     }
 
                     let (param, arg) = match &param_ast.kind {
@@ -428,7 +469,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.scopes[scope_inner].declare(&param_ast.id, entry, Visibility::Private)?;
+                    self.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private)?;
                 }
 
                 // map inner to actual type
@@ -447,15 +488,17 @@ impl<'d, 'a> CompileState<'d, 'a> {
         assert!(self[item].body.is_none());
 
         let _item_ty = self[item].ty.as_ref().expect("item should already have been checked");
-        let item_span = self.get_item_ast(item).common_info().span_short;
 
-        let body = match self.get_item_ast(item) {
+        let item_ast = self.get_item_ast(item)?;
+        let item_span = item_ast.common_info().span_short;
+
+        let body = match item_ast {
             // these items are fully defined by their type, which was already checked earlier
             ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemBody::None,
             ast::Item::Const(_) =>
-                throw!(Diagnostic::new_todo(item_span, "const body")),
+                throw!(self.diag.report_todo(item_span, "const body")),
             ast::Item::Function(_) =>
-                throw!(Diagnostic::new_todo(item_span, "function body")),
+                throw!(self.diag.report_todo(item_span, "function body")),
             ast::Item::Module(item_ast) => {
                 let ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = item_ast;
                 let ast::Block { span: _, statements } = body;
@@ -471,22 +514,22 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 for top_statement in statements {
                     match top_statement.kind {
                         StatementKind::Declaration(_) =>
-                            throw!(Diagnostic::new_todo(top_statement.span, "module top-level declaration")),
+                            throw!(self.diag.report_todo(top_statement.span, "module top-level declaration")),
                         StatementKind::Assignment(_) =>
-                            throw!(Diagnostic::new_todo(top_statement.span, "module top-level assignment")),
+                            throw!(self.diag.report_todo(top_statement.span, "module top-level assignment")),
                         StatementKind::Expression(_) =>
-                            throw!(Diagnostic::new_todo(top_statement.span, "module top-level expression")),
+                            throw!(self.diag.report_todo(top_statement.span, "module top-level expression")),
                         StatementKind::CombinatorialBlock(ref comb_block) => {
                             let mut result_statements = vec![];
 
                             for statement in &comb_block.block.statements {
                                 match statement.kind {
                                     StatementKind::Declaration(_) =>
-                                        throw!(Diagnostic::new_todo(statement.span, "combinatorial declaration")),
+                                        throw!(self.diag.report_todo(statement.span, "combinatorial declaration")),
                                     StatementKind::Assignment(ref assignment) => {
                                         let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
                                         if op.inner.is_some() {
-                                            throw!(Diagnostic::new_todo(statement.span, "combinatorial assignment with operator"))
+                                            throw!(self.diag.report_todo(statement.span, "combinatorial assignment with operator"))
                                         }
 
                                         // TODO type and sync checking
@@ -497,18 +540,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                         if let (Value::ModulePort(target), Value::ModulePort(value)) = (target, value) {
                                             result_statements.push(CombinatorialStatement::PortPortAssignment(target, value));
                                         } else {
-                                            throw!(Diagnostic::new_todo(statement.span, "general combinatorial assignment"))
+                                            throw!(self.diag.report_todo(statement.span, "general combinatorial assignment"))
                                         }
                                     },
                                     StatementKind::Expression(_) =>
-                                        throw!(Diagnostic::new_todo(statement.span, "combinatorial expression")),
+                                        throw!(self.diag.report_todo(statement.span, "combinatorial expression")),
 
                                     StatementKind::CombinatorialBlock(ref comb_block_inner) => {
                                         let err = Diagnostic::new("nested combinatorial block")
                                             .add_info(comb_block.span_keyword, "outer")
                                             .add_error(comb_block_inner.span_keyword, "inner")
                                             .finish();
-                                        throw!(err)
+                                        throw!(self.diag.report(err))
                                     }
 
                                     StatementKind::ClockedBlock(ref clock_block_inner) => {
@@ -516,7 +559,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                             .add_info(comb_block.span_keyword, "outer")
                                             .add_error(clock_block_inner.span_keyword, "inner")
                                             .finish();
-                                        throw!(err)
+                                        throw!(self.diag.report(err))
                                     },
                                 }
                             }
@@ -527,7 +570,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             module_blocks.push(ModuleBlock::Combinatorial(comb_block));
                         }
                         StatementKind::ClockedBlock(_) =>
-                            throw!(Diagnostic::new_todo(top_statement.span, "clocked block")),
+                            throw!(self.diag.report_todo(top_statement.span, "clocked block")),
                     }
                 }
 
@@ -536,7 +579,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 })
             },
             ast::Item::Interface(_) =>
-                throw!(Diagnostic::new_todo(item_span, "interface body")),
+                throw!(self.diag.report_todo(item_span, "interface body")),
         };
         Ok(body)
     }
@@ -558,22 +601,24 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let mut options = curr_dir_info.children.keys().cloned().collect_vec();
                 options.sort();
 
-                Diagnostic::new("invalid path step")
+                let diag = Diagnostic::new("invalid path step")
                     .snippet(path.span)
                     .add_error(step.span, "invalid step")
                     .finish()
                     .footer(Level::Info, format!("possible options: {:?}", options))
-                    .finish()
+                    .finish();
+                self.diag.report(diag)
             })?;
         }
 
         let file = self.database[curr_dir].file.ok_or_else(|| {
-            Diagnostic::new_simple("expected path to file", path.span, "no file exists at this path")
+            let diag = Diagnostic::new_simple("expected path to file", path.span, "no file exists at this path");
+            self.diag.report(diag)
         })?;
-        let file_scope = self[file].local_scope;
+        let file_scope = self[file].as_ref_ok()?.local_scope;
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        match self.scopes[file_scope].find(&self.scopes, &self.database, id, vis)?.value {
+        match self.scopes[file_scope].find(&self.scopes, &self.database, self.diag, id, vis)?.value {
             &ScopedEntry::Item(item) => Ok(item),
             // TODO is this still true?
             ScopedEntry::Direct(_) => unreachable!("file root entries should not exist"),
@@ -586,46 +631,48 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expression(&self, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match expr.inner {
             ExpressionKind::Dummy =>
-                throw!(Diagnostic::new_todo(expr.span, "dummy expression")),
+                throw!(self.diag.report_todo(expr.span, "dummy expression")),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                match self.scopes[scope].find(&self.scopes, &self.database, id, Visibility::Private)?.value {
+                match self.scopes[scope].find(&self.scopes, &self.database, self.diag, id, Visibility::Private)?.value {
                     &ScopedEntry::Item(item) => {
                         // TODO properly support value items, and in general fix "type" vs "value" resolution
                         //  maybe through checking the item kind first?
                         //  each of them clearly only defines a type or value, right?
                         //    or do we want to support "type A = if(cond) B else C"?
                         self.resolve_item_type(item)?
+                            .clone()
                             .map(TypeOrValue::Type)
                     }
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             },
             ExpressionKind::TypeFunc(_, _) =>
-                throw!(Diagnostic::new_todo(expr.span, "type func expression")),
-            ExpressionKind::Block(_) => throw!(Diagnostic::new_todo(expr.span, "block expression")),
+                throw!(self.diag.report_todo(expr.span, "type func expression")),
+            ExpressionKind::Block(_) =>
+                throw!(self.diag.report_todo(expr.span, "block expression")),
             ExpressionKind::If(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "if expression")),
+                throw!(self.diag.report_todo(expr.span, "if expression")),
             ExpressionKind::Loop(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "loop expression")),
+                throw!(self.diag.report_todo(expr.span, "loop expression")),
             ExpressionKind::While(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "while expression")),
+                throw!(self.diag.report_todo(expr.span, "while expression")),
             ExpressionKind::For(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "for expression")),
+                throw!(self.diag.report_todo(expr.span, "for expression")),
             ExpressionKind::Sync(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "sync expression")),
+                throw!(self.diag.report_todo(expr.span, "sync expression")),
             ExpressionKind::Return(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "return expression")),
+                throw!(self.diag.report_todo(expr.span, "return expression")),
             ExpressionKind::Break(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "break expression")),
+                throw!(self.diag.report_todo(expr.span, "break expression")),
             ExpressionKind::Continue =>
-                throw!(Diagnostic::new_todo(expr.span, "continue expression")),
+                throw!(self.diag.report_todo(expr.span, "continue expression")),
             ExpressionKind::IntPattern(ref pattern) => {
                 let value = match pattern {
                     IntPattern::Hex(_) =>
-                        throw!(Diagnostic::new_todo(expr.span, "hex int-pattern expression")),
+                        throw!(self.diag.report_todo(expr.span, "hex int-pattern expression")),
                     IntPattern::Bin(_) =>
-                        throw!(Diagnostic::new_todo(expr.span, "bin int-pattern expression")),
+                        throw!(self.diag.report_todo(expr.span, "bin int-pattern expression")),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         str_clean.parse::<BigInt>().unwrap()
@@ -634,15 +681,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
             }
             ExpressionKind::BoolLiteral(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "bool literal expression")),
+                throw!(self.diag.report_todo(expr.span, "bool literal expression")),
             ExpressionKind::StringLiteral(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "string literal expression")),
+                throw!(self.diag.report_todo(expr.span, "string literal expression")),
             ExpressionKind::ArrayLiteral(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "array literal expression")),
+                throw!(self.diag.report_todo(expr.span, "array literal expression")),
             ExpressionKind::TupleLiteral(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "tuple literal expression")),
+                throw!(self.diag.report_todo(expr.span, "tuple literal expression")),
             ExpressionKind::StructLiteral(_) =>
-                throw!(Diagnostic::new_todo(expr.span, "struct literal expression")),
+                throw!(self.diag.report_todo(expr.span, "struct literal expression")),
             ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
@@ -687,13 +734,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
             },
             ExpressionKind::TernarySelect(_, _, _) =>
-                throw!(Diagnostic::new_todo(expr.span, "ternary select expression")),
+                throw!(self.diag.report_todo(expr.span, "ternary select expression")),
             ExpressionKind::ArrayIndex(_, _) =>
-                throw!(Diagnostic::new_todo(expr.span, "array index expression")),
+                throw!(self.diag.report_todo(expr.span, "array index expression")),
             ExpressionKind::DotIdIndex(_, _) =>
-                throw!(Diagnostic::new_todo(expr.span, "dot id index expression")),
+                throw!(self.diag.report_todo(expr.span, "dot id index expression")),
             ExpressionKind::DotIntIndex(_, _) =>
-                throw!(Diagnostic::new_todo(expr.span, "dot int index expression")),
+                throw!(self.diag.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
                 if let ExpressionKind::Id(id) = &target.inner {
                     if let Some(name) = id.string.strip_prefix("__builtin_") {
@@ -710,11 +757,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         // check count match
                         if parameters.vec.len() != args.inner.len() {
-                            throw!(Diagnostic::new_simple(
+                            let err = Diagnostic::new_simple(
                                 format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
                                 args.span,
                                 format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
-                            ))
+                            );
+                            throw!(self.diag.report(err));
                         }
 
                         // check kind and type match, and collect in replacement map
@@ -743,11 +791,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
-                            TypeOrValue::Type(_) => throw!(
-                                Diagnostic::new_simple("invalid call target", target.span, "invalid call target kind 'type'")
-                            ),
+                            TypeOrValue::Type(_) => {
+                                let err = Diagnostic::new_simple("invalid call target", target.span, "invalid call target kind 'type'");
+                                throw!(self.diag.report(err));
+                            }
                             TypeOrValue::Value(_) =>
-                                throw!(Diagnostic::new_todo(target.span, "value call target")),
+                                throw!(self.diag.report_todo(target.span, "value call target")),
                         }
                     }
                 }
@@ -761,14 +810,16 @@ impl<'d, 'a> CompileState<'d, 'a> {
         match entry {
             // TODO unify these error strings somewhere
             // TODO maybe move back to central error collection place for easier unit testing?
-            ScopedEntryDirect::Constructor(_) => throw!(
-                Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor")
-            ),
+            ScopedEntryDirect::Constructor(_) => {
+                let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
+                throw!(self.diag.report(diag))
+            },
             ScopedEntryDirect::Immediate(entry) => match entry {
                 TypeOrValue::Type(ty) => Ok(ty),
-                TypeOrValue::Value(_) => throw!(
-                    Diagnostic::new_simple("expected type, got value", expr.span, "value")
-                ),
+                TypeOrValue::Value(_) => {
+                    let diag = Diagnostic::new_simple("expected type, got value", expr.span, "value");
+                    throw!(self.diag.report(diag));
+                },
             }
         }
     }
@@ -776,13 +827,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expression_as_value(&self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
-            ScopedEntryDirect::Constructor(_) => throw!(
-                Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor")
-            ),
+            ScopedEntryDirect::Constructor(_) => {
+                let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
+                throw!(self.diag.report(err));
+            },
             ScopedEntryDirect::Immediate(entry) => match entry {
-                TypeOrValue::Type(_) => throw!({
-                    Diagnostic::new_simple("expected value, got type", expr.span, "type")
-                }),
+                TypeOrValue::Type(_) => {
+                    let err = Diagnostic::new_simple("expected value, got type", expr.span, "type");
+                    throw!(self.diag.report(err));
+                },
                 TypeOrValue::Value(value) => Ok(value),
             }
         }
@@ -831,14 +884,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
             _ => {},
         }
 
-        Err(
-            Diagnostic::new("invalid arguments for __builtin call")
-                .snippet(expr_span)
-                .add_error(args.span, "invalid arguments")
-                .finish()
-                .finish()
-                .into()
-        )
+        let err = Diagnostic::new("invalid arguments for __builtin call")
+            .snippet(expr_span)
+            .add_error(args.span, "invalid arguments")
+            .finish()
+            .finish()
+            .into();
+        throw!(self.diag.report(err));
     }
 
     fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> ResolveResult<()> {
@@ -863,23 +915,25 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
 
         let feature = &format!("type-check {:?} contains {:?}", ty, value);
-        throw!(Diagnostic::new_todo(span_value, feature))
+        throw!(self.diag.report_todo(span_value, feature))
     }
 
     fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> ResolveResult<()> {
         self.try_eval_bool_true(span_range, value)?.map_err(|e| {
-            Diagnostic::new(format!("range valid check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
+            let err = Diagnostic::new(format!("range valid check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
                 .add_error(span_range, "when checking that this range is non-decreasing")
-                .finish().into()
+                .finish();
+            self.diag.report(err).into()
         })
     }
 
     fn require_value_true_for_type_check(&self, span_ty: Span, span_value: Span, value: &Value) -> ResolveResult<()> {
         self.try_eval_bool_true(span_value, value)?.map_err(|e| {
-            Diagnostic::new(format!("type check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
+            let err = Diagnostic::new(format!("type check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
                 .add_error(span_value, "when type checking this value")
                 .add_info(span_ty, "against this type")
-                .finish().into()
+                .finish();
+            self.diag.report(err).into()
         })
     }
 
@@ -1033,16 +1087,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     BinaryOp::Pow => {
                         // check that exponent is non-negative
                         let right_start = right.start.as_ref().ok_or_else(|| {
-                            Diagnostic::new(format!("power exponent cannot be negative, got range without lower bound {:?}", self.range_to_readable_str(&right)))
+                            let err = Diagnostic::new(format!("power exponent cannot be negative, got range without lower bound {:?}", self.range_to_readable_str(&right)))
                                 .add_error(origin, "while checking this expression")
-                                .finish()
+                                .finish();
+                            self.diag.report(err)
                         })?;
                         let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::Int(BigInt::ZERO)), right_start.clone());
                         self.try_eval_bool_true(origin, &cond)?
                             .map_err(|e| {
-                                Diagnostic::new(format!("power exponent range check failed: value {} {}", self.value_to_readable_str(&cond), e.to_message()))
+                                let err = Diagnostic::new(format!("power exponent range check failed: value {} {}", self.value_to_readable_str(&cond), e.to_message()))
                                     .add_error(origin, "while checking this expression")
-                                    .finish()
+                                    .finish();
+                                self.diag.report(err)
                             })?;
 
                         let left_start = try_opt_result!(left.start);
@@ -1120,10 +1176,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn get_item_ast(&self, item: Item) -> &'a ast::Item {
+    fn get_item_ast(&self, item: Item) -> DiagnosticResult<&'a ast::Item> {
         let info = &self[item];
-        let ast = &self.file_auxiliary.get(&info.file).unwrap().ast;
-        &ast.items[info.file_item_index]
+        self.file_auxiliary.get(&info.file).unwrap()
+            .as_ref_ok()
+            .map(|aux| &aux.ast.items[info.file_item_index])
     }
 }
 
@@ -1163,20 +1220,26 @@ fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
     }
 }
 
-impl<E> From<E> for ResolveFirstOr<E> {
-    fn from(value: E) -> Self {
-        ResolveFirstOr::Error(value)
+impl From<DiagnosticError> for ResolveError {
+    fn from(value: DiagnosticError) -> Self {
+        ResolveError::Diagnostic(value)
     }
 }
 
-impl From<ResolveFirst> for ResolveFirstOr<Diagnostic> {
+impl From<&DiagnosticError> for ResolveError {
+    fn from(value: &DiagnosticError) -> Self {
+        ResolveError::Diagnostic(*value)
+    }
+}
+
+impl From<ResolveFirst> for ResolveError {
     fn from(value: ResolveFirst) -> Self {
-        ResolveFirstOr::ResolveFirst(value.0)
+        ResolveError::ResolveFirst(value)
     }
 }
 
 impl std::ops::Index<FileId> for CompileState<'_, '_> {
-    type Output = FileAuxiliary;
+    type Output = DiagnosticResult<FileAuxiliary>;
     fn index(&self, index: FileId) -> &Self::Output {
         self.file_auxiliary.get(&index).unwrap()
     }

@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::Diagnostic;
+use crate::data::diagnostic::{Diagnostic, Diagnostics};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::source::SourceDatabase;
@@ -12,6 +12,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncKind};
 use crate::throw;
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
@@ -27,10 +28,16 @@ pub enum LowerError {
 }
 
 // TODO make backend configurable between verilog and VHDL?
-pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> CompileResult<LoweredDatabase> {
+// TODO ban keywords
+// TODO should we still be doing diagnostics here, or should lowering just never start?
+pub fn lower(
+    diag: &Diagnostics,
+    source: &SourceDatabase,
+    compiled: &CompiledDatabase,
+) -> CompileResult<LoweredDatabase> {
     // find top module
     // TODO allow for multiple top-levels, all in a single compilation and with shared common modules
-    let top_module = find_top_module(source, compiled)?;
+    let top_module = find_top_module(diag, source, compiled)?;
 
     // generate module sources
     // delay concatenation, we still need to flip the order
@@ -44,11 +51,11 @@ pub fn lower(source: &SourceDatabase, compiled: &CompiledDatabase) -> CompileRes
 
     while let Some(instance) = todo.pop_front() {
         // pick name
-        let ast = compiled.get_item_ast(instance.module);
+        let ast = compiled.get_item_ast(instance.module)?;
         let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
 
         // generate source
-        let verilog_source = generate_module_source(compiled, &instance, &module_name)?;
+        let verilog_source = generate_module_source(diag, compiled, &instance, &module_name)?;
         verilog_sources_rev.push(verilog_source);
 
         // insert in deduplication map
@@ -73,21 +80,22 @@ struct ModuleInstance {
 
 // TODO write straight into a single string buffer instead of repeated concatenation
 fn generate_module_source(
+    diag: &Diagnostics,
     compiled: &CompiledDatabase,
     instance: &ModuleInstance,
     module_name: &str,
 ) -> CompileResult<String> {
     let &ModuleInstance { module: item, args: ref module_args } = instance;
     let item_info = &compiled[item];
-    let item_ast = unwrap_match!(compiled.get_item_ast(item), ast::Item::Module(item_ast) => item_ast);
+    let item_ast = unwrap_match!(compiled.get_item_ast(item)?, ast::Item::Module(item_ast) => item_ast);
 
-    let module_info = match &item_info.ty {
+    let module_info = match item_info.ty.as_ref_ok()? {
         MaybeConstructor::Immediate(Type::Module(info)) => {
             assert!(module_args.is_none());
             info
         },
         MaybeConstructor::Constructor(_) => {
-            throw!(Diagnostic::new_todo(item_ast.span, "module instance with generic params/args"))
+            throw!(diag.report_todo(item_ast.span, "module instance with generic params/args"))
         }
         _ => unreachable!(),
     };
@@ -105,7 +113,7 @@ fn generate_module_source(
         port_string.push_str("\n");
     }
 
-    let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
+    let body = unwrap_match!(item_info.body.as_ref_ok()?, ItemBody::Module(body) => body);
     let body_str = module_body_to_verilog(compiled, body).unwrap();
 
     let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
@@ -300,30 +308,36 @@ fn value_evaluate_int_range(value: &Value) -> std::ops::Range<BigInt> {
     }
 }
 
-fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Result<Item, CompileError> {
+fn find_top_module(
+    diag: &Diagnostics,
+    source: &SourceDatabase,
+    compiled: &CompiledDatabase,
+) -> Result<Item, CompileError> {
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
     let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
-    let top_entry = compiled[compiled[top_file].local_scope].find_immediate_str("top", Visibility::Public)?;
+    let top_entry = compiled[compiled[top_file].as_ref_ok()?.local_scope].find_immediate_str(diag, "top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
-            match &compiled[item].ty {
+            match compiled[item].ty.as_ref_ok()? {
                 MaybeConstructor::Constructor(_) => {
-                    Err(Diagnostic::new_simple(
+                    let err = Diagnostic::new_simple(
                         "top should be a module without generic parameters, got a constructor",
                         top_entry.defining_span,
                         "defined here",
-                    ).into())
+                    );
+                    throw!(diag.report(err))
                 }
                 MaybeConstructor::Immediate(ty) => {
                     if let Type::Module(_) = ty {
                         Ok(item)
                     } else {
-                        Err(Diagnostic::new_simple(
+                        let err = Diagnostic::new_simple(
                             "top should be a module, got a non-module type",
                             top_entry.defining_span,
                             "defined here",
-                        ).into())
+                        );
+                        throw!(diag.report(err))
                     }
                 }
             }
@@ -331,11 +345,12 @@ fn find_top_module(source: &SourceDatabase, compiled: &CompiledDatabase) -> Resu
         ScopedEntry::Direct(_) => {
             // TODO include "got" string
             // TODO is this even ever possible? direct should only be inside of scopes
-            Err(Diagnostic::new_simple(
+            let err = Diagnostic::new_simple(
                 "top should be an item, got a direct",
                 top_entry.defining_span,
                 "defined here",
-            ).into())
+            );
+            throw!(diag.report(err))
         }
     }
 }

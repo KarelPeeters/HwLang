@@ -132,7 +132,7 @@ impl SourceDatabase {
         self[span.start.file].offsets.expand_span(span)
     }
 
-    pub fn map_parser_error(&self, e: ParseError) -> Diagnostic {
+    pub fn map_parser_error_to_diagnostic(&self, e: ParseError) -> Diagnostic {
         match e {
             ParseError::InvalidToken { location } => {
                 let span = Span::empty_at(location);

@@ -4,8 +4,57 @@ use crate::syntax::pos::{DifferentFile, Span};
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;
+use std::cell::RefCell;
 use std::cmp::min;
 
+// TODO give this a better name to clarify that this means that the compiler gave up on this
+
+/// Indicates that an error was already reported as a diagnostic.
+///
+/// Anything encountering this error should do one of, in order of preference:
+/// * Continue on a best-effort basis,
+///   allowing future errors that are definitely independent of the previous one to also be reported.
+/// * Propagate this value,
+///   blocking any downstream errors that are potentially just caused by the previous error
+///   and which would just be noise.
+///
+/// This value is not publicly constructible, use [Diagnostics::report]. 
+#[must_use]
+#[derive(Debug, Copy, Clone)]
+pub struct DiagnosticError(());
+
+pub type DiagnosticResult<T> = Result<T, DiagnosticError>;
+pub type DiagnosticResultPartial<T> = Result<T, (T, DiagnosticError)>;
+
+pub struct Diagnostics {
+    diagnostics: RefCell<Vec<Diagnostic>>,
+}
+
+impl Diagnostics {
+    pub fn new() -> Self {
+        Self { diagnostics: RefCell::new(vec![]) }
+    }
+
+    pub fn report_and_continue(&self, diag: Diagnostic) {
+        self.diagnostics.borrow_mut().push(diag);
+    }
+
+    // TODO go through and try to avoid early-exits as much as possible
+    pub fn report(&self, diag: Diagnostic) -> DiagnosticError {
+        self.report_and_continue(diag);
+        DiagnosticError(())
+    }
+
+    pub fn report_todo(&self, span: Span, feature: &str) -> DiagnosticError {
+        self.report(Diagnostic::new_todo(span, feature))
+    }
+
+    pub fn finish(self) -> Vec<Diagnostic> {
+        self.diagnostics.into_inner()
+    }
+}
+
+// TODO separate errors and warnings
 #[must_use]
 #[derive(Debug)]
 pub struct Diagnostic {
