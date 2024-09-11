@@ -32,6 +32,7 @@ pub struct GenericArguments {
 pub enum Type {
     GenericParameter(GenericTypeParameter),
 
+    Any,
     Boolean,
     Bits(Option<Box<Value>>),
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
@@ -117,6 +118,7 @@ impl GenericContainer for Type {
         match *self {
             Type::GenericParameter(param) =>
                 map_ty.get(&param).cloned().unwrap_or(Type::GenericParameter(param)),
+            Type::Any => Type::Any,
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {
                 Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map_ty, map_value))))

@@ -252,6 +252,7 @@ fn type_to_verilog(ty: &Type) -> VerilogType {
         // invalid RTL types
         // TODO materialize generics in RTL anyway, where possible? reduces some code duplication
         //   with optional generics, maybe even always have them? but then if there are different types it gets tricky
+        Type::Any => panic!("type 'any' should never materialize in RTL"),
         Type::GenericParameter(_) => panic!("generics should never materialize in RTL"),
         Type::Range => panic!("ranges should never materialize in RTL"),
         Type::Function(_) => panic!("functions should never materialize in RTL"),

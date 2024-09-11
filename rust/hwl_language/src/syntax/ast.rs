@@ -258,6 +258,8 @@ pub type Expression = Spanned<ExpressionKind>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
+    Any,
+    
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),

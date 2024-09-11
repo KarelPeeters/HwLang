@@ -628,6 +628,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let result = match expr.inner {
             ExpressionKind::Dummy =>
                 throw!(self.diag.report_todo(expr.span, "dummy expression")),
+            ExpressionKind::Any => ScopedEntryDirect::Immediate(TypeOrValue::Type(Type::Any)),
             ExpressionKind::Wrapped(ref inner) => self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
                 match self.scopes[scope].find(&self.scopes, &self.database, self.diag, id, Visibility::Private)?.value {

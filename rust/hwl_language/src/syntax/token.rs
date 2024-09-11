@@ -342,6 +342,7 @@ declare_tokens! {
         Use("use", TC::Keyword, TP::Normal),
         As("as", TC::Keyword, TP::Normal),
         Type("type", TC::Keyword, TP::Normal),
+        Any("any", TC::Keyword, TP::Normal),
         Struct("struct", TC::Keyword, TP::Normal),
         Enum("enum", TC::Keyword, TP::Normal),
         Ports("ports", TC::Keyword, TP::Normal),
