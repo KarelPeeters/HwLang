@@ -47,8 +47,6 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
                 let local_scope = scopes.new_root(file_info.offsets.full_span(file));
                 let local_scope_info = &mut scopes[local_scope];
 
-                let mut last_err = None;
-
                 for (file_item_index, ast_item) in enumerate(&ast.items) {
                     let common_info = ast_item.common_info();
                     let vis = match common_info.vis {
@@ -65,17 +63,15 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
 
                     match local_scope_info.maybe_declare(diagnostics, &common_info.id, ScopedEntry::Item(item), vis) {
                         Ok(()) => {}
-                        // don't break the loop, at least collect all declaration errors first
-                        Err(e) => last_err = Some(e),
+                        Err(e) => {
+                            // this is is a non-fatal error
+                            // TODO clean this up, use report_and_continue inside of .maybe_declare
+                            let _: DiagnosticError = e;
+                        },
                     }
                 }
 
-                // TODO make this even more granular, only error out the items with clashing names
-                if let Some(e) = last_err {
-                    Err(e)
-                } else {
-                    Ok(FileAuxiliary { ast, local_scope })
-                }
+                Ok(FileAuxiliary { ast, local_scope })
             }
             Err(e) => {
                 Err(diagnostics.report(database.map_parser_error_to_diagnostic(e)))

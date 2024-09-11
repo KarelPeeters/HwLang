@@ -35,6 +35,7 @@ impl Diagnostics {
         Self { diagnostics: RefCell::new(vec![]) }
     }
 
+    // TODO this is wrongly designed, continuing and whether we want a DiagnosticError are orthogonal
     pub fn report_and_continue(&self, diag: Diagnostic) {
         self.diagnostics.borrow_mut().push(diag);
     }

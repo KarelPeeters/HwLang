@@ -5,7 +5,7 @@ use crate::server::settings::PositionEncoding;
 use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
-use hwl_language::data::diagnostic::{Annotation, Diagnostic};
+use hwl_language::data::diagnostic::{Annotation, Diagnostic, Diagnostics};
 use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
 use hwl_language::front::driver::compile;
 use hwl_language::syntax::pos::FileId;
@@ -26,40 +26,37 @@ impl ServerState {
                 Err(e) => throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
             };
 
+            let diagnostics = Diagnostics::new();
+
             self.log("source database built, compiling");
-            match compile(&source) {
-                Ok(_compiled_database) => {
-                    // TODO maybe keep the database somewhere for later use in extra LSP features
-                    self.log("project compilation succeeded");
+            let _compiled_database = compile(&diagnostics, &source);
+            self.log("compilation finished");
 
-                    // explicitly clear all diagnostics
-                    for path in abs_path_map.values() {
-                        let uri = abs_path_to_uri(path).map_err(|e| OrSendError::Error(e.into()))?;
-                        self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
-                            uri,
-                            diagnostics: vec![],
-                            version: None,
-                        }).map_err(OrSendError::SendError)?;
-                    }
-                }
-                Err(diag) => {
-                    self.log(format!("project compilation failed: {:#?}", diag));
+            // build new diagnostic set, combined per URI
+            let mut diagnostics_per_uri: IndexMap<Uri, Vec<lsp_types::Diagnostic>> = IndexMap::new();
+            for diagnostic in diagnostics.finish() {
+                let (uri, diag) = diagnostic_to_lsp(
+                    self.settings.position_encoding,
+                    &source,
+                    &abs_path_map,
+                    diagnostic,
+                ).map_err(|e| OrSendError::Error(e.into()))?;
 
-                    // TODO be careful about how this should work with multiple files
-                    let (uri, diag) = diagnostic_to_lsp(
-                        self.settings.position_encoding,
-                        &source,
-                        &abs_path_map,
-                        diag,
-                    ).map_err(|e| OrSendError::Error(e.into()))?;
+                diagnostics_per_uri.entry(uri).or_default().push(diag);
+            }
 
-                    self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
-                        uri,
-                        diagnostics: vec![diag],
-                        // TODO version
-                        version: None,
-                    }).map_err(OrSendError::SendError)?;
-                }
+            // iterate over all files to ensure old diagnostics get cleared
+            // TODO optimize this, only send diff
+            for path in abs_path_map.values() {
+                let uri = abs_path_to_uri(path).map_err(|e| OrSendError::Error(e.into()))?;
+                let diagnostics = diagnostics_per_uri.swap_remove(&uri).unwrap_or_default();
+
+                self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
+                    uri,
+                    diagnostics,
+                    // TODO version
+                    version: None,
+                }).map_err(OrSendError::SendError)?;
             }
         }
 
