@@ -24,5 +24,5 @@ pub struct ModuleBlockClocked {
 
 #[derive(Debug)]
 pub enum CombinatorialStatement {
-    PortPortAssignment(ModulePort, ModulePort)
+    PortPortAssignment(ModulePort, ModulePort),
 }

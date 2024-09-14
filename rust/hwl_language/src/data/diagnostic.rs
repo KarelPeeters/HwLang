@@ -1,3 +1,6 @@
+//! This module is strongly inspired by the Rust compiler,
+//! see <https://rustc-dev-guide.rust-lang.org/diagnostics.html>.
+
 use crate::data::source::SourceDatabase;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
@@ -9,23 +12,24 @@ use std::cmp::min;
 
 // TODO give this a better name to clarify that this means that the compiler gave up on this
 
-/// Indicates that an error was already reported as a diagnostic.
+/// Indicates that an error was already reported.
 ///
-/// Anything encountering this error should do one of, in order of preference:
+/// Anything encountering this value should do one of, in order of preference:
 /// * Continue on a best-effort basis,
 ///   allowing future errors that are definitely independent of the previous one to also be reported.
+///   The compiler should make optimistic assumptions about whatever value is instead [ErrorGuaranteed].
 /// * Propagate this value,
 ///   blocking any downstream errors that are potentially just caused by the previous error
 ///   and which would just be noise.
 ///
-/// This value is not publicly constructible, use [Diagnostics::report]. 
+/// This value is not publicly constructible, use [Diagnostics::report].
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ErrorGuaranteed(());
+
+// TODO find a better name for this
+pub type ResultOrGuaranteed<T> = Result<T, ErrorGuaranteed>;
+
 #[must_use]
-#[derive(Debug, Copy, Clone)]
-pub struct DiagnosticError(());
-
-pub type DiagnosticResult<T> = Result<T, DiagnosticError>;
-pub type DiagnosticResultPartial<T> = Result<T, (T, DiagnosticError)>;
-
 pub struct Diagnostics {
     handler: Option<Box<dyn Fn(&Diagnostic)>>,
     diagnostics: RefCell<Vec<Diagnostic>>,
@@ -44,17 +48,17 @@ impl Diagnostics {
         if let Some(handler) = &self.handler {
             handler(&diag);
         }
-        
+
         self.diagnostics.borrow_mut().push(diag);
     }
 
     // TODO go through and try to avoid early-exits as much as possible
-    pub fn report(&self, diag: Diagnostic) -> DiagnosticError {
+    pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
         self.report_and_continue(diag);
-        DiagnosticError(())
+        ErrorGuaranteed(())
     }
 
-    pub fn report_todo(&self, span: Span, feature: &str) -> DiagnosticError {
+    pub fn report_todo(&self, span: Span, feature: &str) -> ErrorGuaranteed {
         self.report(Diagnostic::new_todo(span, feature))
     }
 

@@ -26,7 +26,7 @@ impl ServerState {
                 Err(e) => throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
             };
 
-            let diagnostics = Diagnostics::new();
+            let diagnostics = Diagnostics::new(None);
 
             self.log("source database built, compiling");
             let _compiled_database = compile(&diagnostics, &source);

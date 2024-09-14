@@ -1,4 +1,5 @@
 use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
 use crate::front::common::TypeOrValue;
 use crate::front::values::Value;
@@ -9,6 +10,7 @@ use indexmap::IndexMap;
 pub enum MaybeConstructor<T> {
     Constructor(Constructor<T>),
     Immediate(T),
+    Error(ErrorGuaranteed),
 }
 
 #[derive(Debug, Clone)]
@@ -30,8 +32,14 @@ pub struct GenericArguments {
 // TODO push type constructor args into struct, enum, ... types, like Rust?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
+    // error
+    // TODO how should this behave under equality?
+    Error(ErrorGuaranteed),
+
+    // parameters
     GenericParameter(GenericTypeParameter),
 
+    // basic
     Any,
     Boolean,
     Bits(Option<Box<Value>>),
@@ -109,6 +117,7 @@ impl<T> MaybeConstructor<T> {
                 inner: f(c.inner),
             }),
             MaybeConstructor::Immediate(t) => MaybeConstructor::Immediate(f(t)),
+            MaybeConstructor::Error(e) => MaybeConstructor::Error(e),
         }
     }
 }
@@ -116,8 +125,11 @@ impl<T> MaybeConstructor<T> {
 impl GenericContainer for Type {
     fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         match *self {
+            Type::Error(e) => Type::Error(e),
+
             Type::GenericParameter(param) =>
                 map_ty.get(&param).cloned().unwrap_or(Type::GenericParameter(param)),
+
             Type::Any => Type::Any,
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {

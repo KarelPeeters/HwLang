@@ -51,7 +51,7 @@ pub fn lower(
 
     while let Some(instance) = todo.pop_front() {
         // pick name
-        let ast = compiled.get_item_ast(instance.module)?;
+        let ast = compiled.get_item_ast(instance.module);
         let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
 
         // generate source
@@ -87,9 +87,9 @@ fn generate_module_source(
 ) -> CompileResult<String> {
     let &ModuleInstance { module: item, args: ref module_args } = instance;
     let item_info = &compiled[item];
-    let item_ast = unwrap_match!(compiled.get_item_ast(item)?, ast::Item::Module(item_ast) => item_ast);
+    let item_ast = unwrap_match!(compiled.get_item_ast(item), ast::Item::Module(item_ast) => item_ast);
 
-    let module_info = match item_info.ty.as_ref_ok()? {
+    let module_info = match &item_info.ty {
         MaybeConstructor::Immediate(Type::Module(info)) => {
             assert!(module_args.is_none());
             info
@@ -109,11 +109,11 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(INDENT);
-        port_string.push_str(&port_to_verilog(compiled, port, comma_str));
+        port_string.push_str(&port_to_verilog(compiled, port, comma_str)?);
         port_string.push_str("\n");
     }
 
-    let body = unwrap_match!(item_info.body.as_ref_ok()?, ItemBody::Module(body) => body);
+    let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
     let body_str = module_body_to_verilog(compiled, body).unwrap();
 
     let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
@@ -155,7 +155,7 @@ fn module_body_to_verilog(compiled: &CompiledDatabase, body: &ModuleBody) -> Res
     Ok(result)
 }
 
-fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &str) -> String {
+fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &str) -> CompileResult<String> {
     let &ModulePortInfo {
         defining_item,
         ref defining_id,
@@ -171,7 +171,7 @@ fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &st
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { sync, ty } => {
-            let ty_str = match type_to_verilog(ty) {
+            let ty_str = match type_to_verilog(ty)? {
                 VerilogType::SingleBit =>
                     "".to_string(),
                 VerilogType::MultiBit(signed, n) => {
@@ -197,7 +197,8 @@ fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &st
 
     let name_str = &defining_id.string;
 
-    format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
+    let result_str = format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}");
+    Ok(result_str)
 }
 
 // TODO signed/unsigned? does it ever matter?
@@ -227,14 +228,14 @@ impl Signed {
     }
 }
 
-fn type_to_verilog(ty: &Type) -> VerilogType {
-    match ty {
+fn type_to_verilog(ty: &Type) -> CompileResult<VerilogType> {
+    let result = match ty {
         Type::Boolean => VerilogType::SingleBit,
         Type::Bits(n) => {
             match n {
                 None => panic!("infinite bit widths should never materialize in RTL"),
                 Some(n) => {
-                    let n = value_evaluate_int(n).to_u64().expect("negative or too large to convert to integer");
+                    let n = value_evaluate_int(n)?.to_u64().expect("negative or too large to convert to integer");
                     VerilogType::MultiBit(Signed::Unsigned, n)
                 },
             }
@@ -243,7 +244,7 @@ fn type_to_verilog(ty: &Type) -> VerilogType {
         Type::Array(_, _) => todo!(),
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
-            let range = value_evaluate_int_range(range);
+            let range = value_evaluate_int_range(range)?;
             verilog_type_for_int_range(range)
         },
         Type::Tuple(_) => todo!(),
@@ -252,20 +253,23 @@ fn type_to_verilog(ty: &Type) -> VerilogType {
         // invalid RTL types
         // TODO materialize generics in RTL anyway, where possible? reduces some code duplication
         //   with optional generics, maybe even always have them? but then if there are different types it gets tricky
+        Type::Error(_) => panic!("type 'error' should never materialize in RTL"),
         Type::Any => panic!("type 'any' should never materialize in RTL"),
         Type::GenericParameter(_) => panic!("generics should never materialize in RTL"),
         Type::Range => panic!("ranges should never materialize in RTL"),
         Type::Function(_) => panic!("functions should never materialize in RTL"),
         Type::Module(_) => panic!("modules should never materialize in RTL"),
-    }
+    };
+    Ok(result)
 }
 
-fn value_evaluate_int(value: &Value) -> BigInt {
-    match value {
+fn value_evaluate_int(value: &Value) -> CompileResult<BigInt> {
+    let result = match value {
+        &Value::Error(e) => return Err(CompileError::Diagnostic(e)),
         Value::Int(i) => i.clone(),
         Value::Binary(op, left, right) => {
-            let left = value_evaluate_int(left);
-            let right = value_evaluate_int(right);
+            let left = value_evaluate_int(left)?;
+            let right = value_evaluate_int(right)?;
             match op {
                 BinaryOp::Add => left + right,
                 BinaryOp::Sub => left - right,
@@ -286,17 +290,18 @@ fn value_evaluate_int(value: &Value) -> BigInt {
         Value::Range(_) => todo!(),
         Value::Function(_) => todo!(),
         Value::Module(_) => todo!(),
-    }
+    };
+    Ok(result)
 }
 
-fn value_evaluate_int_range(value: &Value) -> std::ops::Range<BigInt> {
-    match value {
+fn value_evaluate_int_range(value: &Value) -> CompileResult<std::ops::Range<BigInt>> {
+    let result = match value {
         Value::Range(info) => {
             let &RangeInfo { ref start, ref end, end_inclusive } = info;
 
             // unbound ranges should never show up in RTL
-            let start = value_evaluate_int(start.as_ref().unwrap());
-            let end = value_evaluate_int(end.as_ref().unwrap());
+            let start = value_evaluate_int(start.as_ref().unwrap())?;
+            let end = value_evaluate_int(end.as_ref().unwrap())?;
 
             if end_inclusive {
                 start..(end + 1)
@@ -306,7 +311,8 @@ fn value_evaluate_int_range(value: &Value) -> std::ops::Range<BigInt> {
         },
         // TODO relax once ranges are less built-in
         _ => panic!("only range values can be evaluated as ranges"),
-    }
+    };
+    Ok(result)
 }
 
 fn find_top_module(
@@ -320,7 +326,9 @@ fn find_top_module(
     let top_entry = compiled[compiled[top_file].as_ref_ok()?.local_scope].find_immediate_str(diag, "top", Visibility::Public)?;
     match top_entry.value {
         &ScopedEntry::Item(item) => {
-            match compiled[item].ty.as_ref_ok()? {
+            match &compiled[item].ty {
+                &MaybeConstructor::Error(e) =>
+                    Err(CompileError::Diagnostic(e)),
                 MaybeConstructor::Constructor(_) => {
                     let err = Diagnostic::new_simple(
                         "top should be a module without generic parameters, got a constructor",

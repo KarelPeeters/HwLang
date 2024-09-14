@@ -1,4 +1,5 @@
 use crate::data::compiled::{FunctionParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
 use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
@@ -10,6 +11,9 @@ use num_bigint::BigInt;
 // TODO should all values (and types) have (optional) origin spans for easier error messages?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
+    // error
+    Error(ErrorGuaranteed),
+
     // parameters
     GenericParameter(GenericValueParameter),
     FunctionParameter(FunctionParameter),
@@ -82,6 +86,8 @@ impl<V> RangeInfo<V> {
 impl GenericContainer for Value {
     fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
         match *self {
+            Value::Error(e) => Value::Error(e),
+
             Value::GenericParameter(param) =>
                 map_value.get(&param).cloned().unwrap_or(Value::GenericParameter(param)),
             Value::FunctionParameter(unique_id) =>

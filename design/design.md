@@ -606,6 +606,9 @@ clocked(clk, reset) {
 }
 ```
 
+Another issue to consider: all outputs and wires that are assigned by a clocked block must also be reset by that block.
+What should the syntax for those be?
+
 ## Flexibility and the `any` type/value
 
 * generic/function parameters and consequently local variables should be allowed to have type/value `any` (keyword)

@@ -1,8 +1,7 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticResult, Diagnostics};
-use crate::data::source::SourceDatabase;
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
 use crate::new_index_type;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
@@ -24,7 +23,13 @@ pub struct ScopeInfo<V> {
     #[allow(dead_code)]
     scope: Scope,
     parent: Option<(Scope, Visibility)>,
-    values: IndexMap<String, (V, Span, Visibility)>,
+    values: IndexMap<String, DeclaredValue<V>>,
+}
+
+#[derive(Debug)]
+pub enum DeclaredValue<V> {
+    Once { value: V, span: Span, vis: Visibility },
+    Multiple { spans: Vec<Span>, err: ErrorGuaranteed },
 }
 
 #[derive(Debug)]
@@ -66,27 +71,38 @@ impl<V> Scopes<V> {
 impl<V> ScopeInfo<V> {
     // TODO make _local_ shadowing configurable: allowed, non-local allowed, not allowed
     // TODO make "identifier" string configurable
-    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &ast::Identifier, var: V, vis: Visibility) -> DiagnosticResult<()> {
-        if let Some(&(_, prev_span, _)) = self.values.get(&id.string) {
-            // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
-            let err = Diagnostic::new("identifier declared twice")
-                .add_info(prev_span, "previously declared here")
-                .add_error(id.span, "declared again here")
-                .finish();
-            Err(diagnostics.report(err))
+    // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
+    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &ast::Identifier, value: V, vis: Visibility) {
+        if let Some(declared) = self.values.get_mut(&id.string) {
+            // get all spans
+            let mut spans = match declared {
+                DeclaredValue::Once { value: _, span, vis: _ } => vec![*span],
+                DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
+            };
+
+            // report error
+            let mut diag = Diagnostic::new("identifier declared multiple times");
+            for span in &spans {
+                diag = diag.add_info(*span, "previously declared here");
+            }
+            let diag = diag.add_error(id.span, "declared again here").finish();
+            let err = diagnostics.report(diag);
+
+            // insert error value into scope to avoid downstream errors
+            //   caused by only considering the first declared value
+            spans.push(id.span);
+            *declared = DeclaredValue::Multiple { spans, err }
         } else {
-            // only insert if we know the id is not declared yet, to avoid state mutation in case of an error
-            self.values.insert_first(id.string.to_owned(), (var, id.span, vis));
-            Ok(())
+            let declared = DeclaredValue::Once { value, span: id.span, vis };
+            self.values.insert_first(id.string.to_owned(), declared);
         }
     }
 
-    pub fn maybe_declare(&mut self, diagnostics: &Diagnostics, id: &ast::MaybeIdentifier, var: V, vis: Visibility) -> DiagnosticResult<()> {
+    pub fn maybe_declare(&mut self, diagnostics: &Diagnostics, id: &ast::MaybeIdentifier, var: V, vis: Visibility) {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
                 self.declare(diagnostics, id, var, vis),
-            ast::MaybeIdentifier::Dummy(_) =>
-                Ok(())
+            ast::MaybeIdentifier::Dummy(_) => {}
         }
     }
 
@@ -99,12 +115,18 @@ impl<V> ScopeInfo<V> {
     pub fn find<'s>(
         &'s self,
         scopes: &'s Scopes<V>,
-        database: &SourceDatabase,
         diagnostics: &Diagnostics,
         id: &ast::Identifier,
         vis: Visibility,
-    ) -> DiagnosticResult<ScopeFound<&'s V>> {
-        if let Some(&(ref value, value_span, value_vis)) = self.values.get(&id.string) {
+    ) -> ResultOrGuaranteed<ScopeFound<&'s V>> {
+        if let Some(declared) = self.values.get(&id.string) {
+            // check declared exactly once
+            let (value, value_span, value_vis) = match *declared {
+                DeclaredValue::Once { ref value, span, vis } => (value, span, vis),
+                DeclaredValue::Multiple { spans: _, err } => return Err(err),
+            };
+
+            // check access
             if !vis.can_access(value_vis) {
                 let err = Diagnostic::new(format!("cannot access identifier `{}`", id.string))
                     .add_info(value_span, "identifier declared here")
@@ -117,7 +139,7 @@ impl<V> ScopeInfo<V> {
             Ok(ScopeFound { defining_span: value_span, value })
         } else if let Some((parent, parent_vis)) = self.parent {
             // TODO does min access make sense?
-            scopes[parent].find(scopes, database, diagnostics, id, Visibility::minimum_access(vis, parent_vis))
+            scopes[parent].find(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis))
         } else {
             // TODO add fuzzy-matched suggestions as info
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
@@ -128,22 +150,30 @@ impl<V> ScopeInfo<V> {
         }
     }
 
+    // TODO share common code with find, the only difference is a missing span and parent lookup
     pub fn find_immediate_str(
         &self,
         diagnostics: &Diagnostics,
         id: &str,
         vis: Visibility,
-    ) -> DiagnosticResult<ScopeFound<&V>> {
-        if let Some(&(ref value, value_span, value_vis)) = self.values.get(id) {
-            if vis.can_access(value_vis) {
-                Ok(ScopeFound { defining_span: value_span, value })
-            } else {
+    ) -> ResultOrGuaranteed<ScopeFound<&V>> {
+        if let Some(declared) = self.values.get(id) {
+            // check declared exactly once
+            let (value, value_span, value_vis) = match *declared {
+                DeclaredValue::Once { ref value, span, vis } => (value, span, vis),
+                DeclaredValue::Multiple { spans: _, err } => return Err(err),
+            };
+
+            // check vis
+            if !(vis.can_access(value_vis)) {
                 let err = Diagnostic::new(format!("cannot access identifier `{}` externally", id))
                     .add_info(value_span, "identifier declared here")
                     .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
                     .finish();
-                Err(diagnostics.report(err))
+                return Err(diagnostics.report(err));
             }
+
+            Ok(ScopeFound { defining_span: value_span, value })
         } else {
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id))
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here")

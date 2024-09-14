@@ -1,12 +1,12 @@
 use crate::back::LowerError;
-use crate::data::diagnostic::DiagnosticError;
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::source::CompileSetError;
 
 #[must_use]
 #[derive(Debug)]
 pub enum CompileError {
     CompileSetError(CompileSetError),
-    Diagnostic(DiagnosticError),
+    Diagnostic(ErrorGuaranteed),
     LowerError(LowerError),
 }
 
@@ -18,8 +18,8 @@ impl From<CompileSetError> for CompileError {
     }
 }
 
-impl From<DiagnosticError> for CompileError {
-    fn from(value: DiagnosticError) -> Self {
+impl From<ErrorGuaranteed> for CompileError {
+    fn from(value: ErrorGuaranteed) -> Self {
         CompileError::Diagnostic(value)
     }
 }

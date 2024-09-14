@@ -14,6 +14,7 @@ pub enum ScopedEntry {
 }
 
 // TODO transpose or not?
+// TODO find a better name for this
 pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
