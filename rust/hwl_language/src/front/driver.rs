@@ -1,13 +1,12 @@
 use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModuleInfo, ModulePortInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
-use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncDomain, SyncKind, UnaryOp};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::syntax::{ast, parse_file_content};
 use crate::try_opt_result;
@@ -105,7 +104,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
     // TODO merge this with the previous pass: better for LSP and maybe for local items
     for &item in &item_keys {
         assert!(state.compiled[item].body.is_none());
-        let body = match state.type_check_item_body(item) {
+        let body = match state.resolve_item_body(item) {
             Ok(body) => body,
             Err(ResolveFirst(_)) => panic!("all types should be resolved by now"),
         };
@@ -137,12 +136,12 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
 }
 
 // TODO create some dedicated auxiliary data structure, with dense and non-dense variants
-struct CompileState<'d, 'a> {
-    log_const_eval: bool,
-    diag: &'d Diagnostics,
-    source: &'d SourceDatabase,
-    parsed: &'a ParsedDatabase,
-    compiled: CompiledDatabasePartial,
+pub(super) struct CompileState<'d, 'a> {
+    pub(super) log_const_eval: bool,
+    pub(super) diag: &'d Diagnostics,
+    pub(super) source: &'d SourceDatabase,
+    pub(super) parsed: &'a ParsedDatabase,
+    pub(super) compiled: CompiledDatabasePartial,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -453,7 +452,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn type_check_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
+    fn resolve_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
         assert!(self.compiled[item].body.is_none());
 
         let _item_ty = self.compiled[item].ty.as_ref().expect("item should already have been checked");
@@ -468,92 +467,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ItemBody::Error(self.diag.report_todo(item_span, "const body")),
             ast::Item::Function(_) =>
                 ItemBody::Error(self.diag.report_todo(item_span, "function body")),
-            ast::Item::Module(item_ast) => {
-                let ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = item_ast;
-                let ast::Block { span: _, statements } = body;
-
-                // TODO add to this scope any locally-defined items first
-                //   this might require spawning a new sub-driver instance,
-                //     or can we avoid that and do everything in a single graph?
-                //   do we _want_ to avoid splits? that's good for concurrency!
-                let scope_ports = self.compiled.module_info[&item].scope_ports;
-                let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
-
-                let mut module_blocks = vec![];
-
-                for top_statement in statements {
-                    match top_statement.kind {
-                        StatementKind::Declaration(_) => {
-                            self.diag.report_todo(top_statement.span, "module top-level declaration");
-                        }
-                        StatementKind::Assignment(_) => {
-                            self.diag.report_todo(top_statement.span, "module top-level assignment");
-                        }
-                        StatementKind::Expression(_) => {
-                            self.diag.report_todo(top_statement.span, "module top-level expression");
-                        }
-                        StatementKind::CombinatorialBlock(ref comb_block) => {
-                            let mut result_statements = vec![];
-
-                            for statement in &comb_block.block.statements {
-                                match statement.kind {
-                                    StatementKind::Declaration(_) => {
-                                        self.diag.report_todo(statement.span, "combinatorial declaration");
-                                    }
-                                    StatementKind::Assignment(ref assignment) => {
-                                        let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
-                                        if op.inner.is_some() {
-                                            self.diag.report_todo(statement.span, "combinatorial assignment with operator");
-                                        }
-
-                                        // TODO type and sync checking
-
-                                        let target = self.eval_expression_as_value(scope_body, target)?;
-                                        let value = self.eval_expression_as_value(scope_body, value)?;
-
-                                        if let (Value::ModulePort(target), Value::ModulePort(value)) = (target, value) {
-                                            result_statements.push(CombinatorialStatement::PortPortAssignment(target, value));
-                                        } else {
-                                            self.diag.report_todo(statement.span, "general combinatorial assignment");
-                                        }
-                                    },
-                                    StatementKind::Expression(_) => {
-                                        self.diag.report_todo(statement.span, "combinatorial expression");
-                                    }
-
-                                    StatementKind::CombinatorialBlock(ref comb_block_inner) => {
-                                        let err = Diagnostic::new("nested combinatorial block")
-                                            .add_info(comb_block.span_keyword, "outer")
-                                            .add_error(comb_block_inner.span_keyword, "inner")
-                                            .finish();
-                                        self.diag.report(err);
-                                    }
-
-                                    StatementKind::ClockedBlock(ref clock_block_inner) => {
-                                        let err = Diagnostic::new("nested clock block in combinatorial block")
-                                            .add_info(comb_block.span_keyword, "outer")
-                                            .add_error(clock_block_inner.span_keyword, "inner")
-                                            .finish();
-                                        self.diag.report(err);
-                                    },
-                                }
-                            }
-
-                            let comb_block = ModuleBlockCombinatorial {
-                                statements: result_statements,
-                            };
-                            module_blocks.push(ModuleBlock::Combinatorial(comb_block));
-                        }
-                        StatementKind::ClockedBlock(_) => {
-                            self.diag.report_todo(top_statement.span, "clocked block");
-                        },
-                    }
-                }
-
-                ItemBody::Module(ModuleBody {
-                    blocks: module_blocks,
-                })
-            },
+            ast::Item::Module(item_ast) =>
+                ItemBody::Module(self.resolve_module_body(item, item_ast)?),
             ast::Item::Interface(_) =>
                 ItemBody::Error(self.diag.report_todo(item_span, "interface body")),
         };
@@ -842,7 +757,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn eval_expression_as_value(&self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
+    pub fn eval_expression_as_value(&self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             ScopedEntryDirect::Constructor(_) => {
