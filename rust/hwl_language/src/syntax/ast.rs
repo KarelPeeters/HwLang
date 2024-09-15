@@ -109,7 +109,7 @@ pub struct ItemDefFunction {
     pub id: Identifier,
     pub params: Spanned<Vec<FunctionParameter>>,
     pub ret_ty: Option<Expression>,
-    pub body: Block,
+    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +119,7 @@ pub struct ItemDefModule {
     pub id: Identifier,
     pub params: Option<Spanned<Vec<GenericParameter>>>,
     pub ports: Spanned<Vec<ModulePort>>,
-    pub body: Block,
+    pub body: Block<ModuleStatement>,
 }
 
 // TODO think about the syntax and meaning of this
@@ -201,47 +201,60 @@ pub enum PortDirection {
 }
 
 #[derive(Debug, Clone)]
-pub struct Block {
+pub struct Block<S> {
     pub span: Span,
-    pub statements: Vec<Statement>,
+    pub statements: Vec<S>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Statement {
-    pub span: Span,
-    pub kind: StatementKind,
-}
+pub type ModuleStatement = Spanned<ModuleStatementKind>;
+pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
-pub enum StatementKind {
-    Declaration(Declaration),
-    Assignment(Assignment),
-    Expression(Box<Expression>),
+pub enum ModuleStatementKind {
+    RegDeclaration(RegDeclaration),
+    WireDeclaration(WireDeclaration),
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
-    // TODO include items
+    // TODO if, for
+    // TODO function/type definitions
 }
 
 #[derive(Debug, Clone)]
-pub struct Declaration {
+pub enum BlockStatementKind {
+    VariableDeclaration(VariableDeclaration),
+    RegDeclaration(RegDeclaration),
+    Assignment(Assignment),
+    Expression(Box<Expression>),
+    // TODO function/type definitions
+}
+
+#[derive(Debug, Clone)]
+pub struct RegDeclaration {
     pub span: Span,
-    pub kind: DeclarationKind,
+    pub id: MaybeIdentifier,
+    // TODO make optional and infer
+    pub sync: Spanned<SyncDomain<Box<Expression>>>,
+    pub ty: Box<Expression>,
+    pub init: Box<Expression>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WireDeclaration {
+    pub span: Span,
+    pub id: MaybeIdentifier,
+    // TODO make optional and infer
+    pub sync: Spanned<SyncKind<Box<Expression>>>,
+    pub ty: Box<Expression>,
+    pub value: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableDeclaration {
+    pub span: Span,
+    pub mutable: bool,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
     pub init: Option<Box<Expression>>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum DeclarationKind {
-    // Allowed anywhere.
-    Const,
-    // Allowed within clocked or combinatorial blocks.
-    Val,
-    Var,
-    // Allowed top-level in modules.
-    Wire,
-    // Allowed top-level in modules and top-level at the start of clocked blocks.
-    Reg,
 }
 
 #[derive(Debug, Clone)]
@@ -256,7 +269,7 @@ pub struct Assignment {
 pub struct CombinatorialBlock {
     pub span: Span,
     pub span_keyword: Span,
-    pub block: Block,
+    pub block: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,7 +278,7 @@ pub struct ClockedBlock {
     pub span_keyword: Span,
     pub clock: Box<Expression>,
     pub reset: Box<Expression>,
-    pub block: Block,
+    pub block: Block<BlockStatement>,
 }
 
 pub type Expression = Spanned<ExpressionKind>;
@@ -285,12 +298,11 @@ pub enum ExpressionKind {
     TypeFunc(Vec<Expression>, Box<Expression>),
 
     // Control flow
-    Block(Block),
+    Block(Block<BlockStatement>),
     If(IfExpression),
     Loop(LoopExpression),
     While(WhileExpression),
     For(ForExpression),
-    Sync(SyncExpression),
 
     Return(Option<Box<Expression>>),
     Break(Option<Box<Expression>>),
@@ -352,27 +364,27 @@ pub struct RangeLiteral {
 #[derive(Debug, Clone)]
 pub struct IfExpression {
     pub cond: Box<Expression>,
-    pub then_block: Block,
+    pub then_block: Block<BlockStatement>,
     pub else_if_pairs: Vec<ElseIfPair>,
-    pub else_block: Option<Block>,
+    pub else_block: Option<Block<BlockStatement>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ElseIfPair {
     pub span: Span,
     pub cond: Box<Expression>,
-    pub block: Block,
+    pub block: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LoopExpression {
-    pub body: Block,
+    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WhileExpression {
     pub cond: Box<Expression>,
-    pub body: Block,
+    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
@@ -380,13 +392,13 @@ pub struct ForExpression {
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,
-    pub body: Block,
+    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SyncExpression {
-    pub clk: Box<Expression>,
-    pub body: Block,
+    pub clock: Box<Expression>,
+    pub body: Block<BlockStatement>,
 }
 
 // TODO allow: undefined, wildcard, 0, 1, hex, decimal, ...

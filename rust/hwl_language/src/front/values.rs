@@ -33,6 +33,12 @@ pub enum Value {
     // Struct(StructValue),
     // Tuple(TupleValue),
     // Enum(EnumValue),
+
+    // variables
+    // TODO what should these contain? an id? a type?
+    //  how should these behave under generic substitution?
+    Wire,
+    Reg,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -109,6 +115,9 @@ impl GenericContainer for Value {
 
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),
+
+            Value::Wire => Value::Wire,
+            Value::Reg => Value::Reg,
         }
     }
 }

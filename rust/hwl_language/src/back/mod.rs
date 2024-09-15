@@ -297,6 +297,8 @@ fn value_evaluate_int(value: &Value) -> CompileResult<BigInt> {
         Value::Range(_) => todo!(),
         Value::Function(_) => todo!(),
         Value::Module(_) => todo!(),
+        Value::Wire => todo!(),
+        Value::Reg => todo!(),
     };
     Ok(result)
 }

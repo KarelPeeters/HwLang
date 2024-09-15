@@ -114,10 +114,10 @@ Item: Item = {
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<GenericParameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
     // TODO find some nicer syntax than this "ports" keyword separator
-    <start:@L> <vis:Vis> "module" <id:Id> <params:Parameters<GenericParameter>?> "ports" <ports:Parameters<ModulePort>> <body:Block> <end:@R>
+    <start:@L> <vis:Vis> "module" <id:Id> <params:Parameters<GenericParameter>?> "ports" <ports:Parameters<ModulePort>> <body:Block<ModuleStatement>> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-    <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<FunctionParameter>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block> <end:@R>
+    <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<FunctionParameter>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
@@ -131,50 +131,66 @@ StructField: StructField = {
         => StructField { id, ty, span: loc.span(start, end) },
 }
 
-Block: Block = {
-    <start:@L> "{" <statements:Statement*> "}" <end:@R>
-        => Block { statements, span: loc.span(start, end) },
+Block<S>: Block<S> = {
+    <start:@L> "{" <statements:S*> "}" <end:@R> => {
+        Block { statements, span: loc.span(start, end) }
+    },
 }
 
-Statement: Statement = {
+ModuleStatement: ModuleStatement = Spanned<ModuleStatementKind>;
+BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
+
+ModuleStatementKind: ModuleStatementKind = {
     // declaration
-    <start:@L> <kind:DeclarationKind> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        let decl = Declaration { kind, id, ty, init, span: loc.span(start, end) };
-        Statement { kind: StatementKind::Declaration(decl), span: loc.span(start, end) }
+    <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
+        let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
+        ModuleStatementKind::RegDeclaration(decl)
     },
-    // assignment
-    <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
-        let assignment = Assignment { op, target, value, span: loc.span(start, end) };
-        Statement { kind: StatementKind::Assignment(assignment), span: loc.span(start, end) }
+    <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<SyncKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
+        let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
+        ModuleStatementKind::WireDeclaration(decl)
     },
     // combinatorial block
-    <start:@L> "combinatorial" <end_keyword:@R> <block:Block> <end:@R> => {
+    <start:@L> "combinatorial" <end_keyword:@R> <block:Block<BlockStatement>> <end:@R> => {
         let inner = CombinatorialBlock {
             block,
             span: loc.span(start, end),
             span_keyword: loc.span(start, end_keyword),
         };
-        Statement { kind: StatementKind::CombinatorialBlock(inner), span: loc.span(start, end) }
+        ModuleStatementKind::CombinatorialBlock(inner)
     },
-    <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block> <end:@R> => {
+    // clocked block
+    <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R> => {
         let inner = ClockedBlock {
             clock, reset, block,
             span: loc.span(start, end),
             span_keyword: loc.span(start, end_keyword),
         };
-        Statement { kind: StatementKind::ClockedBlock(inner), span: loc.span(start, end) }
+        ModuleStatementKind::ClockedBlock(inner)
     },
-    // expression
-    // TODO semicolon is optional for control flow statements and the last expression in a block
-    <start:@L> <inner:BoxExpr> ";" <end:@R> => Statement { kind: StatementKind::Expression(inner), span: loc.span(start, end) },
 }
 
-DeclarationKind: DeclarationKind = {
-    "const" => DeclarationKind::Const,
-    "val" => DeclarationKind::Val,
-    "var" => DeclarationKind::Var,
-    "wire" => DeclarationKind::Wire,
-    "reg" => DeclarationKind::Reg,
+BlockStatementKind: BlockStatementKind = {
+    // declaration
+    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
+        let decl = VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) };
+        BlockStatementKind::VariableDeclaration(decl)
+    },
+    // assignment
+    <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
+        let assignment = Assignment { op, target, value, span: loc.span(start, end) };
+        BlockStatementKind::Assignment(assignment)
+    },
+    // expression
+    // TODO semicolon is optional for control flow statements
+    <start:@L> <inner:BoxExpr> ";" <end:@R> => {
+        BlockStatementKind::Expression(inner)
+    },
+}
+
+VariableMutable: bool = {
+    "val" => false,
+    "var" => true,
 }
 
 // parameters
@@ -212,7 +228,11 @@ PortDirection: PortDirection = {
 
 SyncKind: SyncKind<Box<Expression>> = {
     "async" => SyncKind::Async,
-    "sync" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" => SyncKind::Sync(SyncDomain { clock, reset }),
+    <SyncDomain> => SyncKind::Sync(<>),
+}
+
+SyncDomain: SyncDomain<Box<Expression>> = {
+    "sync" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" => SyncDomain { clock, reset },
 }
 
 // expressions
@@ -356,7 +376,7 @@ ExprLevelAtomic: ExpressionKind = {
     // parentheses
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
     // block
-    <block:Block> => ExpressionKind::Block(block),
+    <block:Block<BlockStatement>> => ExpressionKind::Block(block),
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),
@@ -384,16 +404,16 @@ ExprLevelAtomic: ExpressionKind = {
 
 ExprControlFlow: ExpressionKind = {
     // if
-    "if" "(" <cond:BoxExpr> ")" <then_block:Block> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block>)?>
+    "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
         => ExpressionKind::If(IfExpression { cond, then_block, else_if_pairs, else_block }),
     // loop
-    "loop" <body:Block>
+    "loop" <body:Block<BlockStatement>>
         => ExpressionKind::Loop(LoopExpression { body }),
     // for
-    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block>
+    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block<BlockStatement>>
         => ExpressionKind::For(ForExpression { index, index_ty, iter, body }),
     // while
-    "while" "(" <cond:BoxExpr> ")" <body:Block>
+    "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => ExpressionKind::While(WhileExpression { cond, body }),
 }
 
@@ -403,7 +423,7 @@ Path: Path = {
 }
 
 ElseIfPair: ElseIfPair = {
-    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block> <end:@R>
+    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
         => ElseIfPair { cond, block, span: loc.span(start, end) },
 }
 

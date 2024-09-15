@@ -574,8 +574,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "while expression")),
             ExpressionKind::For(_) =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "for expression")),
-            ExpressionKind::Sync(_) =>
-                ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "sync expression")),
             ExpressionKind::Return(_) =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "return expression")),
             ExpressionKind::Break(_) =>
@@ -1090,6 +1088,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
             Value::Range(_) => panic!("range can't itself have a range type"),
             Value::Function(_) => panic!("function can't have a range type"),
             Value::Module(_) => panic!("module can't have a range type"),
+            // TODO get their types
+            Value::Wire => Ok(None),
+            Value::Reg => Ok(None),
         }
     }
 }

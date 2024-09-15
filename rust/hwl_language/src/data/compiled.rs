@@ -165,6 +165,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             }
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),
+            Value::Wire => "wire".to_string(),
+            Value::Reg => "reg".to_string(),
         }
     }
 }

@@ -1,11 +1,12 @@
 use crate::data::compiled::Item;
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::data::diagnostic::Diagnostic;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
+use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::Visibility;
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::StatementKind;
+use crate::syntax::ast::{BlockStatementKind, ModuleStatementKind};
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn resolve_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ResolveResult<ModuleBody> {
@@ -22,25 +23,32 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let mut module_blocks = vec![];
 
         for top_statement in statements {
-            match top_statement.kind {
-                StatementKind::Declaration(_) => {
-                    self.diag.report_todo(top_statement.span, "module top-level declaration");
+            match &top_statement.inner {
+                ModuleStatementKind::RegDeclaration(decl) => {
+                    // TODO properly implement
+                    let value = Value::Reg;
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(value)));
+                    self.compiled.scopes[scope_body].maybe_declare(&self.diag, &decl.id, entry, Visibility::Private);
                 }
-                StatementKind::Assignment(_) => {
-                    self.diag.report_todo(top_statement.span, "module top-level assignment");
+                ModuleStatementKind::WireDeclaration(decl) => {
+                    // TODO properly implement
+                    let value = Value::Wire;
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(value)));
+                    self.compiled.scopes[scope_body].maybe_declare(&self.diag, &decl.id, entry, Visibility::Private);
                 }
-                StatementKind::Expression(_) => {
-                    self.diag.report_todo(top_statement.span, "module top-level expression");
-                }
-                StatementKind::CombinatorialBlock(ref comb_block) => {
+                ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
                     let mut result_statements = vec![];
 
                     for statement in &comb_block.block.statements {
-                        match statement.kind {
-                            StatementKind::Declaration(_) => {
-                                self.diag.report_todo(statement.span, "combinatorial declaration");
+                        match &statement.inner {
+                            BlockStatementKind::VariableDeclaration(_) => {
+                                self.diag.report_todo(statement.span, "combinatorial variable declaration");
                             }
-                            StatementKind::Assignment(ref assignment) => {
+                            BlockStatementKind::RegDeclaration(decl) => {
+                                let diag = Diagnostic::new_simple("register declaration inside combinatorial block", decl.span, "register declaration");
+                                self.diag.report(diag);
+                            }
+                            BlockStatementKind::Assignment(ref assignment) => {
                                 let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
                                 if op.inner.is_some() {
                                     self.diag.report_todo(statement.span, "combinatorial assignment with operator");
@@ -57,24 +65,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                     self.diag.report_todo(statement.span, "general combinatorial assignment");
                                 }
                             }
-                            StatementKind::Expression(_) => {
+                            BlockStatementKind::Expression(_) => {
                                 self.diag.report_todo(statement.span, "combinatorial expression");
-                            }
-
-                            StatementKind::CombinatorialBlock(ref comb_block_inner) => {
-                                let err = Diagnostic::new("nested combinatorial block")
-                                    .add_info(comb_block.span_keyword, "outer")
-                                    .add_error(comb_block_inner.span_keyword, "inner")
-                                    .finish();
-                                self.diag.report(err);
-                            }
-
-                            StatementKind::ClockedBlock(ref clock_block_inner) => {
-                                let err = Diagnostic::new("nested clock block in combinatorial block")
-                                    .add_info(comb_block.span_keyword, "outer")
-                                    .add_error(clock_block_inner.span_keyword, "inner")
-                                    .finish();
-                                self.diag.report(err);
                             }
                         }
                     }
@@ -84,7 +76,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     };
                     module_blocks.push(ModuleBlock::Combinatorial(comb_block));
                 }
-                StatementKind::ClockedBlock(_) => {
+                ModuleStatementKind::ClockedBlock(_) => {
                     self.diag.report_todo(top_statement.span, "clocked block");
                 }
             }
