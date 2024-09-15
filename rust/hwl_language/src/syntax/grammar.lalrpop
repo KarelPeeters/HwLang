@@ -208,7 +208,7 @@ PortDirection: PortDirection = {
 
 SyncKind: SyncKind<Box<Expression>> = {
     "async" => SyncKind::Async,
-    "sync" "(" <BoxExpr> ")" => SyncKind::Sync(<>),
+    "sync" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" => SyncKind::Sync(SyncDomain { clock, reset }),
 }
 
 // expressions

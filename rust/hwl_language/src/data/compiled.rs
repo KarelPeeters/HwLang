@@ -1,26 +1,50 @@
 use crate::data::diagnostic::{ErrorGuaranteed, ResultOrGuaranteed};
 use crate::data::module_body::ModuleBody;
+use crate::data::parsed::ItemAstReference;
+use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{MaybeConstructor, Type};
-use crate::front::values::Value;
+use crate::front::values::{RangeInfo, Value};
 use crate::new_index_type;
-use crate::syntax::ast;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncKind};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
+use num_traits::Signed;
 
-// TODO move this somewhere else, this is more of a public interface
-// TODO separate read-only and clearly done iteminfo struct 
-pub struct CompiledDatabase {
-    pub file_auxiliary: IndexMap<FileId, ResultOrGuaranteed<FileAuxiliary>>,
-    pub items: Arena<Item, ItemInfo>,
+pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
+
+pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
+    pub file_scope: IndexMap<FileId, ResultOrGuaranteed<Scope>>,
+    pub scopes: Scopes<ScopedEntry>,
+
+    pub items: Arena<Item, ItemInfo<S::ItemInfoT, S::ItemInfoB>>,
+    
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
     pub function_params: Arena<FunctionParameter, FunctionParameterInfo>,
+    pub module_info: IndexMap<Item, ModuleInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
-    pub scopes: Scopes<ScopedEntry>,
+}
+
+pub trait CompiledStage {
+    type ItemInfoT;
+    type ItemInfoB;
+}
+
+pub struct CompiledStagePartial;
+
+impl CompiledStage for CompiledStagePartial {
+    type ItemInfoT = Option<MaybeConstructor<Type>>;
+    type ItemInfoB = Option<ItemBody>;
+}
+
+pub struct CompiledStateFull;
+
+impl CompiledStage for CompiledStateFull {
+    type ItemInfoT = MaybeConstructor<Type>;
+    type ItemInfoB = ItemBody;
 }
 
 new_index_type!(pub Item);
@@ -31,20 +55,13 @@ new_index_type!(pub ModulePort);
 
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 
-pub struct FileAuxiliary {
-    pub ast: ast::FileContent,
-    // TODO distinguish scopes properly, there are up to 3:
-    //   * containing items defined in this file
-    //   * containing sibling files
-    //   * including imports
-    pub local_scope: Scope,
-}
+pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<Type>>, Option<ItemBody>>;
 
-pub struct ItemInfo {
-    pub file: FileId,
-    pub file_item_index: usize,
-    pub ty: MaybeConstructor<Type>,
-    pub body: ItemBody,
+#[derive(Debug)]
+pub struct ItemInfo<T = MaybeConstructor<Type>, B = ItemBody> {
+    pub ast_ref: ItemAstReference,
+    pub ty: T,
+    pub body: B,
 }
 
 #[derive(Debug)]
@@ -74,6 +91,12 @@ pub struct FunctionParameterInfo {
 }
 
 #[derive(Debug)]
+pub struct ModuleInfo {
+    pub scope_ports: Scope,
+    // TODO scope_inner?
+}
+
+#[derive(Debug)]
 pub struct ModulePortInfo {
     pub defining_item: Item,
     pub defining_id: Identifier,
@@ -91,59 +114,103 @@ pub enum ItemBody {
     Error(ErrorGuaranteed),
 }
 
-impl CompiledDatabase {
-    pub fn get_item_ast(&self, item: Item) -> &ast::Item {
-        let info = &self[item];
-        let aux = self.file_auxiliary.get(&info.file).unwrap()
-            .as_ref()
-            .expect("the item existing implies that the auxiliary info exists too");
-        &aux.ast.items[info.file_item_index]
+impl<S: CompiledStage> CompiledDatabase<S> {
+    // TODO make sure generic variables are properly disambiguated
+    // TODO insert this into value_to_readable_str, no point keeping this one separate
+    pub fn range_to_readable_str(&self, source: &SourceDatabase, range: &RangeInfo<Box<Value>>) -> String {
+        let RangeInfo { ref start, ref end, end_inclusive } = *range;
+
+        let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
+        let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
+        let symbol = if end_inclusive { "..=" } else { ".." };
+
+        format!("({}{}{})", start, symbol, end)
+    }
+
+    // TODO integrate generic parameters properly in the diagnostic, by pointing to them
+    pub fn value_to_readable_str(&self, source: &SourceDatabase, value: &Value) -> String {
+        match *value {
+            // this should never actually come up, since there will never more future errors on error values
+            Value::Error(_) => "value that corresponds to previously reported error".to_string(),
+            // TODO include span to disambiguate
+            Value::GenericParameter(p) => {
+                let id = &self[p].defining_id;
+                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
+            }
+            Value::FunctionParameter(p) => {
+                let id = &self[p].defining_id;
+                format!("function_param({:?}, {:?})", id.string(), source.expand_pos(id.span().start))
+            }
+            Value::ModulePort(p) => {
+                let id = &self[p].defining_id;
+                format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
+            }
+            Value::Int(ref v) => {
+                if v.is_negative() {
+                    format!("({})", v)
+                } else {
+                    format!("{}", v)
+                }
+            },
+            Value::Range(ref range) => self.range_to_readable_str(source, range),
+            Value::Binary(op, ref left, ref right) => {
+                let left = self.value_to_readable_str(source, left);
+                let right = self.value_to_readable_str(source, right);
+                let symbol = op.symbol();
+                format!("({} {} {})", left, symbol, right)
+            }
+            Value::UnaryNot(ref inner) => {
+                let inner = self.value_to_readable_str(source, inner);
+                format!("(!{})", inner)
+            }
+            Value::Function(_) => todo!(),
+            Value::Module(_) => todo!(),
+        }
     }
 }
 
-impl std::ops::Index<FileId> for CompiledDatabase {
-    type Output = ResultOrGuaranteed<FileAuxiliary>;
-    fn index(&self, index: FileId) -> &Self::Output {
-        self.file_auxiliary.get(&index).unwrap()
-    }
-}
-
-impl std::ops::Index<Item> for CompiledDatabase {
-    type Output = ItemInfo;
+impl<S: CompiledStage> std::ops::Index<Item> for CompiledDatabase<S> {
+    type Output = ItemInfo<S::ItemInfoT, S::ItemInfoB>;
     fn index(&self, index: Item) -> &Self::Output {
         &self.items[index]
     }
 }
 
-impl std::ops::Index<GenericTypeParameter> for CompiledDatabase {
+impl std::ops::IndexMut<Item> for CompiledDatabase<CompiledStagePartial> {
+    fn index_mut(&mut self, index: Item) -> &mut ItemInfoPartial {
+        &mut self.items[index]
+    }
+}
+
+impl<S: CompiledStage> std::ops::Index<GenericTypeParameter> for CompiledDatabase<S> {
     type Output = GenericTypeParameterInfo;
     fn index(&self, index: GenericTypeParameter) -> &Self::Output {
         &self.generic_type_params[index]
     }
 }
 
-impl std::ops::Index<GenericValueParameter> for CompiledDatabase {
+impl<S: CompiledStage> std::ops::Index<GenericValueParameter> for CompiledDatabase<S> {
     type Output = GenericValueParameterInfo;
     fn index(&self, index: GenericValueParameter) -> &Self::Output {
         &self.generic_value_params[index]
     }
 }
 
-impl std::ops::Index<FunctionParameter> for CompiledDatabase {
+impl<S: CompiledStage> std::ops::Index<FunctionParameter> for CompiledDatabase<S> {
     type Output = FunctionParameterInfo;
     fn index(&self, index: FunctionParameter) -> &Self::Output {
         &self.function_params[index]
     }
 }
 
-impl std::ops::Index<ModulePort> for CompiledDatabase {
+impl<S: CompiledStage> std::ops::Index<ModulePort> for CompiledDatabase<S> {
     type Output = ModulePortInfo;
     fn index(&self, index: ModulePort) -> &Self::Output {
         &self.module_ports[index]
     }
 }
 
-impl std::ops::Index<Scope> for CompiledDatabase {
+impl<S: CompiledStage> std::ops::Index<Scope> for CompiledDatabase<S> {
     type Output = ScopeInfo<ScopedEntry>;
     fn index(&self, index: Scope) -> &Self::Output {
         &self.scopes[index]

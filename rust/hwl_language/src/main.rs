@@ -77,10 +77,10 @@ fn main() {
     }
 }
 
-fn main_inner(diag: &Diagnostics, source_database: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
-    let compiled_database = compile(diag, &source_database);
-    let lowered_database = lower(diag, &source_database, &compiled_database)?;
-    Ok(lowered_database)
+fn main_inner(diag: &Diagnostics, source: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
+    let (parsed, compiled) = compile(diag, &source);
+    let lowered = lower(diag, &source, &parsed, &compiled)?;
+    Ok(lowered)
 }
 
 fn build_source_database(root: &Path) -> Result<SourceDatabase, CompileSetError> {

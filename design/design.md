@@ -606,6 +606,24 @@ clocked(clk, reset) {
 }
 ```
 
+## Regs, wires and vars
+
+```
+module foo {
+    // register written by a clocked block in this module,
+    //   usable by other combinatorial and clocked blocks
+    //   (sync-ness is optionally inferred)
+    reg a: uint;
+
+    // wire written by a combinatorial block in this module, or set as an expression by one of the others
+    //   (sync-ness is optionally inferred)
+    wire b: uint;
+
+    // variable that's part of the top-to-bottom execution of this module at compile time
+    var c: uint;
+}
+```
+
 Another issue to consider: all outputs and wires that are assigned by a clocked block must also be reset by that block.
 What should the syntax for those be?
 

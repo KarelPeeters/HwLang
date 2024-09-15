@@ -181,7 +181,13 @@ pub enum PortKind<S, T> {
 #[derive(Debug, Clone)]
 pub enum SyncKind<S> {
     Async,
-    Sync(S),
+    Sync(SyncDomain<S>),
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncDomain<S> {
+    pub clock: S,
+    pub reset: S,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

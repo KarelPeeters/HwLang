@@ -2,6 +2,7 @@ use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, Module
 use crate::data::diagnostic::{Diagnostic, Diagnostics};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
+use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::error::{CompileError, CompileResult};
 use crate::front::common::ScopedEntry;
@@ -9,10 +10,9 @@ use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncKind};
+use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
 use crate::throw;
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
@@ -33,6 +33,7 @@ pub enum LowerError {
 pub fn lower(
     diag: &Diagnostics,
     source: &SourceDatabase,
+    parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
 ) -> CompileResult<LoweredDatabase> {
     // find top module
@@ -51,11 +52,11 @@ pub fn lower(
 
     while let Some(instance) = todo.pop_front() {
         // pick name
-        let ast = compiled.get_item_ast(instance.module);
+        let ast = parsed.item_ast(compiled[instance.module].ast_ref);
         let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
 
         // generate source
-        let verilog_source = generate_module_source(diag, compiled, &instance, &module_name)?;
+        let verilog_source = generate_module_source(diag, source, parsed, compiled, &instance, &module_name)?;
         verilog_sources_rev.push(verilog_source);
 
         // insert in deduplication map
@@ -81,13 +82,15 @@ struct ModuleInstance {
 // TODO write straight into a single string buffer instead of repeated concatenation
 fn generate_module_source(
     diag: &Diagnostics,
+    source: &SourceDatabase,
+    parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     instance: &ModuleInstance,
     module_name: &str,
 ) -> CompileResult<String> {
     let &ModuleInstance { module: item, args: ref module_args } = instance;
     let item_info = &compiled[item];
-    let item_ast = unwrap_match!(compiled.get_item_ast(item), ast::Item::Module(item_ast) => item_ast);
+    let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
 
     let module_info = match &item_info.ty {
         MaybeConstructor::Immediate(Type::Module(info)) => {
@@ -109,7 +112,7 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(INDENT);
-        port_string.push_str(&port_to_verilog(compiled, port, comma_str)?);
+        port_string.push_str(&port_to_verilog(source, compiled, port, comma_str)?);
         port_string.push_str("\n");
     }
 
@@ -155,9 +158,14 @@ fn module_body_to_verilog(compiled: &CompiledDatabase, body: &ModuleBody) -> Res
     Ok(result)
 }
 
-fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &str) -> CompileResult<String> {
+fn port_to_verilog(
+    source: &SourceDatabase,
+    compiled: &CompiledDatabase,
+    port: ModulePort,
+    comma_str: &str,
+) -> CompileResult<String> {
     let &ModulePortInfo {
-        defining_item,
+        defining_item: _,
         ref defining_id,
         direction,
         ref kind
@@ -182,11 +190,10 @@ fn port_to_verilog(compiled: &CompiledDatabase, port: ModulePort, comma_str: &st
 
             // TODO include full type in comment
             let comment = match sync {
-                SyncKind::Sync(clk) => {
-                    let clk_port = unwrap_match!(clk, &Value::ModulePort(port) => port);
-                    let clk_port_info = &compiled[clk_port];
-                    assert_eq!(defining_item, clk_port_info.defining_item);
-                    format!("sync({})", &clk_port_info.defining_id.string)
+                SyncKind::Sync(SyncDomain { clock, reset }) => {
+                    let clock_str = compiled.value_to_readable_str(source, clock);
+                    let reset_str = compiled.value_to_readable_str(source, reset);
+                    format!("sync({}, {})", clock_str, reset_str)
                 },
                 SyncKind::Async => "async".to_owned(),
             };
@@ -323,7 +330,9 @@ fn find_top_module(
     let top_dir = *source[source.root_directory].children.get("top")
         .ok_or(LowerError::NoTopFileFound)?;
     let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
-    let top_entry = compiled[compiled[top_file].as_ref_ok()?.local_scope].find_immediate_str(diag, "top", Visibility::Public)?;
+    let top_file_scope = (*compiled.file_scope.get(&top_file).unwrap())?;
+    let top_entry = compiled[top_file_scope].find_immediate_str(diag, "top", Visibility::Public)?;
+
     match top_entry.value {
         &ScopedEntry::Item(item) => {
             match &compiled[item].ty {

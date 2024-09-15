@@ -1,25 +1,25 @@
-use crate::data::compiled::{CompiledDatabase, FileAuxiliary, FunctionParameter, FunctionParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModuleInfo, ModulePortInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
 use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
+use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncKind, UnaryOp};
-use crate::syntax::pos::{FileId, Span};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncDomain, SyncKind, UnaryOp};
+use crate::syntax::pos::Span;
 use crate::syntax::{ast, parse_file_content};
 use crate::try_opt_result;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
-use num_traits::{One, Signed};
+use num_traits::One;
 
-pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> CompiledDatabase {
+pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now file ids are still not deterministic
     let files_sorted = database.files.keys()
@@ -32,14 +32,15 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
     let mut items: Arena<Item, ItemInfoPartial> = Arena::default();
 
     // parse all files and populate local scopes
-    let mut file_auxiliary = IndexMap::new();
+    let mut file_ast = IndexMap::new();
+    let mut file_scope = IndexMap::new();
     let mut scopes = Scopes::default();
 
     for file in files_sorted {
         let file_info = &database[file];
 
         // parse
-        let aux = match parse_file_content(file, &file_info.source) {
+        let (ast, scope) = match parse_file_content(file, &file_info.source) {
             Ok(ast) => {
                 // build local scope
                 // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
@@ -53,9 +54,8 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
                         ast::Visibility::Private => Visibility::Private,
                     };
 
-                    let item = items.push(ItemInfoPartial {
-                        file,
-                        file_item_index,
+                    let item = items.push(ItemInfo {
+                        ast_ref: ItemAstReference { file, file_item_index },
                         ty: None,
                         body: None,
                     });
@@ -63,33 +63,40 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
                     local_scope_info.maybe_declare(diagnostics, &common_info.id, ScopedEntry::Item(item), vis);
                 }
 
-                Ok(FileAuxiliary { ast, local_scope })
+                (Ok(ast), Ok(local_scope))
             }
             Err(e) => {
-                Err(diagnostics.report(database.map_parser_error_to_diagnostic(e)))
+                let e = diagnostics.report(database.map_parser_error_to_diagnostic(e));
+                (Err(e), Err(e))
             },
         };
 
-        file_auxiliary.insert_first(file, aux);
+        file_ast.insert_first(file, ast);
+        file_scope.insert_first(file, scope);
     }
+
+    let parsed = ParsedDatabase { file_ast };
 
     let mut state = CompileState {
         diag: diagnostics,
-        database,
-        items,
-        file_auxiliary: &file_auxiliary,
-        generic_type_params: Arena::default(),
-        generic_value_params: Arena::default(),
-        function_params: Arena::default(),
-        module_ports: Arena::default(),
-        module_info: IndexMap::new(),
-        scopes,
+        source: database,
+        parsed: &parsed,
+        compiled: CompiledDatabase {
+            items,
+            file_scope,
+            generic_type_params: Arena::default(),
+            generic_value_params: Arena::default(),
+            function_params: Arena::default(),
+            module_ports: Arena::default(),
+            module_info: IndexMap::new(),
+            scopes,
+        },
         log_const_eval: false,
     };
 
     // resolve all item types (which is mostly their signatures)
     // TODO randomize order to check for dependency bugs? but then diagnostics have random orders
-    let item_keys = state.items.keys().collect_vec();
+    let item_keys = state.compiled.items.keys().collect_vec();
     for &item in &item_keys {
         state.resolve_item_type_fully(item);
     }
@@ -97,70 +104,45 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> Compiled
     // typecheck all item bodies
     // TODO merge this with the previous pass: better for LSP and maybe for local items
     for &item in &item_keys {
-        assert!(state[item].body.is_none());
+        assert!(state.compiled[item].body.is_none());
         let body = match state.type_check_item_body(item) {
             Ok(body) => body,
             Err(ResolveFirst(_)) => panic!("all types should be resolved by now"),
         };
 
-        let slot = &mut state[item].body;
+        let slot = &mut state.compiled[item].body;
         assert!(slot.is_none());
         *slot = Some(body);
     }
 
-    let items = state.items.map_values(|info| ItemInfo {
-        file: info.file,
-        file_item_index: info.file_item_index,
+    // map to final database
+    let items = state.compiled.items.map_values(|info| ItemInfo {
+        ast_ref: info.ast_ref,
         ty: info.ty.unwrap(),
         body: info.body.unwrap(),
     });
 
-    CompiledDatabase {
+    let compiled = CompiledDatabase {
+        file_scope: state.compiled.file_scope,
+        scopes: state.compiled.scopes,
         items,
-        generic_type_params: state.generic_type_params,
-        generic_value_params: state.generic_value_params,
-        function_params: state.function_params,
-        module_ports: state.module_ports,
-        scopes: state.scopes,
-        file_auxiliary,
-    }
+        generic_type_params: state.compiled.generic_type_params,
+        generic_value_params: state.compiled.generic_value_params,
+        function_params: state.compiled.function_params,
+        module_info: state.compiled.module_info,
+        module_ports: state.compiled.module_ports,
+    };
+
+    (parsed, compiled)
 }
 
 // TODO create some dedicated auxiliary data structure, with dense and non-dense variants
 struct CompileState<'d, 'a> {
-    diag: &'d Diagnostics,
-    
-    database: &'d SourceDatabase,
-    file_auxiliary: &'a IndexMap<FileId, ResultOrGuaranteed<FileAuxiliary>>,
-    items: Arena<Item, ItemInfoPartial>,
-
-    // TODO reduce duplication with CompileDatabase (including all index accessors through a trait)
-    generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
-    generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
-    function_params: Arena<FunctionParameter, FunctionParameterInfo>,
-    module_ports: Arena<ModulePort, ModulePortInfo>,
-    module_info: IndexMap<Item, ModuleInfo>,
-    scopes: Scopes<ScopedEntry>,
-
     log_const_eval: bool,
-}
-
-struct ModuleInfo {
-    scope_ports: Scope,
-    // TODO scope_inner?
-}
-
-#[derive(Debug)]
-struct ItemInfoPartial {
-    file: FileId,
-    file_item_index: usize,
-
-    // `None` if this item has not been resolved yet.
-    // For a type: the type
-    // For a value: the signature
-    ty: Option<MaybeConstructor<Type>>,
-    // `None` if this items body has not been checked yet.
-    body: Option<ItemBody>,
+    diag: &'d Diagnostics,
+    source: &'d SourceDatabase,
+    parsed: &'a ParsedDatabase,
+    compiled: CompiledDatabasePartial,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -190,7 +172,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         // TODO avoid repetitive work by switching to async instead?
         while let Some(curr) = stack.pop() {
-            if self[curr].ty.is_some() {
+            if self.compiled[curr].ty.is_some() {
                 // already resolved, skip
                 continue;
             }
@@ -198,7 +180,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             let resolved = match self.resolve_item_type_new(curr) {
                 Ok(resolved) => resolved,
                 Err(ResolveFirst(first)) => {
-                    assert!(self[first].ty.is_none(), "request to resolve {first:?} first, but it already has a type");
+                    assert!(self.compiled[first].ty.is_none(), "request to resolve {first:?} first, but it already has a type");
 
                     // push curr failed attempt back on the stack
                     stack.push(curr);
@@ -213,14 +195,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         // TODO the order is nondeterministic, it depends on which items happened to be visited first
                         let mut diag = Diagnostic::new("cyclic type dependency");
                         for &stack_item in cycle {
-                            let item_ast = self.get_item_ast(stack_item);
+                            let item_ast = self.parsed.item_ast(self.compiled[stack_item].ast_ref);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
                         }
                         let err = self.diag.report(diag.finish());
 
                         // set slot of all involved items
                         for &stack_item in cycle {
-                            let slot = &mut self[stack_item].ty;
+                            let slot = &mut self.compiled[stack_item].ty;
                             assert!(slot.is_none(), "someone else already set the type for {curr:?}");
                             *slot = Some(MaybeConstructor::Error(err));
                         }
@@ -237,14 +219,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
             };
 
             // managed to resolve the current item, store its type
-            let slot = &mut self[curr].ty;
+            let slot = &mut self.compiled[curr].ty;
             assert!(slot.is_none(), "someone else already set the type for {curr:?}");
             *slot = Some(resolved);
         }
     }
 
     fn resolve_item_type(&self, item: Item) -> ResolveResult<&MaybeConstructor<Type>> {
-        match self[item].ty {
+        match self.compiled[item].ty {
             Some(ref r) => Ok(r),
             None => Err(ResolveFirst(item)),
         }
@@ -252,13 +234,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
         // check that this is indeed a new query
-        assert!(self[item].ty.is_none());
+        assert!(self.compiled[item].ty.is_none());
 
         // item lookup
-        let item_ast = self.get_item_ast(item);
-        let scope = match self.file_auxiliary.get(&self[item].file).unwrap() {
-            Ok(aux) => aux.local_scope,
-            &Err(e) => return Ok(MaybeConstructor::Error(e)),
+        let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
+        let scope = match *self.compiled.file_scope.get(&self.compiled[item].ast_ref.file).unwrap() {
+            Ok(scope) => scope,
+            Err(e) => return Ok(MaybeConstructor::Error(e)),
         };
 
         // actual resolution
@@ -334,7 +316,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
                 self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
-                    let scope_ports = s.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
+                    let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
                     // map ports
                     let mut port_name_map = IndexMap::new();
@@ -359,9 +341,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                     PortKind::Normal {
                                         sync: match &sync.inner {
                                             SyncKind::Async => SyncKind::Async,
-                                            SyncKind::Sync(clk) => {
-                                                let clk = s.eval_expression_as_value(scope_ports, clk)?;
-                                                SyncKind::Sync(clk)
+                                            SyncKind::Sync(SyncDomain { clock, reset }) => {
+                                                let clock = s.eval_expression_as_value(scope_ports, clock)?;
+                                                let reset = s.eval_expression_as_value(scope_ports, reset)?;
+                                                SyncKind::Sync(SyncDomain { clock, reset })
                                             },
                                         },
                                         ty: s.eval_expression_as_ty(scope_ports, ty)?,
@@ -369,10 +352,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 }
                             },
                         };
-                        let module_port = s.module_ports.push(module_port_info);
+                        let module_port = s.compiled.module_ports.push(module_port_info);
                         port_vec.push(module_port);
 
-                        s.scopes[scope_ports].declare(
+                        s.compiled.scopes[scope_ports].declare(
                             s.diag,
                             &port_id,
                             ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
@@ -382,7 +365,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // result
                     let module_info = ModuleInfo { scope_ports };
-                    s.module_info.insert_first(item, module_info);
+                    s.compiled.module_info.insert_first(item, module_info);
 
                     let module_ty_info = ModuleTypeInfo {
                         nominal_type_unique: NominalTypeUnique { item, args },
@@ -408,8 +391,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         params: &Option<Spanned<Vec<ast::GenericParameter>>>,
         build_ty: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<Result<T, ErrorGuaranteed>>,
     ) -> ResolveResult<MaybeConstructor<T>> {
-        let item_span = self.get_item_ast(item).common_info().span_full;
-        let scope_inner = self.scopes.new_child(scope_outer, item_span, Visibility::Private);
+        let item_span = self.parsed.item_ast(self.compiled[item].ast_ref).common_info().span_full;
+        let scope_inner = self.compiled.scopes.new_child(scope_outer, item_span, Visibility::Private);
 
         match params {
             None => {
@@ -429,7 +412,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 for param_ast in &params.inner {
                     let (param, arg) = match &param_ast.kind {
                         &GenericParameterKind::Type(_span) => {
-                            let param = self.generic_type_params.push(GenericTypeParameterInfo {
+                            let param = self.compiled.generic_type_params.push(GenericTypeParameterInfo {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
                             });
@@ -437,7 +420,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         },
                         GenericParameterKind::Value(ty_expr) => {
                             let ty = self.eval_expression_as_ty(scope_inner, ty_expr)?;
-                            let param = self.generic_value_params.push(GenericValueParameterInfo {
+                            let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
                                 ty,
@@ -452,7 +435,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                    self.compiled.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
                 }
 
                 // map inner to actual type
@@ -471,11 +454,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     fn type_check_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
-        assert!(self[item].body.is_none());
+        assert!(self.compiled[item].body.is_none());
 
-        let _item_ty = self[item].ty.as_ref().expect("item should already have been checked");
+        let _item_ty = self.compiled[item].ty.as_ref().expect("item should already have been checked");
 
-        let item_ast = self.get_item_ast(item);
+        let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
         let item_span = item_ast.common_info().span_short;
 
         let body = match item_ast {
@@ -493,7 +476,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 //   this might require spawning a new sub-driver instance,
                 //     or can we avoid that and do everything in a single graph?
                 //   do we _want_ to avoid splits? that's good for concurrency!
-                let scope_body = self.scopes.new_child(self.module_info[&item].scope_ports, body.span, Visibility::Private);
+                let scope_ports = self.compiled.module_info[&item].scope_ports;
+                let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
                 let mut module_blocks = vec![];
 
@@ -583,12 +567,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         // TODO allow private visibility in child and sibling paths
         let vis = Visibility::Public;
-        let mut curr_dir = self.database.root_directory;
+        let mut curr_dir = self.source.root_directory;
 
         let Path { span: _, steps, id } = path;
 
         for step in steps {
-            let curr_dir_info = &self.database[curr_dir];
+            let curr_dir_info = &self.source[curr_dir];
 
             curr_dir = match curr_dir_info.children.get(&step.string) {
                 Some(&child_dir) => child_dir,
@@ -608,7 +592,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             };
         }
 
-        let file = match self.database[curr_dir].file {
+        let file = match self.source[curr_dir].file {
             Some(file) => file,
             None => {
                 let diag = Diagnostic::new_simple("expected path to file", path.span, "no file exists at this path");
@@ -617,13 +601,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         };
 
-        let file_scope = match self[file].as_ref_ok() {
-            Ok(file) => file.local_scope,
+        let file_scope = match *self.compiled.file_scope.get(&file).unwrap() {
+            Ok(scope) => scope,
             Err(e) => return Ok(Err(e)),
         };
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let entry = match self.scopes[file_scope].find(&self.scopes, self.diag, id, vis) {
+        let entry = match self.compiled.scopes[file_scope].find(&self.compiled.scopes, self.diag, id, vis) {
             Err(e) => return Ok(Err(e)),
             Ok(entry) => entry,
         };
@@ -646,7 +630,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ExpressionKind::Wrapped(ref inner) =>
                 self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                let entry = match self.scopes[scope].find(&self.scopes, self.diag, id, Visibility::Private) {
+                let entry = match self.compiled.scopes[scope].find(&self.compiled.scopes, self.diag, id, Visibility::Private) {
                     Err(e) => return Ok(ScopedEntryDirect::Error(e)),
                     Ok(entry) => entry,
                 };
@@ -797,12 +781,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 GenericParameter::Type(param) => {
                                     let arg_ty = self.eval_expression_as_ty(scope, arg)?;
                                     // TODO use for bound-check (once we add type bounds)
-                                    let _param_info = &self[param];
+                                    let _param_info = &self.compiled[param];
                                     map_ty.insert_first(param, arg_ty)
                                 }
                                 GenericParameter::Value(param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
-                                    let param_info = &self[param];
+                                    let param_info = &self.compiled[param];
                                     match self.check_type_contains(param_info.ty_span, arg.span, &param_info.ty, &arg_value) {
                                         Ok(()) => {}
                                         Err(e) => last_err = Some(e),
@@ -965,7 +949,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> ResultOrGuaranteed<()> {
         self.try_eval_bool_true(span_range, value).map_err(|e| {
-            let err = Diagnostic::new(format!("range valid check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
+            let value_str = self.compiled.value_to_readable_str(self.source, value);
+            let title = format!("range valid check failed: value {} {}", value_str, e.to_message());
+            let err = Diagnostic::new(title)
                 .add_error(span_range, "when checking that this range is non-decreasing")
                 .finish();
             self.diag.report(err).into()
@@ -974,7 +960,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn require_value_true_for_type_check(&self, span_ty: Span, span_value: Span, value: &Value) -> ResultOrGuaranteed<()> {
         self.try_eval_bool_true(span_value, value).map_err(|e| {
-            let err = Diagnostic::new(format!("type check failed: value {} {}", self.value_to_readable_str(value), e.to_message()))
+            let value_str = self.compiled.value_to_readable_str(self.source, value);
+            let title = format!("type check failed: value {} {}", value_str, e.to_message());
+            let err = Diagnostic::new(title)
                 .add_error(span_value, "when type checking this value")
                 .add_info(span_ty, "against this type")
                 .finish();
@@ -1009,7 +997,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         if self.log_const_eval {
             eprintln!(
                 "try_eval_bool({}) -> {:?}",
-                self.value_to_readable_str(value),
+                self.compiled.value_to_readable_str(self.source, value),
                 result
             );
         }
@@ -1060,11 +1048,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         });
         if self.log_const_eval {
+            let result_str = result.as_ref()
+                .map_or("None".to_string(), |r| self.compiled.range_to_readable_str(self.source, &r));
+            let result_simple_str = result_simplified.as_ref()
+                .map_or("None".to_string(), |r| self.compiled.range_to_readable_str(self.source, &r));
             eprintln!(
                 "range_of_value({}) -> {:?} -> {:?}",
-                self.value_to_readable_str(value),
-                result.as_ref().map_or("None".to_string(), |r| self.range_to_readable_str(&r)),
-                result_simplified.as_ref().map_or("None".to_string(), |r| self.range_to_readable_str(&r)),
+                self.compiled.value_to_readable_str(self.source, value),
+                result_str,
+                result_simple_str,
             );
         }
         Ok(result_simplified)
@@ -1090,8 +1082,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         match *value {
             Value::Error(e) => Err(e),
             // params have types which we can use to extract a range
-            Value::GenericParameter(param) => ty_as_range(&self[param].ty),
-            Value::FunctionParameter(param) => ty_as_range(&self[param].ty),
+            Value::GenericParameter(param) => ty_as_range(&self.compiled[param].ty),
+            Value::FunctionParameter(param) => ty_as_range(&self.compiled[param].ty),
             // a single integer corresponds to the range containing only that integer
             // TODO should we generate an inclusive or exclusive range here?
             //   this will become moot once we switch to +1 deltas
@@ -1143,7 +1135,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     BinaryOp::Pow => {
                         // check that exponent is non-negative
                         let right_start = right.start.as_ref().ok_or_else(|| {
-                            let err = Diagnostic::new(format!("power exponent cannot be negative, got range without lower bound {:?}", self.range_to_readable_str(&right)))
+                            let right_str = self.compiled.range_to_readable_str(self.source, &right);
+                            let title = format!("power exponent cannot be negative, got range without lower bound {:?}", right_str);
+                            let err = Diagnostic::new(title)
                                 .add_error(origin, "while checking this expression")
                                 .finish();
                             self.diag.report(err)
@@ -1151,7 +1145,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::Int(BigInt::ZERO)), right_start.clone());
                         self.try_eval_bool_true(origin, &cond)
                             .map_err(|e| {
-                                let err = Diagnostic::new(format!("power exponent range check failed: value {} {}", self.value_to_readable_str(&cond), e.to_message()))
+                                let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
+                                let title = format!("power exponent range check failed: value {} {}", cond_str, e.to_message());
+                                let err = Diagnostic::new(title)
                                     .add_error(origin, "while checking this expression")
                                     .finish();
                                 self.diag.report(err)
@@ -1180,66 +1176,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
             Value::Function(_) => panic!("function can't have a range type"),
             Value::Module(_) => panic!("module can't have a range type"),
         }
-    }
-
-    // TODO make sure generic variables are properly disambiguated
-    fn range_to_readable_str(&self, range: &RangeInfo<Box<Value>>) -> String {
-        let RangeInfo { ref start, ref end, end_inclusive } = *range;
-
-        let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(v));
-        let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(v));
-        let symbol = if end_inclusive { "..=" } else { ".." };
-
-        format!("({}{}{})", start, symbol, end)
-    }
-
-    // TODO integrate generic parameters properly in the diagnostic, by pointing to them
-    fn value_to_readable_str(&self, value: &Value) -> String {
-        match *value {
-            // this should never actually come up, since there will never more future errors on error values
-            Value::Error(_) => "value that corresponds to previously reported error".to_string(),
-            // TODO include span to disambiguate
-            Value::GenericParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("generic_param({:?}, {:?})", id.string, self.database.expand_pos(id.span.start))
-            }
-            Value::FunctionParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("function_param({:?}, {:?})", id.string(), self.database.expand_pos(id.span().start))
-            }
-            Value::ModulePort(p) => {
-                let id = &self[p].defining_id;
-                format!("module_port({:?}, {:?})", id.string, self.database.expand_pos(id.span.start))
-            }
-            Value::Int(ref v) => {
-                if v.is_negative() {
-                    format!("({})", v)
-                } else {
-                    format!("{}", v)
-                }
-            },
-            Value::Range(ref range) => self.range_to_readable_str(range),
-            Value::Binary(op, ref left, ref right) => {
-                let left = self.value_to_readable_str(left);
-                let right = self.value_to_readable_str(right);
-                let symbol = op.symbol();
-                format!("({} {} {})", left, symbol, right)
-            }
-            Value::UnaryNot(ref inner) => {
-                let inner = self.value_to_readable_str(inner);
-                format!("(!{})", inner)
-            }
-            Value::Function(_) => todo!(),
-            Value::Module(_) => todo!(),
-        }
-    }
-
-    fn get_item_ast(&self, item: Item) -> &'a ast::Item {
-        let info = &self[item];
-        let aux = self.file_auxiliary.get(&info.file).unwrap()
-            .as_ref()
-            .expect("the item existing implies that the auxiliary info exists too");
-        &aux.ast.items[info.file_item_index]
     }
 }
 
@@ -1276,53 +1212,5 @@ fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
     match (left, right) {
         (Some(left), Some(right)) => Some((left, right)),
         _ => None,
-    }
-}
-
-impl std::ops::Index<FileId> for CompileState<'_, '_> {
-    type Output = ResultOrGuaranteed<FileAuxiliary>;
-    fn index(&self, index: FileId) -> &Self::Output {
-        self.file_auxiliary.get(&index).unwrap()
-    }
-}
-
-impl std::ops::Index<Item> for CompileState<'_, '_> {
-    type Output = ItemInfoPartial;
-    fn index(&self, index: Item) -> &Self::Output {
-        &self.items[index]
-    }
-}
-
-impl std::ops::IndexMut<Item> for CompileState<'_, '_> {
-    fn index_mut(&mut self, index: Item) -> &mut Self::Output {
-        &mut self.items[index]
-    }
-}
-
-impl std::ops::Index<GenericTypeParameter> for CompileState<'_, '_> {
-    type Output = GenericTypeParameterInfo;
-    fn index(&self, index: GenericTypeParameter) -> &Self::Output {
-        &self.generic_type_params[index]
-    }
-}
-
-impl std::ops::Index<GenericValueParameter> for CompileState<'_, '_> {
-    type Output = GenericValueParameterInfo;
-    fn index(&self, index: GenericValueParameter) -> &Self::Output {
-        &self.generic_value_params[index]
-    }
-}
-
-impl std::ops::Index<FunctionParameter> for CompileState<'_, '_> {
-    type Output = FunctionParameterInfo;
-    fn index(&self, index: FunctionParameter) -> &Self::Output {
-        &self.function_params[index]
-    }
-}
-
-impl std::ops::Index<ModulePort> for CompileState<'_, '_> {
-    type Output = ModulePortInfo;
-    fn index(&self, index: ModulePort) -> &Self::Output {
-        &self.module_ports[index]
     }
 }
