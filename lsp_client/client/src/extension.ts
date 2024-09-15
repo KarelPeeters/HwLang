@@ -33,11 +33,9 @@ export function activate(context: ExtensionContext) {
 
 	// Options to control the language client
 	const clientOptions: LanguageClientOptions = {
-		// Register the server for plain text documents
-		// documentSelector: [{ scheme: 'file', language: 'plaintext' }],
 		documentSelector: [
-			{ scheme: 'file', language: 'plaintext' },
-			{ pattern: "**/*.kh" },
+			{scheme: 'file', language: 'hwlang'},
+			// { scheme: 'file', pattern: "**/*.kh" },
 		],
 		// file watching is registered by the server, no need to repeat it in the client plugin
 		synchronize: {}

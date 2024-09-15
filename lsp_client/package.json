@@ -16,9 +16,6 @@
 	"engines": {
 		"vscode": "^1.75.0"
 	},
-	"activationEvents": [
-		"onLanguage:plaintext"
-	],
 	"main": "./client/out/extension",
 	"contributes": {
 		"configuration": {
@@ -43,7 +40,19 @@
 					"description": "Traces the communication between VS Code and the language server."
 				}
 			}
-		}
+		},
+		"languages": [
+			{
+				"id": "hwlang",
+				"aliases": [
+					"HWLang"
+				],
+				"extensions": [
+					".kh"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		]
 	},
 	"scripts": {
 		"vscode:prepublish": "npm run compile",
