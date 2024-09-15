@@ -73,6 +73,7 @@ pub struct Diagnostic {
     pub title: String,
     pub snippets: Vec<(Span, Vec<Annotation>)>,
     pub footers: Vec<(Level, String)>,
+    pub backtrace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,6 +104,9 @@ pub struct DiagnosticStringSettings {
     /// This distance is measured after the context lines have already been added.
     /// If `None`, no merging is done.
     snippet_merge_max_distance: Option<usize>,
+
+    /// Whether to include a backtrace in "todo" diagnostics.
+    todo_backtrace: bool,
 }
 
 impl Default for DiagnosticStringSettings {
@@ -110,6 +114,7 @@ impl Default for DiagnosticStringSettings {
         DiagnosticStringSettings {
             snippet_context_lines: 2,
             snippet_merge_max_distance: Some(3),
+            todo_backtrace: false,
         }
     }
 }
@@ -121,6 +126,7 @@ impl Diagnostic {
                 title: title.into(),
                 snippets: vec![],
                 footers: vec![],
+                backtrace: None,
             }
         }
     }
@@ -149,14 +155,15 @@ impl Diagnostic {
         let message = format!("feature not yet implemented: '{}'", feature);
         let backtrace = Backtrace::force_capture();
 
-        Diagnostic::new(&message)
+        let mut diag = Diagnostic::new(&message)
             .add_error(span, "used here")
-            .footer(Level::Info, backtrace.to_string())
-            .finish()
+            .finish();
+        diag.backtrace = Some(backtrace.to_string());
+        diag
     }
 
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
-        let Self { title, snippets, footers } = self;
+        let Self { title, snippets, footers, backtrace } = self;
 
         // combine snippets that are close together
         let snippets_merged = if let Some(snippet_merge_max_distance) = settings.snippet_merge_max_distance {
@@ -237,6 +244,12 @@ impl Diagnostic {
 
         for &(level, ref footer) in &footers {
             message = message.footer(level.title(footer));
+        }
+
+        if let Some(backtrace) = &backtrace {
+            if settings.todo_backtrace {
+                message = message.footer(Level::Info.title(backtrace));
+            }
         }
 
         // format into string
