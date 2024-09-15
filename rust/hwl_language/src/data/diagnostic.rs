@@ -36,25 +36,24 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
-    pub fn new(handler: Option<Box<dyn Fn(&Diagnostic)>>) -> Self {
+    pub fn new() -> Self {
+        Self::new_with_handler(None)
+    }
+
+    pub fn new_with_handler(handler: Option<Box<dyn Fn(&Diagnostic)>>) -> Self {
         Self {
             handler,
             diagnostics: RefCell::new(vec![]),
         }
     }
 
-    // TODO this is wrongly designed, continuing and whether we want a DiagnosticError are orthogonal
-    pub fn report_and_continue(&self, diag: Diagnostic) {
+    // TODO go through and try to avoid early-exits as much as possible
+    pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
         if let Some(handler) = &self.handler {
             handler(&diag);
         }
 
         self.diagnostics.borrow_mut().push(diag);
-    }
-
-    // TODO go through and try to avoid early-exits as much as possible
-    pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
-        self.report_and_continue(diag);
         ErrorGuaranteed(())
     }
 

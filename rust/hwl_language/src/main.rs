@@ -16,11 +16,11 @@ use itertools::Itertools;
 struct Args {
     root: PathBuf,
     #[arg(long)]
-    print_diagnostics_immediatly: bool,
+    print_diagnostics_immediately: bool,
 }
 
 fn main() {
-    let Args { root, print_diagnostics_immediatly } = Args::parse();
+    let Args { root, print_diagnostics_immediately: print_diagnostics_immediatly } = Args::parse();
 
     // collect source
     let source_database = match build_source_database(&root) {
@@ -44,7 +44,7 @@ fn main() {
     };
     
     // run compilation
-    let diag = Diagnostics::new(handler);
+    let diag = Diagnostics::new_with_handler(handler);
     let main_result = main_inner(&diag, &source_database);
 
     // print diagnostics

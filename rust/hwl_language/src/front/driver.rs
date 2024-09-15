@@ -6,7 +6,7 @@ use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, Typ
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, Identifier, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncKind, UnaryOp};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StatementKind, StructField, SyncKind, UnaryOp};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_file_content};
 use crate::try_opt_result;
@@ -18,7 +18,6 @@ use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 use num_traits::{One, Signed};
-use std::collections::HashMap;
 
 pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> CompiledDatabase {
     // sort files to ensure platform-independence
@@ -424,22 +423,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             Some(params) => {
                 // build inner scope
-                let mut unique: HashMap<&str, &Identifier> = Default::default();
                 let mut parameters = vec![];
                 let mut arguments = vec![];
 
-                let mut last_err = None;
-
                 for param_ast in &params.inner {
-                    // check parameter names for uniqueness
-                    // TODO remove this and let the scope handle it, with proper diagnostic interactions
-                    // TODO maybe even continue type checking the body?
-                    if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
-                        let diag = Diagnostic::new_defined_twice("generic parameter", params.span, prev, &param_ast.id);
-                        let err = self.diag.report(diag);
-                        last_err = Some(err);
-                    }
-
                     let (param, arg) = match &param_ast.kind {
                         &GenericParameterKind::Type(_span) => {
                             let param = self.generic_type_params.push(GenericTypeParameterInfo {
@@ -466,11 +453,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
                     self.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
-                }
-
-                // bail if any parameter error occurred
-                if let Some(e) = last_err {
-                    return Ok(MaybeConstructor::Error(e));
                 }
 
                 // map inner to actual type

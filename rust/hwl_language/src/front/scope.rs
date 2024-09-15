@@ -69,9 +69,13 @@ impl<V> Scopes<V> {
 }
 
 impl<V> ScopeInfo<V> {
-    // TODO make _local_ shadowing configurable: allowed, non-local allowed, not allowed
-    // TODO make "identifier" string configurable
-    // TODO allow shadowing? for items and parameters no, but maybe for local variables yes?
+    /// Declare a value in this scope.
+    ///
+    /// Allows shadowing identifiers in the parent scope, but not in the local scope.
+    ///
+    /// This function always appears to succeed, errors are instead reported as diagnostics.
+    /// This also tracks identifiers that have erroneously been declared multiple times,
+    /// so that [Scope::find] can return an error for those cases.
     pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &ast::Identifier, value: V, vis: Visibility) {
         if let Some(declared) = self.values.get_mut(&id.string) {
             // get all spans
@@ -133,7 +137,7 @@ impl<V> ScopeInfo<V> {
                     .add_error(id.span, "not accessible here")
                     .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
                     .finish();
-                diagnostics.report_and_continue(err);
+                diagnostics.report(err);
             }
 
             Ok(ScopeFound { defining_span: value_span, value })
@@ -165,7 +169,7 @@ impl<V> ScopeInfo<V> {
             };
 
             // check vis
-            if !(vis.can_access(value_vis)) {
+            if !vis.can_access(value_vis) {
                 let err = Diagnostic::new(format!("cannot access identifier `{}` externally", id))
                     .add_info(value_span, "identifier declared here")
                     .footer(Level::Info, format!("Identifier was declared with visibility `{}`,\n but the access happens with visibility `{}`", value_vis, vis))
