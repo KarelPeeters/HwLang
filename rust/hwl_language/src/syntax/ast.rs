@@ -169,7 +169,7 @@ pub struct ModulePort {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    pub kind: Spanned<PortKind<Spanned<SyncKind<Box<Expression>>>, Box<Expression>>>,
+    pub kind: Spanned<PortKind<Sync<Box<Expression>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,12 +178,16 @@ pub enum PortKind<S, T> {
     Normal { sync: S, ty: T },
 }
 
+pub type Sync<S> = Spanned<SyncKind<S>>;
+
 #[derive(Debug, Clone)]
 pub enum SyncKind<S> {
     Async,
     Sync(SyncDomain<S>),
 }
 
+// TODO how to represent the difference between sync and async reset?
+//   this is not the same as the sync/async-ness of the reset itself! (or is it?)
 #[derive(Debug, Clone)]
 pub struct SyncDomain<S> {
     pub clock: S,
@@ -229,9 +233,15 @@ pub struct Declaration {
 
 #[derive(Debug, Copy, Clone)]
 pub enum DeclarationKind {
+    // Allowed anywhere.
     Const,
+    // Allowed within clocked or combinatorial blocks.
+    Val,
     Var,
-    Val
+    // Allowed top-level in modules.
+    Wire,
+    // Allowed top-level in modules and top-level at the start of clocked blocks.
+    Reg,
 }
 
 #[derive(Debug, Clone)]

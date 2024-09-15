@@ -34,6 +34,8 @@ extern {
         "const" => TokenType::Const,
         "val" => TokenType::Val,
         "var" => TokenType::Var,
+        "wire" => TokenType::Wire,
+        "reg" => TokenType::Reg,
         "input" => TokenType::Input,
         "output" => TokenType::Output,
         "async" => TokenType::Async,
@@ -171,6 +173,8 @@ DeclarationKind: DeclarationKind = {
     "const" => DeclarationKind::Const,
     "val" => DeclarationKind::Val,
     "var" => DeclarationKind::Var,
+    "wire" => DeclarationKind::Wire,
+    "reg" => DeclarationKind::Reg,
 }
 
 // parameters

@@ -354,6 +354,8 @@ declare_tokens! {
         Const("const", TC::Keyword, TP::Normal),
         Val("val", TC::Keyword, TP::Normal),
         Var("var", TC::Keyword, TP::Normal),
+        Wire("wire", TC::Keyword, TP::Normal),
+        Reg("reg", TC::Keyword, TP::Normal),
         Input("input", TC::Keyword, TP::Normal),
         Output("output", TC::Keyword, TP::Normal),
         Async("async", TC::Keyword, TP::Normal),
