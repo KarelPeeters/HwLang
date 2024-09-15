@@ -428,12 +428,16 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let mut parameters = vec![];
                 let mut arguments = vec![];
 
+                let mut last_err = None;
+
                 for param_ast in &params.inner {
                     // check parameter names for uniqueness
+                    // TODO remove this and let the scope handle it, with proper diagnostic interactions
+                    // TODO maybe even continue type checking the body?
                     if let Some(prev) = unique.insert(&param_ast.id.string, &param_ast.id) {
                         let diag = Diagnostic::new_defined_twice("generic parameter", params.span, prev, &param_ast.id);
                         let err = self.diag.report(diag);
-                        return Ok(MaybeConstructor::Error(err));
+                        last_err = Some(err);
                     }
 
                     let (param, arg) = match &param_ast.kind {
@@ -462,6 +466,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
                     self.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                }
+
+                // bail if any parameter error occurred
+                if let Some(e) = last_err {
+                    return Ok(MaybeConstructor::Error(e));
                 }
 
                 // map inner to actual type
@@ -947,6 +956,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     //   and don't short-circuit unnecessarily, preventing multiple errors
     fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> ResultOrGuaranteed<()> {
         match (ty, value) {
+            (&Type::Error(e), _) | (_, &Value::Error(e)) => return Err(e),
             (Type::Range, Value::Range(_)) => return Ok(()),
             (Type::Integer(IntegerTypeInfo { range }), value) => {
                 if let Value::Range(range) = range.as_ref() {
@@ -966,7 +976,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             _ => {},
         }
 
-        let feature = format!("type_check_contains {:?} {:?}", ty, value);
+        let feature = format!("check_type_contains {:?} {:?}", ty, value);
         self.diag.report_todo(span_value, &feature);
         Ok(())
     }
@@ -993,6 +1003,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn try_eval_bool_true(&self, origin: Span, value: &Value) -> Result<(), EvalTrueError> {
         match self.try_eval_bool(origin, value) {
             Err(e) => {
+                // accept errors as correct to prevent further downstream errors
                 let _: ErrorGuaranteed = e;
                 Ok(())
             },
@@ -1081,12 +1092,17 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // TODO if range ends are themselves params with ranges, assume the worst case
         //   although that misses things like (n < n+1)
         fn ty_as_range(ty: &Type) -> ResultOrGuaranteed<Option<RangeInfo<Box<Value>>>> {
-            if let Type::Integer(IntegerTypeInfo { range }) = ty {
-                if let Value::Range(range) = range.as_ref() {
-                    return Ok(Some(range.clone()));
+            match ty {
+                &Type::Error(e) => Err(e),
+                Type::Integer(IntegerTypeInfo { range }) => {
+                    match range.as_ref() {
+                        &Value::Error(e) => Err(e),
+                        Value::Range(range) => Ok(Some(range.clone())),
+                        _ => Ok(None),
+                    }
                 }
+                _ => Ok(None)
             }
-            Ok(None)
         }
 
         match *value {
