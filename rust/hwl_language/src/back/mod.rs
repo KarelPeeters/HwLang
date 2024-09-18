@@ -1,7 +1,7 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{CombinatorialStatement, ModuleBlock, ModuleBlockCombinatorial, ModuleBody};
+use crate::data::module_body::{CombinatorialStatement, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::error::{CompileError, CompileResult};
@@ -11,8 +11,8 @@ use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, T
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
-use crate::throw;
 use crate::util::data::IndexMapExt;
+use crate::{swrite, swriteln, throw};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
@@ -117,41 +117,54 @@ fn generate_module_source(
     }
 
     let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
-    let body_str = module_body_to_verilog(compiled, body).unwrap();
+    let body_str = module_body_to_verilog(source, compiled, body)?;
 
     let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
     Ok(full_str)
 }
 
-fn module_body_to_verilog(compiled: &CompiledDatabase, body: &ModuleBody) -> Result<String, std::fmt::Error> {
+fn module_body_to_verilog(source: &SourceDatabase, compiled: &CompiledDatabase, body: &ModuleBody) -> CompileResult<String> {
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleBody { blocks } = body;
+    let ModuleBody { blocks, regs } = body;
+
+    for (reg_index, reg) in enumerate(regs) {
+        if reg_index != 0 {
+            swrite!(f, "\n");
+        }
+
+        let ModuleRegInfo { sync, ty } = reg;
+        let ty_str = verilog_to_to_str(type_to_verilog(&ty)?);
+        let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
+
+        swrite!(f, "{INDENT}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
+    }
+
     for (block_index, block) in enumerate(blocks) {
         if block_index != 0 {
-            write!(f, "\n\n")?;
+            swrite!(f, "\n\n");
         }
 
         match block {
-            ModuleBlock::Combinatorial(ModuleBlockCombinatorial { statements }) => {
+            ModuleBlockInfo::Combinatorial(ModuleBlockCombinatorial { statements }) => {
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
-                writeln!(f, "{INDENT}always(*) begin")?;
+                swriteln!(f, "{INDENT}always(*) begin");
 
                 for statement in statements {
                     match statement {
                         &CombinatorialStatement::PortPortAssignment(target, value) => {
                             let target_str = &compiled[target].defining_id.string;
                             let value_str = &compiled[value].defining_id.string;
-                            writeln!(f, "{INDENT}{INDENT}{target_str} <= {value_str};")?;
+                            swriteln!(f, "{INDENT}{INDENT}{target_str} <= {value_str};");
                         }
                     }
                 }
 
-                writeln!(f, "{INDENT}end")?;
+                swriteln!(f, "{INDENT}end");
             }
-            ModuleBlock::Clocked(_) => todo!()
+            ModuleBlockInfo::Clocked(_) => todo!()
         }
     }
 
@@ -179,25 +192,9 @@ fn port_to_verilog(
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { sync, ty } => {
-            let ty_str = match type_to_verilog(ty)? {
-                VerilogType::SingleBit =>
-                    "".to_string(),
-                VerilogType::MultiBit(signed, n) => {
-                    assert!(n > 0, "zero-width signals are not allowed in verilog");
-                    format!("{}[{}:0] ", signed.to_verilog_str(), n - 1)
-                },
-            };
-
             // TODO include full type in comment
-            let comment = match sync {
-                SyncKind::Sync(SyncDomain { clock, reset }) => {
-                    let clock_str = compiled.value_to_readable_str(source, clock);
-                    let reset_str = compiled.value_to_readable_str(source, reset);
-                    format!("sync({}, {})", clock_str, reset_str)
-                },
-                SyncKind::Async => "async".to_owned(),
-            };
-
+            let ty_str = verilog_to_to_str(type_to_verilog(ty)?);
+            let comment = sync_to_comment_str(source, compiled, sync);
             (ty_str, comment)
         }
     };
@@ -206,6 +203,28 @@ fn port_to_verilog(
 
     let result_str = format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}");
     Ok(result_str)
+}
+
+fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, sync: &SyncKind<Value>) -> String {
+    match sync {
+        SyncKind::Sync(SyncDomain { clock, reset }) => {
+            let clock_str = compiled.value_to_readable_str(source, clock);
+            let reset_str = compiled.value_to_readable_str(source, reset);
+            format!("sync({}, {})", clock_str, reset_str)
+        },
+        SyncKind::Async => "async".to_owned(),
+    }
+}
+
+fn verilog_to_to_str(ty: VerilogType) -> String {
+    match ty {
+        VerilogType::SingleBit =>
+            "".to_string(),
+        VerilogType::MultiBit(signed, n) => {
+            assert!(n > 0, "zero-width signals are not allowed in verilog");
+            format!("{}[{}:0] ", signed.to_verilog_str(), n - 1)
+        },
+    }
 }
 
 // TODO signed/unsigned? does it ever matter?
@@ -235,6 +254,7 @@ impl Signed {
     }
 }
 
+// TODO remove all panics
 fn type_to_verilog(ty: &Type) -> CompileResult<VerilogType> {
     let result = match ty {
         Type::Boolean => VerilogType::SingleBit,
@@ -298,7 +318,7 @@ fn value_evaluate_int(value: &Value) -> CompileResult<BigInt> {
         Value::Function(_) => todo!(),
         Value::Module(_) => todo!(),
         Value::Wire => todo!(),
-        Value::Reg => todo!(),
+        Value::Reg(_) => todo!(),
     };
     Ok(result)
 }

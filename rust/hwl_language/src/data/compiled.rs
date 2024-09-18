@@ -1,5 +1,5 @@
 use crate::data::diagnostic::{ErrorGuaranteed, ResultOrGuaranteed};
-use crate::data::module_body::ModuleBody;
+use crate::data::module_body::{ModuleBody, ModuleReg};
 use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -166,7 +166,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),
             Value::Wire => "wire".to_string(),
-            Value::Reg => "reg".to_string(),
+            Value::Reg(ModuleReg { module_item: _, index }) => format!("reg_{index}"),
         }
     }
 }

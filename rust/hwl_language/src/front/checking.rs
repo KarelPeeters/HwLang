@@ -268,7 +268,7 @@ impl CompileState<'_, '_> {
             Value::Module(_) => panic!("module can't have a range type"),
             // TODO get their types
             Value::Wire => Ok(None),
-            Value::Reg => Ok(None),
+            Value::Reg(_) => Ok(None),
         }
     }
 }

@@ -733,7 +733,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         Ok(result)
     }
 
-    fn eval_expression_as_ty(&self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
+    pub fn eval_expression_as_ty(&self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             // TODO unify these error strings somewhere
@@ -769,6 +769,20 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             ScopedEntryDirect::Error(e) => Ok(Value::Error(e)),
         }
+    }
+
+    pub fn eval_sync_domain(&self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> ResolveResult<SyncDomain<Value>> {
+        let clock = self.eval_expression_as_value(scope, &domain.clock)?;
+        let reset = self.eval_expression_as_value(scope, &domain.reset)?;
+
+        // TODO check that clock is a clock
+        // TODO check that reset is a boolean
+        // TODO check that reset is either async or sync to the same clock
+
+        Ok(SyncDomain {
+            clock,
+            reset,
+        })
     }
 
     fn eval_builtin_call(

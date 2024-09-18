@@ -43,3 +43,28 @@ impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
         }
     }
 }
+
+pub fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some((left, right)),
+        _ => None,
+    }
+}
+
+/// Variant of write! that only works for strings, and doesn't return a spurious error.
+#[macro_export]
+macro_rules! swrite {
+    ($dst:expr, $($arg:tt)*) => {
+        let dst: &mut String = $dst;
+        write!(dst, $($arg)*).unwrap();
+    };
+}
+
+/// Variant of writeln! that only works for strings, and doesn't return a spurious error.
+#[macro_export]
+macro_rules! swriteln {
+    ($dst:expr, $($arg:tt)*) => {
+        let dst: &mut String = $dst;
+        writeln!(dst, $($arg)*).unwrap();
+    };
+}

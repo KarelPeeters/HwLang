@@ -180,6 +180,7 @@ pub enum PortKind<S, T> {
 
 pub type Sync<S> = Spanned<SyncKind<S>>;
 
+// TODO rename this to "domain" too?
 #[derive(Debug, Clone)]
 pub enum SyncKind<S> {
     Async,

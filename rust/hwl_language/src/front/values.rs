@@ -1,5 +1,6 @@
 use crate::data::compiled::{FunctionParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
 use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
@@ -9,6 +10,7 @@ use num_bigint::BigInt;
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
 // TODO should all values (and types) have (optional) origin spans for easier error messages?
+// TODO Eq impl is a bit suspicious
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // error
@@ -38,7 +40,7 @@ pub enum Value {
     // TODO what should these contain? an id? a type?
     //  how should these behave under generic substitution?
     Wire,
-    Reg,
+    Reg(ModuleReg),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -117,7 +119,7 @@ impl GenericContainer for Value {
             Value::Module(_) => todo!(),
 
             Value::Wire => Value::Wire,
-            Value::Reg => Value::Reg,
+            Value::Reg(r) => Value::Reg(r),
         }
     }
 }

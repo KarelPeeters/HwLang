@@ -627,6 +627,20 @@ module foo {
 Another issue to consider: all outputs and wires that are assigned by a clocked block must also be reset by that block.
 What should the syntax for those be?
 
+## Wire semantics
+
+```
+module foo {
+    reg a = 0;
+    wire b = a;
+    
+    clocked(...) {
+        a = 1;
+        // TODO what should b be at this point? should it update?
+    }
+}
+```
+
 ## Flexibility and the `any` type/value
 
 * generic/function parameters and consequently local variables should be allowed to have type/value `any` (keyword)

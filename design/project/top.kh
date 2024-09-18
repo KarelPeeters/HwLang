@@ -25,13 +25,25 @@ type foo(n: int_range(0..5)) = bits(n);
 pub module top ports (
     clk: input clock,
     reset: input async bool,
-    buttons: input sync(clk) bits(4),
-    leds: output sync(clk) bits(4),
+    buttons: input sync(clk, reset) bits(4),
+    leds: output sync(clk, reset) bits(4),
 ) {
+//    reg a: uint;
+//    wire b: uint;
+    reg data: sync(clk, reset) bits(4) = 0;
+
+//    wire derp: sync(clk, reset) bits(4) = buttons;
     combinatorial {
-        // leds = invert(4, button);
-        leds = !buttons;
+//        leds = data;
     }
+
+//    combinatorial {
+        // leds = invert(4, button);
+//        var x: bits(4) = buttons;
+//        x = !x;
+//        leds = x;
+//        leds = buttons;
+//    }
 
 //    clocked(clk, reset) {
 //        let state = delay(state, init=0);
