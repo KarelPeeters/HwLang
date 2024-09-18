@@ -63,6 +63,10 @@ macro_rules! swrite {
 /// Variant of writeln! that only works for strings, and doesn't return a spurious error.
 #[macro_export]
 macro_rules! swriteln {
+    ($dst:expr $(,)?) => {
+        let dst: &mut String = $dst;
+        writeln!(dst).unwrap();
+    };
     ($dst:expr, $($arg:tt)*) => {
         let dst: &mut String = $dst;
         writeln!(dst, $($arg)*).unwrap();

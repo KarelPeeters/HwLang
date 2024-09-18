@@ -1,7 +1,9 @@
 use crate::data::compiled::{Item, ModulePort};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::types::Type;
 use crate::front::values::Value;
 use crate::syntax::ast::SyncDomain;
+use crate::syntax::pos::Span;
 
 #[derive(Debug)]
 pub struct ModuleBody {
@@ -29,25 +31,26 @@ pub struct ModuleRegInfo {
 
 #[derive(Debug)]
 pub struct ModuleBlockCombinatorial {
-    // TODO include necessary temporary variables and other metadata
-    pub statements: Vec<CombinatorialStatement>,
-}
+    pub span: Span,
 
-#[derive(Debug)]
-pub enum CombinatorialStatement {
-    PortPortAssignment(ModulePort, ModulePort),
+    // TODO include necessary temporary variables and other metadata
+    pub statements: Vec<LowerStatement>,
 }
 
 #[derive(Debug)]
 pub struct ModuleBlockClocked {
-    regs: Vec<BlockReg>,
+    pub span: Span,
+
+    pub clock: Value,
+    pub reset: Value,
 
     // TODO how to implement ports that are just registers?
-    on_reset: (), // TODO IR 
-    on_block: (), // TODO IR
+    pub on_reset: Vec<LowerStatement>, // TODO IR
+    pub on_block: Vec<LowerStatement>, // TODO IR
 }
 
 #[derive(Debug)]
-pub struct BlockReg {
-    ty: Type,
+pub enum LowerStatement {
+    PortPortAssignment(ModulePort, ModulePort),
+    Error(ErrorGuaranteed),
 }

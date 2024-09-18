@@ -1,7 +1,7 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{CombinatorialStatement, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::error::{CompileError, CompileResult};
@@ -12,7 +12,7 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
 use crate::util::data::IndexMapExt;
-use crate::{swrite, swriteln, throw};
+use crate::{swriteln, throw};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use num_bigint::BigInt;
@@ -69,7 +69,7 @@ pub fn lower(
     Ok(result)
 }
 
-const INDENT: &str = "    ";
+const I: &str = "    ";
 
 // TODO expose the elaborated tree as a user-facing API, next to the ast and the type-checked files
 #[derive(Eq, PartialEq, Hash)]
@@ -111,19 +111,19 @@ fn generate_module_source(
         }
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
-        port_string.push_str(INDENT);
+        port_string.push_str(I);
         port_string.push_str(&port_to_verilog(source, compiled, port, comma_str)?);
         port_string.push_str("\n");
     }
 
     let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
-    let body_str = module_body_to_verilog(source, compiled, body)?;
+    let body_str = module_body_to_verilog(diag, source, compiled, body)?;
 
     let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
     Ok(full_str)
 }
 
-fn module_body_to_verilog(source: &SourceDatabase, compiled: &CompiledDatabase, body: &ModuleBody) -> CompileResult<String> {
+fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, body: &ModuleBody) -> CompileResult<String> {
     let mut result = String::new();
     let f = &mut result;
 
@@ -131,44 +131,84 @@ fn module_body_to_verilog(source: &SourceDatabase, compiled: &CompiledDatabase, 
 
     for (reg_index, reg) in enumerate(regs) {
         if reg_index != 0 {
-            swrite!(f, "\n");
+            swriteln!(f);
         }
 
         let ModuleRegInfo { sync, ty } = reg;
         let ty_str = verilog_to_to_str(type_to_verilog(&ty)?);
         let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
 
-        swrite!(f, "{INDENT}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
+        swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
+    }
+
+    if regs.len() > 0 {
+        swriteln!(f);
     }
 
     for (block_index, block) in enumerate(blocks) {
         if block_index != 0 {
-            swrite!(f, "\n\n");
+            swriteln!(f);
         }
 
         match block {
-            ModuleBlockInfo::Combinatorial(ModuleBlockCombinatorial { statements }) => {
+            ModuleBlockInfo::Combinatorial(block) => {
+                let ModuleBlockCombinatorial { span: _, statements } = block;
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
-                swriteln!(f, "{INDENT}always(*) begin");
-
+                swriteln!(f, "{I}always(*) begin");
                 for statement in statements {
-                    match statement {
-                        &CombinatorialStatement::PortPortAssignment(target, value) => {
-                            let target_str = &compiled[target].defining_id.string;
-                            let value_str = &compiled[value].defining_id.string;
-                            swriteln!(f, "{INDENT}{INDENT}{target_str} <= {value_str};");
-                        }
-                    }
+                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
                 }
-
-                swriteln!(f, "{INDENT}end");
+                swriteln!(f, "{I}end");
             }
-            ModuleBlockInfo::Clocked(_) => todo!()
+            ModuleBlockInfo::Clocked(block) => {
+                let &ModuleBlockClocked {
+                    span, ref clock, ref reset, ref on_reset, ref on_block
+                } = block;
+
+                let value_to_string = |value: &Value| -> &str {
+                    if let &Value::ModulePort(port) = value {
+                        &compiled[port].defining_id.string
+                    } else {
+                        diag.report_todo(span, "non-port sensitivity");
+                        "0"
+                    }
+                };
+
+                let clock_str = value_to_string(clock);
+                let reset_str = value_to_string(reset);
+
+                // TODO if reset is inverted, use negedge and un-invert the value?
+                swriteln!(f, "{I}always @(posedge {clock_str} or posedge {reset_str}) begin");
+                swriteln!(f, "{I}{I}if ({reset_str}) begin");
+                for statement in on_reset {
+                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
+                }
+                swriteln!(f, "{I}{I}end else begin");
+                for statement in on_block {
+                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
+                }
+                swriteln!(f, "{I}{I}end");
+
+                swriteln!(f, "{I}end");
+            }
         }
     }
 
     Ok(result)
+}
+
+fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) -> String {
+    match statement {
+        &LowerStatement::PortPortAssignment(target, value) => {
+            let target_str = &compiled[target].defining_id.string;
+            let value_str = &compiled[value].defining_id.string;
+            format!("{target_str} <= {value_str};")
+        }
+        &LowerStatement::Error(_) => {
+            format!("{I}{I}// error statement")
+        }
+    }
 }
 
 fn port_to_verilog(

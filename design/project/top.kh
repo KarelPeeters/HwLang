@@ -37,6 +37,10 @@ pub module top ports (
 //        leds = data;
     }
 
+    clocked(clk, reset) {
+//        data = buttons;
+    }
+
 //    combinatorial {
         // leds = invert(4, button);
 //        var x: bits(4) = buttons;
