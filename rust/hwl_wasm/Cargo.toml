@@ -1,0 +1,14 @@
+[package]
+name = "hwl_wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hwl_language.workspace = true
+wasm-bindgen.workspace = true
+
+# We're building for a JS environment, tell getrandom it can use the JS random generator.
+getrandom = { workspace = true, features = ["js"] }
