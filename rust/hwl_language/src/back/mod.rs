@@ -155,7 +155,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 let ModuleBlockCombinatorial { span: _, statements } = block;
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
-                swriteln!(f, "{I}always(*) begin");
+                swriteln!(f, "{I}always @(*) begin");
                 for statement in statements {
                     swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
                 }
