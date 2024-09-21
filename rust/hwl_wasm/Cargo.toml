@@ -8,7 +8,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 hwl_language.workspace = true
+itertools.workspace = true
+strum.workspace = true
 wasm-bindgen.workspace = true
 
 # We're building for a JS environment, tell getrandom it can use the JS random generator.
 getrandom = { workspace = true, features = ["js"] }
+
+# TODO make sure this still happens for release, but it's too slow for development
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = false

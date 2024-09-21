@@ -1,9 +1,11 @@
+use annotate_snippets::Level;
+use itertools::Itertools;
 use lalrpop_util::lalrpop_mod;
 
-use pos::Pos;
-
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
+use pos::Pos;
 
 pub mod ast;
 pub mod pos;
@@ -48,4 +50,43 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
         e.map_location(|byte| Pos { file, byte })
             .map_token(|token| token.map(str::to_owned))
     })
+}
+
+pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
+    match error {
+        ParseError::InvalidToken { location } => {
+            let span = Span::empty_at(location);
+            Diagnostic::new("invalid token")
+                .add_error(span, "invalid token")
+                .finish()
+        }
+        ParseError::UnrecognizedEof { location, expected } => {
+            let span = Span::empty_at(location);
+            let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
+
+            Diagnostic::new("unexpected eof")
+                .add_error(span, "invalid token")
+                .footer(Level::Info, format!("expected one of {:?}", expected))
+                .finish()
+        }
+        ParseError::UnrecognizedToken { token, expected } => {
+            let (start, _, end) = token;
+            let span = Span::new(start, end);
+            let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
+
+            Diagnostic::new("unexpected token")
+                .add_error(span, "unexpected token")
+                .footer(Level::Info, format!("expected one of {:?}", expected))
+                .finish()
+        }
+        ParseError::ExtraToken { token } => {
+            let (start, _, end) = token;
+            let span = Span::new(start, end);
+
+            Diagnostic::new("unexpected extra token")
+                .add_error(span, "extra token")
+                .finish()
+        }
+        ParseError::User { error } => error.to_diagnostic(),
+    }
 }

@@ -8,7 +8,7 @@ use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericPa
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
-use crate::syntax::{ast, parse_file_content};
+use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -63,7 +63,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
                 (Ok(ast), Ok(local_scope))
             }
             Err(e) => {
-                let e = diagnostics.report(database.map_parser_error_to_diagnostic(e));
+                let e = diagnostics.report(parse_error_to_diagnostic(e));
                 (Err(e), Err(e))
             },
         };

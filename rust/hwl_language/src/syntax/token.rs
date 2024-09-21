@@ -297,7 +297,7 @@ enum PatternKind {
     Literal,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, strum::Display)]
 pub enum TokenCategory {
     WhiteSpace,
     Comment,
@@ -308,6 +308,12 @@ pub enum TokenCategory {
     Symbol,
 }
 
+impl TokenCategory {
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// Priority is only used to tiebreak equal-length matches.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TokenPriority {
@@ -316,6 +322,7 @@ pub enum TokenPriority {
     Low = 0,
 }
 
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use TokenCategory as TC;
 use TokenPriority as TP;
 
@@ -424,6 +431,29 @@ declare_tokens! {
         AmperEq("&=", TC::Symbol, TP::Normal),
         CircumflexEq("^=", TC::Symbol, TP::Normal),
         BarEq("|=", TC::Symbol, TP::Normal),
+    }
+}
+
+impl TokenError {
+    pub fn to_diagnostic(self) -> Diagnostic {
+        match self {
+            TokenError::InvalidToken { pos, prefix: _ } => {
+                Diagnostic::new("tokenization error")
+                    .add_error(Span::empty_at(pos), "invalid prefix")
+                    .finish()
+            }
+            TokenError::BlockCommentMissingEnd { start, eof } => {
+                Diagnostic::new("block comment missing end")
+                    .add_info(Span::empty_at(start), "block comment started here")
+                    .add_error(Span::empty_at(eof), "end of file reached")
+                    .finish()
+            }
+            TokenError::BlockCommentUnexpectedEnd { pos, prefix: _ } => {
+                Diagnostic::new("unexpected end of block comment")
+                    .add_error(Span::empty_at(pos), "end of comment here")
+                    .finish()
+            }
+        }
     }
 }
 

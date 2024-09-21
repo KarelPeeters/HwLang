@@ -103,7 +103,10 @@ fn diagnostic_to_lsp(
     abs_path_map: &IndexMap<FileId, PathBuf>,
     diagnostic: Diagnostic,
 ) -> VfsResult<(Uri, lsp_types::Diagnostic)> {
-    let Diagnostic { title, snippets, footers } = diagnostic;
+    let Diagnostic { title, snippets, footers, backtrace } = diagnostic;
+
+    // don't show backtrace in LSP, it's not intended for end-users
+    let _ = backtrace;
 
     // find the file with the highest level annotation, that's probably the main one
     let mut top_annotation: Option<&Annotation> = None;

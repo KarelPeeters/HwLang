@@ -1,13 +1,9 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, LineOffsets, Pos, PosFull, Span, SpanFull};
-use crate::syntax::token::TokenError;
-use crate::syntax::ParseError;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::{new_index_type, throw};
-use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{enumerate, Itertools};
+use itertools::enumerate;
 
 /// The full set of source files that are part of this compilation.
 /// Immutable once all files have been added.
@@ -133,64 +129,6 @@ impl SourceDatabase {
 
     pub fn expand_span(&self, span: Span) -> SpanFull {
         self[span.start.file].offsets.expand_span(span)
-    }
-
-    pub fn map_parser_error_to_diagnostic(&self, e: ParseError) -> Diagnostic {
-        match e {
-            ParseError::InvalidToken { location } => {
-                let span = Span::empty_at(location);
-                Diagnostic::new("invalid token")
-                    .add_error(span, "invalid token")
-                    .finish()
-            }
-            ParseError::UnrecognizedEof { location, expected } => {
-                let span = Span::empty_at(location);
-                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
-
-                Diagnostic::new("unexpected eof")
-                    .add_error(span, "invalid token")
-                    .footer(Level::Info, format!("expected one of {:?}", expected))
-                    .finish()
-            }
-            ParseError::UnrecognizedToken { token, expected } => {
-                let (start, _, end) = token;
-                let span = Span::new(start, end);
-                let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
-
-                Diagnostic::new("unexpected token")
-                    .add_error(span, "unexpected token")
-                    .footer(Level::Info, format!("expected one of {:?}", expected))
-                    .finish()
-            }
-            ParseError::ExtraToken { token } => {
-                let (start, _, end) = token;
-                let span = Span::new(start, end);
-
-                Diagnostic::new("unexpected extra token")
-                    .add_error(span, "extra token")
-                    .finish()
-            }
-            ParseError::User { error } => {
-                match error {
-                    TokenError::InvalidToken { pos, prefix: _ } => {
-                        Diagnostic::new("tokenization error")
-                            .add_error(Span::empty_at(pos), "invalid prefix")
-                            .finish()
-                    }
-                    TokenError::BlockCommentMissingEnd { start, eof } => {
-                        Diagnostic::new("block comment missing end")
-                            .add_info(Span::empty_at(start), "block comment started here")
-                            .add_error(Span::empty_at(eof), "end of file reached")
-                            .finish()
-                    }
-                    TokenError::BlockCommentUnexpectedEnd { pos, prefix: _ } => {
-                        Diagnostic::new("unexpected end of block comment")
-                            .add_error(Span::empty_at(pos), "end of comment here")
-                            .finish()
-                    }
-                }
-            }
-        }
     }
 }
 
