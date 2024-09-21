@@ -4,8 +4,10 @@ import {defaultKeymap, history, indentWithTab} from "@codemirror/commands"
 import {
     bracketMatching,
     defaultHighlightStyle,
+    defineLanguageFacet,
     indentUnit,
     Language,
+    languageDataProp,
     LanguageSupport,
     StreamLanguage,
     syntaxHighlighting
@@ -17,6 +19,12 @@ import {verilog} from "@codemirror/legacy-modes/mode/verilog";
 
 import AnsiToHtmlClass from "ansi-to-html";
 
+const topNode = NodeType.define({
+    id: 0,
+    name: "topNode",
+    top: true,
+});
+
 function build_node_types() {
     const node_types_string = hwl_wasm.codemirror_node_types();
 
@@ -24,7 +32,14 @@ function build_node_types() {
     const child_node_types = node_types_string.map((name, index) => {
         return NodeType.define({id: index, name: name, top: false})
     })
-    const top_node_type = NodeType.define({id: child_node_types.length, name: "top", top: true})
+    const top_node_type = NodeType.define({
+        id: child_node_types.length, name: "top", top: true, props: [[
+            languageDataProp,
+            defineLanguageFacet({
+                commentTokens: {line: "//", block: {start: "/*", end: "*/"}}
+            }),
+        ]]
+    })
     let all_node_types = child_node_types.concat([top_node_type]);
 
     // create set, including styles
@@ -72,7 +87,6 @@ class HwlParser extends Parser {
 
 let language = new Language(null, new HwlParser(), [], "HWLang");
 
-
 const ansi_to_html = new AnsiToHtmlClass();
 const diagnostics_element = document.getElementById("split-mid");
 
@@ -91,7 +105,6 @@ function diagnostics_ansi_to_html(ansi: string): string {
     for (let line of ansi.split("\n")) {
         result += "<div>" + ansi_to_html.toHtml(escapeHtml(line).replace(/ /g, "&nbsp;")) + "</div>";
     }
-    console.log(result);
     return result;
 }
 
@@ -114,7 +127,6 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
             insert: lowered_verilog,
         }
     })
-    console.log("document changed");
 }
 
 let common_extensions = [
