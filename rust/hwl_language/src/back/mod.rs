@@ -186,7 +186,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 }
                 swriteln!(f, "{I}{I}end else begin");
                 for statement in on_block {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
+                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(compiled, statement));
                 }
                 swriteln!(f, "{I}{I}end");
 
