@@ -166,21 +166,29 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                     span, ref clock, ref reset, ref on_reset, ref on_block
                 } = block;
 
-                let value_to_string = |value: &Value| -> &str {
-                    if let &Value::ModulePort(port) = value {
-                        &compiled[port].defining_id.string
-                    } else {
-                        diag.report_todo(span, "non-port sensitivity");
-                        "0"
+                let sensitivity_value_to_string = |value: &Value| -> (&str, &str, &str) {
+                    match value {
+                        &Value::ModulePort(port) =>
+                            return (&compiled[port].defining_id.string, "posedge", ""),
+                        Value::UnaryNot(inner) => {
+                            if let &Value::ModulePort(port) = &**inner {
+                                return (&compiled[port].defining_id.string, "negedge", "!");
+                            }
+                            // fallthrough
+                        }
+                        // fallthrough
+                        _ => {}
                     }
+
+                    diag.report_todo(span, "general sensitivity");
+                    ("0 /* error */", "posedge", "")
                 };
 
-                let clock_str = value_to_string(clock);
-                let reset_str = value_to_string(reset);
+                let (clock_str, clock_edge, _) = sensitivity_value_to_string(clock);
+                let (reset_str, reset_edge, reset_prefix) = sensitivity_value_to_string(reset);
 
-                // TODO if reset is inverted, use negedge and un-invert the value?
-                swriteln!(f, "{I}always @(posedge {clock_str} or posedge {reset_str}) begin");
-                swriteln!(f, "{I}{I}if ({reset_str}) begin");
+                swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
+                swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
                 for statement in on_reset {
                     swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
                 }

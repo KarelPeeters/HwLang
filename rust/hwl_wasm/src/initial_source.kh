@@ -11,7 +11,7 @@ pub module top ports(
          y = x;
     } 
 
-    clocked(clk, rst) {
+    clocked(clk, !rst) {
 
     }
 }
