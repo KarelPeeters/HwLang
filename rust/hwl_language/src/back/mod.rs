@@ -206,7 +206,7 @@ fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) 
             format!("{target_str} <= {value_str};")
         }
         &LowerStatement::Error(_) => {
-            format!("{I}{I}// error statement")
+            "// error statement".to_string()
         }
     }
 }
