@@ -148,7 +148,7 @@ impl<V> ScopeInfo<V> {
             // TODO add fuzzy-matched suggestions as info
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
-                .add_info(Span::empty_at(self.span.start), "searched in the scope starting here and its parents")
+                .add_info(Span::empty_at(self.span.start), "searched in the scope starting here, and its parents")
                 .finish();
             Err(diagnostics.report(err))
         }

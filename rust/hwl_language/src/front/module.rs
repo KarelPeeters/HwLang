@@ -85,11 +85,17 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                     let target = self.eval_expression_as_value(scope, target)?;
                                     let value = self.eval_expression_as_value(scope, value)?;
 
-                                    if let (Value::ModulePort(target), Value::ModulePort(value)) = (target, value) {
-                                        result_statements.push(LowerStatement::PortPortAssignment(target, value));
-                                    } else {
-                                        let err = self.diag.report_todo(statement.span, "general combinatorial assignment");
-                                        result_statements.push(LowerStatement::Error(err));
+                                    match (target, value) {
+                                        (Value::ModulePort(target), Value::ModulePort(value)) => {
+                                            result_statements.push(LowerStatement::PortPortAssignment(target, value));
+                                        }
+                                        (Value::Error(e), _) | (_, Value::Error(e)) => {
+                                            result_statements.push(LowerStatement::Error(e));
+                                        }
+                                        _ => {
+                                            let err = self.diag.report_todo(statement.span, "general combinatorial assignment");
+                                            result_statements.push(LowerStatement::Error(err));
+                                        }
                                     }
                                 }
                             }
