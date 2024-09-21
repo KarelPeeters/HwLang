@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
@@ -10,7 +10,8 @@ use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
+use crate::syntax::ast::{BinaryOp, Identifier, PortDirection, PortKind, SyncDomain, SyncKind};
+use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::{swriteln, throw};
 use indexmap::{IndexMap, IndexSet};
@@ -53,7 +54,8 @@ pub fn lower(
     while let Some(instance) = todo.pop_front() {
         // pick name
         let ast = parsed.item_ast(compiled[instance.module].ast_ref);
-        let module_name = pick_unique_name(&ast.common_info().id, &mut used_instance_names);
+        let ast = unwrap_match!(ast, ast::Item::Module(ast) => ast);
+        let module_name = pick_unique_name(&ast.id, &mut used_instance_names);
 
         // generate source
         let verilog_source = generate_module_source(diag, source, parsed, compiled, &instance, &module_name)?;
@@ -112,18 +114,18 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(I);
-        port_string.push_str(&port_to_verilog(source, compiled, port, comma_str)?);
+        port_string.push_str(&port_to_verilog(diag, source, compiled, port, comma_str)?);
         port_string.push_str("\n");
     }
 
     let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
-    let body_str = module_body_to_verilog(diag, source, compiled, body)?;
+    let body_str = module_body_to_verilog(diag, source, compiled, item_ast.span, body)?;
 
     let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
     Ok(full_str)
 }
 
-fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, body: &ModuleBody) -> CompileResult<String> {
+fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleBody) -> CompileResult<String> {
     let mut result = String::new();
     let f = &mut result;
 
@@ -135,7 +137,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         }
 
         let ModuleRegInfo { sync, ty } = reg;
-        let ty_str = verilog_to_to_str(type_to_verilog(&ty)?);
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty)?);
         let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
 
         swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
@@ -220,6 +222,7 @@ fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) 
 }
 
 fn port_to_verilog(
+    diag: &Diagnostics,
     source: &SourceDatabase,
     compiled: &CompiledDatabase,
     port: ModulePort,
@@ -241,7 +244,7 @@ fn port_to_verilog(
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { sync, ty } => {
             // TODO include full type in comment
-            let ty_str = verilog_to_to_str(type_to_verilog(ty)?);
+            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty)?);
             let comment = sync_to_comment_str(source, compiled, sync);
             (ty_str, comment)
         }
@@ -264,12 +267,22 @@ fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, syn
     }
 }
 
-fn verilog_to_to_str(ty: VerilogType) -> String {
+fn verilog_ty_to_str(diag: &Diagnostics, span: Span, ty: VerilogType) -> String {
     match ty {
         VerilogType::SingleBit =>
             "".to_string(),
         VerilogType::MultiBit(signed, n) => {
-            assert!(n > 0, "zero-width signals are not allowed in verilog");
+            if n == 0 && signed == Signed::Signed {
+                let e = diag.report_internal_error(span, "zero-width signed signal");
+                return verilog_ty_to_str(diag, span, VerilogType::Error(e));
+            }
+
+            if n == 0 {
+                // TODO filter out zero-width signals earlier in the process
+                let e = diag.report_todo(span, "zero-width signals");
+                return verilog_ty_to_str(diag, span, VerilogType::Error(e));
+            }
+
             format!("{}[{}:0] ", signed.to_verilog_str(), n - 1)
         }
         VerilogType::Error(_) =>
@@ -286,7 +299,7 @@ pub enum VerilogType {
     /// Signedness is really just here for documentation purposes,
     ///   the internal code will always case to the right value anyway
     /// The width includes the sign bit.
-    MultiBit(Signed, u64),
+    MultiBit(Signed, u32),
     Error(ErrorGuaranteed),
 }
 
@@ -305,94 +318,113 @@ impl Signed {
     }
 }
 
-// TODO remove all panics
-fn type_to_verilog(ty: &Type) -> CompileResult<VerilogType> {
+fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuaranteed<VerilogType> {
     let result = match ty {
         Type::Boolean => VerilogType::SingleBit,
         Type::Bits(n) => {
             match n {
-                None => panic!("infinite bit widths should never materialize in RTL"),
+                None => {
+                    VerilogType::Error(diag.report_internal_error(span, "infinite bit widths should never materialize"))
+                }
                 Some(n) => {
-                    let n = value_evaluate_int(n)?.to_u64().expect("negative or too large to convert to integer");
-                    VerilogType::MultiBit(Signed::Unsigned, n)
+                    match value_evaluate_int(diag, span, n)?.to_u32() {
+                        Some(n) => VerilogType::MultiBit(Signed::Unsigned, n),
+                        None => {
+                            let e = diag.report_simple(format!("width {n:?} negative or too large"), span, "used here");
+                            VerilogType::Error(e)
+                        }
+                    }
                 }
             }
         }
         // TODO convert all of these to bit representations
-        Type::Array(_, _) => todo!(),
+        Type::Array(_, _) =>
+            VerilogType::Error(diag.report_todo(span, "lower type 'array'")),
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
-            let range = value_evaluate_int_range(range)?;
-            verilog_type_for_int_range(range)
+            let range = value_evaluate_int_range(diag, span, range)?;
+            verilog_type_for_int_range(diag, span, range)
         }
-        Type::Tuple(_) => todo!(),
-        Type::Struct(_) => todo!(),
-        Type::Enum(_) => todo!(),
+        Type::Tuple(_) =>
+            VerilogType::Error(diag.report_todo(span, "lower type 'tuple'")),
+        Type::Struct(_) =>
+            VerilogType::Error(diag.report_todo(span, "lower type 'struct'")),
+        Type::Enum(_) =>
+            VerilogType::Error(diag.report_todo(span, "lower type 'enum'")),
         // invalid RTL types
-        // TODO materialize generics in RTL anyway, where possible? reduces some code duplication
-        //   with optional generics, maybe even always have them? but then if there are different types it gets tricky
-        Type::Any => panic!("type 'any' should never materialize in RTL"),
-        Type::GenericParameter(_) => panic!("generics should never materialize in RTL"),
-        Type::Range => panic!("ranges should never materialize in RTL"),
-        Type::Function(_) => panic!("functions should never materialize in RTL"),
-        Type::Module(_) => panic!("modules should never materialize in RTL"),
-        &Type::Error(e) => VerilogType::Error(e),
+        Type::Any =>
+            VerilogType::Error(diag.report_internal_error(span, "type 'any' should never materialize")),
+        Type::GenericParameter(_) =>
+            VerilogType::Error(diag.report_internal_error(span, "generic parameters should never materialize")),
+        Type::Range =>
+            VerilogType::Error(diag.report_internal_error(span, "ranges should never materialize")),
+        Type::Function(_) =>
+            VerilogType::Error(diag.report_internal_error(span, "functions should never materialize")),
+        Type::Module(_) =>
+            VerilogType::Error(diag.report_internal_error(span, "modules should never materialize")),
+        &Type::Error(e) =>
+            VerilogType::Error(e),
     };
     Ok(result)
 }
 
-fn value_evaluate_int(value: &Value) -> CompileResult<BigInt> {
-    let result = match value {
-        &Value::Error(e) => return Err(CompileError::Diagnostic(e)),
-        Value::Int(i) => i.clone(),
+fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> ResultOrGuaranteed<BigInt> {
+    match value {
+        &Value::Error(e) => Err(e),
+        Value::Int(i) => Ok(i.clone()),
         Value::Binary(op, left, right) => {
-            let left = value_evaluate_int(left)?;
-            let right = value_evaluate_int(right)?;
+            let left = value_evaluate_int(diag, span, left)?;
+            let right = value_evaluate_int(diag, span, right)?;
             match op {
-                BinaryOp::Add => left + right,
-                BinaryOp::Sub => left - right,
-                BinaryOp::Mul => left * right,
-                BinaryOp::Div => left / right,
-                BinaryOp::Mod => left % right,
-                BinaryOp::BitAnd => left & right,
-                BinaryOp::BitOr => left | right,
-                BinaryOp::BitXor => left ^ right,
-                BinaryOp::Pow => left.pow(right.to_u32().unwrap()),
-                _ => todo!("evaluate binary value {value:?}")
+                BinaryOp::Add => Ok(left + right),
+                BinaryOp::Sub => Ok(left - right),
+                BinaryOp::Mul => Ok(left * right),
+                BinaryOp::Div => Ok(left / right),
+                BinaryOp::Mod => Ok(left % right),
+                BinaryOp::BitAnd => Ok(left & right),
+                BinaryOp::BitOr => Ok(left | right),
+                BinaryOp::BitXor => Ok(left ^ right),
+                BinaryOp::Pow => {
+                    match right.to_u32() {
+                        Some(right) =>
+                            Ok(left.pow(right)),
+                        None =>
+                            Err(diag.report_simple(format!("power exponent too large: {}", right), span, "used here")),
+                    }
+                },
+                _ => Err(diag.report_todo(span, format!("evaluate binary value {value:?}")))
             }
         }
-        Value::UnaryNot(_) => todo!(),
-        Value::GenericParameter(_) => todo!(),
-        Value::FunctionParameter(_) => todo!(),
-        Value::ModulePort(_) => todo!(),
-        Value::Range(_) => todo!(),
-        Value::Function(_) => todo!(),
-        Value::Module(_) => todo!(),
-        Value::Wire => todo!(),
-        Value::Reg(_) => todo!(),
-    };
-    Ok(result)
+        Value::UnaryNot(_) => Err(diag.report_todo(span, "evaluate value UnaryNot")),
+        Value::GenericParameter(_) => Err(diag.report_todo(span, "evaluate value GenericParameter")),
+        Value::FunctionParameter(_) => Err(diag.report_todo(span, "evaluate value FunctionParameter")),
+        Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),
+        Value::Range(_) => Err(diag.report_todo(span, "evaluate value Range")),
+        Value::Function(_) => Err(diag.report_todo(span, "evaluate value Function")),
+        Value::Module(_) => Err(diag.report_todo(span, "evaluate value Module")),
+        Value::Wire => Err(diag.report_todo(span, "evaluate value Wire")),
+        Value::Reg(_) => Err(diag.report_todo(span, "evaluate value Reg")),
+    }
 }
 
-fn value_evaluate_int_range(value: &Value) -> CompileResult<std::ops::Range<BigInt>> {
-    let result = match value {
+fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> ResultOrGuaranteed<std::ops::Range<BigInt>> {
+    match value {
         Value::Range(info) => {
             let &RangeInfo { ref start, ref end, end_inclusive } = info;
 
             // unbound ranges should never show up in RTL
-            let start = value_evaluate_int(start.as_ref().unwrap())?;
-            let end = value_evaluate_int(end.as_ref().unwrap())?;
+            let start = value_evaluate_int(diag, span, start.as_ref().unwrap())?;
+            let end = value_evaluate_int(diag, span, end.as_ref().unwrap())?;
 
-            if end_inclusive {
+            let result = if end_inclusive {
                 start..(end + 1)
             } else {
                 start..end
-            }
+            };
+            Ok(result)
         }
-        // TODO relax once ranges are less built-in
-        _ => panic!("only range values can be evaluated as ranges"),
-    };
-    Ok(result)
+        _ => Err(diag.report_todo(span, format!("evaluate range of non-range value {value:?}"))),
+    }
 }
 
 fn find_top_module(
@@ -449,12 +481,8 @@ fn find_top_module(
 // TODO proper filename uniqueness scheme: combination of path, raw name and generic args
 //   it might be worth getting a bit clever about this, or we can also just always use the full name
 //   but using the paths generic args fully might generate _very_ long strings
-fn pick_unique_name(id: &MaybeIdentifier, used_names: &mut IndexSet<String>) -> String {
-    let raw_name: &str = match id {
-        // TODO this is not allowed, maybe just panic?
-        MaybeIdentifier::Dummy(_) => "unnamed",
-        MaybeIdentifier::Identifier(id) => &id.string,
-    };
+fn pick_unique_name(id: &Identifier, used_names: &mut IndexSet<String>) -> String {
+    let raw_name = &id.string;
 
     if used_names.insert(raw_name.to_owned()) {
         // immediate success
@@ -474,13 +502,13 @@ fn pick_unique_name(id: &MaybeIdentifier, used_names: &mut IndexSet<String>) -> 
 // TODO move this to some common place, we will need it all over the place
 // TODO do we want to save bits for small ranges that are far away from 0? is this common or worth it?
 // Pick signedness and the smallest width such that the entire range can be represented.
-fn verilog_type_for_int_range(range: std::ops::Range<BigInt>) -> VerilogType {
+fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: std::ops::Range<BigInt>) -> VerilogType {
     assert!(range.start < range.end, "Range needs to contain at least one value, got {range:?}");
 
     let min_value = range.start;
     let max_value = range.end - 1u32;
 
-    if min_value < BigInt::ZERO {
+    let (signed, bits) = if min_value < BigInt::ZERO {
         // signed
         // prevent max value underflow
         let max_value = if max_value.is_negative() {
@@ -488,31 +516,52 @@ fn verilog_type_for_int_range(range: std::ops::Range<BigInt>) -> VerilogType {
         } else {
             max_value
         };
-        VerilogType::MultiBit(Signed::Signed, max(
+        let max_bits = max(
             1 + (min_value + 1u32).bits(),
             1 + max_value.bits(),
-        ))
+        );
+
+        (Signed::Signed, max_bits)
     } else {
         // unsigned
-        VerilogType::MultiBit(Signed::Unsigned, max_value.bits())
+        (Signed::Unsigned, max_value.bits())
+    };
+
+    match bits.to_u32() {
+        Some(bits) => VerilogType::MultiBit(signed, bits),
+        None => {
+            let e = diag.report_simple(
+                format!("integer range needs more bits ({bits}) that are possible in verilog"),
+                span,
+                "used here",
+            );
+            VerilogType::Error(e)
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::back::{verilog_type_for_int_range, Signed, VerilogType};
+    use crate::data::diagnostic::Diagnostics;
+    use crate::syntax::pos::{FileId, Pos, Span};
     use std::ops::Range;
 
     #[track_caller]
     fn test_case(range: Range<i64>, signed: Signed, width: u32) {
+        let diag = Diagnostics::new();
+        let span = Span::empty_at(Pos { file: FileId::SINGLE, byte: 0 });
+
         let expected = VerilogType::MultiBit(signed, width.into());
-        let result = verilog_type_for_int_range(range.start.into()..range.end.into());
+        let result = verilog_type_for_int_range(&diag, span, range.start.into()..range.end.into());
         println!("range {:?} => {:?}", range, result);
         assert_eq!(
             expected,
             result,
             "mismatch for range {range:?}"
         );
+
+        assert!(diag.finish().is_empty());
     }
 
     #[test]

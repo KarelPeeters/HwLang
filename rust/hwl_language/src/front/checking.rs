@@ -33,8 +33,7 @@ impl CompileState<'_, '_> {
             _ => {}
         }
 
-        let feature = format!("check_type_contains {:?} {:?}", ty, value);
-        self.diag.report_todo(span_value, &feature);
+        self.diag.report_todo(span_value, format!("check_type_contains {:?} {:?}", ty, value));
         Ok(())
     }
 

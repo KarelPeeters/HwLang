@@ -11,6 +11,7 @@ use num_bigint::BigInt;
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
 // TODO should all values (and types) have (optional) origin spans for easier error messages?
 // TODO Eq impl is a bit suspicious
+// TODO attach a span to each value? that kills both interning and compiler-value-constructing though
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     // error

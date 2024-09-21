@@ -110,7 +110,15 @@ function diagnostics_ansi_to_html(ansi: string): string {
 
 function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     // run the compiler
-    let {diagnostics_ansi, lowered_verilog} = hwl_wasm.compile_and_lower(source);
+    let diagnostics_ansi, lowered_verilog;
+    try {
+        const result = hwl_wasm.compile_and_lower(source);
+        diagnostics_ansi = result.diagnostics_ansi;
+        lowered_verilog = result.lowered_verilog;
+    } catch (e) {
+        diagnostics_ansi = "compiler panicked\nsee console for the error message and stack trace";
+        lowered_verilog = "";
+    }
 
     // display diagnostics as html
     diagnostics_element.innerHTML = diagnostics_ansi_to_html(diagnostics_ansi);

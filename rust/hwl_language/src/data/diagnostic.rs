@@ -57,8 +57,16 @@ impl Diagnostics {
         ErrorGuaranteed(())
     }
 
-    pub fn report_todo(&self, span: Span, feature: &str) -> ErrorGuaranteed {
+    pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> ErrorGuaranteed {
+        self.report(Diagnostic::new_simple(title, span, label))
+    }
+
+    pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_todo(span, feature))
+    }
+
+    pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> ErrorGuaranteed {
+        self.report(Diagnostic::new_internal_error(span, reason))
     }
 
     pub fn finish(self) -> Vec<Diagnostic> {
@@ -151,8 +159,8 @@ impl Diagnostic {
 
     /// Utility diagnostic constructor for features that are not yet implemented.
     #[track_caller]
-    pub fn new_todo(span: Span, feature: &str) -> Diagnostic {
-        let message = format!("feature not yet implemented: '{}'", feature);
+    pub fn new_todo(span: Span, feature: impl Into<String>) -> Diagnostic {
+        let message = format!("feature not yet implemented: '{}'", feature.into());
         let backtrace = Backtrace::force_capture();
 
         let mut diag = Diagnostic::new(&message)
@@ -160,6 +168,12 @@ impl Diagnostic {
             .finish();
         diag.backtrace = Some(backtrace.to_string());
         diag
+    }
+
+    pub fn new_internal_error(span: Span, reason: impl Into<String>) -> Diagnostic {
+        Diagnostic::new(format!("internal compiler error: '{}'", reason.into()))
+            .add_error(span, "caused here")
+            .finish()
     }
 
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
