@@ -6,6 +6,7 @@ use crate::data::source::CompileSetError;
 #[derive(Debug)]
 pub enum CompileError {
     CompileSetError(CompileSetError),
+    // TODO remove this option, diagnostics are always handler out-of-flow
     Diagnostic(ErrorGuaranteed),
     LowerError(LowerError),
 }

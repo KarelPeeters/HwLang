@@ -1,5 +1,5 @@
 use annotate_snippets::Level;
-use itertools::Itertools;
+use itertools::enumerate;
 use lalrpop_util::lalrpop_mod;
 
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
@@ -62,21 +62,19 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
         }
         ParseError::UnrecognizedEof { location, expected } => {
             let span = Span::empty_at(location);
-            let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
 
             Diagnostic::new("unexpected eof")
                 .add_error(span, "invalid token")
-                .footer(Level::Info, format!("expected one of {:?}", expected))
+                .footer(Level::Info, format!("expected one of {}", format_expected(&expected)))
                 .finish()
         }
         ParseError::UnrecognizedToken { token, expected } => {
             let (start, _, end) = token;
             let span = Span::new(start, end);
-            let expected = expected.iter().map(|s| &s[1..s.len() - 1]).collect_vec();
 
             Diagnostic::new("unexpected token")
                 .add_error(span, "unexpected token")
-                .footer(Level::Info, format!("expected one of {:?}", expected))
+                .footer(Level::Info, format!("expected one of {}", format_expected(&expected)))
                 .finish()
         }
         ParseError::ExtraToken { token } => {
@@ -89,4 +87,22 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
         }
         ParseError::User { error } => error.to_diagnostic(),
     }
+}
+
+// Workaround for lalrpop using strings instead of a real token type
+fn format_expected(expected: &[String]) -> String {
+    let mut result = String::new();
+    result.push_str("[");
+    for (i, e) in enumerate(expected) {
+        if i > 0 {
+            result.push_str(", ");
+        }
+        if let Some(suffix) = e.strip_prefix("Token") {
+            result.push_str(suffix);
+        } else {
+            result.push_str(e);
+        }
+    }
+    result.push_str("]");
+    result
 }

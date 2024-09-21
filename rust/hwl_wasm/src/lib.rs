@@ -1,4 +1,5 @@
-use hwl_language::data::diagnostic::Diagnostics;
+use hwl_language::back::lower;
+use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::data::source::FilePath;
 use hwl_language::data::source::SourceDatabase;
 use hwl_language::front::driver::compile;
@@ -8,16 +9,57 @@ use itertools::Itertools;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-// TODO replace with proper compilation
+/// This function automatically runs when the module gets initialized.
+#[wasm_bindgen(start)]
+pub fn start() {
+    console_error_panic_hook::set_once();
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct CompileAndLowerResult {
+    pub diagnostics_ansi: String,
+    pub lowered_verilog: String,
+}
+
 #[wasm_bindgen]
-pub fn diag_count(src: String) -> u32 {
+pub fn initial_source() -> String {
+    include_str!("initial_source.kh").to_owned()
+}
+
+#[wasm_bindgen]
+pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let mut source = SourceDatabase::new();
-    source.add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src).unwrap();
+    const STD_TYPES_SRC: &str = include_str!("../../../design/project/std/types.kh");
+    source.add_file(
+        FilePath(vec!["std".to_owned(), "types".to_owned()]),
+        "srd/types.kh".to_owned(),
+        STD_TYPES_SRC.to_owned(),
+    ).unwrap();
+    source.add_file(
+        FilePath(vec!["top".to_owned()]),
+        "top.kh".to_owned(),
+        src,
+    ).unwrap();
 
     let diag = Diagnostics::new();
-    let _ = compile(&diag, &source);
+    let (parsed, compiled) = compile(&diag, &source);
+    let lowered = lower(&diag, &source, &parsed, &compiled);
 
-    diag.finish().len() as u32
+    let lowered_verilog = match lowered {
+        Ok(lowered) => lowered.verilog_source,
+        Err(_) => "".to_owned(),
+    };
+
+    // TODO lower directly to html?
+    let diag_settings = DiagnosticStringSettings::default();
+    let diagnostics_ansi = diag.finish().into_iter()
+        .map(|d| d.to_string(&source, diag_settings))
+        .join("\n");
+
+    CompileAndLowerResult {
+        diagnostics_ansi,
+        lowered_verilog,
+    }
 }
 
 /// See <https://lezer.codemirror.net/docs/ref/#common.Tree^build>

@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::{Diagnostic, Diagnostics};
+use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
@@ -96,7 +96,7 @@ fn generate_module_source(
         MaybeConstructor::Immediate(Type::Module(info)) => {
             assert!(module_args.is_none());
             info
-        },
+        }
         MaybeConstructor::Constructor(_) => {
             throw!(diag.report_todo(item_ast.span, "module instance with generic params/args"))
         }
@@ -251,7 +251,7 @@ fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, syn
             let clock_str = compiled.value_to_readable_str(source, clock);
             let reset_str = compiled.value_to_readable_str(source, reset);
             format!("sync({}, {})", clock_str, reset_str)
-        },
+        }
         SyncKind::Async => "async".to_owned(),
     }
 }
@@ -263,7 +263,9 @@ fn verilog_to_to_str(ty: VerilogType) -> String {
         VerilogType::MultiBit(signed, n) => {
             assert!(n > 0, "zero-width signals are not allowed in verilog");
             format!("{}[{}:0] ", signed.to_verilog_str(), n - 1)
-        },
+        }
+        VerilogType::Error(_) =>
+            "/* error */ ".to_string(),
     }
 }
 
@@ -277,6 +279,7 @@ pub enum VerilogType {
     ///   the internal code will always case to the right value anyway
     /// The width includes the sign bit.
     MultiBit(Signed, u64),
+    Error(ErrorGuaranteed),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -304,7 +307,7 @@ fn type_to_verilog(ty: &Type) -> CompileResult<VerilogType> {
                 Some(n) => {
                     let n = value_evaluate_int(n)?.to_u64().expect("negative or too large to convert to integer");
                     VerilogType::MultiBit(Signed::Unsigned, n)
-                },
+                }
             }
         }
         // TODO convert all of these to bit representations
@@ -313,19 +316,19 @@ fn type_to_verilog(ty: &Type) -> CompileResult<VerilogType> {
             let IntegerTypeInfo { range } = info;
             let range = value_evaluate_int_range(range)?;
             verilog_type_for_int_range(range)
-        },
+        }
         Type::Tuple(_) => todo!(),
         Type::Struct(_) => todo!(),
         Type::Enum(_) => todo!(),
         // invalid RTL types
         // TODO materialize generics in RTL anyway, where possible? reduces some code duplication
         //   with optional generics, maybe even always have them? but then if there are different types it gets tricky
-        Type::Error(_) => panic!("type 'error' should never materialize in RTL"),
         Type::Any => panic!("type 'any' should never materialize in RTL"),
         Type::GenericParameter(_) => panic!("generics should never materialize in RTL"),
         Type::Range => panic!("ranges should never materialize in RTL"),
         Type::Function(_) => panic!("functions should never materialize in RTL"),
         Type::Module(_) => panic!("modules should never materialize in RTL"),
+        &Type::Error(e) => VerilogType::Error(e),
     };
     Ok(result)
 }
@@ -349,7 +352,7 @@ fn value_evaluate_int(value: &Value) -> CompileResult<BigInt> {
                 BinaryOp::Pow => left.pow(right.to_u32().unwrap()),
                 _ => todo!("evaluate binary value {value:?}")
             }
-        },
+        }
         Value::UnaryNot(_) => todo!(),
         Value::GenericParameter(_) => todo!(),
         Value::FunctionParameter(_) => todo!(),
@@ -377,7 +380,7 @@ fn value_evaluate_int_range(value: &Value) -> CompileResult<std::ops::Range<BigI
             } else {
                 start..end
             }
-        },
+        }
         // TODO relax once ranges are less built-in
         _ => panic!("only range values can be evaluated as ranges"),
     };

@@ -11,6 +11,7 @@ hwl_language.workspace = true
 itertools.workspace = true
 strum.workspace = true
 wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true
 
 # We're building for a JS environment, tell getrandom it can use the JS random generator.
 getrandom = { workspace = true, features = ["js"] }
