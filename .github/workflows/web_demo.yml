@@ -11,18 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20.17.0
-      - name: install wasm-pack
-        #        TODO download precompiled binary from somewhere instead?
-        run: cargo install wasm-pack
-      - name: wasm-pack
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+      - name: Run wasm-pack
         run: cd rust/hwl_wasm && wasm-pack build
-      - name: npm ci
-        run: cd web_demo && npm install
-      - name: npm build
+      - name: NPM install
+        run: cd web_demo && npm ci
+      - name: NPM build
         run: cd web_demo && npm run build
       - uses: actions/upload-artifact@v4
         with:
