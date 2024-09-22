@@ -8,7 +8,7 @@ pub module top ports(
     y: output sync(clk, rst) bits(4),
 ) {
     combinatorial {
-         y = x;
+        y = x;
     } 
 
     clocked(clk, !rst) {
