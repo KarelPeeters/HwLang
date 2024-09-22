@@ -16,8 +16,9 @@ Web demo:
 
 Relevant projects:
 
-* Rust-Analyzer for LSP architecture
-  ideas https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md
+* Rust-Analyzer for LSP architecture ideas
+  * https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md
+  * https://rust-analyzer.github.io/blog
 
 Websites and blog posts:
 
