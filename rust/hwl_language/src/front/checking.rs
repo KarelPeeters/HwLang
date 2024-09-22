@@ -1,4 +1,4 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed, ResultOrGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::driver::{CompileState, EvalTrueError};
 use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -11,7 +11,7 @@ use num_traits::One;
 impl CompileState<'_, '_> {
     // TODO double-check that all of these type-checking functions do their error handling correctly
     //   and don't short-circuit unnecessarily, preventing multiple errors
-    pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> ResultOrGuaranteed<()> {
+    pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         match (ty, value) {
             (&Type::Error(e), _) | (_, &Value::Error(e)) => return Err(e),
             (Type::Range, Value::Range(_)) => return Ok(()),
@@ -37,7 +37,7 @@ impl CompileState<'_, '_> {
         Ok(())
     }
 
-    pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> ResultOrGuaranteed<()> {
+    pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
         self.try_eval_bool_true(span_range, value).map_err(|e| {
             let value_str = self.compiled.value_to_readable_str(self.source, value);
             let title = format!("range valid check failed: value {} {}", value_str, e.to_message());
@@ -48,7 +48,7 @@ impl CompileState<'_, '_> {
         })
     }
 
-    pub fn require_value_true_for_type_check(&self, span_ty: Span, span_value: Span, value: &Value) -> ResultOrGuaranteed<()> {
+    pub fn require_value_true_for_type_check(&self, span_ty: Span, span_value: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
         self.try_eval_bool_true(span_value, value).map_err(|e| {
             let value_str = self.compiled.value_to_readable_str(self.source, value);
             let title = format!("type check failed: value {} {}", value_str, e.to_message());
@@ -82,7 +82,7 @@ impl CompileState<'_, '_> {
     // TODO convert inclusive/exclusive into +1/-1 fixes instead?
     // TODO check lt, lte, gt, gte, ... all together elegantly
     // TODO return true for vacuous truths, eg. comparisons between empty ranges?
-    pub fn try_eval_bool(&self, origin: Span, value: &Value) -> ResultOrGuaranteed<Option<bool>> {
+    pub fn try_eval_bool(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
         let result = self.try_eval_bool_inner(origin, value);
         if self.log_const_eval {
             eprintln!(
@@ -94,7 +94,7 @@ impl CompileState<'_, '_> {
         result
     }
 
-    pub fn try_eval_bool_inner(&self, origin: Span, value: &Value) -> ResultOrGuaranteed<Option<bool>> {
+    pub fn try_eval_bool_inner(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
         // TODO this is wrong, we should be returning None a lot more, eg. if the ranges of the operands are not tight
         match *value {
             Value::Binary(binary_op, ref left, ref right) => {
@@ -128,7 +128,7 @@ impl CompileState<'_, '_> {
     // TODO This needs to be split up into a tight and loose range:
     //   we _know_ all values in the tight range are reachable,
     //   and we _know_ no values outside of the loose range are
-    pub fn range_of_value(&self, origin: Span, value: &Value) -> ResultOrGuaranteed<Option<RangeInfo<Box<Value>>>> {
+    pub fn range_of_value(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
         let result = self.range_of_value_inner(origin, value)?;
         let result_simplified = result.clone().map(|r| {
             RangeInfo {
@@ -152,10 +152,10 @@ impl CompileState<'_, '_> {
         Ok(result_simplified)
     }
 
-    pub fn range_of_value_inner(&self, origin: Span, value: &Value) -> ResultOrGuaranteed<Option<RangeInfo<Box<Value>>>> {
+    pub fn range_of_value_inner(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
         // TODO if range ends are themselves params with ranges, assume the worst case
         //   although that misses things like (n < n+1)
-        fn ty_as_range(ty: &Type) -> ResultOrGuaranteed<Option<RangeInfo<Box<Value>>>> {
+        fn ty_as_range(ty: &Type) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
             match ty {
                 &Type::Error(e) => Err(e),
                 Type::Integer(IntegerTypeInfo { range }) => {

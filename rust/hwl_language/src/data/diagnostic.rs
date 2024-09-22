@@ -26,9 +26,6 @@ use std::cmp::min;
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ErrorGuaranteed(());
 
-// TODO find a better name for this
-pub type ResultOrGuaranteed<T> = Result<T, ErrorGuaranteed>;
-
 #[must_use]
 pub struct Diagnostics {
     handler: Option<Box<dyn Fn(&Diagnostic)>>,
@@ -289,7 +286,6 @@ impl DiagnosticBuilder {
     }
 
     pub fn finish(self) -> Diagnostic {
-        assert!(!self.diagnostic.snippets.is_empty(), "Diagnostic without any snippets is not allowed");
         self.diagnostic
     }
 }

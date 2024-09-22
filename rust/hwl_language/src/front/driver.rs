@@ -1,5 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModuleInfo, ModulePortInfo};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
@@ -473,7 +473,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         Ok(body)
     }
 
-    fn resolve_use_path(&self, path: &Path) -> ResolveResult<ResultOrGuaranteed<Item>> {
+    fn resolve_use_path(&self, path: &Path) -> ResolveResult<Result<Item, ErrorGuaranteed>> {
         // TODO the current path design does not allow private sub-modules
         //   are they really necessary? if all inner items are private it's effectively equivalent
         //   -> no it's not equivalent, things can also be private from the parent

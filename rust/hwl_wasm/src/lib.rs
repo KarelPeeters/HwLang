@@ -1,5 +1,6 @@
 use hwl_language::back::lower;
 use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::FilePath;
 use hwl_language::data::source::SourceDatabase;
 use hwl_language::front::driver::compile;
@@ -43,12 +44,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
 
     let diag = Diagnostics::new();
     let (parsed, compiled) = compile(&diag, &source);
-    let lowered = lower(&diag, &source, &parsed, &compiled);
-
-    let lowered_verilog = match lowered {
-        Ok(lowered) => lowered.verilog_source,
-        Err(_) => "".to_owned(),
-    };
+    let LoweredDatabase { top_module_name, verilog_source } = lower(&diag, &source, &parsed, &compiled);
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();
@@ -56,9 +52,10 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         .map(|d| d.to_string(&source, diag_settings))
         .join("\n");
 
+    let _ = top_module_name;
     CompileAndLowerResult {
         diagnostics_ansi,
-        lowered_verilog,
+        lowered_verilog: verilog_source,
     }
 }
 

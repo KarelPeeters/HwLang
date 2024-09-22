@@ -1,7 +1,7 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::new_index_type;
 use crate::syntax::ast;
 use crate::syntax::pos::Span;
@@ -122,7 +122,7 @@ impl<V> ScopeInfo<V> {
         diagnostics: &Diagnostics,
         id: &ast::Identifier,
         vis: Visibility,
-    ) -> ResultOrGuaranteed<ScopeFound<&'s V>> {
+    ) -> Result<ScopeFound<&'s V>, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(&id.string) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
@@ -160,7 +160,7 @@ impl<V> ScopeInfo<V> {
         diagnostics: &Diagnostics,
         id: &str,
         vis: Visibility,
-    ) -> ResultOrGuaranteed<ScopeFound<&V>> {
+    ) -> Result<ScopeFound<&V>, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(id) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {

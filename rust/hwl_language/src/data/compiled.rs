@@ -1,4 +1,4 @@
-use crate::data::diagnostic::{ErrorGuaranteed, ResultOrGuaranteed};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::{ModuleBody, ModuleReg};
 use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
@@ -16,7 +16,7 @@ use num_traits::Signed;
 pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
 
 pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
-    pub file_scope: IndexMap<FileId, ResultOrGuaranteed<Scope>>,
+    pub file_scope: IndexMap<FileId, Result<Scope, ErrorGuaranteed>>,
     pub scopes: Scopes<ScopedEntry>,
 
     pub items: Arena<Item, ItemInfo<S::ItemInfoT, S::ItemInfoB>>,

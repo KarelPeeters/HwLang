@@ -1,11 +1,12 @@
-use crate::data::diagnostic::ResultOrGuaranteed;
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::syntax::ast;
+use crate::syntax::ast::FileContent;
 use crate::syntax::pos::FileId;
 use indexmap::IndexMap;
 
 // TODO represent the set of existing items here already, so direct lookups become possible
 pub struct ParsedDatabase {
-    pub file_ast: IndexMap<FileId, ResultOrGuaranteed<ast::FileContent>>,
+    pub file_ast: IndexMap<FileId, Result<FileContent, ErrorGuaranteed>>,
 }
 
 #[derive(Debug, Copy, Clone)]

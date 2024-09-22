@@ -1,10 +1,9 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
-use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed, ResultOrGuaranteed};
+use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::error::{CompileError, CompileResult};
 use crate::front::common::ScopedEntry;
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
@@ -23,11 +22,6 @@ use std::collections::VecDeque;
 use std::fmt::Write;
 use unwrap_match::unwrap_match;
 
-#[derive(Debug)]
-pub enum LowerError {
-    NoTopFileFound,
-}
-
 // TODO make backend configurable between verilog and VHDL?
 // TODO ban keywords
 // TODO should we still be doing diagnostics here, or should lowering just never start?
@@ -36,10 +30,18 @@ pub fn lower(
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
-) -> CompileResult<LoweredDatabase> {
+) -> LoweredDatabase {
     // find top module
     // TODO allow for multiple top-levels, all in a single compilation and with shared common modules
-    let top_module = find_top_module(diag, source, compiled)?;
+    let top_module = match find_top_module(diag, source, compiled) {
+        Ok(top_module) => top_module,
+        Err(e) => {
+            return LoweredDatabase {
+                top_module_name: Err(e),
+                verilog_source: "".to_owned(),
+            };
+        }
+    };
 
     // generate module sources
     // delay concatenation, we still need to flip the order
@@ -58,7 +60,7 @@ pub fn lower(
         let module_name = pick_unique_name(&ast.id, &mut used_instance_names);
 
         // generate source
-        let verilog_source = generate_module_source(diag, source, parsed, compiled, &instance, &module_name)?;
+        let verilog_source = generate_module_source(diag, source, parsed, compiled, &instance, &module_name);
         verilog_sources_rev.push(verilog_source);
 
         // insert in deduplication map
@@ -67,8 +69,10 @@ pub fn lower(
 
     // concatenate sources and build result
     let verilog_source = verilog_sources_rev.iter().rev().join("\n\n");
-    let result = LoweredDatabase { top_module_name: "top".to_string(), verilog_source };
-    Ok(result)
+    LoweredDatabase {
+        top_module_name: Ok("top".to_string()),
+        verilog_source,
+    }
 }
 
 const I: &str = "    ";
@@ -89,7 +93,7 @@ fn generate_module_source(
     compiled: &CompiledDatabase,
     instance: &ModuleInstance,
     module_name: &str,
-) -> CompileResult<String> {
+) -> String {
     let &ModuleInstance { module: item, args: ref module_args } = instance;
     let item_info = &compiled[item];
     let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
@@ -100,7 +104,8 @@ fn generate_module_source(
             info
         }
         MaybeConstructor::Constructor(_) => {
-            throw!(diag.report_todo(item_ast.span, "module instance with generic params/args"))
+            diag.report_todo(item_ast.span, "module instance with generic params/args");
+            return "".to_string();
         }
         _ => unreachable!(),
     };
@@ -114,18 +119,17 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(I);
-        port_string.push_str(&port_to_verilog(diag, source, compiled, port, comma_str)?);
+        port_string.push_str(&port_to_verilog(diag, source, compiled, port, comma_str));
         port_string.push_str("\n");
     }
 
     let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
-    let body_str = module_body_to_verilog(diag, source, compiled, item_ast.span, body)?;
+    let body_str = module_body_to_verilog(diag, source, compiled, item_ast.span, body);
 
-    let full_str = format!("module {module_name} ({port_string});\n{body_str}endmodule\n");
-    Ok(full_str)
+    format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
-fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleBody) -> CompileResult<String> {
+fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleBody) -> String {
     let mut result = String::new();
     let f = &mut result;
 
@@ -137,7 +141,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         }
 
         let ModuleRegInfo { sync, ty } = reg;
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty)?);
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
         let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
 
         swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
@@ -205,7 +209,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         }
     }
 
-    Ok(result)
+    result
 }
 
 fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) -> String {
@@ -227,7 +231,7 @@ fn port_to_verilog(
     compiled: &CompiledDatabase,
     port: ModulePort,
     comma_str: &str,
-) -> CompileResult<String> {
+) -> String {
     let &ModulePortInfo {
         defining_item: _,
         ref defining_id,
@@ -244,7 +248,7 @@ fn port_to_verilog(
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { sync, ty } => {
             // TODO include full type in comment
-            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty)?);
+            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty));
             let comment = sync_to_comment_str(source, compiled, sync);
             (ty_str, comment)
         }
@@ -252,8 +256,7 @@ fn port_to_verilog(
 
     let name_str = &defining_id.string;
 
-    let result_str = format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}");
-    Ok(result_str)
+    format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
 }
 
 fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, sync: &SyncKind<Value>) -> String {
@@ -318,8 +321,8 @@ impl Signed {
     }
 }
 
-fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuaranteed<VerilogType> {
-    let result = match ty {
+fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
+    match ty {
         Type::Boolean => VerilogType::SingleBit,
         Type::Bits(n) => {
             match n {
@@ -327,13 +330,14 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuarant
                     VerilogType::Error(diag.report_internal_error(span, "infinite bit widths should never materialize"))
                 }
                 Some(n) => {
-                    match value_evaluate_int(diag, span, n)?.to_u32() {
-                        Some(n) => VerilogType::MultiBit(Signed::Unsigned, n),
-                        None => {
+                    match value_evaluate_int(diag, span, n).map(|n| n.to_u32()) {
+                        Ok(Some(n)) => VerilogType::MultiBit(Signed::Unsigned, n),
+                        Ok(None) => {
                             // TODO negative should be an internal error
                             let e = diag.report_simple(format!("width {n:?} negative or too large"), span, "used here");
                             VerilogType::Error(e)
                         }
+                        Err(e) => VerilogType::Error(e),
                     }
                 }
             }
@@ -343,7 +347,10 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuarant
             VerilogType::Error(diag.report_todo(span, "lower type 'array'")),
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
-            let range = value_evaluate_int_range(diag, span, range)?;
+            let range = match value_evaluate_int_range(diag, span, range) {
+                Ok(range) => range,
+                Err(e) => return VerilogType::Error(e),
+            };
             verilog_type_for_int_range(diag, span, range)
         }
         Type::Tuple(_) =>
@@ -365,11 +372,10 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuarant
             VerilogType::Error(diag.report_internal_error(span, "modules should never materialize")),
         &Type::Error(e) =>
             VerilogType::Error(e),
-    };
-    Ok(result)
+    }
 }
 
-fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> ResultOrGuaranteed<BigInt> {
+fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::Int(i) => Ok(i.clone()),
@@ -392,7 +398,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> ResultOr
                         None =>
                             Err(diag.report_simple(format!("power exponent too large: {}", right), span, "used here")),
                     }
-                },
+                }
                 _ => Err(diag.report_todo(span, format!("evaluate binary value {value:?}")))
             }
         }
@@ -408,7 +414,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> ResultOr
     }
 }
 
-fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> ResultOrGuaranteed<std::ops::Range<BigInt>> {
+fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
     match value {
         Value::Range(info) => {
             let &RangeInfo { ref start, ref end, end_inclusive } = info;
@@ -436,10 +442,14 @@ fn find_top_module(
     diag: &Diagnostics,
     source: &SourceDatabase,
     compiled: &CompiledDatabase,
-) -> Result<Item, CompileError> {
-    let top_dir = *source[source.root_directory].children.get("top")
-        .ok_or(LowerError::NoTopFileFound)?;
-    let top_file = source[top_dir].file.ok_or(LowerError::NoTopFileFound)?;
+) -> Result<Item, ErrorGuaranteed> {
+    let top_file = source[source.root_directory].children.get("top")
+        .and_then(|&top_dir| {
+            source[top_dir].file
+        }).ok_or_else(|| {
+        let title = "no top file found, should be called `top` and be in the root directory of the project";
+        diag.report(Diagnostic::new(title).finish())
+    })?;
     let top_file_scope = (*compiled.file_scope.get(&top_file).unwrap())?;
     let top_entry = compiled[top_file_scope].find_immediate_str(diag, "top", Visibility::Public)?;
 
@@ -447,7 +457,7 @@ fn find_top_module(
         &ScopedEntry::Item(item) => {
             match &compiled[item].ty {
                 &MaybeConstructor::Error(e) =>
-                    Err(CompileError::Diagnostic(e)),
+                    Err(e),
                 MaybeConstructor::Constructor(_) => {
                     let err = Diagnostic::new_simple(
                         "top should be a module without generic parameters, got a constructor",

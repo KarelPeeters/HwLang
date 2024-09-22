@@ -7,7 +7,6 @@ use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::data::lowered::LoweredDatabase;
 use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
-use hwl_language::error::CompileError;
 use hwl_language::front::driver::compile;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
@@ -20,10 +19,10 @@ struct Args {
 }
 
 fn main() {
-    let Args { root, print_diagnostics_immediately: print_diagnostics_immediatly } = Args::parse();
+    let Args { root, print_diagnostics_immediately } = Args::parse();
 
     // collect source
-    let source_database = match build_source_database(&root) {
+    let source = match build_source_database(&root) {
         Ok(db) => db,
         Err(e) => {
             eprintln!("building source database failed: {e:?}");
@@ -32,8 +31,8 @@ fn main() {
     };
 
     // build diagnostic handler
-    let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediatly {
-        let source_database = source_database.clone();
+    let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediately {
+        let source_database = source.clone();
         let handler = move |diag: &Diagnostic| {
             let s = diag.clone().to_string(&source_database, DiagnosticStringSettings::default());
             eprintln!("{}", s);
@@ -42,45 +41,36 @@ fn main() {
     } else {
         None
     };
-    
+
     // run compilation
     let diag = Diagnostics::new_with_handler(handler);
-    let main_result = main_inner(&diag, &source_database);
+    let (parsed, compiled) = compile(&diag, &source);
+    let lowered = lower(&diag, &source, &parsed, &compiled);
 
     // print diagnostics
-    if !print_diagnostics_immediatly {
-        for diag in diag.finish() {
-            let s = diag.to_string(&source_database, DiagnosticStringSettings::default());
+    let diagnostics = diag.finish();
+    let any_error = !diagnostics.is_empty();
+    if !print_diagnostics_immediately {
+        for diag in diagnostics {
+            let s = diag.to_string(&source, DiagnosticStringSettings::default());
             eprintln!("{}", s);
         }
     }
 
     // print result
-    match main_result {
-        Ok(result) => {
-            println!("Compilation finished successfully");
-            println!();
-            println!("top module name: {}", result.top_module_name);
-            println!("verilog source:");
-            println!("----------------------------------------");
-            print!("{}", result.verilog_source);
-            if !result.verilog_source.ends_with("\n") {
-                println!();
-            }
-            println!("----------------------------------------");
-        }
-        Err(e) => {
-            eprintln!("{:?}", e);
-            eprintln!("Compilation failed");
-            std::process::exit(1);
-        }
+    let LoweredDatabase { top_module_name, verilog_source } = lowered;
+    println!("top module name: {:?}", top_module_name);
+    println!("verilog source:");
+    println!("----------------------------------------");
+    print!("{}", verilog_source);
+    if !verilog_source.ends_with("\n") {
+        println!();
     }
-}
+    println!("----------------------------------------");
 
-fn main_inner(diag: &Diagnostics, source: &SourceDatabase) -> Result<LoweredDatabase, CompileError> {
-    let (parsed, compiled) = compile(diag, &source);
-    let lowered = lower(diag, &source, &parsed, &compiled)?;
-    Ok(lowered)
+    if any_error {
+        std::process::exit(1);
+    }
 }
 
 fn build_source_database(root: &Path) -> Result<SourceDatabase, CompileSetError> {
