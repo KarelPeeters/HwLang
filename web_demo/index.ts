@@ -19,12 +19,6 @@ import {verilog} from "@codemirror/legacy-modes/mode/verilog";
 
 import AnsiToHtmlClass from "ansi-to-html";
 
-const topNode = NodeType.define({
-    id: 0,
-    name: "topNode",
-    top: true,
-});
-
 function build_node_types() {
     const node_types_string = hwl_wasm.codemirror_node_types();
 
