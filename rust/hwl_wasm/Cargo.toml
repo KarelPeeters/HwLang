@@ -16,6 +16,5 @@ console_error_panic_hook.workspace = true
 # We're building for a JS environment, tell getrandom it can use the JS random generator.
 getrandom = { workspace = true, features = ["js"] }
 
-# TODO make sure this still happens for release, but it's too slow for development
-[package.metadata.wasm-pack.profile.profiling]
+[package.metadata.wasm-pack.profile.dev]
 wasm-opt = false
