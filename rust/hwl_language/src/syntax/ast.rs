@@ -167,7 +167,7 @@ pub struct ModulePort {
     pub kind: Spanned<PortKind<Sync<Box<Expression>>, Box<Expression>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PortKind<S, T> {
     Clock,
     Normal { sync: S, ty: T },
@@ -176,7 +176,7 @@ pub enum PortKind<S, T> {
 pub type Sync<S> = Spanned<SyncKind<S>>;
 
 // TODO rename this to "domain" too?
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SyncKind<S> {
     Async,
     Sync(SyncDomain<S>),
@@ -184,7 +184,7 @@ pub enum SyncKind<S> {
 
 // TODO how to represent the difference between sync and async reset?
 //   this is not the same as the sync/async-ness of the reset itself! (or is it?)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SyncDomain<S> {
     pub clock: S,
     pub reset: S,

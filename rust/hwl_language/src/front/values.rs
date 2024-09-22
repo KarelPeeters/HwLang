@@ -1,4 +1,4 @@
-use crate::data::compiled::{GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, FunctionValueParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
@@ -19,6 +19,7 @@ pub enum Value {
 
     // parameters
     GenericParameter(GenericValueParameter),
+    FunctionParameter(FunctionValueParameter),
     ModulePort(ModulePort),
 
     // basic
@@ -92,26 +93,35 @@ impl<V> RangeInfo<V> {
 }
 
 impl GenericContainer for Value {
-    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
+    type Result = Value;
+
+    fn replace_generic_params(
+        &self,
+        compiled: &mut CompiledDatabasePartial,
+        map_ty: &IndexMap<GenericTypeParameter, Type>,
+        map_value: &IndexMap<GenericValueParameter, Value>,
+    ) -> Value {
         match *self {
             Value::Error(e) => Value::Error(e),
 
             Value::GenericParameter(param) =>
-                map_value.get(&param).cloned().unwrap_or(Value::GenericParameter(param)),
-            Value::ModulePort(unique_id) =>
-                Value::ModulePort(unique_id),
+                param.replace_generic_params(compiled, map_ty, map_value),
+            Value::FunctionParameter(param) =>
+                Value::FunctionParameter(param.replace_generic_params(compiled, map_ty, map_value)),
+            Value::ModulePort(module_port) =>
+                Value::ModulePort(module_port.replace_generic_params(compiled, map_ty, map_value)),
 
             Value::Int(_) => todo!(),
             Value::Range(_) => todo!(),
             Value::Binary(op, ref left, ref right) => {
                 Value::Binary(
                     op,
-                    Box::new(left.replace_generic_params(map_ty, map_value)),
-                    Box::new(right.replace_generic_params(map_ty, map_value)),
+                    Box::new(left.replace_generic_params(compiled, map_ty, map_value)),
+                    Box::new(right.replace_generic_params(compiled, map_ty, map_value)),
                 )
             }
             Value::UnaryNot(ref inner) =>
-                Value::UnaryNot(Box::new(inner.replace_generic_params(map_ty, map_value))),
+                Value::UnaryNot(Box::new(inner.replace_generic_params(compiled, map_ty, map_value))),
 
             Value::Function(_) => todo!(),
             Value::Module(_) => todo!(),

@@ -23,6 +23,8 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
 
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
+    pub function_type_params: Arena<FunctionTypeParameter, FunctionTypeParameterInfo>,
+    pub function_value_params: Arena<FunctionValueParameter, FunctionValueParameterInfo>,
     pub module_info: IndexMap<Item, ModuleSignatureInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
     pub function_info: IndexMap<Item, FunctionSignatureInfo>,
@@ -50,10 +52,12 @@ impl CompiledStage for CompiledStateFull {
 new_index_type!(pub Item);
 new_index_type!(pub GenericTypeParameter);
 new_index_type!(pub GenericValueParameter);
-new_index_type!(pub FunctionParameter);
+new_index_type!(pub FunctionTypeParameter);
+new_index_type!(pub FunctionValueParameter);
 new_index_type!(pub ModulePort);
 
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
+pub type FunctionParameter = TypeOrValue<FunctionTypeParameter, FunctionValueParameter>;
 
 pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<Type>>, Option<ItemBody>>;
 
@@ -78,7 +82,25 @@ pub struct GenericValueParameterInfo {
     pub defining_id: Identifier,
 
     pub ty: Type,
-    // TODO it's a bit weird that we're tracking the span here
+    // TODO it's a bit weird that we're tracking the span here, this should just be part of Type
+    pub ty_span: Span,
+}
+
+#[derive(Debug)]
+pub struct FunctionTypeParameterInfo {
+    pub defining_item: Item,
+    pub defining_id: Identifier,
+
+    // TODO type constraints
+}
+
+#[derive(Debug)]
+pub struct FunctionValueParameterInfo {
+    pub defining_item: Item,
+    pub defining_id: Identifier,
+
+    pub ty: Type,
+    // TODO it's a bit weird that we're tracking the span here, this should just be part of Type
     pub ty_span: Span,
 }
 
@@ -127,12 +149,16 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     }
 
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
+    // TODO make this less ugly for end users, eg. omit the span if there's no ambiguity
     pub fn value_to_readable_str(&self, source: &SourceDatabase, value: &Value) -> String {
         match *value {
             // this should never actually come up, since there will never more future errors on error values
             Value::Error(_) => "value that corresponds to previously reported error".to_string(),
-            // TODO include span to disambiguate
             Value::GenericParameter(p) => {
+                let id = &self[p].defining_id;
+                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
+            }
+            Value::FunctionParameter(p) => {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
@@ -190,6 +216,20 @@ impl<S: CompiledStage> std::ops::Index<GenericValueParameter> for CompiledDataba
     type Output = GenericValueParameterInfo;
     fn index(&self, index: GenericValueParameter) -> &Self::Output {
         &self.generic_value_params[index]
+    }
+}
+
+impl<S: CompiledStage> std::ops::Index<FunctionTypeParameter> for CompiledDatabase<S> {
+    type Output = FunctionTypeParameterInfo;
+    fn index(&self, index: FunctionTypeParameter) -> &Self::Output {
+        &self.function_type_params[index]
+    }
+}
+
+impl<S: CompiledStage> std::ops::Index<FunctionValueParameter> for CompiledDatabase<S> {
+    type Output = FunctionValueParameterInfo;
+    fn index(&self, index: FunctionValueParameter) -> &Self::Output {
+        &self.function_value_params[index]
     }
 }
 

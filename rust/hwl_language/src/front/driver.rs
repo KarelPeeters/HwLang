@@ -1,10 +1,10 @@
-use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FunctionSignatureInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModulePortInfo, ModuleSignatureInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FunctionParameter, FunctionSignatureInfo, FunctionTypeParameterInfo, FunctionValueParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, FunctionTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::types::{Constructor, EnumTypeInfo, FunctionParameters, FunctionTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
@@ -83,6 +83,8 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
             file_scope,
             generic_type_params: Arena::default(),
             generic_value_params: Arena::default(),
+            function_type_params: Arena::default(),
+            function_value_params: Arena::default(),
             module_ports: Arena::default(),
             module_info: IndexMap::new(),
             function_info: IndexMap::new(),
@@ -125,6 +127,8 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
         items,
         generic_type_params: state.compiled.generic_type_params,
         generic_value_params: state.compiled.generic_value_params,
+        function_type_params: state.compiled.function_type_params,
+        function_value_params: state.compiled.function_value_params,
         module_info: state.compiled.module_info,
         module_ports: state.compiled.module_ports,
         function_info: state.compiled.function_info,
@@ -373,8 +377,37 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, ref body }) => {
                 let scope_params = self.compiled.scopes.new_child(scope_file, params.span.join(body.span), Visibility::Private);
 
-                // TODO is it okay to discard the arguments here?
-                let (parameters, _arguments) = self.resolve_generic_params(item, scope_params, params)?;
+                let mut parameters = vec![];
+
+                for param_ast in &params.inner {
+                    // TODO name arg/param better
+                    let (param, arg) = match &param_ast.kind {
+                        &GenericParameterKind::Type(_span) => {
+                            let param = self.compiled.function_type_params.push(FunctionTypeParameterInfo {
+                                defining_item: item,
+                                defining_id: param_ast.id.clone(),
+                            });
+                            (FunctionParameter::Type(param), TypeOrValue::Type(Type::FunctionParameter(param)))
+                        }
+                        GenericParameterKind::Value(ty_expr) => {
+                            let ty = self.eval_expression_as_ty(scope_params, ty_expr)?;
+                            let param = self.compiled.function_value_params.push(FunctionValueParameterInfo {
+                                defining_item: item,
+                                defining_id: param_ast.id.clone(),
+                                ty,
+                                ty_span: ty_expr.span,
+                            });
+                            (FunctionParameter::Value(param), TypeOrValue::Value(Value::FunctionParameter(param)))
+                        }
+                    };
+
+                    parameters.push(param);
+
+                    // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
+                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
+                    self.compiled.scopes[scope_params].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                }
+
                 let ret_ty = match ret_ty {
                     None => Type::Unit,
                     Some(ret_ty) => self.eval_expression_as_ty(scope_params, ret_ty)?,
@@ -385,7 +418,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                 // result type
                 let ty_info = FunctionTypeInfo {
-                    params: parameters,
+                    params: FunctionParameters { vec: parameters },
                     ret: Box::new(ret_ty),
                 };
                 Ok(MaybeConstructor::Immediate(Type::Function(ty_info)))
@@ -417,58 +450,55 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
             }
             Some(params) => {
-                let (parameters, arguments) = self.resolve_generic_params(item, scope_inner, params)?;
+                // build inner scope
+                let mut parameters = vec![];
+                let mut arguments = vec![];
 
+                for param_ast in &params.inner {
+                    // TODO name arg/param better
+                    let (param, arg) = match &param_ast.kind {
+                        &GenericParameterKind::Type(_span) => {
+                            let param = self.compiled.generic_type_params.push(GenericTypeParameterInfo {
+                                defining_item: item,
+                                defining_id: param_ast.id.clone(),
+                            });
+                            (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
+                        }
+                        GenericParameterKind::Value(ty_expr) => {
+                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr)?;
+                            let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
+                                defining_item: item,
+                                defining_id: param_ast.id.clone(),
+                                ty,
+                                ty_span: ty_expr.span,
+                            });
+                            (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
+                        }
+                    };
+
+                    parameters.push(param);
+                    arguments.push(arg.clone());
+
+                    // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
+                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
+                    self.compiled.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                }
+
+                let parameters = GenericParameters { vec: parameters };
+                let arguments = GenericArguments { vec: arguments };
+
+                // build inner type
                 let inner = match build_ty(self, arguments, scope_inner) {
                     Ok(Ok(inner)) => inner,
                     Ok(Err(e)) => return Ok(MaybeConstructor::Error(e)),
                     Err(first) => return Err(first),
                 };
 
+                // result
                 let ty_constr = Constructor { parameters, inner };
                 Ok(MaybeConstructor::Constructor(ty_constr))
             }
         }
-    }
-
-    fn resolve_generic_params(&mut self, item: Item, scope: Scope, params: &Spanned<Vec<ast::GenericParameter>>) -> ResolveResult<(GenericParameters, GenericArguments)> {
-        // build inner scope
-        let mut parameters = vec![];
-        let mut arguments = vec![];
-
-        for param_ast in &params.inner {
-            let (param, arg) = match &param_ast.kind {
-                &GenericParameterKind::Type(_span) => {
-                    let param = self.compiled.generic_type_params.push(GenericTypeParameterInfo {
-                        defining_item: item,
-                        defining_id: param_ast.id.clone(),
-                    });
-                    (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
-                }
-                GenericParameterKind::Value(ty_expr) => {
-                    let ty = self.eval_expression_as_ty(scope, ty_expr)?;
-                    let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
-                        defining_item: item,
-                        defining_id: param_ast.id.clone(),
-                        ty,
-                        ty_span: ty_expr.span,
-                    });
-                    (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
-                }
-            };
-
-            parameters.push(param);
-            arguments.push(arg.clone());
-
-            // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
-            let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-            self.compiled.scopes[scope].declare(self.diag, &param_ast.id, entry, Visibility::Private);
-        }
-
-        // result
-        let parameters = GenericParameters { vec: parameters };
-        let arguments = GenericArguments { vec: arguments };
-        Ok((parameters, arguments))
     }
 
     fn resolve_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
@@ -571,7 +601,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&self, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
+    fn eval_expression(&mut self, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let result = match expr.inner {
             ExpressionKind::Dummy =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "dummy expression")),
@@ -641,7 +671,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
-                let map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
+                let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
                     match point {
                         None => Ok(None),
                         Some(point) => Ok(Some(Box::new(self.eval_expression_as_value(scope, point)?))),
@@ -750,7 +780,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         }
 
                         // do the actual replacement
-                        let result = inner.replace_generic_params(&map_ty, &map_value);
+                        let result = inner.replace_generic_params(&mut self.compiled, &map_ty, &map_value);
                         MaybeConstructor::Immediate(result)
                     }
                     ScopedEntryDirect::Immediate(entry) => {
@@ -770,7 +800,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         Ok(result)
     }
 
-    pub fn eval_expression_as_ty(&self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
+    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             // TODO unify these error strings somewhere
@@ -790,7 +820,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    pub fn eval_expression_as_value(&self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
+    pub fn eval_expression_as_value(&mut self, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(scope, expr)?;
         match entry {
             ScopedEntryDirect::Constructor(_) => {
@@ -808,7 +838,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    pub fn eval_sync_domain(&self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> ResolveResult<SyncDomain<Value>> {
+    pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> ResolveResult<SyncDomain<Value>> {
         let clock = self.eval_expression_as_value(scope, &domain.clock)?;
         let reset = self.eval_expression_as_value(scope, &domain.reset)?;
 
@@ -823,7 +853,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     fn eval_builtin_call(
-        &self,
+        &mut self,
         scope: Scope,
         expr_span: Span,
         name: &str,

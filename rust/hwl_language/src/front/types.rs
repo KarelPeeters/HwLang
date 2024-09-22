@@ -1,4 +1,4 @@
-use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, FunctionParameter, FunctionTypeParameter, GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
 use crate::front::common::TypeOrValue;
@@ -29,6 +29,13 @@ pub struct GenericArguments {
     pub vec: Vec<TypeOrValue>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct FunctionParameters {
+    pub vec: Vec<FunctionParameter>,
+}
+
+// TODO function arguments?
+
 // TODO push type constructor args into struct, enum, ... types, like Rust?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
@@ -38,6 +45,7 @@ pub enum Type {
 
     // parameters
     GenericParameter(GenericTypeParameter),
+    FunctionParameter(FunctionTypeParameter),
 
     // basic
     Any,
@@ -63,7 +71,7 @@ pub struct IntegerTypeInfo {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionTypeInfo {
-    pub params: GenericParameters,
+    pub params: FunctionParameters,
     pub ret: Box<Type>,
 }
 
@@ -108,7 +116,7 @@ pub struct ModuleTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
     #[derivative(PartialEq = "ignore")]
     #[derivative(Hash = "ignore")]
-    pub ports: Vec<ModulePort>
+    pub ports: Vec<ModulePort>,
 }
 
 impl<T> MaybeConstructor<T> {
@@ -125,71 +133,89 @@ impl<T> MaybeConstructor<T> {
 }
 
 impl GenericContainer for Type {
-    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
+    type Result = Type;
+
+    fn replace_generic_params(
+        &self,
+        compiled: &mut CompiledDatabasePartial,
+        map_ty: &IndexMap<GenericTypeParameter, Type>,
+        map_value: &IndexMap<GenericValueParameter, Value>,
+    ) -> Self {
         match *self {
             Type::Error(e) => Type::Error(e),
 
             Type::GenericParameter(param) =>
-                map_ty.get(&param).cloned().unwrap_or(Type::GenericParameter(param)),
+                param.replace_generic_params(compiled, map_ty, map_value),
+            Type::FunctionParameter(param) =>
+                Type::FunctionParameter(param.replace_generic_params(compiled, map_ty, map_value)),
 
             Type::Any => Type::Any,
             Type::Unit => Type::Unit,
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {
-                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map_ty, map_value))))
-            },
+                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(compiled, map_ty, map_value))))
+            }
             Type::Array(ref inner, ref len) => {
                 Type::Array(
-                    Box::new(inner.replace_generic_params(map_ty, map_value)),
-                    Box::new(len.replace_generic_params(map_ty, map_value)),
+                    Box::new(inner.replace_generic_params(compiled, map_ty, map_value)),
+                    Box::new(len.replace_generic_params(compiled, map_ty, map_value)),
                 )
             }
             Type::Range => Type::Range,
             Type::Integer(ref info) => {
                 Type::Integer(IntegerTypeInfo {
-                    range: Box::new(info.range.replace_generic_params(map_ty, map_value)),
+                    range: Box::new(info.range.replace_generic_params(compiled, map_ty, map_value)),
                 })
             }
             Type::Function(ref info) => {
-                // TODO ???
-                todo!()
-                // Type::Function(FunctionTypeInfo {
-                //     params: info.params.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
-                //     ret: Box::new(info.ret.replace_generic_params(map_ty, map_value)),
-                // })
+                Type::Function(FunctionTypeInfo {
+                    params: FunctionParameters {
+                        vec: info.params.vec.iter()
+                            .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
+                            .collect(),
+                    },
+                    ret: Box::new(info.ret.replace_generic_params(compiled, map_ty, map_value)),
+                })
             }
             Type::Tuple(ref types) => {
-                Type::Tuple(types.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect())
-            },
+                Type::Tuple(types.iter().map(|t| t.replace_generic_params(compiled, map_ty, map_value)).collect())
+            }
             Type::Struct(ref info) => {
                 Type::Struct(StructTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map_ty, map_value),
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(compiled, map_ty, map_value),
                     fields: info.fields.iter()
-                        .map(|(name, ty)| (name.clone(), ty.replace_generic_params(map_ty, map_value)))
+                        .map(|(name, ty)| (name.clone(), ty.replace_generic_params(compiled, map_ty, map_value)))
                         .collect(),
                 })
-            },
+            }
             Type::Enum(ref info) => {
                 Type::Enum(EnumTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(map_ty, map_value),
+                    nominal_type_unique: info.nominal_type_unique.replace_generic_params(compiled, map_ty, map_value),
                     variants: info.variants.iter()
                         .map(|(name, ty)| {
-                            (name.clone(), ty.as_ref().map(|t| t.replace_generic_params(map_ty, map_value)))
+                            (name.clone(), ty.as_ref().map(|t| t.replace_generic_params(compiled, map_ty, map_value)))
                         })
                         .collect(),
                 })
-            },
+            }
             Type::Module(_) => todo!(),
         }
     }
 }
 
 impl GenericContainer for NominalTypeUnique {
-    fn replace_generic_params(&self, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self {
+    type Result = NominalTypeUnique;
+
+    fn replace_generic_params(
+        &self,
+        compiled: &mut CompiledDatabasePartial,
+        map_ty: &IndexMap<GenericTypeParameter, Type>,
+        map_value: &IndexMap<GenericValueParameter, Value>,
+    ) -> Self {
         NominalTypeUnique {
             item: self.item,
             args: GenericArguments {
-                vec: self.args.vec.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
+                vec: self.args.vec.iter().map(|t| t.replace_generic_params(compiled, map_ty, map_value)).collect(),
             },
         }
     }

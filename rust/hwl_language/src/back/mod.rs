@@ -361,10 +361,13 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
         Type::Enum(_) =>
             VerilogType::Error(diag.report_todo(span, "lower type 'enum'")),
         // invalid RTL types
+        // TODO redesign type-type such that these are statically impossible at this point?
         Type::Any =>
             VerilogType::Error(diag.report_internal_error(span, "type 'any' should never materialize")),
         Type::GenericParameter(_) =>
             VerilogType::Error(diag.report_internal_error(span, "generic parameters should never materialize")),
+        Type::FunctionParameter(_) =>
+            VerilogType::Error(diag.report_internal_error(span, "function parameters should never materialize")),
         Type::Range =>
             VerilogType::Error(diag.report_internal_error(span, "ranges should never materialize")),
         Type::Function(_) =>
@@ -405,6 +408,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
         }
         Value::UnaryNot(_) => Err(diag.report_todo(span, "evaluate value UnaryNot")),
         Value::GenericParameter(_) => Err(diag.report_todo(span, "evaluate value GenericParameter")),
+        Value::FunctionParameter(_) => Err(diag.report_todo(span, "evaluate value FunctionParameter")),
         Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),
         Value::Range(_) => Err(diag.report_todo(span, "evaluate value Range")),
         Value::Function(_) => Err(diag.report_todo(span, "evaluate value Function")),

@@ -2,7 +2,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::driver::{CompileState, EvalTrueError};
 use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::BinaryOp;
+use crate::syntax::ast::{BinaryOp, PortKind};
 use crate::syntax::pos::Span;
 use crate::try_opt_result;
 use num_bigint::BigInt;
@@ -181,7 +181,13 @@ impl CompileState<'_, '_> {
                 end: Some(Box::new(Value::Int(value + 1u32))),
                 end_inclusive: false,
             })),
-            Value::ModulePort(_) => Ok(None),
+            Value::ModulePort(port) => {
+                match &self.compiled[port].kind {
+                    PortKind::Clock => Ok(None),
+                    PortKind::Normal { sync: _, ty } => ty_as_range(ty),
+                }
+            }
+            Value::FunctionParameter(param) => ty_as_range(&self.compiled[param].ty),
             Value::Binary(op, ref left, ref right) => {
                 let left = try_opt_result!(self.range_of_value(origin, left)?);
                 let right = try_opt_result!(self.range_of_value(origin, right)?);
