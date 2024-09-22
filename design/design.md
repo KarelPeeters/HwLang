@@ -15,25 +15,26 @@
 ## Sources of inspiration
 
 * Software:
-  * Python:
-    * convenient to use and start new projects in
-    * very convenient `int` type
-  * Rust: 
-    * safety: preventing as many bugs as possible by making the compiler check for them continuously during development
-    * very strong type system
-    * cargo: very easy to start a project, compile, publish, version, declare dependencies 
-  * Kotlin
-    * a "second generation" language that replaces Java while still having very good interop with existing Java code
+    * Python:
+        * convenient to use and start new projects in
+        * very convenient `int` type
+    * Rust:
+        * safety: preventing as many bugs as possible by making the compiler check for them continuously during
+          development
+        * very strong type system
+        * cargo: very easy to start a project, compile, publish, version, declare dependencies
+    * Kotlin
+        * a "second generation" language that replaces Java while still having very good interop with existing Java code
 * Legacy RTL languages
-  * (System)Verilog
-  * VHDL
-* New RTL languages (see also https://github.com/drom/awesome-hdl) 
-  * MyHDL
-  * Chisel
+    * (System)Verilog
+    * VHDL
+* New RTL languages (see also https://github.com/drom/awesome-hdl)
+    * MyHDL
+    * Chisel
 * Blog posts:
-  * https://www.jandecaluwe.com/hdldesign/counting.html
-  * https://www.jandecaluwe.com/hdldesign/signal-assignments.html
-  * More generally everything at https://www.jandecaluwe.com/hdldesign
+    * https://www.jandecaluwe.com/hdldesign/counting.html
+    * https://www.jandecaluwe.com/hdldesign/signal-assignments.html
+    * More generally everything at https://www.jandecaluwe.com/hdldesign
 
 ## Specifics
 
@@ -47,7 +48,7 @@
 * expression based wherever possible (eg. loops, if, ... are all expressions)
 
 Alternative: use `[]` for generics and `()` for array indexing
-  but then what about array literals?
+but then what about array literals?
 
 ### Generics
 
@@ -56,16 +57,16 @@ Eg. `struct Foo(T: type)(T)` is really weird, and `Foo(bar)` is ambiguous.
 
 * Do we want to get rid of separate generics entirely, even for struct and enums? No, that doesn't make sense, especially for enums.
 * Do we want to fully split generics and parameters, even for functions? That might be a better idea.
-  * But do functions parameters and other manipulation of `type` still work as-is then?
+    * But do functions parameters and other manipulation of `type` still work as-is then?
 
 Implementation:
 
 * How to we check which generic types and values are the same/assignable/greater than or equal/...?
-  * Maybe equivalence graphs are useful here, see the egg crate.
-  * Alternatively, is canonicalization enough?
-    * Eg. some fully-expanded multiplication form?
-  * How much do we want to look through function bodies? Ideally not at all, right? But then is calling functions at
-    compile time still possible?
+    * Maybe equivalence graphs are useful here, see the egg crate.
+    * Alternatively, is canonicalization enough?
+        * Eg. some fully-expanded multiplication form?
+    * How much do we want to look through function bodies? Ideally not at all, right? But then is calling functions at
+      compile time still possible?
 
 ### Identifiers
 
@@ -123,7 +124,7 @@ Allow type and function declarations everywhere.
 
 Utility types:
 * `Option(T)` like Rust
-* `TriState(T)`: should it _actually_ be tristate, or just have a  
+* `TriState(T)`: should it _actually_ be tristate, or just have a
 
 ### Parameters
 
@@ -144,15 +145,15 @@ Example:
 
 Distinction between functions and procedures:
 * functions
-  * only compute values
-  * are combinatorial/compile time
-  * specific `pure` class of function that _only_ depends on args and no rng state, outside io, ...?
+    * only compute values
+    * are combinatorial/compile time
+    * specific `pure` class of function that _only_ depends on args and no rng state, outside io, ...?
 * procedures
-  * can use time, clock, registers, ...
-  * have inout/out parameters!
-* Both 
-  * can return values!
-  * input arguments
+    * can use time, clock, registers, ...
+    * have inout/out parameters!
+* Both
+    * can return values!
+    * input arguments
 
 
 ### Testing
@@ -177,9 +178,9 @@ Do we want (only) our own simulator or rely on existing ones? We need interop wi
 #### Utilities
 
 * printing debug strings with formatting needs to be super easy
-  * (we don't want to repeatedly type `uvm_info(get_type_name(), $sformatf("..."), UVM_LOW)`)
-  * different log levels (error, warning, info)
-  * different verbosity for info? with some concrete guide on how those levels should be used
+    * (we don't want to repeatedly type `uvm_info(get_type_name(), $sformatf("..."), UVM_LOW)`)
+    * different log levels (error, warning, info)
+    * different verbosity for info? with some concrete guide on how those levels should be used
 
 * Coverage built-in as much as possible
 
@@ -246,7 +247,7 @@ Probably undefined for everything to detect startup bugs.
 * Can interfaces have built-in asserts/drivers/monitors? How do we turn them on or off?
 
 * Every `def`/`function`/`module`/... defines an implicit interface.
-  * We need an easy way to partially compose them.
+    * We need an easy way to partially compose them.
 
 ### Port directions
 
@@ -274,12 +275,12 @@ First thoughts:
 Clock/Reset/State:
 * Do we want separate clocked vs non-clocked assignments?
 * How do assignments know which clock to use? Infer from LHS and RHS (which must match)? Or have some default clock per function?
-  * If there are multiple clocks, explicitly set the current clock within some scope?
+    * If there are multiple clocks, explicitly set the current clock within some scope?
 * How to deal with reset values for delays?
 
 Typing:
 * allow automatic widening of types? or with a separate operator?
-  * literals automatically widen anyway, so this would only be for arithmetic expressions 
+    * literals automatically widen anyway, so this would only be for arithmetic expressions
 * maybe stick to `truncate`, `extend`, ... for consistency at first
 
 ```
@@ -336,7 +337,7 @@ Do we also want a similar show for pipelined combinatorial stuff? How should the
 * automatically by our compiler?
 * automatically by backend -> this doesn't seem to work great in practice
 * manually by the user
-  * do we want some warnings/errors if values get misaligned?
+    * do we want some warnings/errors if values get misaligned?
 
 ### Data structures
 
@@ -368,7 +369,7 @@ Scalar:
 * basic arithmetic, boolean operators, bitwise operators, ...
 * array indexing and slicing
 * steal `<=` chaining from python? or just rely on `&&` for now?
-  * maybe just have an `in` operator for ranges?
+    * maybe just have an `in` operator for ranges?
 
 Reshaping:
 
@@ -376,7 +377,7 @@ Reshaping:
 * convert bits to array and back? transpose arrays? ...
 
 * Is a spread operator like python enough?
-  * No, we want easy support for both little and bit endian!
+    * No, we want easy support for both little and bit endian!
 * Are a couple of conversion functions enough?
 * Check what VHDL and SystemVerilog do.
 
@@ -440,33 +441,36 @@ Capitalization:
 Big picture:
 * parse
 * type/semantics-check each module _independently_, converting to some HIR
-  * correctness/typechecking of a module using another module can only depend on the interface on that module, not the code inside
-    * except for compile-time asserts?
-      * or do we force compile time asserts _into_ the interface itself?
-    * this is also important for incrementalness, users only need to wait on parsing the interface and functions used in there
-    * language design: support this stuff 
-      * making counting matching {} easy?
+    * correctness/typechecking of a module using another module can only depend on the interface on that module, not the
+      code inside
+        * except for compile-time asserts?
+            * or do we force compile time asserts _into_ the interface itself?
+        * this is also important for incrementalness, users only need to wait on parsing the interface and functions
+          used in there
+        * language design: support this stuff
+            * making counting matching {} easy?
 * walk top-down, instantiating each module with the right parameters and converting to LIR
 * convert LIR to output, either Verilog or VHDL
 
 Details:
 * lazy, incremental, ...
-  * use salsa? https://rustc-dev-guide.rust-lang.org/salsa.html
-* for ideas on what we need to support IDEs: https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md 
+    * use salsa? https://rustc-dev-guide.rust-lang.org/salsa.html
+* for ideas on what we need to support
+  IDEs: https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md
 
-Worklist: 
+Worklist:
 * Items can heavily depend on each other, on the result of typedefs, on symbols imported ...
 * => We need some kind of worklist algorithm that's very flexible.
-  * Work on an item until we get stuck, then move to the next one.
-  * If all items are stuck there's a cyclic dependency in the source code, report this as an error.
-  * Is `async` rust a good fit here?
+    * Work on an item until we get stuck, then move to the next one.
+    * If all items are stuck there's a cyclic dependency in the source code, report this as an error.
+    * Is `async` rust a good fit here?
 
 ### Use cases to examine
 
 * basic pipelined datapath (with backpressure)
 * IO state machine
 * AXI config register banks
-  * is the language powerful enough that we don't need to generate code?
+    * is the language powerful enough that we don't need to generate code?
 * repeating grids of components
 * FIFOs
 * CPU instruction decoding
@@ -478,7 +482,7 @@ Worklist:
 
 * easy within-language testing
 * easy connection to python and C++ for test vectors
-  * they don't need to be timing aware, just passing data back and forth is enough
+    * they don't need to be timing aware, just passing data back and forth is enough
 * easy json parsing on the language side
 * regex matching? maybe even at runtime codegen if the regex is simple enough?
 
@@ -497,14 +501,15 @@ We want to detect as many issues as early as possible, primarily during compile 
 
 Examples:
 * we have a very strong type system, and encourage the user to define more types whenever possible
-  * add a way for users to constrain their types, with constructors that assert or return `Option`?
+    * add a way for users to constrain their types, with constructors that assert or return `Option`?
 * integer range issues are caught by range checking (part of int types), and the user has to explicitly truncate or wrap
 * clock/async issues are caught by all values/types having an associated clock property!
-  * this forces users to insert synchronization primitives
-  * users can opt-out via some `unsafe`-style block
+    * this forces users to insert synchronization primitives
+    * users can opt-out via some `unsafe`-style block
 * can we fully detect race conditions between different `async` and `sync` blocks at compile time?
-  * investigate this
-  * we want to avoid any "unpredictable" or undefined behavior, we want least want to emit "X" if this happens in simulation
+    * investigate this
+    * we want to avoid any "unpredictable" or undefined behavior, we want least want to emit "X" if this happens in
+      simulation
 * only allow non-resetting registers in pipelines or similar structures that are dataflow-only
 
 ### Documentation
@@ -517,13 +522,13 @@ Examples:
 ### Compilation output
 
 * allow the user to select a set of top-level modules to export
-  * top-level modules can't have any generic parameters
-  * each one becomes one of the roots of the elaboration tree
-  * dump everything into a single file or spread across multiple?
+    * top-level modules can't have any generic parameters
+    * each one becomes one of the roots of the elaboration tree
+    * dump everything into a single file or spread across multiple?
 
 * parse external verilog and VHDL files, infer sync/async/... from them
-  * allow the user to override this inference during instantiation
-  * be so good at this that people considering using this compiler just for it's verilog/VHDL features, a bit like Zig
+    * allow the user to override this inference during instantiation
+    * be so good at this that people considering using this compiler just for it's verilog/VHDL features, a bit like Zig
 
 ## Resets
 
@@ -532,15 +537,15 @@ Examples:
   so this dynamic-ness needs to be optional.
 * Make `reset` a separate signal type like `async`, `sync`, and `clock`?
 * _Maybe_ make a clock and the corresponding reset a single type?
-  * Slightly unrelated, but can struct fields just be async/sync/clock/... as well? Or is that only for interfaces?
-    * What actually is the difference between interfaces and structs if anything?
+    * Slightly unrelated, but can struct fields just be async/sync/clock/... as well? Or is that only for interfaces?
+        * What actually is the difference between interfaces and structs if anything?
 
 ## Assignments registers, reset, outputs and read-backs
 
 * Variables and output ports should behave as they do in programming languages:
-  * assignments always happen immediately (called "blocking assignment" in legacy RTL languages)
-  * assignments from other clocked blocks are only visible after the clock cycle has fully ended
-  * this is basically a double-buffer timing model, probably exactly what verilator uses
+    * assignments always happen immediately (called "blocking assignment" in legacy RTL languages)
+    * assignments from other clocked blocks are only visible after the clock cycle has fully ended
+    * this is basically a double-buffer timing model, probably exactly what verilator uses
 
 Clock block register syntax:
 
@@ -624,6 +629,11 @@ module foo {
 }
 ```
 
+Also infer clk/reset for clocked blocks, if there is only a single clock and reset. This makes the common case of a
+module with only a singly clock very nice to write.
+
+Also support clocked blocks without reset? Or is that just `false` as the reset signal?
+
 Another issue to consider: all outputs and wires that are assigned by a clocked block must also be reset by that block.
 What should the syntax for those be?
 
@@ -644,12 +654,12 @@ module foo {
 ## Flexibility and the `any` type/value
 
 * generic/function parameters and consequently local variables should be allowed to have type/value `any` (keyword)
-  * this mean that those values are not checked at _compile_ time, only at _codegen_ time
-  * ports might need this too, especially for their width
-  * this applies at every level
-  * a huge disadvantage is that this kind of breaks compatibility and full type checking,
-    so strongly recommend against using this in the docs
-  * this is easy to implement: the type checker already needs the ability to skip types to prevent cascading
+    * this mean that those values are not checked at _compile_ time, only at _codegen_ time
+    * ports might need this too, especially for their width
+    * this applies at every level
+    * a huge disadvantage is that this kind of breaks compatibility and full type checking,
+      so strongly recommend against using this in the docs
+    * this is easy to implement: the type checker already needs the ability to skip types to prevent cascading
 
 * this is useful to allow implementing a fully generic pipeline module, including backpressure:
 
@@ -687,12 +697,43 @@ module pipeline(
 }
 ```
 
+## Resets
+
+Things we want for resets:
+
+Module/port-level:
+
+* Some modules may require a sync/async reset, eg. hardware IPs like BRAMs.
+* Most modules don't care about the reset strategy, so the instantiator can choose.
+
+Clocked-block level:
+
+* Clocked blocks might need to specify the polarity and sync-ness of their clock and resets.
+
+Should reset be a separate type? Probably. Coming out of reset should always be sync with a clock edge.
+
+First sketch:
+
+```
+module foo(
+    clk: input clock,
+    // user can decide polarity and sync-ness of clock
+    rst: input reset(clk),
+    rst: input reset.async(clk),
+    rst: input reset.sync(clk),
+    rst: input reset.sync.active_high(clk),
+    rst: input reset.sync.active_low(clk),
+) {}
+```
+
+Also think about how the module instantiator can specify the reset polarity and sync-ness.
+
 ## Generics
 
 [//]: # (TODO expand)
 
 * Generics are defined on _items_ (functions, modules, types, ...)
-  * generics are also implicitly visible in inner items
+    * generics are also implicitly visible in inner items
 * Do we also want to add packages with generic params that encapsulate multiple items that can share generic-derived
   constants?
 
@@ -710,18 +751,19 @@ module pipeline(
 [//]: # (TODO expand)
 
 * Initial sketch:
-  * Functions are pure: their results only depend on their parameters, and they have no side effects (except for asserts
-    and logging).
-  * Procedures are stateful: they can interact with ports, actually consume clock cycles.
+    * Functions are pure: their results only depend on their parameters, and they have no side effects (except for
+      asserts
+      and logging).
+    * Procedures are stateful: they can interact with ports, actually consume clock cycles.
 * More clearly disambiguate the different orthogonal concepts:
-  * pure vs side-effects
-  * leaky vs non-leaky scope
-  * combinatorial vs clock-cycle-consuming
+    * pure vs side-effects
+    * leaky vs non-leaky scope
+    * combinatorial vs clock-cycle-consuming
 
 ## External interaction
 
 * Do we want to allow embedding scripts straight into the RTL?
-  * eg. python to calculate some coefficients
+    * eg. python to calculate some coefficients
 * How should constraints be handled?
-  * They should be declared within the module they apply to for proper composition.
-  * How do we solve the O(N) tool vendor problem? Allow mapping though a compiler extension API? 
+    * They should be declared within the module they apply to for proper composition.
+    * How do we solve the O(N) tool vendor problem? Allow mapping though a compiler extension API? 
