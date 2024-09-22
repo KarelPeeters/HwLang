@@ -50,7 +50,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let diag_settings = DiagnosticStringSettings::default();
     let diagnostics_ansi = diag.finish().into_iter()
         .map(|d| d.to_string(&source, diag_settings))
-        .join("\n");
+        .join("\n\n");
 
     let _ = top_module_name;
     CompileAndLowerResult {

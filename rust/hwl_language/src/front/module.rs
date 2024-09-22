@@ -6,7 +6,7 @@ use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::Visibility;
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, RegDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, RegDeclaration, VariableDeclaration};
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn resolve_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ResolveResult<ModuleBody> {
@@ -25,6 +25,32 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // first pass: populate scope with declarations
         for top_statement in statements {
             match &top_statement.inner {
+                ModuleStatementKind::VariableDeclaration(decl) => {
+                    let &VariableDeclaration { span, mutable, ref id, ref ty, ref init } = decl;
+
+                    let entry = if mutable {
+                        let e = self.diag.report_todo(span, "mutable variable in module body");
+                        ScopedEntryDirect::Error(e)
+                    } else {
+                        match (ty, init) {
+                            (Some(ty), Some(init)) => {
+                                let ty_eval = self.eval_expression_as_ty(scope_body, ty)?;
+                                let init_eval = self.eval_expression_as_value(scope_body, init)?;
+
+                                // TODO this loses the type declaration information, which is not correct
+                                match self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval) {
+                                    Ok(()) => ScopedEntryDirect::Immediate(TypeOrValue::Value(init_eval)),
+                                    Err(e) => ScopedEntryDirect::Error(e),
+                                }
+                            }
+                            _ => {
+                                let e = self.diag.report_todo(span, "variable declaration without type and/or init");
+                                ScopedEntryDirect::Error(e)
+                            }
+                        }
+                    };
+                    self.compiled.scopes[scope_body].maybe_declare(&self.diag, &id, ScopedEntry::Direct(entry), Visibility::Private);
+                }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let RegDeclaration { span: _, id, sync, ty, init } = decl;
 
@@ -55,8 +81,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // second pass: codegen for the actual blocks
         for top_statement in statements {
             match &top_statement.inner {
+                // declarations were already handled
+                ModuleStatementKind::VariableDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
                 ModuleStatementKind::WireDeclaration(_) => {}
+                // actual blocks
                 ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
                     let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
                     let ast::Block { span: _, statements } = block;
@@ -131,11 +160,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             BlockStatementKind::VariableDeclaration(_) => {
                                 let err = self.diag.report_todo(statement.span, "clocked variable declaration");
                                 result_statements.push(LowerStatement::Error(err));
-                            },
+                            }
                             BlockStatementKind::RegDeclaration(_) => {
                                 let err = self.diag.report_todo(statement.span, "register declaration inside clocked block");
                                 result_statements.push(LowerStatement::Error(err));
-                            },
+                            }
                             BlockStatementKind::Assignment(_) => {
                                 let err = self.diag.report_todo(statement.span, "assignment inside clocked block");
                                 result_statements.push(LowerStatement::Error(err));

@@ -66,6 +66,8 @@ impl Diagnostics {
         self.report(Diagnostic::new_internal_error(span, reason))
     }
 
+    // TODO sort diagnostics by location, for a better user experience?
+    //   especially with the graph traversal stuff, the order can be very arbitrary
     pub fn finish(self) -> Vec<Diagnostic> {
         self.diagnostics.into_inner()
     }
@@ -146,7 +148,7 @@ impl Diagnostic {
 
     /// Utility diagnostic constructor for a duplicate identifier definition.
     pub fn new_defined_twice(kind: &str, span: Span, prev: &Identifier, curr: &Identifier) -> Diagnostic {
-        Diagnostic::new(format!("duplicate {:?}", kind))
+        Diagnostic::new(format!("duplicate {}", kind))
             .snippet(span)
             .add_info(prev.span, "previously defined here")
             .add_error(curr.span, "defined for the second time here")

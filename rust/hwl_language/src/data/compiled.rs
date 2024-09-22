@@ -7,7 +7,7 @@ use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncKind};
+use crate::syntax::ast::{Identifier, PortDirection, PortKind, SyncKind};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
@@ -20,12 +20,12 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub scopes: Scopes<ScopedEntry>,
 
     pub items: Arena<Item, ItemInfo<S::ItemInfoT, S::ItemInfoB>>,
-    
+
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
-    pub function_params: Arena<FunctionParameter, FunctionParameterInfo>,
-    pub module_info: IndexMap<Item, ModuleInfo>,
+    pub module_info: IndexMap<Item, ModuleSignatureInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
+    pub function_info: IndexMap<Item, FunctionSignatureInfo>,
 }
 
 pub trait CompiledStage {
@@ -82,22 +82,21 @@ pub struct GenericValueParameterInfo {
     pub ty_span: Span,
 }
 
+// TODO move into ItemInfo
 #[derive(Debug)]
-pub struct FunctionParameterInfo {
-    pub defining_item: Item,
-    pub defining_id: MaybeIdentifier,
-
-    pub ty: Type,
+pub struct FunctionSignatureInfo {
+    pub scope_params: Scope,
 }
 
+// TODO move into ItemInfo
 #[derive(Debug)]
-pub struct ModuleInfo {
+pub struct ModuleSignatureInfo {
     pub scope_ports: Scope,
-    // TODO scope_inner?
 }
 
 #[derive(Debug)]
 pub struct ModulePortInfo {
+    // These ids might not be unique, compilation continues even if a duplicate port name was used.
     pub defining_item: Item,
     pub defining_id: Identifier,
 
@@ -137,10 +136,6 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
-            Value::FunctionParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("function_param({:?}, {:?})", id.string(), source.expand_pos(id.span().start))
-            }
             Value::ModulePort(p) => {
                 let id = &self[p].defining_id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
@@ -151,7 +146,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 } else {
                     format!("{}", v)
                 }
-            },
+            }
             Value::Range(ref range) => self.range_to_readable_str(source, range),
             Value::Binary(op, ref left, ref right) => {
                 let left = self.value_to_readable_str(source, left);
@@ -195,13 +190,6 @@ impl<S: CompiledStage> std::ops::Index<GenericValueParameter> for CompiledDataba
     type Output = GenericValueParameterInfo;
     fn index(&self, index: GenericValueParameter) -> &Self::Output {
         &self.generic_value_params[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<FunctionParameter> for CompiledDatabase<S> {
-    type Output = FunctionParameterInfo;
-    fn index(&self, index: FunctionParameter) -> &Self::Output {
-        &self.function_params[index]
     }
 }
 

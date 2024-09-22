@@ -19,7 +19,7 @@ pub struct Constructor<T> {
     pub inner: T,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct GenericParameters {
     pub vec: Vec<GenericParameter>,
 }
@@ -41,6 +41,8 @@ pub enum Type {
 
     // basic
     Any,
+    // TODO make unit just a special case of tuple
+    Unit,
     Boolean,
     Bits(Option<Box<Value>>),
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
@@ -61,7 +63,7 @@ pub struct IntegerTypeInfo {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionTypeInfo {
-    pub params: Vec<Type>,
+    pub params: GenericParameters,
     pub ret: Box<Type>,
 }
 
@@ -131,6 +133,7 @@ impl GenericContainer for Type {
                 map_ty.get(&param).cloned().unwrap_or(Type::GenericParameter(param)),
 
             Type::Any => Type::Any,
+            Type::Unit => Type::Unit,
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {
                 Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generic_params(map_ty, map_value))))
@@ -148,10 +151,12 @@ impl GenericContainer for Type {
                 })
             }
             Type::Function(ref info) => {
-                Type::Function(FunctionTypeInfo {
-                    params: info.params.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
-                    ret: Box::new(info.ret.replace_generic_params(map_ty, map_value)),
-                })
+                // TODO ???
+                todo!()
+                // Type::Function(FunctionTypeInfo {
+                //     params: info.params.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect(),
+                //     ret: Box::new(info.ret.replace_generic_params(map_ty, map_value)),
+                // })
             }
             Type::Tuple(ref types) => {
                 Type::Tuple(types.iter().map(|t| t.replace_generic_params(map_ty, map_value)).collect())

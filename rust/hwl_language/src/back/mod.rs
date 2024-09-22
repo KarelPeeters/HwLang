@@ -323,6 +323,7 @@ impl Signed {
 
 fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
     match ty {
+        Type::Unit => VerilogType::MultiBit(Signed::Unsigned, 0),
         Type::Boolean => VerilogType::SingleBit,
         Type::Bits(n) => {
             match n {
@@ -404,7 +405,6 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
         }
         Value::UnaryNot(_) => Err(diag.report_todo(span, "evaluate value UnaryNot")),
         Value::GenericParameter(_) => Err(diag.report_todo(span, "evaluate value GenericParameter")),
-        Value::FunctionParameter(_) => Err(diag.report_todo(span, "evaluate value FunctionParameter")),
         Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),
         Value::Range(_) => Err(diag.report_todo(span, "evaluate value Range")),
         Value::Function(_) => Err(diag.report_todo(span, "evaluate value Function")),

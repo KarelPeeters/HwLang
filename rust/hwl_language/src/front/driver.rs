@@ -1,12 +1,12 @@
-use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModuleInfo, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FunctionSignatureInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::types::{Constructor, EnumTypeInfo, FunctionTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
+use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::Arena;
@@ -65,7 +65,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
             Err(e) => {
                 let e = diagnostics.report(parse_error_to_diagnostic(e));
                 (Err(e), Err(e))
-            },
+            }
         };
 
         file_ast.insert_first(file, ast);
@@ -83,9 +83,9 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
             file_scope,
             generic_type_params: Arena::default(),
             generic_value_params: Arena::default(),
-            function_params: Arena::default(),
             module_ports: Arena::default(),
             module_info: IndexMap::new(),
+            function_info: IndexMap::new(),
             scopes,
         },
         log_const_eval: false,
@@ -125,9 +125,9 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
         items,
         generic_type_params: state.compiled.generic_type_params,
         generic_value_params: state.compiled.generic_value_params,
-        function_params: state.compiled.function_params,
         module_info: state.compiled.module_info,
         module_ports: state.compiled.module_ports,
+        function_info: state.compiled.function_info,
     };
 
     (parsed, compiled)
@@ -206,11 +206,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         // remove cycle from the stack
                         drop(stack.drain(cycle_start_index..));
-                        continue
+                        continue;
                     } else {
                         // no cycle, visit the next item
                         stack.push(first);
-                        continue
+                        continue;
                     }
                 }
             };
@@ -229,14 +229,17 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
+    // TODO this signature is wrong: items are not always type constructors
+    // TODO clarify: this resolves the _signature_, not the body, right?
+    //   for type aliases it appears to resolve the body too.
     fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
         // check that this is indeed a new query
         assert!(self.compiled[item].ty.is_none());
 
         // item lookup
         let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
-        let scope = match *self.compiled.file_scope.get(&self.compiled[item].ast_ref.file).unwrap() {
-            Ok(scope) => scope,
+        let scope_file = match *self.compiled.file_scope.get(&self.compiled[item].ast_ref.file).unwrap() {
+            Ok(scope_file) => scope_file,
             Err(e) => return Ok(MaybeConstructor::Error(e)),
         };
 
@@ -254,12 +257,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
-                self.resolve_new_generic_type_def(item, scope, params, |s, _args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope_file, params, |s, _args, scope_inner| {
                     Ok(Ok(s.eval_expression_as_ty(scope_inner, inner)?))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
-                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
                     // map fields
                     let mut fields_map = IndexMap::new();
                     for field in fields {
@@ -283,7 +286,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
-                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
                     // map variants
                     let mut variants_map = IndexMap::new();
                     for variant in variants {
@@ -308,25 +311,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     };
                     Ok(Ok(Type::Enum(ty)))
                 })
-            },
+            }
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
-                self.resolve_new_generic_type_def(item, scope, params, |s, args, scope_inner| {
+                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
                     // map ports
-                    let mut port_name_map = IndexMap::new();
                     let mut port_vec = vec![];
 
                     for port in &ports.inner {
                         let ast::ModulePort { span: _, id: port_id, direction, kind, } = port;
-
-                        if let Some(prev) = port_name_map.insert(port_id.string.clone(), port_id) {
-                            let diag = Diagnostic::new_defined_twice("module port", ports.span, &port_id, prev);
-                            let err = s.diag.report(diag);
-                            return Ok(Err(err));
-                        }
 
                         let module_port_info = ModulePortInfo {
                             defining_item: item,
@@ -342,7 +338,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                                 let clock = s.eval_expression_as_value(scope_ports, clock)?;
                                                 let reset = s.eval_expression_as_value(scope_ports, reset)?;
                                                 SyncKind::Sync(SyncDomain { clock, reset })
-                                            },
+                                            }
                                         },
                                         ty: s.eval_expression_as_ty(scope_ports, ty)?,
                                     }
@@ -361,7 +357,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
 
                     // result
-                    let module_info = ModuleInfo { scope_ports };
+                    let module_info = ModuleSignatureInfo { scope_ports };
                     s.compiled.module_info.insert_first(item, module_info);
 
                     let module_ty_info = ModuleTypeInfo {
@@ -371,16 +367,35 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     Ok(Ok(Type::Module(module_ty_info)))
                 })
-            },
+            }
             ast::Item::Const(_) =>
                 Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "const definition"))),
-            ast::Item::Function(_) =>
-                Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "function definition"))),
+            ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, ref body }) => {
+                let scope_params = self.compiled.scopes.new_child(scope_file, params.span.join(body.span), Visibility::Private);
+
+                // TODO is it okay to discard the arguments here?
+                let (parameters, _arguments) = self.resolve_generic_params(item, scope_params, params)?;
+                let ret_ty = match ret_ty {
+                    None => Type::Unit,
+                    Some(ret_ty) => self.eval_expression_as_ty(scope_params, ret_ty)?,
+                };
+
+                // keep scope for later
+                self.compiled.function_info.insert_first(item, FunctionSignatureInfo { scope_params });
+
+                // result type
+                let ty_info = FunctionTypeInfo {
+                    params: parameters,
+                    ret: Box::new(ret_ty),
+                };
+                Ok(MaybeConstructor::Immediate(Type::Function(ty_info)))
+            }
             ast::Item::Interface(_) =>
                 Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "interface definition"))),
         }
     }
 
+    // TODO can this be used for functions? they don't really define a type independent of the parameters
     fn resolve_new_generic_type_def<T>(
         &mut self,
         item: Item,
@@ -402,42 +417,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
             }
             Some(params) => {
-                // build inner scope
-                let mut parameters = vec![];
-                let mut arguments = vec![];
+                let (parameters, arguments) = self.resolve_generic_params(item, scope_inner, params)?;
 
-                for param_ast in &params.inner {
-                    let (param, arg) = match &param_ast.kind {
-                        &GenericParameterKind::Type(_span) => {
-                            let param = self.compiled.generic_type_params.push(GenericTypeParameterInfo {
-                                defining_item: item,
-                                defining_id: param_ast.id.clone(),
-                            });
-                            (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
-                        },
-                        GenericParameterKind::Value(ty_expr) => {
-                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr)?;
-                            let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
-                                defining_item: item,
-                                defining_id: param_ast.id.clone(),
-                                ty,
-                                ty_span: ty_expr.span,
-                            });
-                            (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
-                        }
-                    };
-
-                    parameters.push(param);
-                    arguments.push(arg.clone());
-
-                    // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
-                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.compiled.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
-                }
-
-                // map inner to actual type
-                let parameters = GenericParameters { vec: parameters };
-                let arguments = GenericArguments { vec: arguments };
                 let inner = match build_ty(self, arguments, scope_inner) {
                     Ok(Ok(inner)) => inner,
                     Ok(Err(e)) => return Ok(MaybeConstructor::Error(e)),
@@ -450,10 +431,54 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
+    fn resolve_generic_params(&mut self, item: Item, scope: Scope, params: &Spanned<Vec<ast::GenericParameter>>) -> ResolveResult<(GenericParameters, GenericArguments)> {
+        // build inner scope
+        let mut parameters = vec![];
+        let mut arguments = vec![];
+
+        for param_ast in &params.inner {
+            let (param, arg) = match &param_ast.kind {
+                &GenericParameterKind::Type(_span) => {
+                    let param = self.compiled.generic_type_params.push(GenericTypeParameterInfo {
+                        defining_item: item,
+                        defining_id: param_ast.id.clone(),
+                    });
+                    (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
+                }
+                GenericParameterKind::Value(ty_expr) => {
+                    let ty = self.eval_expression_as_ty(scope, ty_expr)?;
+                    let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
+                        defining_item: item,
+                        defining_id: param_ast.id.clone(),
+                        ty,
+                        ty_span: ty_expr.span,
+                    });
+                    (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
+                }
+            };
+
+            parameters.push(param);
+            arguments.push(arg.clone());
+
+            // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
+            let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
+            self.compiled.scopes[scope].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+        }
+
+        // result
+        let parameters = GenericParameters { vec: parameters };
+        let arguments = GenericArguments { vec: arguments };
+        Ok((parameters, arguments))
+    }
+
     fn resolve_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
         assert!(self.compiled[item].body.is_none());
 
-        let _item_ty = self.compiled[item].ty.as_ref().expect("item should already have been checked");
+        let item_ty = self.compiled[item].ty.as_ref().expect("item should already have been checked");
+        let item_ty_err = match item_ty {
+            &MaybeConstructor::Error(e) => Some(e),
+            _ => None,
+        };
 
         let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
         let item_span = item_ast.common_info().span_short;
@@ -461,14 +486,26 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let body = match item_ast {
             // these items are fully defined by their type, which was already checked earlier
             ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemBody::None,
-            ast::Item::Const(_) =>
-                ItemBody::Error(self.diag.report_todo(item_span, "const body")),
-            ast::Item::Function(_) =>
-                ItemBody::Error(self.diag.report_todo(item_span, "function body")),
+            ast::Item::Const(_) => {
+                match item_ty_err {
+                    Some(e) => ItemBody::Error(e),
+                    None => ItemBody::Error(self.diag.report_todo(item_span, "const body")),
+                }
+            }
+            ast::Item::Function(_) => {
+                match item_ty_err {
+                    Some(e) => ItemBody::Error(e),
+                    None => ItemBody::Error(self.diag.report_todo(item_span, "function body")),
+                }
+            }
             ast::Item::Module(item_ast) =>
                 ItemBody::Module(self.resolve_module_body(item, item_ast)?),
-            ast::Item::Interface(_) =>
-                ItemBody::Error(self.diag.report_todo(item_span, "interface body")),
+            ast::Item::Interface(_) => {
+                match item_ty_err {
+                    Some(e) => ItemBody::Error(e),
+                    None => ItemBody::Error(self.diag.report_todo(item_span, "interface body")),
+                }
+            }
         };
         Ok(body)
     }
@@ -500,7 +537,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         .footer(Level::Info, format!("possible options: {:?}", options))
                         .finish();
                     let err = self.diag.report(diag);
-                    return Ok(Err(err))
+                    return Ok(Err(err));
                 }
             };
         }
@@ -559,7 +596,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
-            },
+            }
             ExpressionKind::TypeFunc(_, _) =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "type func expression")),
             ExpressionKind::Block(_) =>
@@ -624,7 +661,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                 let value = Value::Range(RangeInfo::new(start, end, end_inclusive));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
-            },
+            }
             ExpressionKind::UnaryOp(op, ref inner) => {
                 let result = match op {
                     UnaryOp::Neg => {
@@ -639,14 +676,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
-            },
+            }
             ExpressionKind::BinaryOp(op, ref left, ref right) => {
                 let left = self.eval_expression_as_value(scope, left)?;
                 let right = self.eval_expression_as_value(scope, right)?;
 
                 let result = Value::Binary(op, Box::new(left), Box::new(right));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
-            },
+            }
             ExpressionKind::TernarySelect(_, _, _) =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "ternary select expression")),
             ExpressionKind::ArrayIndex(_, _) =>
@@ -728,7 +765,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                     ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
                 }
-            },
+            }
         };
         Ok(result)
     }
@@ -741,13 +778,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ScopedEntryDirect::Constructor(_) => {
                 let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
                 Ok(Type::Error(self.diag.report(diag)))
-            },
+            }
             ScopedEntryDirect::Immediate(entry) => match entry {
                 TypeOrValue::Type(ty) => Ok(ty),
                 TypeOrValue::Value(_) => {
                     let diag = Diagnostic::new_simple("expected type, got value", expr.span, "value");
                     Ok(Type::Error(self.diag.report(diag)))
-                },
+                }
             }
             ScopedEntryDirect::Error(e) => Ok(Type::Error(e))
         }
@@ -759,12 +796,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ScopedEntryDirect::Constructor(_) => {
                 let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
                 Ok(Value::Error(self.diag.report(err)))
-            },
+            }
             ScopedEntryDirect::Immediate(entry) => match entry {
                 TypeOrValue::Type(_) => {
                     let err = Diagnostic::new_simple("expected value, got type", expr.span, "type");
                     Ok(Value::Error(self.diag.report(err)))
-                },
+                }
                 TypeOrValue::Value(value) => Ok(value),
             }
             ScopedEntryDirect::Error(e) => Ok(Value::Error(e)),
@@ -809,7 +846,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             let range = Box::new(self.eval_expression_as_value(scope, &args.inner[1])?);
                             let ty_info = IntegerTypeInfo { range };
                             return Ok(Ok(TypeOrValue::Type(Type::Integer(ty_info))));
-                        },
+                        }
                         "Range" if args.inner.len() == 1 =>
                             return Ok(Ok(TypeOrValue::Type(Type::Range))),
                         "bits_inf" if args.inner.len() == 1 => {
@@ -826,12 +863,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             return Ok(Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len)))));
                         }
                         // fallthrough
-                        _ => {},
+                        _ => {}
                     }
                 }
             }
             // fallthrough
-            _ => {},
+            _ => {}
         }
 
         let err = Diagnostic::new("invalid arguments for __builtin call")

@@ -1,0 +1,3 @@
+pub function print(value: any) {
+    __builtin_function("print", value);
+}

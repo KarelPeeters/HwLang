@@ -53,7 +53,7 @@ fn main() {
     if !print_diagnostics_immediately {
         for diag in diagnostics {
             let s = diag.to_string(&source, DiagnosticStringSettings::default());
-            eprintln!("{}", s);
+            eprintln!("{}\n", s);
         }
     }
 

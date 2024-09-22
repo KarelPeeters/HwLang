@@ -107,7 +107,10 @@ pub struct ItemDefFunction {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Spanned<Vec<FunctionParameter>>,
+    /// All function parameters are "generic", which means they can be types.
+    /// It doesn't make sense to force a distinction similar to modules.
+    pub params: Spanned<Vec<GenericParameter>>,
+    // TODO should the return type by "generic" too, ie. should functions be allowed to return types?
     pub ret_ty: Option<Expression>,
     pub body: Block<BlockStatement>,
 }
@@ -154,14 +157,6 @@ pub struct GenericParameter {
 pub enum GenericParameterKind {
     Type(Span),
     Value(Expression),
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionParameter {
-    pub span: Span,
-    // pub is_const: bool,
-    pub id: Identifier,
-    pub ty: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -212,12 +207,13 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
+    VariableDeclaration(VariableDeclaration),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     // TODO if, for
-    // TODO function/type definitions
+    // TODO function/type/module(?) definitions
 }
 
 #[derive(Debug, Clone)]

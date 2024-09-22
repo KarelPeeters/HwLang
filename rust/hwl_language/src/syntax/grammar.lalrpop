@@ -117,7 +117,7 @@ Item: Item = {
     <start:@L> <vis:Vis> "module" <id:Id> <params:Parameters<GenericParameter>?> "ports" <ports:Parameters<ModulePort>> <body:Block<ModuleStatement>> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-    <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<FunctionParameter>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
+    <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<GenericParameter>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
@@ -142,6 +142,8 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
 ModuleStatementKind: ModuleStatementKind = {
     // declaration
+    <VariableDeclaration> =>
+        ModuleStatementKind::VariableDeclaration(<>),
     <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
@@ -172,10 +174,8 @@ ModuleStatementKind: ModuleStatementKind = {
 
 BlockStatementKind: BlockStatementKind = {
     // declaration
-    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        let decl = VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) };
-        BlockStatementKind::VariableDeclaration(decl)
-    },
+    <VariableDeclaration> =>
+        BlockStatementKind::VariableDeclaration(<>),
     // assignment
     <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
         let assignment = Assignment { op, target, value, span: loc.span(start, end) };
@@ -185,6 +185,12 @@ BlockStatementKind: BlockStatementKind = {
     // TODO semicolon is optional for control flow statements
     <start:@L> <inner:BoxExpr> ";" <end:@R> => {
         BlockStatementKind::Expression(inner)
+    },
+}
+
+VariableDeclaration: VariableDeclaration = {
+    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
+        VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) }
     },
 }
 
@@ -205,10 +211,6 @@ GenericParameter: GenericParameter = {
 GenericParameterKind: GenericParameterKind = {
     <start:@L> "type" <end:@R> => GenericParameterKind::Type(loc.span(start, end)),
     <ty:Expr> => GenericParameterKind::Value(ty),
-}
-
-FunctionParameter: FunctionParameter = {
-    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => FunctionParameter { id, ty, span: loc.span(start, end) },
 }
 
 ModulePort: ModulePort = {
