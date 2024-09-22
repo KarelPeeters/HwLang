@@ -330,6 +330,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> ResultOrGuarant
                     match value_evaluate_int(diag, span, n)?.to_u32() {
                         Some(n) => VerilogType::MultiBit(Signed::Unsigned, n),
                         None => {
+                            // TODO negative should be an internal error
                             let e = diag.report_simple(format!("width {n:?} negative or too large"), span, "used here");
                             VerilogType::Error(e)
                         }
@@ -412,9 +413,13 @@ fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Re
         Value::Range(info) => {
             let &RangeInfo { ref start, ref end, end_inclusive } = info;
 
-            // unbound ranges should never show up in RTL
-            let start = value_evaluate_int(diag, span, start.as_ref().unwrap())?;
-            let end = value_evaluate_int(diag, span, end.as_ref().unwrap())?;
+            let (start, end) = match (start, end) {
+                (Some(start), Some(end)) => (start, end),
+                _ => throw!(diag.report_internal_error(span, "unbound integers should not materialize")),
+            };
+
+            let start = value_evaluate_int(diag, span, start.as_ref())?;
+            let end = value_evaluate_int(diag, span, end.as_ref())?;
 
             let result = if end_inclusive {
                 start..(end + 1)
@@ -531,7 +536,7 @@ fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: std::ops::R
         Some(bits) => VerilogType::MultiBit(signed, bits),
         None => {
             let e = diag.report_simple(
-                format!("integer range needs more bits ({bits}) that are possible in verilog"),
+                format!("integer range needs more bits ({bits}) than are possible in verilog"),
                 span,
                 "used here",
             );
