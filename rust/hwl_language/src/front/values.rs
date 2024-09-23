@@ -111,8 +111,14 @@ impl GenericContainer for Value {
             Value::ModulePort(module_port) =>
                 Value::ModulePort(module_port.replace_generic_params(compiled, map_ty, map_value)),
 
-            Value::Int(_) => todo!(),
-            Value::Range(_) => todo!(),
+            Value::Int(ref info) => Value::Int(info.clone()),
+            Value::Range(ref info) => Value::Range(RangeInfo {
+                start: info.start.as_ref()
+                    .map(|v| Box::new(v.replace_generic_params(compiled, map_ty, map_value))),
+                end: info.end.as_ref()
+                    .map(|v| Box::new(v.replace_generic_params(compiled, map_ty, map_value))),
+                end_inclusive: info.end_inclusive,
+            }),
             Value::Binary(op, ref left, ref right) => {
                 Value::Binary(
                     op,

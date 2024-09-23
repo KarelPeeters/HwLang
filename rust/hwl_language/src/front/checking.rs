@@ -52,6 +52,7 @@ impl CompileState<'_, '_> {
         self.try_eval_bool_true(span_value, value).map_err(|e| {
             let value_str = self.compiled.value_to_readable_str(self.source, value);
             let title = format!("type check failed: value {} {}", value_str, e.to_message());
+            // TODO include the type of the value and the target type, with generics it's not always obvious
             let err = Diagnostic::new(title)
                 .add_error(span_value, "when type checking this value")
                 .add_info(span_ty, "against this type")

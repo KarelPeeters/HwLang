@@ -764,8 +764,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 }
                                 GenericParameter::Value(param) => {
                                     let arg_value = self.eval_expression_as_value(scope, arg)?;
+
+                                    // immediately use the existing generic params to replace the current one
                                     let param_info = &self.compiled[param];
-                                    match self.check_type_contains(param_info.ty_span, arg.span, &param_info.ty, &arg_value) {
+                                    let ty_span = param_info.ty_span;
+                                    let ty_replaced = param_info.ty.clone()
+                                        .replace_generic_params(&mut self.compiled, &map_ty, &map_value);
+
+                                    match self.check_type_contains(ty_span, arg.span, &ty_replaced, &arg_value) {
                                         Ok(()) => {}
                                         Err(e) => last_err = Some(e),
                                     }
