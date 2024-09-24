@@ -107,7 +107,7 @@ pub struct FunctionValueParameterInfo {
 // TODO move into ItemInfo
 #[derive(Debug)]
 pub struct FunctionSignatureInfo {
-    pub scope_params: Scope,
+    pub scope_inner: Scope,
 }
 
 // TODO move into ItemInfo
@@ -184,7 +184,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let inner = self.value_to_readable_str(source, inner);
                 format!("(!{})", inner)
             }
-            Value::Function(_) => todo!(),
+            Value::FunctionReturn(_) => todo!(),
             Value::Module(_) => todo!(),
             Value::Wire => "wire".to_string(),
             Value::Reg(ModuleReg { module_item: _, index }) => format!("reg_{index}"),

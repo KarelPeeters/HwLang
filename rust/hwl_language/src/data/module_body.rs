@@ -5,6 +5,7 @@ use crate::front::values::Value;
 use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::Span;
 
+// TODO include body comments for eg. the values that values were resolved to
 #[derive(Debug)]
 pub struct ModuleBody {
     pub blocks: Vec<ModuleBlockInfo>,

@@ -2,7 +2,7 @@ use crate::data::compiled::{CompiledDatabasePartial, FunctionValueParameter, Gen
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
-use crate::front::types::{FunctionParameters, ModuleTypeInfo, Type};
+use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -32,7 +32,7 @@ pub enum Value {
 
     // structures
     // TODO functions are represented very strangely, double-check if this makes sense
-    Function(FunctionValue),
+    FunctionReturn(FunctionReturnValue),
     Module(ModuleValueInfo),
     // Struct(StructValue),
     // Tuple(TupleValue),
@@ -54,9 +54,8 @@ pub struct RangeInfo<V> {
 
 // TODO double check which fields should be used for eq and hash
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct FunctionValue {
+pub struct FunctionReturnValue {
     pub item: Item,
-    pub params: FunctionParameters,
     pub ret_ty: Type,
 }
 
@@ -126,17 +125,10 @@ impl GenericContainer for Value {
             Value::UnaryNot(ref inner) =>
                 Value::UnaryNot(Box::new(inner.replace_generic_params(compiled, map_ty, map_value))),
 
-            Value::Function(ref func) => {
-                let params = FunctionParameters {
-                    vec: func.params.vec.iter()
-                        .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
-                        .collect(),
-                };
-                let ret_ty = func.ret_ty.replace_generic_params(compiled, map_ty, map_value);
-                Value::Function(FunctionValue {
+            Value::FunctionReturn(ref func) => {
+                Value::FunctionReturn(FunctionReturnValue {
                     item: func.item,
-                    params,
-                    ret_ty,
+                    ret_ty: func.ret_ty.replace_generic_params(compiled, map_ty, map_value),
                 })
             }
             Value::Module(_) => todo!(),

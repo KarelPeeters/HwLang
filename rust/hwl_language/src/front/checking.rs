@@ -269,7 +269,7 @@ impl CompileState<'_, '_> {
             }
             Value::UnaryNot(_) => Ok(None),
             Value::Range(_) => panic!("range can't itself have a range type"),
-            Value::Function(_) => panic!("function can't have a range type"),
+            Value::FunctionReturn(ref ret) => ty_as_range(&ret.ret_ty),
             Value::Module(_) => panic!("module can't have a range type"),
             // TODO get their types
             Value::Wire => Ok(None),

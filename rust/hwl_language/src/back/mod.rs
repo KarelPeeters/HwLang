@@ -411,7 +411,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
         Value::FunctionParameter(_) => Err(diag.report_todo(span, "evaluate value FunctionParameter")),
         Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),
         Value::Range(_) => Err(diag.report_todo(span, "evaluate value Range")),
-        Value::Function(_) => Err(diag.report_todo(span, "evaluate value Function")),
+        Value::FunctionReturn(_) => Err(diag.report_todo(span, "evaluate value Function")),
         Value::Module(_) => Err(diag.report_todo(span, "evaluate value Module")),
         Value::Wire => Err(diag.report_todo(span, "evaluate value Wire")),
         Value::Reg(_) => Err(diag.report_todo(span, "evaluate value Reg")),

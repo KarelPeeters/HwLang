@@ -1,11 +1,11 @@
-use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FunctionParameter, FunctionSignatureInfo, FunctionTypeParameterInfo, FunctionValueParameterInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModulePortInfo, ModuleSignatureInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FunctionSignatureInfo, GenericParameter, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ItemBody, ItemInfo, ItemInfoPartial, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, FunctionParameters, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
-use crate::front::values::{FunctionValue, RangeInfo, Value};
+use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::values::{FunctionReturnValue, RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
@@ -262,12 +262,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
-                self.resolve_new_generic_type_def(item, scope_file, params, |s, _args, scope_inner| {
+                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, _args, scope_inner| {
                     Ok(Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)?)))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
-                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
                     // map fields
                     let mut fields_map = IndexMap::new();
                     for field in fields {
@@ -291,7 +291,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
-                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
                     // map variants
                     let mut variants_map = IndexMap::new();
                     for variant in variants {
@@ -319,7 +319,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
-                self.resolve_new_generic_type_def(item, scope_file, params, |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
@@ -375,65 +375,35 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
             ast::Item::Const(_) =>
                 Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "const definition"))),
-            ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, ref body }) => {
-                let scope_params = self.compiled.scopes.new_child(scope_file, params.span.join(body.span), Visibility::Private);
+            ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
+                self.resolve_new_generic_def(item, scope_file, Some(params), |s, args, scope_inner| {
+                    // no need to use args for anything, they are mostly used for nominal type uniqueness
+                    //   which does not apply to functions
+                    let _ = args;
 
-                let mut parameters = vec![];
-
-                for param_ast in &params.inner {
-                    // TODO name arg/param better
-                    let (param, arg) = match &param_ast.kind {
-                        &GenericParameterKind::Type(_span) => {
-                            let param = self.compiled.function_type_params.push(FunctionTypeParameterInfo {
-                                defining_item: item,
-                                defining_id: param_ast.id.clone(),
-                            });
-                            (FunctionParameter::Type(param), TypeOrValue::Type(Type::FunctionParameter(param)))
-                        }
-                        GenericParameterKind::Value(ty_expr) => {
-                            let ty = self.eval_expression_as_ty(scope_params, ty_expr)?;
-                            let param = self.compiled.function_value_params.push(FunctionValueParameterInfo {
-                                defining_item: item,
-                                defining_id: param_ast.id.clone(),
-                                ty,
-                                ty_span: ty_expr.span,
-                            });
-                            (FunctionParameter::Value(param), TypeOrValue::Value(Value::FunctionParameter(param)))
-                        }
+                    let ret_ty = match ret_ty {
+                        None => Type::Unit,
+                        Some(ret_ty) => s.eval_expression_as_ty(scope_inner, ret_ty)?,
                     };
 
-                    parameters.push(param);
+                    // keep scope for later
+                    s.compiled.function_info.insert_first(item, FunctionSignatureInfo { scope_inner });
 
-                    // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
-                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.compiled.scopes[scope_params].declare(self.diag, &param_ast.id, entry, Visibility::Private);
-                }
-
-                let ret_ty = match ret_ty {
-                    None => Type::Unit,
-                    Some(ret_ty) => self.eval_expression_as_ty(scope_params, ret_ty)?,
-                };
-
-                // keep scope for later
-                self.compiled.function_info.insert_first(item, FunctionSignatureInfo { scope_params });
-
-                // result
-                let parameters = FunctionParameters { vec: parameters };
-                let func_value = FunctionValue { item, params: parameters, ret_ty };
-                Ok(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Function(func_value))))
+                    // result
+                    Ok(Ok(TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty }))))
+                })
             }
             ast::Item::Interface(_) =>
                 Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "interface definition"))),
         }
     }
 
-    // TODO can this be used for functions? they don't really define a type independent of the parameters
-    fn resolve_new_generic_type_def<T>(
+    fn resolve_new_generic_def<T>(
         &mut self,
         item: Item,
         scope_outer: Scope,
-        params: &Option<Spanned<Vec<ast::GenericParameter>>>,
-        build_ty: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<Result<T, ErrorGuaranteed>>,
+        params: Option<&Spanned<Vec<ast::GenericParameter>>>,
+        build: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<Result<T, ErrorGuaranteed>>,
     ) -> ResolveResult<MaybeConstructor<T>> {
         let item_span = self.parsed.item_ast(self.compiled[item].ast_ref).common_info().span_full;
         let scope_inner = self.compiled.scopes.new_child(scope_outer, item_span, Visibility::Private);
@@ -443,7 +413,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 // there are no parameters, just map directly
                 // the scope still needs to be "nested" since the builder needs an owned scope
                 let arguments = GenericArguments { vec: vec![] };
-                match build_ty(self, arguments, scope_inner)? {
+                match build(self, arguments, scope_inner)? {
                     Ok(ty) => Ok(MaybeConstructor::Immediate(ty)),
                     Err(e) => Ok(MaybeConstructor::Error(e)),
                 }
@@ -487,7 +457,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let arguments = GenericArguments { vec: arguments };
 
                 // build inner type
-                let inner = match build_ty(self, arguments, scope_inner) {
+                let inner = match build(self, arguments, scope_inner) {
                     Ok(Ok(inner)) => inner,
                     Ok(Err(e)) => return Ok(MaybeConstructor::Error(e)),
                     Err(first) => return Err(first),
@@ -726,6 +696,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
 
                 let target_entry = self.eval_expression(scope, target)?;
+                eprintln!("{:?}", target_entry);
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
