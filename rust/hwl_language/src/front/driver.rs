@@ -4,8 +4,8 @@ use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, FunctionParameters, FunctionTypeInfo, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
-use crate::front::values::{RangeInfo, Value};
+use crate::front::types::{Constructor, EnumTypeInfo, FunctionParameters, GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::values::{FunctionValue, RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, EnumVariant, Expression, ExpressionKind, GenericParameterKind, IntPattern, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, RangeLiteral, Spanned, StructField, SyncDomain, SyncKind, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
@@ -53,7 +53,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
 
                     let item = items.push(ItemInfo {
                         ast_ref: ItemAstReference { file, file_item_index },
-                        ty: None,
+                        signature: None,
                         body: None,
                     });
 
@@ -97,7 +97,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
     // TODO randomize order to check for dependency bugs? but then diagnostics have random orders
     let item_keys = state.compiled.items.keys().collect_vec();
     for &item in &item_keys {
-        state.resolve_item_type_fully(item);
+        state.resolve_item_signature_fully(item);
     }
 
     // typecheck all item bodies
@@ -117,7 +117,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
     // map to final database
     let items = state.compiled.items.map_values(|info| ItemInfo {
         ast_ref: info.ast_ref,
-        ty: info.ty.unwrap(),
+        signature: info.signature.unwrap(),
         body: info.body.unwrap(),
     });
 
@@ -168,20 +168,20 @@ impl EvalTrueError {
 }
 
 impl<'d, 'a> CompileState<'d, 'a> {
-    fn resolve_item_type_fully(&mut self, item: Item) {
+    fn resolve_item_signature_fully(&mut self, item: Item) {
         let mut stack = vec![item];
 
         // TODO avoid repetitive work by switching to async instead?
         while let Some(curr) = stack.pop() {
-            if self.compiled[curr].ty.is_some() {
+            if self.compiled[curr].signature.is_some() {
                 // already resolved, skip
                 continue;
             }
 
-            let resolved = match self.resolve_item_type_new(curr) {
+            let resolved = match self.resolve_item_signature_new(curr) {
                 Ok(resolved) => resolved,
                 Err(ResolveFirst(first)) => {
-                    assert!(self.compiled[first].ty.is_none(), "request to resolve {first:?} first, but it already has a type");
+                    assert!(self.compiled[first].signature.is_none(), "request to resolve {first:?} first, but it already has a signature");
 
                     // push curr failed attempt back on the stack
                     stack.push(curr);
@@ -194,7 +194,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         // build diagnostic
                         // TODO the order is nondeterministic, it depends on which items happened to be visited first
-                        let mut diag = Diagnostic::new("cyclic type dependency");
+                        let mut diag = Diagnostic::new("cyclic signature dependency");
                         for &stack_item in cycle {
                             let item_ast = self.parsed.item_ast(self.compiled[stack_item].ast_ref);
                             diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
@@ -203,8 +203,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                         // set slot of all involved items
                         for &stack_item in cycle {
-                            let slot = &mut self.compiled[stack_item].ty;
-                            assert!(slot.is_none(), "someone else already set the type for {curr:?}");
+                            let slot = &mut self.compiled[stack_item].signature;
+                            assert!(slot.is_none(), "someone else already set the signature for {curr:?}");
                             *slot = Some(MaybeConstructor::Error(err));
                         }
 
@@ -220,14 +220,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
             };
 
             // managed to resolve the current item, store its type
-            let slot = &mut self.compiled[curr].ty;
+            let slot = &mut self.compiled[curr].signature;
             assert!(slot.is_none(), "someone else already set the type for {curr:?}");
             *slot = Some(resolved);
         }
     }
 
-    fn resolve_item_type(&self, item: Item) -> ResolveResult<&MaybeConstructor<Type>> {
-        match self.compiled[item].ty {
+    // TODO under the current model, functions don't really have "types" independent of their parameters
+    fn resolve_item_signature(&self, item: Item) -> ResolveResult<&MaybeConstructor<TypeOrValue>> {
+        match self.compiled[item].signature {
             Some(ref r) => Ok(r),
             None => Err(ResolveFirst(item)),
         }
@@ -236,9 +237,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
     // TODO this signature is wrong: items are not always type constructors
     // TODO clarify: this resolves the _signature_, not the body, right?
     //   for type aliases it appears to resolve the body too.
-    fn resolve_item_type_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<Type>> {
+    fn resolve_item_signature_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<TypeOrValue>> {
         // check that this is indeed a new query
-        assert!(self.compiled[item].ty.is_none());
+        assert!(self.compiled[item].signature.is_none());
 
         // item lookup
         let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
@@ -255,14 +256,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 //  this is really weird, use items don't even really have signatures
                 let next_item = self.resolve_use_path(path)?;
                 match next_item {
-                    Ok(next_item) => Ok(self.resolve_item_type(next_item)?.clone()),
+                    Ok(next_item) => Ok(self.resolve_item_signature(next_item)?.clone()),
                     Err(e) => Ok(MaybeConstructor::Error(e)),
                 }
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
                 self.resolve_new_generic_type_def(item, scope_file, params, |s, _args, scope_inner| {
-                    Ok(Ok(s.eval_expression_as_ty(scope_inner, inner)?))
+                    Ok(Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)?)))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
@@ -286,7 +287,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         fields: fields_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(Ok(Type::Struct(ty)))
+                    Ok(Ok(TypeOrValue::Type(Type::Struct(ty))))
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
@@ -313,7 +314,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         variants: variants_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(Ok(Type::Enum(ty)))
+                    Ok(Ok(TypeOrValue::Type(Type::Enum(ty))))
                 })
             }
             // value definitions
@@ -369,7 +370,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         ports: port_vec,
                     };
 
-                    Ok(Ok(Type::Module(module_ty_info)))
+                    Ok(Ok(TypeOrValue::Type(Type::Module(module_ty_info))))
                 })
             }
             ast::Item::Const(_) =>
@@ -416,12 +417,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 // keep scope for later
                 self.compiled.function_info.insert_first(item, FunctionSignatureInfo { scope_params });
 
-                // result type
-                let ty_info = FunctionTypeInfo {
-                    params: FunctionParameters { vec: parameters },
-                    ret: Box::new(ret_ty),
-                };
-                Ok(MaybeConstructor::Immediate(Type::Function(ty_info)))
+                // result
+                let parameters = FunctionParameters { vec: parameters };
+                let func_value = FunctionValue { item, params: parameters, ret_ty };
+                Ok(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Function(func_value))))
             }
             ast::Item::Interface(_) =>
                 Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "interface definition"))),
@@ -504,8 +503,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn resolve_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
         assert!(self.compiled[item].body.is_none());
 
-        let item_ty = self.compiled[item].ty.as_ref().expect("item should already have been checked");
-        let item_ty_err = match item_ty {
+        // TODO remove this, no point in forcing this to be two-phase
+        let item_signature = self.compiled[item].signature.as_ref()
+            .expect("item should already have been checked");
+        let item_signature_err = match item_signature {
             &MaybeConstructor::Error(e) => Some(e),
             _ => None,
         };
@@ -517,13 +518,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
             // these items are fully defined by their type, which was already checked earlier
             ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemBody::None,
             ast::Item::Const(_) => {
-                match item_ty_err {
+                match item_signature_err {
                     Some(e) => ItemBody::Error(e),
                     None => ItemBody::Error(self.diag.report_todo(item_span, "const body")),
                 }
             }
             ast::Item::Function(_) => {
-                match item_ty_err {
+                match item_signature_err {
                     Some(e) => ItemBody::Error(e),
                     None => ItemBody::Error(self.diag.report_todo(item_span, "function body")),
                 }
@@ -531,7 +532,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ast::Item::Module(item_ast) =>
                 ItemBody::Module(self.resolve_module_body(item, item_ast)?),
             ast::Item::Interface(_) => {
-                match item_ty_err {
+                match item_signature_err {
                     Some(e) => ItemBody::Error(e),
                     None => ItemBody::Error(self.diag.report_todo(item_span, "interface body")),
                 }
@@ -615,15 +616,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     Ok(entry) => entry,
                 };
                 match entry.value {
-                    &ScopedEntry::Item(item) => {
-                        // TODO properly support value items, and in general fix "type" vs "value" resolution
-                        //  maybe through checking the item kind first?
-                        //  each of them clearly only defines a type or value, right?
-                        //    or do we want to support "type A = if(cond) B else C"?
-                        self.resolve_item_type(item)?
-                            .clone()
-                            .map(TypeOrValue::Type)
-                    }
+                    &ScopedEntry::Item(item) => self.resolve_item_signature(item)?.clone(),
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             }

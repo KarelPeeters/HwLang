@@ -4,7 +4,7 @@ use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::front::common::ScopedEntry;
+use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -98,8 +98,8 @@ fn generate_module_source(
     let item_info = &compiled[item];
     let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
 
-    let module_info = match &item_info.ty {
-        MaybeConstructor::Immediate(Type::Module(info)) => {
+    let module_info = match &item_info.signature {
+        MaybeConstructor::Immediate(TypeOrValue::Type(Type::Module(info))) => {
             assert!(module_args.is_none());
             info
         }
@@ -459,27 +459,34 @@ fn find_top_module(
 
     match top_entry.value {
         &ScopedEntry::Item(item) => {
-            match &compiled[item].ty {
+            match &compiled[item].signature {
                 &MaybeConstructor::Error(e) =>
                     Err(e),
                 MaybeConstructor::Constructor(_) => {
-                    let err = Diagnostic::new_simple(
+                    Err(diag.report_simple(
                         "top should be a module without generic parameters, got a constructor",
                         top_entry.defining_span,
                         "defined here",
-                    );
-                    throw!(diag.report(err))
+                    ))
                 }
-                MaybeConstructor::Immediate(ty) => {
-                    if let Type::Module(_) = ty {
-                        Ok(item)
-                    } else {
-                        let err = Diagnostic::new_simple(
-                            "top should be a module, got a non-module type",
-                            top_entry.defining_span,
-                            "defined here",
-                        );
-                        throw!(diag.report(err))
+                MaybeConstructor::Immediate(imm) => {
+                    match imm {
+                        TypeOrValue::Type(Type::Module(_)) =>
+                            Ok(item),
+                        TypeOrValue::Type(_) => {
+                            Err(diag.report_simple(
+                                "top should be a module, got a type",
+                                top_entry.defining_span,
+                                "defined here",
+                            ))
+                        }
+                        TypeOrValue::Value(_) => {
+                            Err(diag.report_simple(
+                                "top should be a module, got a value",
+                                top_entry.defining_span,
+                                "defined here",
+                            ))
+                        }
                     }
                 }
             }
@@ -487,12 +494,11 @@ fn find_top_module(
         ScopedEntry::Direct(_) => {
             // TODO include "got" string
             // TODO is this even ever possible? direct should only be inside of scopes
-            let err = Diagnostic::new_simple(
+            Err(diag.report_simple(
                 "top should be an item, got a direct",
                 top_entry.defining_span,
                 "defined here",
-            );
-            throw!(diag.report(err))
+            ))
         }
     }
 }

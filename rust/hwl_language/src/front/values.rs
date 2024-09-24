@@ -2,7 +2,7 @@ use crate::data::compiled::{CompiledDatabasePartial, FunctionValueParameter, Gen
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
-use crate::front::types::{ModuleTypeInfo, Type};
+use crate::front::types::{FunctionParameters, ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -10,7 +10,7 @@ use num_bigint::BigInt;
 // TODO should all values have types? or can eg. ints just be free abstract objects?
 // TODO during compilation, have a "value" wrapper that lazily computes the content and type to break up cycles
 // TODO should all values (and types) have (optional) origin spans for easier error messages?
-// TODO Eq impl is a bit suspicious
+// TODO Eq impl is a bit suspicious, remove it and replace it by named functions, eg. is_same_value
 // TODO attach a span to each value? that kills both interning and compiler-value-constructing though
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
@@ -31,6 +31,7 @@ pub enum Value {
     UnaryNot(Box<Value>),
 
     // structures
+    // TODO functions are represented very strangely, double-check if this makes sense
     Function(FunctionValue),
     Module(ModuleValueInfo),
     // Struct(StructValue),
@@ -51,16 +52,12 @@ pub struct RangeInfo<V> {
     pub end_inclusive: bool,
 }
 
-// TODO reduce this to just the defining item and generic args
+// TODO double check which fields should be used for eq and hash
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionValue {
-    // only this field is used in hash and eq
-    // TODO also include captured values once those exist
     pub item: Item,
-
-    // pub ty: Type,
-    // pub params: Vec<Identifier>,
-    // pub body: FunctionBody,
+    pub params: FunctionParameters,
+    pub ret_ty: Type,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -129,7 +126,19 @@ impl GenericContainer for Value {
             Value::UnaryNot(ref inner) =>
                 Value::UnaryNot(Box::new(inner.replace_generic_params(compiled, map_ty, map_value))),
 
-            Value::Function(_) => todo!(),
+            Value::Function(ref func) => {
+                let params = FunctionParameters {
+                    vec: func.params.vec.iter()
+                        .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
+                        .collect(),
+                };
+                let ret_ty = func.ret_ty.replace_generic_params(compiled, map_ty, map_value);
+                Value::Function(FunctionValue {
+                    item: func.item,
+                    params,
+                    ret_ty,
+                })
+            }
             Value::Module(_) => todo!(),
 
             Value::Wire => Value::Wire,

@@ -61,6 +61,8 @@ pub enum Type {
     Tuple(Vec<Type>),
     Struct(StructTypeInfo),
     Enum(EnumTypeInfo),
+    
+    // should module be a separate thing, neither type nor value? or just a value?
     Module(ModuleTypeInfo),
 }
 

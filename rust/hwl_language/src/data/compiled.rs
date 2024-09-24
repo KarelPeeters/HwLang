@@ -19,7 +19,7 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub file_scope: IndexMap<FileId, Result<Scope, ErrorGuaranteed>>,
     pub scopes: Scopes<ScopedEntry>,
 
-    pub items: Arena<Item, ItemInfo<S::ItemInfoT, S::ItemInfoB>>,
+    pub items: Arena<Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>>,
 
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
@@ -31,22 +31,22 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
 }
 
 pub trait CompiledStage {
-    type ItemInfoT;
-    type ItemInfoB;
+    type ItemInfoSignature;
+    type ItemInfoBody;
 }
 
 pub struct CompiledStagePartial;
 
 impl CompiledStage for CompiledStagePartial {
-    type ItemInfoT = Option<MaybeConstructor<Type>>;
-    type ItemInfoB = Option<ItemBody>;
+    type ItemInfoSignature = Option<MaybeConstructor<TypeOrValue>>;
+    type ItemInfoBody = Option<ItemBody>;
 }
 
 pub struct CompiledStateFull;
 
 impl CompiledStage for CompiledStateFull {
-    type ItemInfoT = MaybeConstructor<Type>;
-    type ItemInfoB = ItemBody;
+    type ItemInfoSignature = MaybeConstructor<TypeOrValue>;
+    type ItemInfoBody = ItemBody;
 }
 
 new_index_type!(pub Item);
@@ -59,12 +59,12 @@ new_index_type!(pub ModulePort);
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 pub type FunctionParameter = TypeOrValue<FunctionTypeParameter, FunctionValueParameter>;
 
-pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<Type>>, Option<ItemBody>>;
+pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemBody>>;
 
 #[derive(Debug)]
-pub struct ItemInfo<T = MaybeConstructor<Type>, B = ItemBody> {
+pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemBody> {
     pub ast_ref: ItemAstReference,
-    pub ty: T,
+    pub signature: T,
     pub body: B,
 }
 
@@ -193,7 +193,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
 }
 
 impl<S: CompiledStage> std::ops::Index<Item> for CompiledDatabase<S> {
-    type Output = ItemInfo<S::ItemInfoT, S::ItemInfoB>;
+    type Output = ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>;
     fn index(&self, index: Item) -> &Self::Output {
         &self.items[index]
     }
