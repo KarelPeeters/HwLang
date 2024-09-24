@@ -7,7 +7,7 @@ use crate::syntax::pos::Span;
 
 // TODO include body comments for eg. the values that values were resolved to
 #[derive(Debug)]
-pub struct ModuleBody {
+pub struct ModuleChecked {
     pub blocks: Vec<ModuleBlockInfo>,
     pub regs: Vec<ModuleRegInfo>,
 }

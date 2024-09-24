@@ -1,4 +1,4 @@
-use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemBody, ModulePortInfo, ModuleSignatureInfo};
+use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
@@ -249,7 +249,7 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn resolve_item_body(&mut self, item: Item) -> ResolveResult<ItemBody> {
+    pub fn check_item_body(&mut self, item: Item) -> ResolveResult<ItemChecked> {
         assert!(self.compiled[item].body.is_none());
 
         // TODO remove this, no point in forcing this to be two-phase
@@ -265,25 +265,21 @@ impl CompileState<'_, '_> {
 
         let body = match item_ast {
             // these items are fully defined by their type, which was already checked earlier
-            ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemBody::None,
+            ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemChecked::None,
             ast::Item::Const(_) => {
                 match item_signature_err {
-                    Some(e) => ItemBody::Error(e),
-                    None => ItemBody::Error(self.diag.report_todo(item_span, "const body")),
+                    Some(e) => ItemChecked::Error(e),
+                    None => ItemChecked::Error(self.diag.report_todo(item_span, "const body")),
                 }
             }
-            ast::Item::Function(_) => {
-                match item_signature_err {
-                    Some(e) => ItemBody::Error(e),
-                    None => ItemBody::Error(self.diag.report_todo(item_span, "function body")),
-                }
-            }
+            ast::Item::Function(item_ast) =>
+                ItemChecked::Function(self.check_function_body(item, item_ast)?),
             ast::Item::Module(item_ast) =>
-                ItemBody::Module(self.resolve_module_body(item, item_ast)?),
+                ItemChecked::Module(self.check_module_body(item, item_ast)?),
             ast::Item::Interface(_) => {
                 match item_signature_err {
-                    Some(e) => ItemBody::Error(e),
-                    None => ItemBody::Error(self.diag.report_todo(item_span, "interface body")),
+                    Some(e) => ItemChecked::Error(e),
+                    None => ItemChecked::Error(self.diag.report_todo(item_span, "interface body")),
                 }
             }
         };

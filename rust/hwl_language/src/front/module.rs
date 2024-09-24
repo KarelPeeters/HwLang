@@ -1,6 +1,6 @@
 use crate::data::compiled::Item;
 use crate::data::diagnostic::Diagnostic;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleReg, ModuleRegInfo};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked, ModuleReg, ModuleRegInfo};
 use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::Visibility;
@@ -9,7 +9,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, RegDeclaration, VariableDeclaration};
 
 impl<'d, 'a> CompileState<'d, 'a> {
-    pub fn resolve_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ResolveResult<ModuleBody> {
+    pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ResolveResult<ModuleChecked> {
         let ast::ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = module_ast;
         let ast::Block { span: _, statements } = body;
 
@@ -188,7 +188,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         }
 
-        let result = ModuleBody {
+        let result = ModuleChecked {
             blocks: module_blocks,
             regs: module_regs,
         };

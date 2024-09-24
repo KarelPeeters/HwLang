@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::{ModuleBody, ModuleReg};
+use crate::data::module_body::{ModuleChecked, ModuleReg};
 use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -39,14 +39,14 @@ pub struct CompiledStagePartial;
 
 impl CompiledStage for CompiledStagePartial {
     type ItemInfoSignature = Option<MaybeConstructor<TypeOrValue>>;
-    type ItemInfoBody = Option<ItemBody>;
+    type ItemInfoBody = Option<ItemChecked>;
 }
 
 pub struct CompiledStateFull;
 
 impl CompiledStage for CompiledStateFull {
     type ItemInfoSignature = MaybeConstructor<TypeOrValue>;
-    type ItemInfoBody = ItemBody;
+    type ItemInfoBody = ItemChecked;
 }
 
 new_index_type!(pub Item);
@@ -59,10 +59,10 @@ new_index_type!(pub ModulePort);
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 pub type FunctionParameter = TypeOrValue<FunctionTypeParameter, FunctionValueParameter>;
 
-pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemBody>>;
+pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked>>;
 
 #[derive(Debug)]
-pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemBody> {
+pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemChecked> {
     pub ast_ref: ItemAstReference,
     pub signature: T,
     pub body: B,
@@ -126,13 +126,22 @@ pub struct ModulePortInfo {
     pub kind: PortKind<SyncKind<Value>, Type>,
 }
 
+/// The result of item body checking.
+///
+/// Typechecking can store any additional information beyond the AST here,
+/// which can be used during lowering.
 #[derive(Debug)]
-pub enum ItemBody {
+pub enum ItemChecked {
     /// For items that don't have a body.
     None,
-    Module(ModuleBody),
-    // TODO expand to remaining items
+    Module(ModuleChecked),
+    Function(FunctionChecked),
     Error(ErrorGuaranteed),
+}
+
+#[derive(Debug)]
+pub struct FunctionChecked {
+    // TODO at least the types of all local variables
 }
 
 impl<S: CompiledStage> CompiledDatabase<S> {

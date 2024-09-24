@@ -1,7 +1,7 @@
-use crate::data::compiled::{CompiledDatabase, Item, ItemBody, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleBody, ModuleRegInfo};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked, ModuleRegInfo};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -123,17 +123,17 @@ fn generate_module_source(
         port_string.push_str("\n");
     }
 
-    let body = unwrap_match!(&item_info.body, ItemBody::Module(body) => body);
+    let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body);
     let body_str = module_body_to_verilog(diag, source, compiled, item_ast.span, body);
 
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
-fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleBody) -> String {
+fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleChecked) -> String {
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleBody { blocks, regs } = body;
+    let ModuleChecked { blocks, regs } = body;
 
     for (reg_index, reg) in enumerate(regs) {
         if reg_index != 0 {

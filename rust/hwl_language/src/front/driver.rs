@@ -99,7 +99,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
     // TODO merge this with the previous pass: better for LSP and maybe for local items
     for &item in &item_keys {
         assert!(state.compiled[item].body.is_none());
-        let body = match state.resolve_item_body(item) {
+        let body = match state.check_item_body(item) {
             Ok(body) => body,
             Err(ResolveFirst(_)) => panic!("all types should be resolved by now"),
         };
