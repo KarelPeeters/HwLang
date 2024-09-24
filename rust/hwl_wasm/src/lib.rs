@@ -33,7 +33,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     const STD_TYPES_SRC: &str = include_str!("../../../design/project/std/types.kh");
     source.add_file(
         FilePath(vec!["std".to_owned(), "types".to_owned()]),
-        "srd/types.kh".to_owned(),
+        "std/types.kh".to_owned(),
         STD_TYPES_SRC.to_owned(),
     ).unwrap();
     source.add_file(
