@@ -130,15 +130,6 @@ impl CompileState<'_, '_> {
             ExpressionKind::DotIntIndex(_, _) =>
                 ScopedEntryDirect::Error(self.diag.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
-                if let ExpressionKind::Id(id) = &target.inner {
-                    if let Some(name) = id.string.strip_prefix("__builtin_") {
-                        return match self.eval_builtin_call(scope, expr.span, name, args)? {
-                            Ok(result) => Ok(MaybeConstructor::Immediate(result)),
-                            Err(e) => Ok(MaybeConstructor::Error(e)),
-                        };
-                    }
-                }
-
                 let target_entry = self.eval_expression(scope, target)?;
 
                 match target_entry {
@@ -209,6 +200,12 @@ impl CompileState<'_, '_> {
                     ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
                 }
             }
+            ExpressionKind::Builtin(ref args) => {
+                return match self.eval_builtin_call(scope, expr.span, args)? {
+                    Ok(result) => Ok(MaybeConstructor::Immediate(result)),
+                    Err(e) => Ok(MaybeConstructor::Error(e)),
+                };
+            }
         };
         Ok(result)
     }
@@ -269,49 +266,49 @@ impl CompileState<'_, '_> {
         &mut self,
         scope: Scope,
         expr_span: Span,
-        name: &str,
         args: &Args,
     ) -> ResolveResult<Result<TypeOrValue, ErrorGuaranteed>> {
-        // TODO disallow calling builtin outside of stdlib?
-        match name {
-            "type" => {
-                let first_arg = args.inner.get(0).map(|e| &e.inner);
-                if let Some(ExpressionKind::StringLiteral(ty)) = first_arg {
-                    match ty.as_str() {
-                        "bool" if args.inner.len() == 1 =>
-                            return Ok(Ok(TypeOrValue::Type(Type::Boolean))),
-                        "int" if args.inner.len() == 1 => {
-                            let range = Box::new(Value::Range(RangeInfo::unbounded()));
-                            return Ok(Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range }))));
-                        }
-                        "int_range" if args.inner.len() == 2 => {
-                            // TODO typecheck (range must be integer)
-                            let range = Box::new(self.eval_expression_as_value(scope, &args.inner[1])?);
-                            let ty_info = IntegerTypeInfo { range };
-                            return Ok(Ok(TypeOrValue::Type(Type::Integer(ty_info))));
-                        }
-                        "Range" if args.inner.len() == 1 =>
-                            return Ok(Ok(TypeOrValue::Type(Type::Range))),
-                        "bits_inf" if args.inner.len() == 1 => {
-                            return Ok(Ok(TypeOrValue::Type(Type::Bits(None))));
-                        }
-                        "bits" if args.inner.len() == 2 => {
-                            // TODO typecheck (bits must be non-negative integer)
-                            let bits = self.eval_expression_as_value(scope, &args.inner[1])?;
-                            return Ok(Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits))))));
-                        }
-                        "Array" if args.inner.len() == 3 => {
-                            let ty = self.eval_expression_as_ty(scope, &args.inner[1])?;
-                            let len = self.eval_expression_as_value(scope, &args.inner[2])?;
-                            return Ok(Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len)))));
-                        }
-                        // fallthrough
-                        _ => {}
-                    }
-                }
+        let get_arg_str = |i: usize| -> Option<&str> {
+            args.inner.get(i).and_then(|e| match &e.inner {
+                ExpressionKind::StringLiteral(s) => Some(s.as_str()),
+                _ => None,
+            })
+        };
+
+        if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
+            let rest = &args.inner[2..];
+
+            match (first, second, rest) {
+                ("type", "bool", &[]) =>
+                    return Ok(Ok(TypeOrValue::Type(Type::Boolean))),
+                ("type", "int", &[]) => {
+                    let range = Box::new(Value::Range(RangeInfo::unbounded()));
+                    return Ok(Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range }))));
+                },
+                ("type", "int_range", [range]) => {
+                    // TODO typecheck (range must be integer)
+                    let range = Box::new(self.eval_expression_as_value(scope, range)?);
+                    let ty_info = IntegerTypeInfo { range };
+                    return Ok(Ok(TypeOrValue::Type(Type::Integer(ty_info))));
+                },
+                ("type", "Range", &[]) =>
+                    return Ok(Ok(TypeOrValue::Type(Type::Range))),
+                ("type", "bits_inf", &[]) =>
+                    return Ok(Ok(TypeOrValue::Type(Type::Bits(None)))),
+                ("type", "bits", [bits]) => {
+                    // TODO typecheck (bits must be non-negative integer)
+                    let bits = self.eval_expression_as_value(scope, bits)?;
+                    return Ok(Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits))))));
+                },
+                ("type", "Array", [ty, len]) => {
+                    // TODO typecheck: len must be uint
+                    let ty = self.eval_expression_as_ty(scope, ty)?;
+                    let len = self.eval_expression_as_value(scope, len)?;
+                    return Ok(Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len)))));
+                },
+                // fallthrough into error
+                _ => {},
             }
-            // fallthrough
-            _ => {}
         }
 
         let err = Diagnostic::new("invalid arguments for __builtin call")

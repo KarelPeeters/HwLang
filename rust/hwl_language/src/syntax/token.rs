@@ -379,6 +379,7 @@ declare_tokens! {
         In("in", TC::Keyword, TP::Normal),
         While("while", TC::Keyword, TP::Normal),
         Public("pub", TC::Keyword, TP::Normal),
+        Builtin("__builtin", TC::Keyword, TP::Normal),
     
         // misc symbols
         Semi(";", TC::Symbol, TP::Normal),

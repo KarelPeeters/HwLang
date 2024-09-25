@@ -2,10 +2,10 @@
 
 // Basic types
 // TODO bool should be an enum :)
-pub type bool = __builtin_type("bool");
+pub type bool = __builtin("type", "bool");
 
 // TODO what is the difference if anything between "type" and "const" for types?
-//const bool: type = __builtin_type();
+//const bool: type = __builtin("type", );
 
 //pub type my_array(T: type) = Array(T, n);
 //function my_array(T: type) -> type {
@@ -30,16 +30,16 @@ pub enum Option(T: type) {
 }
 
 // TODO go back to a more user-accessible struct
-pub type Range = __builtin_type("Range");
+pub type Range = __builtin("type", "Range");
 //struct Range(L: type, H: type) {
 //    min: L,
 //    max: H,
 //}
 
 // TODO add overloading?
-pub type int_range(r: Range) = __builtin_type("int_range", r);
+pub type int_range(r: Range) = __builtin("type", "int_range", r);
 // TODO can we write this as `int_range(..)` again?
-pub type int = __builtin_type("int");
+pub type int = __builtin("type", "int");
 
 // example triggering new error reporting
 //pub type foo = int();
@@ -50,16 +50,16 @@ pub type int_bits(n: natural) = int_range(-2**(n - 1) .. 2**(n - 1));
 pub type uint_bits(n: uint) = int_range(0 .. 2**n);
 
 // Containers
-//pub type List(T: type) = __builtin_type("List", T);
+//pub type List(T: type) = __builtin("type", "List", T);
  // TODO "uint, *uint" or "+uint"? (for multidim arrays)
-pub type Array(T: type, len: uint) = __builtin_type("Array", T, len);
+pub type Array(T: type, len: uint) = __builtin("type", "Array", T, len);
 
 // TODO should this just be an alias for an array of booleans?
 //  we mostly want this for xor/and/or/... operators, maybe we can also just allow those on boolean arrays?
 // TODO get this working again
-pub type bits_inf = __builtin_type("bits_inf");
-pub type bits(n: uint) = __builtin_type("bits", n);
-// pub type bits(n: Option(uint)) = __builtin_type("bits", n);
+pub type bits_inf = __builtin("type", "bits_inf");
+pub type bits(n: uint) = __builtin("type", "bits", n);
+// pub type bits(n: Option(uint)) = __builtin("type", "bits", n);
 
 // Operators
 // TODO move operators to different file

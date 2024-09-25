@@ -52,6 +52,7 @@ extern {
         "in" => TokenType::In,
         "while" => TokenType::While,
         "pub" => TokenType::Public,
+        "__builtin" => TokenType::Builtin,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -331,6 +332,8 @@ ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
 ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
 ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
+    "__builtin" "(" <args:CallArgs> ")" =>
+        ExpressionKind::Builtin(args),
     <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "(" <args:CallArgs> ")" =>
         ExpressionKind::Call(target, args),
     <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:CallArgs> "]" =>

@@ -327,6 +327,7 @@ pub enum ExpressionKind {
 
     // Calls
     Call(Box<Expression>, Args),
+    Builtin(Args),
 }
 
 #[derive(Debug, Clone)]
