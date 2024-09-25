@@ -81,8 +81,11 @@ class HwlParser extends Parser {
 
 let language = new Language(null, new HwlParser(), [], "HWLang");
 
+const element_editor_output = document.getElementById("div-editor-output");
+const element_editor_input = document.getElementById("div-editor-input");
+const element_messages = document.getElementById("div-messages");
+
 const ansi_to_html = new AnsiToHtmlClass();
-const diagnostics_element = document.getElementById("split-mid");
 
 function escapeHtml(raw: string): string {
     return raw
@@ -115,7 +118,7 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     }
 
     // display diagnostics as html
-    diagnostics_element.innerHTML = diagnostics_ansi_to_html(diagnostics_ansi);
+    element_messages.innerHTML = diagnostics_ansi_to_html(diagnostics_ansi);
 
     // replace output content with newly generated verilog,
     // put at least some text to prevent confusion
@@ -153,7 +156,7 @@ let editor_state_verilog = EditorState.create({
 })
 let editor_view_verilog = new EditorView({
     state: editor_state_verilog,
-    parent: document.getElementById("split-right")
+    parent: element_editor_output
 })
 
 // TODO get this out of the typing event loop, run this async or on a separate thread
@@ -173,7 +176,7 @@ let editor_state_hdl = EditorState.create({
 })
 let editor_view_hdl = new EditorView({
     state: editor_state_hdl,
-    parent: document.getElementById("split-left"),
+    parent: element_editor_input,
 })
 
 // initial update
