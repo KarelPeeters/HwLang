@@ -47,6 +47,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
                     };
 
                     let item = items.push(ItemInfo {
+                        defining_id: common_info.id.clone(),
                         ast_ref: ItemAstReference { file, file_item_index },
                         signature: None,
                         body: None,
@@ -111,6 +112,7 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
 
     // map to final database
     let items = state.compiled.items.map_values(|info| ItemInfo {
+        defining_id: info.defining_id,
         ast_ref: info.ast_ref,
         signature: info.signature.unwrap(),
         body: info.body.unwrap(),

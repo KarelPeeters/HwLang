@@ -95,6 +95,7 @@ pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Optio
 
 #[derive(Debug)]
 pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemChecked> {
+    pub defining_id: MaybeIdentifier,
     pub ast_ref: ItemAstReference,
     pub signature: T,
     pub body: B,
@@ -213,54 +214,44 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
     // TODO make this less ugly for end users, eg. omit the span if there's no ambiguity
     pub fn value_to_readable_str(&self, source: &SourceDatabase, value: &Value) -> String {
-        match *value {
+        match value {
             // this should never actually come up, since there will never more future errors on error values
             Value::Error(_) => "value that corresponds to previously reported error".to_string(),
-            Value::GenericParameter(p) => {
+            &Value::GenericParameter(p) => {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
-            Value::ModulePort(p) => {
+            &Value::ModulePort(p) => {
                 let id = &self[p].defining_id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
-            Value::Int(ref v) => {
+            Value::Int(v) => {
                 if v.is_negative() {
                     format!("({})", v)
                 } else {
                     format!("{}", v)
                 }
             }
-            Value::Range(ref range) => self.range_to_readable_str(source, range),
-            Value::Binary(op, ref left, ref right) => {
+            Value::Range(range) => self.range_to_readable_str(source, range),
+            &Value::Binary(op, ref left, ref right) => {
                 let left = self.value_to_readable_str(source, left);
                 let right = self.value_to_readable_str(source, right);
                 let symbol = op.symbol();
                 format!("({} {} {})", left, symbol, right)
             }
-            Value::UnaryNot(ref inner) => {
+            Value::UnaryNot(inner) => {
                 let inner = self.value_to_readable_str(source, inner);
                 format!("(!{})", inner)
             }
-            Value::FunctionReturn(_) => todo!(),
-            Value::Module(_) => todo!(),
+            Value::FunctionReturn(ret) =>
+                format!("function_return({})", defining_id_to_string_pair(source, &self[ret.item].defining_id)),
+            Value::Module(module) =>
+                format!("module({})", defining_id_to_string_pair(source, &self[module.ty.nominal_type_unique.item].defining_id)),
             Value::Wire => "wire".to_string(),
-            Value::Register(reg) => {
-                let info = &self[reg];
-                let defining_id_str = match &info.defining_id {
-                    MaybeIdentifier::Dummy(_) => "_",
-                    MaybeIdentifier::Identifier(id) => &id.string,
-                };
-                format!("module_port({:?}, {:?})", defining_id_str, source.expand_pos(info.defining_id.span().start))
-            },
-            Value::Variable(var) => {
-                let info = &self[var];
-                let defining_id_str = match &info.defining_id {
-                    MaybeIdentifier::Dummy(_) => "_",
-                    MaybeIdentifier::Identifier(id) => &id.string,
-                };
-                format!("variable({:?}, {:?})", defining_id_str, source.expand_pos(info.defining_id.span().start))
-            },
+            &Value::Register(reg) =>
+                format!("register({})", defining_id_to_string_pair(source, &self[reg].defining_id)),
+            &Value::Variable(var) =>
+                format!("variable({})", defining_id_to_string_pair(source, &self[var].defining_id)),
         }
     }
 
@@ -295,4 +286,12 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Module(_) => "module".to_string(),
         }
     }
+}
+
+fn defining_id_to_string_pair(source: &SourceDatabase, id: &MaybeIdentifier) -> String {
+    let id_str = match id {
+        MaybeIdentifier::Dummy(_) => "_",
+        MaybeIdentifier::Identifier(id) => &id.string,
+    };
+    format!("{:?}, {:?}", id_str, source.expand_pos(id.span().start))
 }
