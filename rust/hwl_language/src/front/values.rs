@@ -1,6 +1,5 @@
-use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericValueParameter, Item, ModulePort, Register, Variable};
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
 use crate::front::types::{ModuleTypeInfo, Type};
 use crate::syntax::ast::BinaryOp;
@@ -41,7 +40,8 @@ pub enum Value {
     // TODO what should these contain? an id? a type?
     //  how should these behave under generic substitution?
     Wire,
-    Reg(ModuleReg),
+    Register(Register),
+    Variable(Variable),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -131,7 +131,8 @@ impl GenericContainer for Value {
             Value::Module(_) => todo!(),
 
             Value::Wire => Value::Wire,
-            Value::Reg(r) => Value::Reg(r),
+            Value::Register(r) => Value::Register(r),
+            Value::Variable(var) => Value::Variable(var),
         }
     }
 }

@@ -288,7 +288,8 @@ impl CompileState<'_, '_> {
             Value::Module(_) => panic!("module can't have a range type"),
             // TODO get their types
             Value::Wire => Ok(None),
-            Value::Reg(_) => Ok(None),
+            Value::Register(reg) => ty_as_range(&self.compiled[reg].ty),
+            Value::Variable(var) => ty_as_range(&self.compiled[var].ty),
         }
     }
 }

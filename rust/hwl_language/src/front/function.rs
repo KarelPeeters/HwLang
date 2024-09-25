@@ -1,4 +1,4 @@
-use crate::data::compiled::{FunctionChecked, FunctionSignatureInfo, Item};
+use crate::data::compiled::{FunctionChecked, FunctionSignatureInfo, Item, VariableInfo};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
@@ -18,12 +18,17 @@ impl CompileState<'_, '_> {
         // TODO check control flow
         let _ = ret_ty;
 
-        self.visit_function_block(scope_inner, body)?;
+        self.visit_function_block(func_item, scope_inner, body)?;
 
         Ok(FunctionChecked {})
     }
 
-    fn visit_function_block(&mut self, parent_scope: Scope, block: &Block<BlockStatement>) -> ResolveResult<()> {
+    fn visit_function_block(
+        &mut self,
+        func_item: Item,
+        parent_scope: Scope,
+        block: &Block<BlockStatement>,
+    ) -> ResolveResult<()> {
         let diag = self.diag;
         let scope = self.compiled.scopes.new_child(parent_scope, block.span, Visibility::Private);
 
@@ -50,11 +55,9 @@ impl CompileState<'_, '_> {
                     }
 
                     // declare
-                    // TODO introduce LRValue
-                    // TODO this is wrong, the value needs to be a lot (with mutability), not just the init
-                    let _ = mutable;
-
-                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(init_eval)));
+                    let info = VariableInfo { defining_item: func_item, defining_id: id.clone(), ty: ty_eval.clone(), mutable };
+                    let variable = self.compiled.variables.push(info);
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(variable))));
                     self.compiled[scope].maybe_declare(diag, id, entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(assignment) => {

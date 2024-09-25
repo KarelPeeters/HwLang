@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::{ModuleChecked, ModuleReg};
+use crate::data::module_body::ModuleChecked;
 use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -7,11 +7,33 @@ use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, PortDirection, PortKind, SyncKind};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
 use num_traits::Signed;
+
+
+macro_rules! impl_index {
+    ($arena:ident, $index:ty, $info:ty) => {
+        impl<S: CompiledStage> std::ops::Index<$index> for CompiledDatabase<S> {
+            type Output = $info;
+            fn index(&self, index: $index) -> &Self::Output {
+                &self.$arena[index]
+            }
+        }
+    };
+}
+
+macro_rules! impl_index_mut {
+    ($arena:ident, $index:ty, $info:ty) => {
+        impl std::ops::IndexMut<$index> for CompiledDatabase<CompiledStagePartial> {
+            fn index_mut(&mut self, index: $index) -> &mut $info {
+                &mut self.$arena[index]
+            }
+        }
+    };
+}
 
 pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
 
@@ -26,7 +48,20 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub module_info: IndexMap<Item, ModuleSignatureInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
     pub function_info: IndexMap<Item, FunctionSignatureInfo>,
+    pub registers: Arena<Register, RegisterInfo>,
+    pub variables: Arena<Variable, VariableInfo>,
 }
+
+impl_index!(items, Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>);
+impl_index_mut!(items, Item, ItemInfoPartial);
+impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
+impl_index_mut!(scopes, Scope, ScopeInfo<ScopedEntry>);
+
+impl_index!(generic_type_params, GenericTypeParameter, GenericTypeParameterInfo);
+impl_index!(generic_value_params, GenericValueParameter, GenericValueParameterInfo);
+impl_index!(module_ports, ModulePort, ModulePortInfo);
+impl_index!(registers, Register, RegisterInfo);
+impl_index!(variables, Variable, VariableInfo);
 
 pub trait CompiledStage {
     type ItemInfoSignature;
@@ -51,6 +86,8 @@ new_index_type!(pub Item);
 new_index_type!(pub GenericTypeParameter);
 new_index_type!(pub GenericValueParameter);
 new_index_type!(pub ModulePort);
+new_index_type!(pub Register);
+new_index_type!(pub Variable);
 
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 
@@ -117,9 +154,29 @@ pub struct ModulePortInfo {
     // These ids might not be unique, compilation continues even if a duplicate port name was used.
     pub defining_item: Item,
     pub defining_id: Identifier,
-
     pub direction: PortDirection,
+    // TODO this is probably wrong, the type and value here don't get replaced properly
     pub kind: PortKind<SyncKind<Value>, Type>,
+}
+
+#[derive(Debug)]
+pub struct RegisterInfo {
+    pub defining_item: Item,
+    pub defining_id: MaybeIdentifier,
+
+    // TODO is it okay that this type and value does not get its generics replaced?
+    pub sync: SyncDomain<Value>,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct VariableInfo {
+    pub defining_item: Item,
+    pub defining_id: MaybeIdentifier,
+
+    // TODO is it okay that this type does not get its generics replaced?
+    pub ty: Type,
+    pub mutable: bool,
 }
 
 /// The result of item body checking.
@@ -188,7 +245,22 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Value::FunctionReturn(_) => todo!(),
             Value::Module(_) => todo!(),
             Value::Wire => "wire".to_string(),
-            Value::Reg(ModuleReg { module_item: _, index }) => format!("reg_{index}"),
+            Value::Register(reg) => {
+                let info = &self[reg];
+                let defining_id_str = match &info.defining_id {
+                    MaybeIdentifier::Dummy(_) => "_",
+                    MaybeIdentifier::Identifier(id) => &id.string,
+                };
+                format!("module_port({:?}, {:?})", defining_id_str, source.expand_pos(info.defining_id.span().start))
+            },
+            Value::Variable(var) => {
+                let info = &self[var];
+                let defining_id_str = match &info.defining_id {
+                    MaybeIdentifier::Dummy(_) => "_",
+                    MaybeIdentifier::Identifier(id) => &id.string,
+                };
+                format!("variable({:?}, {:?})", defining_id_str, source.expand_pos(info.defining_id.span().start))
+            },
         }
     }
 
@@ -222,52 +294,5 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Enum(_) => "enum".to_string(),
             Type::Module(_) => "module".to_string(),
         }
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<Item> for CompiledDatabase<S> {
-    type Output = ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>;
-    fn index(&self, index: Item) -> &Self::Output {
-        &self.items[index]
-    }
-}
-
-impl std::ops::IndexMut<Item> for CompiledDatabase<CompiledStagePartial> {
-    fn index_mut(&mut self, index: Item) -> &mut ItemInfoPartial {
-        &mut self.items[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<GenericTypeParameter> for CompiledDatabase<S> {
-    type Output = GenericTypeParameterInfo;
-    fn index(&self, index: GenericTypeParameter) -> &Self::Output {
-        &self.generic_type_params[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<GenericValueParameter> for CompiledDatabase<S> {
-    type Output = GenericValueParameterInfo;
-    fn index(&self, index: GenericValueParameter) -> &Self::Output {
-        &self.generic_value_params[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<ModulePort> for CompiledDatabase<S> {
-    type Output = ModulePortInfo;
-    fn index(&self, index: ModulePort) -> &Self::Output {
-        &self.module_ports[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<Scope> for CompiledDatabase<S> {
-    type Output = ScopeInfo<ScopedEntry>;
-    fn index(&self, index: Scope) -> &Self::Output {
-        &self.scopes[index]
-    }
-}
-
-impl std::ops::IndexMut<Scope> for CompiledDatabase<CompiledStagePartial> {
-    fn index_mut(&mut self, index: Scope) -> &mut ScopeInfo<ScopedEntry> {
-        &mut self.scopes[index]
     }
 }

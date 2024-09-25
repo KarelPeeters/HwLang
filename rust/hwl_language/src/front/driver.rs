@@ -76,12 +76,14 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
         compiled: CompiledDatabase {
             items,
             file_scope,
+            scopes,
             generic_type_params: Arena::default(),
             generic_value_params: Arena::default(),
             module_ports: Arena::default(),
             module_info: IndexMap::new(),
             function_info: IndexMap::new(),
-            scopes,
+            registers: Arena::default(),
+            variables: Arena::default(),
         },
         log_const_eval: false,
     };
@@ -123,6 +125,8 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
         module_info: state.compiled.module_info,
         module_ports: state.compiled.module_ports,
         function_info: state.compiled.function_info,
+        registers: state.compiled.registers,
+        variables: state.compiled.variables,
     };
 
     (parsed, compiled)

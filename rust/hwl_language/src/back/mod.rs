@@ -1,7 +1,7 @@
-use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, RegisterInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked, ModuleRegInfo};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -135,12 +135,17 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
 
     let ModuleChecked { blocks, regs } = body;
 
-    for (reg_index, reg) in enumerate(regs) {
+    for (reg_index, &(reg, ref init)) in enumerate(regs) {
         if reg_index != 0 {
             swriteln!(f);
         }
 
-        let ModuleRegInfo { sync, ty } = reg;
+        // TODO also allow declaration init for FPGAs and simulation?
+        // initialization happens in the corresponding clocked block, not at declaration time
+        let _ = init;
+
+        // TODO use id in the name?
+        let RegisterInfo { defining_item: _, defining_id: _, sync, ty } = &compiled[reg];
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
         let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
 
@@ -411,7 +416,8 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
         Value::FunctionReturn(_) => Err(diag.report_todo(span, "evaluate value Function")),
         Value::Module(_) => Err(diag.report_todo(span, "evaluate value Module")),
         Value::Wire => Err(diag.report_todo(span, "evaluate value Wire")),
-        Value::Reg(_) => Err(diag.report_todo(span, "evaluate value Reg")),
+        Value::Register(_) => Err(diag.report_todo(span, "evaluate value Reg")),
+        Value::Variable(_) => Err(diag.report_todo(span, "evaluate value Variable")),
     }
 }
 

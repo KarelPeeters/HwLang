@@ -1,33 +1,19 @@
-use crate::data::compiled::{Item, ModulePort};
+use crate::data::compiled::{ModulePort, Register};
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::front::types::Type;
 use crate::front::values::Value;
-use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::Span;
 
 // TODO include body comments for eg. the values that values were resolved to
 #[derive(Debug)]
 pub struct ModuleChecked {
     pub blocks: Vec<ModuleBlockInfo>,
-    pub regs: Vec<ModuleRegInfo>,
+    pub regs: Vec<(Register, Value)>,
 }
 
 #[derive(Debug)]
 pub enum ModuleBlockInfo {
     Combinatorial(ModuleBlockCombinatorial),
     Clocked(ModuleBlockClocked),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ModuleReg {
-    pub module_item: Item,
-    pub index: usize,
-}
-
-#[derive(Debug)]
-pub struct ModuleRegInfo {
-    pub sync: SyncDomain<Value>,
-    pub ty: Type,
 }
 
 #[derive(Debug)]

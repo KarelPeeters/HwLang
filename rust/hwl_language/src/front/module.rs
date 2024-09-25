@@ -1,5 +1,5 @@
-use crate::data::compiled::Item;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked, ModuleReg, ModuleRegInfo};
+use crate::data::compiled::{Item, RegisterInfo};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
 use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::Visibility;
@@ -16,7 +16,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
         //   or just leave the backend to walk the AST if it wants?
         let mut module_blocks = vec![];
         let mut module_regs = vec![];
-        let mut module_reg_init = vec![];
 
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
@@ -55,17 +54,19 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     let sync = self.eval_sync_domain(scope_body, &sync.inner)?;
                     let ty = self.eval_expression_as_ty(scope_body, ty)?;
-                    let init = self.eval_expression_as_value(scope_body, init)?;
-
-                    let index = module_regs.len();
-                    module_regs.push(ModuleRegInfo { sync, ty });
-                    let module_reg = ModuleReg { module_item, index };
 
                     // TODO assert that the init value is known at compile time (basically a kind of sync-ness)
-                    module_reg_init.push(Some(init));
+                    let init = self.eval_expression_as_value(scope_body, init)?;
 
-                    let value = Value::Reg(module_reg);
-                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(value)));
+                    let reg = self.compiled.registers.push(RegisterInfo {
+                        defining_item: module_item,
+                        defining_id: id.clone(),
+                        sync,
+                        ty,
+                    });
+                    module_regs.push((reg, init));
+
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Register(reg))));
                     self.compiled[scope_body].maybe_declare(&self.diag, &id, entry, Visibility::Private);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {

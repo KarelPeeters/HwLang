@@ -42,6 +42,7 @@ pub enum Type {
     GenericParameter(GenericTypeParameter),
 
     // basic
+    // TODO split "any" meaning checked but accepts anything and "unchecked" meaning only checked at elaboration time
     Any,
     // TODO make unit just a special case of tuple
     Unit,
