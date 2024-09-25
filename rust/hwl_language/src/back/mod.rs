@@ -409,6 +409,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
                 _ => Err(diag.report_todo(span, format!("evaluate binary value {value:?}")))
             }
         }
+        Value::Unit => Err(diag.report_todo(span, "evaluate value Unit")),
         Value::UnaryNot(_) => Err(diag.report_todo(span, "evaluate value UnaryNot")),
         Value::GenericParameter(_) => Err(diag.report_todo(span, "evaluate value GenericParameter")),
         Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),

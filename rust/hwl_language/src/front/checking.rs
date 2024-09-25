@@ -190,6 +190,7 @@ impl CompileState<'_, '_> {
             Value::Error(e) => Err(e),
             // params have types which we can use to extract a range
             Value::GenericParameter(param) => ty_as_range(&self.compiled[param].ty),
+            Value::Unit => Ok(None),
             // a single integer corresponds to the range containing only that integer
             // TODO should we generate an inclusive or exclusive range here?
             //   this will become moot once we switch to +1 deltas

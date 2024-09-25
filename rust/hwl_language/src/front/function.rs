@@ -64,7 +64,7 @@ impl CompileState<'_, '_> {
                     diag.report_todo(assignment.span, "assignment in function body");
                 }
                 BlockStatementKind::Expression(expression) => {
-                    diag.report_todo(expression.span, "expression in function body");
+                    let _ = self.eval_expression_as_value(scope, expression)?;
                 }
             }
         }

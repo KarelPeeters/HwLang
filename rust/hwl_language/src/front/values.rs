@@ -21,6 +21,7 @@ pub enum Value {
     ModulePort(ModulePort),
 
     // basic
+    Unit,
     Int(BigInt),
     // TODO long-term this should become a standard struct instead of compiler magic
     Range(RangeInfo<Box<Value>>),
@@ -104,6 +105,7 @@ impl GenericContainer for Value {
             Value::ModulePort(module_port) =>
                 Value::ModulePort(module_port.replace_generic_params(compiled, map_ty, map_value)),
 
+            Value::Unit => Value::Unit,
             Value::Int(ref info) => Value::Int(info.clone()),
             Value::Range(ref info) => Value::Range(RangeInfo {
                 start: info.start.as_ref()

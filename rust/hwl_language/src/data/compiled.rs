@@ -225,6 +225,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let id = &self[p].defining_id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
+            Value::Unit => "()".to_string(),
             Value::Int(v) => {
                 if v.is_negative() {
                     format!("({})", v)

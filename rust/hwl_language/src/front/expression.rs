@@ -306,6 +306,10 @@ impl CompileState<'_, '_> {
                     let len = self.eval_expression_as_value(scope, len)?;
                     return Ok(Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len)))));
                 },
+                ("function", "print", [value]) => {
+                    let _: Value = self.eval_expression_as_value(scope, value)?;
+                    return Ok(Ok(TypeOrValue::Value(Value::Unit)))
+                }
                 // fallthrough into error
                 _ => {},
             }
