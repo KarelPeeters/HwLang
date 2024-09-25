@@ -204,7 +204,6 @@ impl CompileState<'_, '_> {
                     PortKind::Normal { sync: _, ty } => ty_as_range(ty),
                 }
             }
-            Value::FunctionParameter(param) => ty_as_range(&self.compiled[param].ty),
             Value::Binary(op, ref left, ref right) => {
                 let left = try_opt_result!(self.range_of_value(origin, left)?);
                 let right = try_opt_result!(self.range_of_value(origin, right)?);

@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, FunctionParameter, FunctionTypeParameter, FunctionTypeParameterInfo, FunctionValueParameter, FunctionValueParameterInfo, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{PortKind, SyncDomain, SyncKind};
@@ -139,67 +139,6 @@ impl GenericContainer for GenericValueParameter {
             } else {
                 Value::GenericParameter(param)
             }
-        }
-    }
-}
-
-impl GenericContainer for FunctionParameter {
-    type Result = FunctionParameter;
-
-    fn replace_generic_params(&self, compiled: &mut CompiledDatabasePartial, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self::Result {
-        match *self {
-            FunctionParameter::Type(param) =>
-                FunctionParameter::Type(param.replace_generic_params(compiled, map_ty, map_value)),
-            FunctionParameter::Value(param) =>
-                FunctionParameter::Value(param.replace_generic_params(compiled, map_ty, map_value)),
-        }
-    }
-}
-
-impl GenericContainer for FunctionTypeParameter {
-    type Result = FunctionTypeParameter;
-
-    fn replace_generic_params(
-        &self,
-        compiled: &mut CompiledDatabasePartial,
-        _map_ty: &IndexMap<GenericTypeParameter, Type>,
-        _map_value: &IndexMap<GenericValueParameter, Value>,
-    ) -> FunctionTypeParameter {
-        let param = *self;
-
-        // check if bounds of the parameter need to be replaced
-        // (for now this doesn't do anything, but this is a compile-type check for added fields, eg. bounds)
-        let FunctionTypeParameterInfo { defining_item: _, defining_id: _ } = &compiled[param];
-        param
-    }
-}
-
-impl GenericContainer for FunctionValueParameter {
-    type Result = FunctionValueParameter;
-
-    fn replace_generic_params(
-        &self,
-        compiled: &mut CompiledDatabasePartial,
-        map_ty: &IndexMap<GenericTypeParameter, Type>,
-        map_value: &IndexMap<GenericValueParameter, Value>,
-    ) -> FunctionValueParameter {
-        let param = *self;
-
-        // check if bounds of the parameter need to be replaced
-        // (for now this doesn't do anything, but this is a compile-type check for added fields, eg. bounds)
-        let ty_new = compiled[param].ty.clone().replace_generic_params(compiled, map_ty, map_value);
-        let FunctionValueParameterInfo { defining_item, defining_id, ty, ty_span } = &compiled[param];
-
-        if &ty_new != ty {
-            let param_new = compiled.function_value_params.push(FunctionValueParameterInfo {
-                defining_item: *defining_item,
-                defining_id: defining_id.clone(),
-                ty: ty_new,
-                ty_span: ty_span.clone(),
-            });
-            param_new
-        } else {
-            param
         }
     }
 }

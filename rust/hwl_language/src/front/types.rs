@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, FunctionParameter, FunctionTypeParameter, GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
 use crate::front::common::TypeOrValue;
@@ -29,11 +29,6 @@ pub struct GenericArguments {
     pub vec: Vec<TypeOrValue>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct FunctionParameters {
-    pub vec: Vec<FunctionParameter>,
-}
-
 // TODO function arguments?
 
 // TODO push type constructor args into struct, enum, ... types, like Rust?
@@ -45,7 +40,6 @@ pub enum Type {
 
     // parameters
     GenericParameter(GenericTypeParameter),
-    FunctionParameter(FunctionTypeParameter),
 
     // basic
     Any,
@@ -61,7 +55,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     Struct(StructTypeInfo),
     Enum(EnumTypeInfo),
-    
+
     // should module be a separate thing, neither type nor value? or just a value?
     Module(ModuleTypeInfo),
 }
@@ -71,9 +65,11 @@ pub struct IntegerTypeInfo {
     pub range: Box<Value>,
 }
 
+/// This is only used for higher-order functions, which are restricted to only take values as parameters.
+/// Functions themselves don't really define a type, they define a value constructor.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionTypeInfo {
-    pub params: FunctionParameters,
+    pub params: Vec<Type>,
     pub ret: Box<Type>,
 }
 
@@ -148,8 +144,6 @@ impl GenericContainer for Type {
 
             Type::GenericParameter(param) =>
                 param.replace_generic_params(compiled, map_ty, map_value),
-            Type::FunctionParameter(param) =>
-                Type::FunctionParameter(param.replace_generic_params(compiled, map_ty, map_value)),
 
             Type::Any => Type::Any,
             Type::Unit => Type::Unit,
@@ -171,11 +165,9 @@ impl GenericContainer for Type {
             }
             Type::Function(ref info) => {
                 Type::Function(FunctionTypeInfo {
-                    params: FunctionParameters {
-                        vec: info.params.vec.iter()
+                    params: info.params.iter()
                             .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
                             .collect(),
-                    },
                     ret: Box::new(info.ret.replace_generic_params(compiled, map_ty, map_value)),
                 })
             }

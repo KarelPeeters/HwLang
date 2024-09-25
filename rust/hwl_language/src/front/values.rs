@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, FunctionValueParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleReg;
 use crate::front::common::GenericContainer;
@@ -19,7 +19,6 @@ pub enum Value {
 
     // parameters
     GenericParameter(GenericValueParameter),
-    FunctionParameter(FunctionValueParameter),
     ModulePort(ModulePort),
 
     // basic
@@ -102,8 +101,6 @@ impl GenericContainer for Value {
 
             Value::GenericParameter(param) =>
                 param.replace_generic_params(compiled, map_ty, map_value),
-            Value::FunctionParameter(param) =>
-                Value::FunctionParameter(param.replace_generic_params(compiled, map_ty, map_value)),
             Value::ModulePort(module_port) =>
                 Value::ModulePort(module_port.replace_generic_params(compiled, map_ty, map_value)),
 

@@ -23,8 +23,6 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
 
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
-    pub function_type_params: Arena<FunctionTypeParameter, FunctionTypeParameterInfo>,
-    pub function_value_params: Arena<FunctionValueParameter, FunctionValueParameterInfo>,
     pub module_info: IndexMap<Item, ModuleSignatureInfo>,
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
     pub function_info: IndexMap<Item, FunctionSignatureInfo>,
@@ -52,13 +50,9 @@ impl CompiledStage for CompiledStateFull {
 new_index_type!(pub Item);
 new_index_type!(pub GenericTypeParameter);
 new_index_type!(pub GenericValueParameter);
-new_index_type!(pub FunctionTypeParameter);
-new_index_type!(pub FunctionValueParameter);
 new_index_type!(pub ModulePort);
 
-// TODO delete function parameters again, same for FunctionType?
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
-pub type FunctionParameter = TypeOrValue<FunctionTypeParameter, FunctionValueParameter>;
 
 pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked>>;
 
@@ -169,10 +163,6 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
-            Value::FunctionParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
-            }
             Value::ModulePort(p) => {
                 let id = &self[p].defining_id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
@@ -211,7 +201,6 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
-            &Type::FunctionParameter(p) => panic!(),
             Type::Any => "any".to_string(),
             Type::Unit => "()".to_string(),
             Type::Boolean => "bool".to_string(),
@@ -260,20 +249,6 @@ impl<S: CompiledStage> std::ops::Index<GenericValueParameter> for CompiledDataba
     type Output = GenericValueParameterInfo;
     fn index(&self, index: GenericValueParameter) -> &Self::Output {
         &self.generic_value_params[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<FunctionTypeParameter> for CompiledDatabase<S> {
-    type Output = FunctionTypeParameterInfo;
-    fn index(&self, index: FunctionTypeParameter) -> &Self::Output {
-        &self.function_type_params[index]
-    }
-}
-
-impl<S: CompiledStage> std::ops::Index<FunctionValueParameter> for CompiledDatabase<S> {
-    type Output = FunctionValueParameterInfo;
-    fn index(&self, index: FunctionValueParameter) -> &Self::Output {
-        &self.function_value_params[index]
     }
 }
 
