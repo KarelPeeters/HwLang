@@ -166,7 +166,11 @@ impl CompileState<'_, '_> {
                     };
 
                     // keep scope for later
-                    s.compiled.function_info.insert_first(item, FunctionSignatureInfo { scope_inner });
+                    let info = FunctionSignatureInfo {
+                        scope_inner,
+                        ret_ty: ret_ty.clone(),
+                    };
+                    s.compiled.function_info.insert_first(item, info);
 
                     // result
                     Ok(Ok(TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty }))))
@@ -229,7 +233,7 @@ impl CompileState<'_, '_> {
 
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.compiled.scopes[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                    self.compiled[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
                 }
 
                 let parameters = GenericParameters { vec: parameters };
@@ -333,7 +337,7 @@ impl CompileState<'_, '_> {
         };
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let entry = match self.compiled.scopes[file_scope].find(&self.compiled.scopes, self.diag, id, vis) {
+        let entry = match self.compiled[file_scope].find(&self.compiled.scopes, self.diag, id, vis) {
             Err(e) => return Ok(Err(e)),
             Ok(entry) => entry,
         };

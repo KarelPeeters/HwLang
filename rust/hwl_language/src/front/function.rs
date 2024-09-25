@@ -1,13 +1,71 @@
-use crate::data::compiled::{FunctionChecked, Item};
+use crate::data::compiled::{FunctionChecked, FunctionSignatureInfo, Item};
+use crate::data::diagnostic::ErrorGuaranteed;
+use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
-use crate::syntax::ast;
+use crate::front::scope::{Scope, Visibility};
+use crate::front::types::Type;
+use crate::front::values::Value;
+use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, ItemDefFunction, VariableDeclaration};
 
 impl CompileState<'_, '_> {
-    pub fn check_function_body(&mut self, func_item: Item, funct_ast: &ast::ItemDefFunction) -> ResolveResult<FunctionChecked> {
-        // TODO
-        let _ = func_item;
-        let _ = funct_ast;
+    pub fn check_function_body(&mut self, func_item: Item, funct_ast: &ItemDefFunction) -> ResolveResult<FunctionChecked> {
+        let ItemDefFunction { span: _, vis: _, id: _, params: _, ret_ty: _, body } = funct_ast;
+        let &FunctionSignatureInfo { scope_inner, ref ret_ty } = self.compiled.function_info.get(&func_item)
+            .expect("signature and info should be resolved by now");
+        let ret_ty = ret_ty.clone();
+
+        // TODO check return type (and control flow)
+        // TODO check control flow
+        let _ = ret_ty;
+
+        self.visit_function_block(scope_inner, body)?;
 
         Ok(FunctionChecked {})
+    }
+
+    fn visit_function_block(&mut self, parent_scope: Scope, block: &Block<BlockStatement>) -> ResolveResult<()> {
+        let diag = self.diag;
+        let scope = self.compiled.scopes.new_child(parent_scope, block.span, Visibility::Private);
+
+        for statement in &block.statements {
+            match &statement.inner {
+                BlockStatementKind::VariableDeclaration(decl) => {
+                    let VariableDeclaration { span, mutable, id, ty, init } = decl;
+                    let span = *span;
+                    let mutable = *mutable;
+
+                    // evaluate
+                    let ty_eval = match ty {
+                        Some(ty) => self.eval_expression_as_ty(scope, ty)?,
+                        None => Type::Error(diag.report_todo(span, "variable without type")),
+                    };
+                    let init_eval = match init {
+                        Some(init) => self.eval_expression_as_value(scope, init)?,
+                        None => Value::Error(diag.report_todo(span, "variable without init")),
+                    };
+
+                    // type check
+                    if let (Some(ty), Some(init)) = (ty, init) {
+                        let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval);
+                    }
+
+                    // declare
+                    // TODO introduce LRValue
+                    // TODO this is wrong, the value needs to be a lot (with mutability), not just the init
+                    let _ = mutable;
+
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(init_eval)));
+                    self.compiled[scope].maybe_declare(diag, id, entry, Visibility::Private);
+                }
+                BlockStatementKind::Assignment(assignment) => {
+                    diag.report_todo(assignment.span, "assignment in function body");
+                }
+                BlockStatementKind::Expression(expression) => {
+                    diag.report_todo(expression.span, "expression in function body");
+                }
+            }
+        }
+
+        Ok(())
     }
 }

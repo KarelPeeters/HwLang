@@ -4,7 +4,7 @@ use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
-use crate::front::types::{MaybeConstructor, Type};
+use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, PortDirection, PortKind, SyncKind};
@@ -56,6 +56,7 @@ new_index_type!(pub FunctionTypeParameter);
 new_index_type!(pub FunctionValueParameter);
 new_index_type!(pub ModulePort);
 
+// TODO delete function parameters again, same for FunctionType?
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 pub type FunctionParameter = TypeOrValue<FunctionTypeParameter, FunctionValueParameter>;
 
@@ -104,13 +105,14 @@ pub struct FunctionValueParameterInfo {
     pub ty_span: Span,
 }
 
-// TODO move into ItemInfo
+// TODO move into ItemInfo?
 #[derive(Debug)]
 pub struct FunctionSignatureInfo {
     pub scope_inner: Scope,
+    pub ret_ty: Type,
 }
 
-// TODO move into ItemInfo
+// TODO move into ItemInfo?
 #[derive(Debug)]
 pub struct ModuleSignatureInfo {
     pub scope_ports: Scope,
@@ -199,6 +201,39 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Value::Reg(ModuleReg { module_item: _, index }) => format!("reg_{index}"),
         }
     }
+
+    // TODO make sure to always print in disambiguated form
+    pub fn type_to_readable_str(&self, source: &SourceDatabase, ty: &Type) -> String {
+        match ty {
+            // this should never actually come up, since there will never more future errors on error types
+            Type::Error(_) => "type that corresponds to previously reported error".to_string(),
+            &Type::GenericParameter(p) => {
+                let id = &self[p].defining_id;
+                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
+            }
+            &Type::FunctionParameter(p) => panic!(),
+            Type::Any => "any".to_string(),
+            Type::Unit => "()".to_string(),
+            Type::Boolean => "bool".to_string(),
+            Type::Bits(n) => match n {
+                None => "bits".to_string(),
+                Some(n) => format!("bits({})", self.value_to_readable_str(source, n)),
+            },
+            Type::Range => "range".to_string(),
+            Type::Array(inner, n) =>
+                format!("Array({}, {})", self.type_to_readable_str(source, inner), self.value_to_readable_str(source, n)),
+            Type::Integer(IntegerTypeInfo { range }) => {
+                // TODO match specific patterns again, eg. uint?
+                format!("int_range({})", self.value_to_readable_str(source, range))
+            }
+            // TODO
+            Type::Function(_) => "function".to_string(),
+            Type::Tuple(_) => "tuple".to_string(),
+            Type::Struct(_) => "struct".to_string(),
+            Type::Enum(_) => "enum".to_string(),
+            Type::Module(_) => "module".to_string(),
+        }
+    }
 }
 
 impl<S: CompiledStage> std::ops::Index<Item> for CompiledDatabase<S> {
@@ -253,5 +288,11 @@ impl<S: CompiledStage> std::ops::Index<Scope> for CompiledDatabase<S> {
     type Output = ScopeInfo<ScopedEntry>;
     fn index(&self, index: Scope) -> &Self::Output {
         &self.scopes[index]
+    }
+}
+
+impl std::ops::IndexMut<Scope> for CompiledDatabase<CompiledStagePartial> {
+    fn index_mut(&mut self, index: Scope) -> &mut ScopeInfo<ScopedEntry> {
+        &mut self.scopes[index]
     }
 }

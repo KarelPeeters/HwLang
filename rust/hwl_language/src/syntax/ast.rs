@@ -219,7 +219,6 @@ pub enum ModuleStatementKind {
 #[derive(Debug, Clone)]
 pub enum BlockStatementKind {
     VariableDeclaration(VariableDeclaration),
-    RegDeclaration(RegDeclaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
     // TODO function/type definitions

@@ -117,6 +117,7 @@ Item: Item = {
     <start:@L> <vis:Vis> "module" <id:Id> <params:Parameters<GenericParameter>?> "ports" <ports:Parameters<ModulePort>> <body:Block<ModuleStatement>> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
+    // TODO replace "->" with ":"
     <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<GenericParameter>> <ret_ty: ("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }

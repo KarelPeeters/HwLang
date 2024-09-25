@@ -5,6 +5,7 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind};
 use crate::syntax::pos::Span;
 use crate::try_opt_result;
+use annotate_snippets::Level;
 use num_bigint::BigInt;
 use num_traits::One;
 
@@ -28,6 +29,21 @@ impl CompileState<'_, '_> {
                         self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
                     }
                     return Ok(());
+                }
+            }
+            (ty, &Value::GenericParameter(param)) => {
+                let param_ty = &self.compiled[param].ty;
+                return if ty == param_ty {
+                    Ok(())
+                } else {
+                    // TODO extract common "type mismatch" error formatting
+                    let err = Diagnostic::new("type mismatch")
+                        .add_error(span_value, "value defined here")
+                        .add_error(span_ty, "type defined here")
+                        .footer(Level::Info, format!("expected type: {:?}", ty))
+                        .footer(Level::Info, format!("actual type: {:?}", param_ty))
+                        .finish();
+                    Err(self.diag.report(err))
                 }
             }
             _ => {}

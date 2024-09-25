@@ -1,5 +1,4 @@
 use crate::data::compiled::Item;
-use crate::data::diagnostic::Diagnostic;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked, ModuleReg, ModuleRegInfo};
 use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
@@ -49,7 +48,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             }
                         }
                     };
-                    self.compiled.scopes[scope_body].maybe_declare(&self.diag, &id, ScopedEntry::Direct(entry), Visibility::Private);
+                    self.compiled[scope_body].maybe_declare(&self.diag, &id, ScopedEntry::Direct(entry), Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let RegDeclaration { span: _, id, sync, ty, init } = decl;
@@ -67,7 +66,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     let value = Value::Reg(module_reg);
                     let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(value)));
-                    self.compiled.scopes[scope_body].maybe_declare(&self.diag, &id, entry, Visibility::Private);
+                    self.compiled[scope_body].maybe_declare(&self.diag, &id, entry, Visibility::Private);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     // TODO careful if/when implementing this, wire semantics are unclear
@@ -97,11 +96,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         match &statement.inner {
                             BlockStatementKind::VariableDeclaration(_) => {
                                 let err = self.diag.report_todo(statement.span, "combinatorial variable declaration");
-                                result_statements.push(LowerStatement::Error(err));
-                            }
-                            BlockStatementKind::RegDeclaration(decl) => {
-                                let diag = Diagnostic::new_simple("register declaration inside combinatorial block", decl.span, "register declaration");
-                                let err = self.diag.report(diag);
                                 result_statements.push(LowerStatement::Error(err));
                             }
                             BlockStatementKind::Assignment(ref assignment) => {
@@ -159,10 +153,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         match &statement.inner {
                             BlockStatementKind::VariableDeclaration(_) => {
                                 let err = self.diag.report_todo(statement.span, "clocked variable declaration");
-                                result_statements.push(LowerStatement::Error(err));
-                            }
-                            BlockStatementKind::RegDeclaration(_) => {
-                                let err = self.diag.report_todo(statement.span, "register declaration inside clocked block");
                                 result_statements.push(LowerStatement::Error(err));
                             }
                             BlockStatementKind::Assignment(_) => {

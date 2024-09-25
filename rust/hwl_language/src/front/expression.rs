@@ -25,7 +25,7 @@ impl CompileState<'_, '_> {
             ExpressionKind::Wrapped(ref inner) =>
                 self.eval_expression(scope, inner)?,
             ExpressionKind::Id(ref id) => {
-                let entry = match self.compiled.scopes[scope].find(&self.compiled.scopes, self.diag, id, Visibility::Private) {
+                let entry = match self.compiled[scope].find(&self.compiled.scopes, self.diag, id, Visibility::Private) {
                     Err(e) => return Ok(ScopedEntryDirect::Error(e)),
                     Ok(entry) => entry,
                 };
