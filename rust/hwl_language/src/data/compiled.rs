@@ -214,8 +214,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO make this less ugly for end users, eg. omit the span if there's no ambiguity
     pub fn value_to_readable_str(&self, source: &SourceDatabase, value: &Value) -> String {
         match value {
-            // this should never actually come up, since there will never more future errors on error values
-            Value::Error(_) => "value that corresponds to previously reported error".to_string(),
+            Value::Error(_) => "error".to_string(),
             &Value::GenericParameter(p) => {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
@@ -259,8 +258,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO make sure to always print in disambiguated form
     pub fn type_to_readable_str(&self, source: &SourceDatabase, ty: &Type) -> String {
         match ty {
-            // this should never actually come up, since there will never more future errors on error types
-            Type::Error(_) => "type that corresponds to previously reported error".to_string(),
+            Type::Error(_) => "error".to_string(),
             &Type::GenericParameter(p) => {
                 let id = &self[p].defining_id;
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))

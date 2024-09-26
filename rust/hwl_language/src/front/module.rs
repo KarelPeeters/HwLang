@@ -319,11 +319,19 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let SyncDomain { clock: target_clock, reset: target_reset } = target;
                 let SyncDomain { clock: source_clock, reset: source_reset } = source;
 
-                match (target_clock != source_clock, target_reset != source_reset) {
-                    (true, true) => Some("different clock and reset"),
-                    (true, false) => Some("different clock"),
-                    (false, true) => Some("different reset"),
-                    (false, false) => None,
+                // TODO equality is _probably_ the wrong operation for this
+                let value_neq = |a: &Value, b: &Value| {
+                    match (a, b) {
+                        (&Value::Error(e), _) | (_, &Value::Error(e)) => Err(e),
+                        (a, b) => Ok(a != b),
+                    }
+                };
+
+                match (value_neq(target_clock, source_clock), value_neq(target_reset, source_reset)) {
+                    (Ok(true), Ok(true)) => Some("different clock and reset"),
+                    (Ok(true), Ok(false)) => Some("different clock"),
+                    (Ok(false), Ok(true)) => Some("different reset"),
+                    (Ok(false), Ok(false)) | (Err(_), _) | (_, Err(_)) => None,
                 }
             }
         };
