@@ -11,6 +11,7 @@ use num_traits::One;
 impl CompileState<'_, '_> {
     // TODO double-check that all of these type-checking functions do their error handling correctly
     //   and don't short-circuit unnecessarily, preventing multiple errors
+    // TODO change this to be type-type based instead of type-value
     pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         match (ty, value) {
             // propagate errors, we can't just silently ignore them:
@@ -43,22 +44,39 @@ impl CompileState<'_, '_> {
                 }
             }
 
-            // generic param check
+            // type-type checks
+            // TODO type equality is not good enough (and should be removed entirely), eg. this does not support broadcasting
             (ty, &Value::GenericParameter(param)) => {
-                let param_ty = &self.compiled[param].ty;
-                // TODO type equality is not good enough (and should be removed entirely)
-                //   eg. this does not support broadcasting
-                if ty == param_ty {
+                if ty == &self.compiled[param].ty {
                     return Ok(());
                 }
             }
+            (ty, &Value::ModulePort(port)) => {
+                // TODO weird, will solve itself once we switch to type-type
+                if let PortKind::Normal { sync: _, ty: ref port_ty } = self.compiled[port].kind {
+                    if ty == port_ty {
+                        return Ok(());
+                    }
+                }
+            }
+            (ty, &Value::Variable(var)) => {
+                if ty == &self.compiled[var].ty {
+                    return Ok(());
+                }
+            }
+            (ty, &Value::Register(reg)) => {
+                if ty == &self.compiled[reg].ty {
+                    return Ok(());
+                }
+            }
+
             // fallthrough into error
             _ => {},
         };
 
         let ty_str = self.compiled.type_to_readable_str(self.source, ty);
         let value_str = self.compiled.value_to_readable_str(self.source, value);
-        let title = format!("type check failed: value {} is not of type {}", value_str, ty_str);
+        let title = format!("type mismatch: value {} does not match type {}", value_str, ty_str);
         let err = Diagnostic::new(title)
             .add_error(span_value, "value defined here")
             .add_error(span_ty, "type defined here")

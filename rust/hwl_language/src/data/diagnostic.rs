@@ -62,6 +62,7 @@ impl Diagnostics {
         self.report(Diagnostic::new_todo(span, feature))
     }
 
+    // TODO rename to "report_bug"
     pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_internal_error(span, reason))
     }
@@ -78,6 +79,7 @@ impl Diagnostics {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub title: String,
+    // TODO use Spanned here
     pub snippets: Vec<(Span, Vec<Annotation>)>,
     pub footers: Vec<(Level, String)>,
     pub backtrace: Option<String>,

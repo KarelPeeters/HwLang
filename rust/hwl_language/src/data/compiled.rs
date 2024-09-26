@@ -289,6 +289,17 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Module(_) => "module".to_string(),
         }
     }
+
+    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &SyncKind<Value>) -> String {
+        match sync {
+            SyncKind::Async => "async".to_string(),
+            SyncKind::Sync(SyncDomain { clock, reset }) => {
+                let clock_str = self.value_to_readable_str(source, clock);
+                let reset_str = self.value_to_readable_str(source, reset);
+                format!("sync({clock_str}, {reset_str})")
+            }
+        }
+    }
 }
 
 fn defining_id_to_string_pair(source: &SourceDatabase, id: &MaybeIdentifier) -> String {

@@ -174,8 +174,9 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
             }
             ModuleBlockInfo::Clocked(block) => {
                 let &ModuleBlockClocked {
-                    span, ref clock, ref reset, ref on_reset, ref on_block
+                    span, ref domain, ref on_reset, ref on_block
                 } = block;
+                let SyncDomain { clock, reset } = domain;
 
                 let sensitivity_value_to_string = |value: &Value| -> (&str, &str, &str) {
                     match value {

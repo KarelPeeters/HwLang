@@ -22,6 +22,7 @@ pub enum ExpressionContext {
     FunctionBody { ret_ty_span: Span, ret_ty: Type },
     /// Used at the top level of a module, eg. in variables or register initialization.
     ModuleTopLevel,
+    // TODO add the sync domain here, and immediate sync-check all expressions
     /// Used in clocked block.
     ClockedBlock,
     /// Used in combinatorial block.

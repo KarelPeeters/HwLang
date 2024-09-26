@@ -1,6 +1,7 @@
 use crate::data::compiled::{ModulePort, Register};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::values::Value;
+use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::Span;
 
 // TODO include body comments for eg. the values that values were resolved to
@@ -27,9 +28,7 @@ pub struct ModuleBlockCombinatorial {
 #[derive(Debug)]
 pub struct ModuleBlockClocked {
     pub span: Span,
-
-    pub clock: Value,
-    pub reset: Value,
+    pub domain: SyncDomain<Value>,
 
     // TODO how to implement ports that are just registers?
     pub on_reset: Vec<LowerStatement>, // TODO IR
