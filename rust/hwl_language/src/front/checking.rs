@@ -29,18 +29,27 @@ impl CompileState<'_, '_> {
 
             // integer range check
             (Type::Integer(IntegerTypeInfo { range }), value) => {
-                if let Value::Range(range) = range.as_ref() {
-                    let &RangeInfo { ref start, ref end, end_inclusive } = range;
-                    if let Some(start) = start {
-                        let cond = Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone()));
-                        self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
+                // only continue checking if the value has at least a range, which means that it's an integer
+                match self.range_of_value(span_value, value) {
+                    Ok(Some(_)) => {
+                        if let Value::Range(range) = range.as_ref() {
+                            // check that the value fits in the required range
+                            let &RangeInfo { ref start, ref end, end_inclusive } = range;
+                            if let Some(start) = start {
+                                let cond = Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone()));
+                                self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
+                            }
+                            if let Some(end) = end {
+                                let cmp_op = if end_inclusive { BinaryOp::CmpLte } else { BinaryOp::CmpLt };
+                                let cond = Value::Binary(cmp_op, Box::new(value.clone()), end.clone());
+                                self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
+                            }
+                            return Ok(());
+                        }
                     }
-                    if let Some(end) = end {
-                        let cmp_op = if end_inclusive { BinaryOp::CmpLte } else { BinaryOp::CmpLt };
-                        let cond = Value::Binary(cmp_op, Box::new(value.clone()), end.clone());
-                        self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
-                    }
-                    return Ok(());
+                    // fallthrough into error
+                    Ok(None) => {}
+                    Err(e) => return Err(e),
                 }
             }
 
@@ -78,7 +87,7 @@ impl CompileState<'_, '_> {
         let value_str = self.compiled.value_to_readable_str(self.source, value);
         let title = format!("type mismatch: value {} does not match type {}", value_str, ty_str);
         let err = Diagnostic::new(title)
-            .add_error(span_value, "value defined here")
+            .add_error(span_value, "value used here")
             .add_error(span_ty, "type defined here")
             .finish();
         Err(self.diag.report(err))
