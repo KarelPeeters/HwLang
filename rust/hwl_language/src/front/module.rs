@@ -1,6 +1,6 @@
 use crate::data::compiled::{Item, RegisterInfo};
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
-use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::Visibility;
 use crate::front::values::Value;
@@ -20,6 +20,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
+        let ctx_module = ExpressionContext::ModuleTopLevel(module_item);
+
         // first pass: populate scope with declarations
         for top_statement in statements {
             match &top_statement.inner {
@@ -33,7 +35,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         match (ty, init) {
                             (Some(ty), Some(init)) => {
                                 let ty_eval = self.eval_expression_as_ty(scope_body, ty)?;
-                                let init_eval = self.eval_expression_as_value(scope_body, init)?;
+                                let init_eval = self.eval_expression_as_value(ctx_module, scope_body, init)?;
 
                                 // TODO this loses the type declaration information, which is not correct
                                 match self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval) {
@@ -56,7 +58,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let ty = self.eval_expression_as_ty(scope_body, ty)?;
 
                     // TODO assert that the init value is known at compile time (basically a kind of sync-ness)
-                    let init = self.eval_expression_as_value(scope_body, init)?;
+                    let init = self.eval_expression_as_value(ctx_module, scope_body, init)?;
 
                     let reg = self.compiled.registers.push(RegisterInfo {
                         defining_item: module_item,
@@ -93,6 +95,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
                     let mut result_statements = vec![];
 
+                    let ctx_comb = ExpressionContext::CombinatorialBlock;
+
                     for statement in statements {
                         match &statement.inner {
                             BlockStatementKind::VariableDeclaration(_) => {
@@ -106,8 +110,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                     result_statements.push(LowerStatement::Error(err));
                                 } else {
                                     // TODO type and sync checking
-                                    let target = self.eval_expression_as_value(scope, target)?;
-                                    let value = self.eval_expression_as_value(scope, value)?;
+                                    let target = self.eval_expression_as_value(ctx_comb, scope, target)?;
+                                    let value = self.eval_expression_as_value(ctx_comb, scope, value)?;
 
                                     match (target, value) {
                                         (Value::ModulePort(target), Value::ModulePort(value)) => {
@@ -144,9 +148,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                     let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
 
+                    let ctx_clocked = ExpressionContext::ClockedBlock;
+
                     // TODO typecheck: clock must be a single-bit clock, reset must be a single-bit reset
-                    let clock = self.eval_expression_as_value(scope, clock)?;
-                    let reset = self.eval_expression_as_value(scope, reset)?;
+                    let clock = self.eval_expression_as_value(ctx_clocked, scope, clock)?;
+                    let reset = self.eval_expression_as_value(ctx_clocked, scope, reset)?;
 
                     let mut result_statements = vec![];
 

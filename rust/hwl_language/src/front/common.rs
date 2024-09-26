@@ -3,7 +3,30 @@ use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{PortKind, SyncDomain, SyncKind};
 use indexmap::IndexMap;
+
 // TODO move all common stuff to the data module, since multiple stages depend on it
+
+/// The context in which this expression or block is used.
+/// This is used to determine which expression kinds are allowed and how they should behave,
+/// and to pass through the necessary metadata.
+///
+/// For example:
+/// * return is only allowed in functions
+/// * break/continue are only allowed in loops
+/// TODO maybe allow break to be used in clocked blocks too?
+#[derive(Debug, Copy, Clone)]
+pub enum ExpressionContext {
+    /// Used in type declaration.
+    Type,
+    /// Used in function body as part of normal statements or expressions.
+    FunctionBody(Item),
+    /// Used at the top level of a module, eg. in variables or register initialization.
+    ModuleTopLevel(Item),
+    /// Used in clocked block.
+    ClockedBlock,
+    /// Used in combinatorial block.
+    CombinatorialBlock,
+}
 
 // TODO pick a better name for this
 // TODO is this still necessary? can't items also be sorted into types or values immediately? 

@@ -169,7 +169,7 @@ impl CompileState<'_, '_> {
         Ok(result_simplified)
     }
 
-    pub fn range_of_value_inner(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
+    fn range_of_value_inner(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
         // TODO if range ends are themselves params with ranges, assume the worst case
         //   although that misses things like (n < n+1)
         fn ty_as_range(ty: &Type) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {

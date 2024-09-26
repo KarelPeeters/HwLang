@@ -1,6 +1,6 @@
 use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::front::common::{ScopedEntry, TypeOrValue};
+use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
 use crate::front::driver::{CompileState, ResolveResult};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
@@ -26,6 +26,9 @@ impl CompileState<'_, '_> {
             Ok(scope_file) => scope_file,
             Err(e) => return Ok(MaybeConstructor::Error(e)),
         };
+
+        // always use a static context for types
+        let ctx = ExpressionContext::Type;
 
         // actual resolution
         match *item_ast {
@@ -119,8 +122,8 @@ impl CompileState<'_, '_> {
                                         sync: match &sync.inner {
                                             SyncKind::Async => SyncKind::Async,
                                             SyncKind::Sync(SyncDomain { clock, reset }) => {
-                                                let clock = s.eval_expression_as_value(scope_ports, clock)?;
-                                                let reset = s.eval_expression_as_value(scope_ports, reset)?;
+                                                let clock = s.eval_expression_as_value(ctx, scope_ports, clock)?;
+                                                let reset = s.eval_expression_as_value(ctx, scope_ports, reset)?;
                                                 SyncKind::Sync(SyncDomain { clock, reset })
                                             }
                                         },

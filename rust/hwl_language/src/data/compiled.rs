@@ -172,7 +172,6 @@ pub struct RegisterInfo {
 
 #[derive(Debug)]
 pub struct VariableInfo {
-    pub defining_item: Item,
     pub defining_id: MaybeIdentifier,
 
     // TODO is it okay that this type does not get its generics replaced?
