@@ -8,6 +8,7 @@ use crate::front::values::Value;
 use crate::syntax::ast;
 use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, SyncKind, VariableDeclaration};
 use crate::syntax::pos::Span;
+use annotate_snippets::Level;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ResolveResult<ModuleChecked> {
@@ -253,13 +254,38 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 match block_sync {
                     None => {
                         // async block, we just need source->target to be valid
-                        self.check_sync_assign(assignment.target.span, target_sync, assignment.value.span, value_sync)?;
+                        self.check_sync_assign(
+                            assignment.target.span,
+                            target_sync,
+                            assignment.value.span,
+                            value_sync,
+                            UserControlled::Both,
+                            "in a combinatorial bloc, for each assignment target and source must be in the same block domain",
+                        )?;
                     }
                     Some(Spanned { span: block_sync_span, inner: block_sync }) => {
                         // clocked block, we need source->block and block->target to be valid
                         let block_sync = SyncKind::Sync(block_sync.clone());
-                        self.check_sync_assign(assignment.target.span, target_sync, block_sync_span, &block_sync)?;
-                        self.check_sync_assign(block_sync_span, &block_sync, assignment.value.span, value_sync)?;
+
+                        let result_0 = self.check_sync_assign(
+                            assignment.target.span,
+                            target_sync,
+                            block_sync_span,
+                            &block_sync,
+                            UserControlled::Target,
+                            "in a clocked block, each assignment target must be in the same domain as the block",
+                        );
+                        let result_1 = self.check_sync_assign(
+                            block_sync_span,
+                            &block_sync,
+                            assignment.value.span,
+                            value_sync,
+                            UserControlled::Source,
+                            "in a clocked block, each source must be in the same domain as the block",
+                        );
+
+                        result_0?;
+                        result_1?;
                     }
                 }
 
@@ -275,7 +301,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     /// Checks whether the source sync domain can be assigned to the target sync domain.
     /// This is equivalent to checking whether source is more contained that target.
-    fn check_sync_assign(&self, target_span: Span, target: &SyncKind<Value>, source_span: Span, source: &SyncKind<Value>) -> Result<(), ErrorGuaranteed> {
+    fn check_sync_assign(
+        &self,
+        target_span: Span,
+        target: &SyncKind<Value>,
+        source_span: Span,
+        source: &SyncKind<Value>,
+        user_controlled: UserControlled,
+        hint: &str,
+    ) -> Result<(), ErrorGuaranteed> {
         let diag = self.diag;
 
         let invalid_reason = match (target, source) {
@@ -291,17 +325,30 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     (false, true) => Some("different reset"),
                     (false, false) => None,
                 }
-            },
+            }
+        };
+
+        let (target_level, source_level) = match user_controlled {
+            UserControlled::Target => (Level::Error, Level::Info),
+            UserControlled::Source => (Level::Info, Level::Error),
+            UserControlled::Both => (Level::Error, Level::Error),
         };
 
         if let Some(invalid_reason) = invalid_reason {
             let err = Diagnostic::new(format!("unsafe domain crossing: {}", invalid_reason))
-                .add_info(target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, target)))
-                .add_info(source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, source)))
+                .add(target_level, target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, target)))
+                .add(source_level, source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, source)))
+                .footer(Level::Help, hint)
                 .finish();
             Err(diag.report(err))
         } else {
             Ok(())
         }
     }
+}
+
+enum UserControlled {
+    Target,
+    Source,
+    Both,
 }
