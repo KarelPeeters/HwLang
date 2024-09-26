@@ -180,6 +180,8 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
 
                 let sensitivity_value_to_string = |value: &Value| -> (&str, &str, &str) {
                     match value {
+                        Value::Error(_) =>
+                            return ("0 /* error */", "posedge", ""),
                         &Value::ModulePort(port) =>
                             return (&compiled[port].defining_id.string, "posedge", ""),
                         Value::UnaryNot(inner) => {
@@ -329,6 +331,8 @@ impl Signed {
 
 fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
     match ty {
+        &Type::Error(e) =>
+            VerilogType::Error(e),
         Type::Unit => VerilogType::MultiBit(Signed::Unsigned, 0),
         Type::Boolean => VerilogType::SingleBit,
         Type::Bits(n) => {
@@ -370,8 +374,6 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
         // TODO redesign type-type such that these are statically impossible at this point?
         Type::Any | Type::GenericParameter(_) | Type::Range | Type::Function(_) | Type::Module(_) | Type::Unchecked | Type::Never =>
             VerilogType::Error(diag.report_internal_error(span, format!("type '{ty:?}' should not materialize"))),
-        &Type::Error(e) =>
-            VerilogType::Error(e),
     }
 }
 
@@ -418,6 +420,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
 
 fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
     match value {
+        &Value::Error(e) => Err(e),
         Value::Range(info) => {
             let &RangeInfo { ref start, ref end, end_inclusive } = info;
 

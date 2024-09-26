@@ -145,6 +145,7 @@ impl CompileState<'_, '_> {
     pub fn try_eval_bool_inner(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
         // TODO this is wrong, we should be returning None a lot more, eg. if the ranges of the operands are not tight
         match *value {
+            Value::Error(e) => return Err(e),
             Value::Binary(binary_op, ref left, ref right) => {
                 let left = try_opt_result!(self.range_of_value(origin, left)?);
                 let right = try_opt_result!(self.range_of_value(origin, right)?);
@@ -353,6 +354,7 @@ pub fn simplify_value(value: Value) -> Value {
     }
 }
 
+// TODO return error if value is error?
 pub fn value_as_int(value: &Value) -> Option<&BigInt> {
     match value {
         Value::Int(value) => Some(value),
