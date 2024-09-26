@@ -2,8 +2,8 @@ use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, Gener
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{PortKind, SyncDomain, SyncKind};
+use crate::syntax::pos::Span;
 use indexmap::IndexMap;
-
 // TODO move all common stuff to the data module, since multiple stages depend on it
 
 /// The context in which this expression or block is used.
@@ -14,14 +14,14 @@ use indexmap::IndexMap;
 /// * return is only allowed in functions
 /// * break/continue are only allowed in loops
 /// TODO maybe allow break to be used in clocked blocks too?
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub enum ExpressionContext {
     /// Used in type declaration.
     Type,
     /// Used in function body as part of normal statements or expressions.
-    FunctionBody(Item),
+    FunctionBody { ret_ty_span: Span, ret_ty: Type },
     /// Used at the top level of a module, eg. in variables or register initialization.
-    ModuleTopLevel(Item),
+    ModuleTopLevel,
     /// Used in clocked block.
     ClockedBlock,
     /// Used in combinatorial block.

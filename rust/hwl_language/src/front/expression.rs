@@ -16,7 +16,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&mut self, ctx: ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
+    fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
         let diag = self.diag;
 
         let result = match expr.inner {
@@ -102,8 +102,32 @@ impl CompileState<'_, '_> {
                 // for loops always return unit
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Unit))
             }
-            ExpressionKind::Return(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "return expression")),
+            ExpressionKind::Return(ref ret_value) => {
+                let ret_value = ret_value.as_ref()
+                    .map(|v| self.eval_expression_as_value(ctx, scope, v).map(|e| (v.span, e)))
+                    .transpose()?;
+
+                match ctx {
+                    &ExpressionContext::FunctionBody { ret_ty_span, ref ret_ty } => {
+                        match (ret_value, ret_ty) {
+                            (None, Type::Unit | Type::Error(_)) => {
+                                // accept
+                            }
+                            (None, _) => {
+                                diag.report_simple("missing return value", expr.span, "return");
+                            },
+                            (Some((ret_value_span, ret_value)), expected_ret_ty) => {
+                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ret_ty_span, ret_value_span, expected_ret_ty, &ret_value);
+                            }
+                        }
+                    },
+                    _ => {
+                        diag.report_simple("return outside function body", expr.span, "return");
+                    }
+                };
+
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Never))
+            }
             ExpressionKind::Break(_) =>
                 ScopedEntryDirect::Error(diag.report_todo(expr.span, "break expression")),
             ExpressionKind::Continue =>
@@ -267,7 +291,9 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
-        let entry = self.eval_expression(ExpressionContext::Type, scope, expr)?;
+        let ctx = &ExpressionContext::Type;
+        let entry = self.eval_expression(ctx, scope, expr)?;
+
         match entry {
             // TODO unify these error strings somewhere
             // TODO maybe move back to central error collection place for easier unit testing?
@@ -286,7 +312,7 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_expression_as_value(&mut self, ctx: ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
+    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
         let entry = self.eval_expression(ctx, scope, expr)?;
         match entry {
             ScopedEntryDirect::Constructor(_) => {
@@ -305,8 +331,9 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> ResolveResult<SyncDomain<Value>> {
-        let clock = self.eval_expression_as_value(ExpressionContext::Type, scope, &domain.clock)?;
-        let reset = self.eval_expression_as_value(ExpressionContext::Type, scope, &domain.reset)?;
+        let ctx = &ExpressionContext::Type;
+        let clock = self.eval_expression_as_value(ctx, scope, &domain.clock)?;
+        let reset = self.eval_expression_as_value(ctx, scope, &domain.reset)?;
 
         // TODO check that clock is a clock
         // TODO check that reset is a boolean
@@ -333,7 +360,7 @@ impl CompileState<'_, '_> {
 
         if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
             let rest = &args.inner[2..];
-            let ctx = ExpressionContext::Type;
+            let ctx = &ExpressionContext::Type;
 
             match (first, second, rest) {
                 ("type", "bool", &[]) =>

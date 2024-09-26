@@ -14,7 +14,12 @@ impl CompileState<'_, '_> {
     //   and don't short-circuit unnecessarily, preventing multiple errors
     pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         match (ty, value) {
+            // propagate errors, we can't just silently ignore them:
+            //   downstream compiler code might actually depend on the type matching
             (&Type::Error(e), _) | (_, &Value::Error(e)) => return Err(e),
+            // any contains everything
+            (&Type::Any, _) => return Ok(()),
+
             (Type::Range, Value::Range(_)) => return Ok(()),
             (Type::Integer(IntegerTypeInfo { range }), value) => {
                 if let Value::Range(range) = range.as_ref() {
@@ -186,11 +191,16 @@ impl CompileState<'_, '_> {
             }
         }
 
+        // TODO for unchecked type, return unchecked value?
+
         match *value {
             Value::Error(e) => Err(e),
             // params have types which we can use to extract a range
             Value::GenericParameter(param) => ty_as_range(&self.compiled[param].ty),
             Value::Unit => Ok(None),
+
+            // TODO return the same as error?
+            Value::Never => Ok(None),
             // a single integer corresponds to the range containing only that integer
             // TODO should we generate an inclusive or exclusive range here?
             //   this will become moot once we switch to +1 deltas

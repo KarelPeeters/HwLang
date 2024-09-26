@@ -10,7 +10,7 @@ use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, VariableDecl
 impl CompileState<'_, '_> {
     pub fn visit_block(
         &mut self,
-        ctx: ExpressionContext,
+        ctx: &ExpressionContext,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> ResolveResult<()> {

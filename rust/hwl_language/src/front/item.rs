@@ -28,7 +28,7 @@ impl CompileState<'_, '_> {
         };
 
         // always use a static context for types
-        let ctx = ExpressionContext::Type;
+        let ctx = &ExpressionContext::Type;
 
         // actual resolution
         match *item_ast {

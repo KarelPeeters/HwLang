@@ -42,10 +42,11 @@ pub enum Type {
     GenericParameter(GenericTypeParameter),
 
     // basic
-    // TODO split "any" meaning checked but accepts anything and "unchecked" meaning only checked at elaboration time
     Any,
-    // TODO make unit just a special case of tuple
+    Unchecked,
     Unit,
+    // TODO make unit just a special case of tuple
+    Never,
     Boolean,
     Bits(Option<Box<Value>>),
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
@@ -147,6 +148,8 @@ impl GenericContainer for Type {
                 param.replace_generic_params(compiled, map_ty, map_value),
 
             Type::Any => Type::Any,
+            Type::Unchecked => Type::Unchecked,
+            Type::Never => Type::Never,
             Type::Unit => Type::Unit,
             Type::Boolean => Type::Boolean,
             Type::Bits(ref width) => {

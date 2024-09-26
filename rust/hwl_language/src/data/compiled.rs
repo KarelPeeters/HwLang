@@ -224,6 +224,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let id = &self[p].defining_id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
+            Value::Never => "never".to_string(),
             Value::Unit => "()".to_string(),
             Value::Int(v) => {
                 if v.is_negative() {
@@ -265,6 +266,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
             Type::Any => "any".to_string(),
+            Type::Unchecked => "unchecked".to_string(),
+            Type::Never => "never".to_string(),
             Type::Unit => "()".to_string(),
             Type::Boolean => "bool".to_string(),
             Type::Bits(n) => match n {

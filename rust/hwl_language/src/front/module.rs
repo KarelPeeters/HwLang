@@ -20,7 +20,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
-        let ctx_module = ExpressionContext::ModuleTopLevel(module_item);
+        let ctx_module = &ExpressionContext::ModuleTopLevel;
 
         // first pass: populate scope with declarations
         for top_statement in statements {
@@ -93,9 +93,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let ast::Block { span: _, statements } = block;
 
                     let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
+                    let ctx_comb = &ExpressionContext::CombinatorialBlock;
+                    
                     let mut result_statements = vec![];
-
-                    let ctx_comb = ExpressionContext::CombinatorialBlock;
 
                     for statement in statements {
                         match &statement.inner {
@@ -147,8 +147,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let ast::Block { span: _, statements } = block;
 
                     let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
-
-                    let ctx_clocked = ExpressionContext::ClockedBlock;
+                    let ctx_clocked = &ExpressionContext::ClockedBlock;
 
                     // TODO typecheck: clock must be a single-bit clock, reset must be a single-bit reset
                     let clock = self.eval_expression_as_value(ctx_clocked, scope, clock)?;
