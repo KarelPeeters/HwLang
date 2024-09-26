@@ -14,8 +14,10 @@
     "@codemirror/state": "6.4.1",
     "@codemirror/view": "6.33.0",
     "@lezer/common": "1.2.1",
+    "@types/js-cookie": "^3.0.6",
     "ansi-to-html": "^0.7.2",
-    "hwl_wasm": "file:../rust/hwl_wasm/pkg"
+    "hwl_wasm": "file:../rust/hwl_wasm/pkg",
+    "js-cookie": "^3.0.5"
   },
   "scripts": {
     "build": "webpack --config webpack.config.js",

@@ -18,6 +18,7 @@ import * as hwl_wasm from "hwl_wasm";
 import {verilog} from "@codemirror/legacy-modes/mode/verilog";
 
 import AnsiToHtmlClass from "ansi-to-html";
+import Cookies from "js-cookie";
 
 function build_node_types() {
     const node_types_string = hwl_wasm.codemirror_node_types();
@@ -105,7 +106,13 @@ function diagnostics_ansi_to_html(ansi: string): string {
     return result;
 }
 
+const EMPTY_DOC = "// empty";
+const COOKIE_SOURCE = "source";
+
 function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
+    // store code in cookie
+    Cookies.set(COOKIE_SOURCE, source);
+
     // run the compiler
     let diagnostics_ansi, lowered_verilog;
     try {
@@ -123,7 +130,7 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     // replace output content with newly generated verilog,
     // put at least some text to prevent confusion
     if (lowered_verilog.length == 0) {
-        lowered_verilog = "// empty";
+        lowered_verilog = EMPTY_DOC;
     }
     editor_view_verilog.dispatch({
         changes: {
@@ -148,7 +155,7 @@ let common_extensions = [
 
 // TODO compare legacy mode to to https://www.npmjs.com/package/codemirror-lang-verilog
 let editor_state_verilog = EditorState.create({
-    doc: "module foo; endmodule;",
+    doc: EMPTY_DOC,
     extensions: common_extensions.concat([
         EditorState.readOnly.of(true),
         StreamLanguage.define(verilog)
@@ -166,8 +173,13 @@ let updateListenerExtension = EditorView.updateListener.of((update) => {
     }
 })
 
+let initial_doc = Cookies.get(COOKIE_SOURCE);
+if (initial_doc == undefined || initial_doc == "") {
+    initial_doc = hwl_wasm.initial_source();
+}
+
 let editor_state_hdl = EditorState.create({
-    doc: hwl_wasm.initial_source(),
+    doc: initial_doc,
     extensions: common_extensions.concat([
         highlightActiveLineGutter(),
         new LanguageSupport(language),
