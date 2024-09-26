@@ -5,7 +5,6 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind};
 use crate::syntax::pos::Span;
 use crate::try_opt_result;
-use annotate_snippets::Level;
 use num_bigint::BigInt;
 use num_traits::One;
 
@@ -17,10 +16,17 @@ impl CompileState<'_, '_> {
             // propagate errors, we can't just silently ignore them:
             //   downstream compiler code might actually depend on the type matching
             (&Type::Error(e), _) | (_, &Value::Error(e)) => return Err(e),
+
             // any contains everything
             (&Type::Any, _) => return Ok(()),
 
+            // basic types that only contain themselves
+            (Type::Unit, Value::Unit) => return Ok(()),
+            (Type::Never, Value::Never) => return Ok(()),
+            // TODO differentiate between arbitrary open, half-open, ...
             (Type::Range, Value::Range(_)) => return Ok(()),
+
+            // integer range check
             (Type::Integer(IntegerTypeInfo { range }), value) => {
                 if let Value::Range(range) = range.as_ref() {
                     let &RangeInfo { ref start, ref end, end_inclusive } = range;
@@ -36,26 +42,28 @@ impl CompileState<'_, '_> {
                     return Ok(());
                 }
             }
+
+            // generic param check
             (ty, &Value::GenericParameter(param)) => {
                 let param_ty = &self.compiled[param].ty;
-                return if ty == param_ty {
-                    Ok(())
-                } else {
-                    // TODO extract common "type mismatch" error formatting
-                    let err = Diagnostic::new("type mismatch")
-                        .add_error(span_value, "value defined here")
-                        .add_error(span_ty, "type defined here")
-                        .footer(Level::Info, format!("expected type: {:?}", ty))
-                        .footer(Level::Info, format!("actual type: {:?}", param_ty))
-                        .finish();
-                    Err(self.diag.report(err))
+                // TODO type equality is not good enough (and should be removed entirely)
+                //   eg. this does not support broadcasting
+                if ty == param_ty {
+                    return Ok(());
                 }
             }
-            _ => {}
-        }
+            // fallthrough into error
+            _ => {},
+        };
 
-        self.diag.report_todo(span_value, format!("check_type_contains {:?} {:?}", ty, value));
-        Ok(())
+        let ty_str = self.compiled.type_to_readable_str(self.source, ty);
+        let value_str = self.compiled.value_to_readable_str(self.source, value);
+        let title = format!("type check failed: value {} is not of type {}", value_str, ty_str);
+        let err = Diagnostic::new(title)
+            .add_error(span_value, "value defined here")
+            .add_error(span_ty, "type defined here")
+            .finish();
+        Err(self.diag.report(err))
     }
 
     pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
