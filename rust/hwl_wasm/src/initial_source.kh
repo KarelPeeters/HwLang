@@ -1,17 +1,49 @@
 use std::types::bool;
 use std::types::bits;
+use std::types::int;
+use std::types::uint;
+use std::types::uint_bits;
+use std::types::int_bits;
+use std::types::int_range;
+use std::types::Array;
+
+type my_array(T: type, N: uint) = Array(T, N);
+type vector = bits(4);
 
 pub module top ports(
-    clk: input clock,
-    rst: input async bool,
-    x: input sync(clk, rst) bits(4),
-    y: output sync(clk, rst) bits(4),
+    clk_a: input clock,
+    clk_b: input clock,
+    rst_a: input async bool,
+    rst_b: input async bool,
+
+    in_a: input sync(clk_a, !rst_a) vector,
+    in_b: input sync(clk_b, !rst_b) vector,
+    out_a: output sync(clk_a, !rst_a) vector,
+    out_b: output sync(clk_b, !rst_b) vector,
+
+    in_async: input async vector,
+    out_async: output async vector,
+
+    in_int_range: input async int_range(-3..27),
+    in_int_bits: input async int_bits(3),
+    in_uint_bits: input async uint_bits(3),
 ) {
+    val test_pos: int = 8;
+    //val test_neg: uint = test_pos; //type err
+
     combinatorial {
-        y = x;
-    } 
-
-    clocked(clk, !rst) {
-
+        out_a = in_a;
+        //out_b = in_a; //sync err
+        out_async = in_async;
     }
+
+    clocked(clk_a, !rst_a) {
+        out_a = in_a;
+        //out_b = in_b; //sync err
+    }
+}
+
+function foo(T: type, x: T) -> T {
+    //return 0; //type err
+    return x;
 }
