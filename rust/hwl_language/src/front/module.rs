@@ -1,4 +1,4 @@
-use crate::data::compiled::{Item, ModulePort, ModulePortInfo, RegisterInfo};
+use crate::data::compiled::{Item, ModulePort, ModulePortInfo, RegisterInfo, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
 use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
@@ -40,11 +40,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 let ty_eval = self.eval_expression_as_ty(scope_body, ty)?;
                                 let init_eval = self.eval_expression_as_value(ctx_module, scope_body, init)?;
 
-                                // TODO this loses the type declaration information, which is not correct
-                                match self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval) {
-                                    Ok(()) => ScopedEntryDirect::Immediate(TypeOrValue::Value(init_eval)),
-                                    Err(e) => ScopedEntryDirect::Error(e),
-                                }
+                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval);
+
+                                let var = self.compiled.variables.push(VariableInfo {
+                                    defining_id: id.clone(),
+                                    ty: ty_eval.clone(),
+                                    mutable,
+                                });
+                                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(var)))
                             }
                             _ => {
                                 let e = self.diag.report_todo(span, "variable declaration without type and/or init");
