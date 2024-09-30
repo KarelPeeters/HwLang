@@ -8,7 +8,7 @@ pub module top ports(
     rst: input async bool,
     x: input sync(clk, rst) bits(4),
     y: output sync(clk, rst) bits(4),
-) {
+) body {
     val n: uint = test(8);
 
     combinatorial {
