@@ -1,11 +1,11 @@
-use std::types::bool;
-use std::types::bits;
-use std::types::int;
-use std::types::uint;
-use std::types::uint_bits;
-use std::types::int_bits;
-use std::types::int_range;
-use std::types::Array;
+import std.types.bool;
+import std.types.bits;
+import std.types.int;
+import std.types.uint;
+import std.types.uint_bits;
+import std.types.int_bits;
+import std.types.int_range;
+import std.types.Array;
 
 type my_array(T: type, N: uint) = Array(T, N);
 type vector = bits(4);
@@ -27,7 +27,7 @@ pub module top ports(
     in_int_range: input async int_range(-3..27),
     in_int_bits: input async int_bits(3),
     in_uint_bits: input async uint_bits(3),
-) {
+) body {
     val test_pos: int = 8;
     //val test_neg: uint = test_pos; //type err
 
@@ -43,7 +43,7 @@ pub module top ports(
     }
 }
 
-function foo(T: type, x: T) -> T {
+function foo(T: type, x: T): T {
     //return 0; //type err
     return x;
 }
