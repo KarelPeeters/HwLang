@@ -20,7 +20,7 @@ pub module top ports(
     }
 }
 
-function test(n: uint) -> uint {
+function test(n: uint): uint {
     for (i in 0..n) {
         print(i);
     };
