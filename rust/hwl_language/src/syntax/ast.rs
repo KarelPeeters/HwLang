@@ -17,7 +17,7 @@ pub enum Visibility {
 // TODO add "doc comment" field to items?
 #[derive(Debug, Clone)]
 pub enum Item {
-    Use(ItemUse),
+    Import(ItemImport),
     // Package(ItemDefPackage),
     Const(ItemDefConst),
     Type(ItemDefType),
@@ -32,14 +32,10 @@ pub enum Item {
 
 // TODO split this out from the items that actually define _new_ symbols?
 #[derive(Debug, Clone)]
-pub struct ItemUse {
+pub struct ItemImport {
     pub span: Span,
     pub path: Path,
     pub as_: Option<MaybeIdentifier>,
-}
-
-pub enum ItemUseKind {
-    Root,
 }
 
 // TODO remove
@@ -521,7 +517,7 @@ pub struct ItemCommonInfo {
 impl Item {
     pub fn common_info(&self) -> ItemCommonInfo {
         match self {
-            Item::Use(item) => {
+            Item::Import(item) => {
                 let id = match &item.as_ {
                     None => MaybeIdentifier::Identifier(item.path.id.clone()),
                     Some(as_) => as_.clone(),

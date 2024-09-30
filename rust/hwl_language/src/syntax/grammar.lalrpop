@@ -19,7 +19,7 @@ extern {
         TokenIntPatternHexadecimal => TokenType::IntPatternHexadecimal(<&'s str>),
         TokenIntPatternBinary => TokenType::IntPatternBinary(<&'s str>),
         TokenStringLiteral => TokenType::StringLiteral(<&'s str>),
-        "use" => TokenType::Use,
+        "import" => TokenType::Import,
         "as" => TokenType::As,
         "type" => TokenType::Type,
         "any" => TokenType::Any,
@@ -108,8 +108,8 @@ pub FileContent: FileContent = {
 
 // items
 Item: Item = {
-    <start:@L> "use" <path:Path> <as_: ("as" <MaybeId>)?> ";" <end:@R>
-            => Item::Use(ItemUse { path, as_, span: loc.span(start, end) }),
+    <start:@L> "import" <path:Path> <as_: ("as" <MaybeId>)?> ";" <end:@R>
+        => Item::Import(ItemImport { path, as_, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "type" <id:Id> <params:Parameters<GenericParameter>?> "=" <inner:BoxExpr> ";" <end:@R>
         => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<GenericParameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>

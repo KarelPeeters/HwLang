@@ -346,7 +346,7 @@ declare_tokens! {
     }
     literal {
         // keywords
-        Use("use", TC::Keyword, TP::Normal),
+        Import("import", TC::Keyword, TP::Normal),
         As("as", TC::Keyword, TP::Normal),
         Type("type", TC::Keyword, TP::Normal),
         Any("any", TC::Keyword, TP::Normal),
@@ -382,7 +382,7 @@ declare_tokens! {
         While("while", TC::Keyword, TP::Normal),
         Public("pub", TC::Keyword, TP::Normal),
         Builtin("__builtin", TC::Keyword, TP::Normal),
-    
+
         // misc symbols
         Semi(";", TC::Symbol, TP::Normal),
         Colon(":", TC::Symbol, TP::Normal),
@@ -390,7 +390,7 @@ declare_tokens! {
         Arrow("->", TC::Symbol, TP::Normal),
         Underscore("_", TC::Symbol, TP::Normal),
         ColonColon("::", TC::Symbol, TP::Normal),
-    
+
         // braces
         OpenC("{", TC::Symbol, TP::Normal),
         CloseC("}", TC::Symbol, TP::Normal),
@@ -398,7 +398,7 @@ declare_tokens! {
         CloseR(")", TC::Symbol, TP::Normal),
         OpenS("[", TC::Symbol, TP::Normal),
         CloseS("]", TC::Symbol, TP::Normal),
-    
+
         // operators
         Dot(".", TC::Symbol, TP::Normal),
         Dots("..", TC::Symbol, TP::Normal),
@@ -423,7 +423,7 @@ declare_tokens! {
         Percent("%", TC::Symbol, TP::Normal),
         Bang("!", TC::Symbol, TP::Normal),
         StarStar("**", TC::Symbol, TP::Normal),
-    
+
         // assignment operators
         Eq("=", TC::Symbol, TP::Normal),
         PlusEq("+=", TC::Symbol, TP::Normal),

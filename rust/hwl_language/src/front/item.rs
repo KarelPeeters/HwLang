@@ -6,7 +6,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemUse, Path, PortKind, Spanned, StructField, SyncDomain, SyncKind};
+use crate::syntax::ast::{EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, Path, PortKind, Spanned, StructField, SyncDomain, SyncKind};
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
 use indexmap::IndexMap;
@@ -33,7 +33,7 @@ impl CompileState<'_, '_> {
         // actual resolution
         match *item_ast {
             // use indirection
-            ast::Item::Use(ItemUse { span: _, ref path, as_: _ }) => {
+            ast::Item::Import(ItemImport { span: _, ref path, as_: _ }) => {
                 // TODO why are we handling use items here? can they not be eliminated by scope building
                 //  this is really weird, use items don't even really have signatures
                 let next_item = self.resolve_use_path(path)?;
@@ -272,7 +272,7 @@ impl CompileState<'_, '_> {
 
         let body = match item_ast {
             // these items are fully defined by their type, which was already checked earlier
-            ast::Item::Use(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemChecked::None,
+            ast::Item::Import(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemChecked::None,
             ast::Item::Const(_) => {
                 match item_signature_err {
                     Some(e) => ItemChecked::Error(e),
