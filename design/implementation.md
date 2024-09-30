@@ -19,6 +19,9 @@ Relevant projects:
 * Rust-Analyzer for LSP architecture ideas
   * https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md
   * https://rust-analyzer.github.io/blog
+* Salsa
+  * https://medium.com/@eliah.lakhin/salsa-algorithm-explained-c5d6df1dd291 (and its sources at the bottom)
+  * https://salsa-rs.github.io/salsa/
 
 Websites and blog posts:
 
