@@ -263,7 +263,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             assignment.value.span,
                             value_sync,
                             UserControlled::Both,
-                            "in a combinatorial bloc, for each assignment target and source must be in the same block domain",
+                            "in a combinatorial block, for each assignment, target and source must be in the same domain",
                         )?;
                     }
                     Some(Spanned { span: block_sync_span, inner: block_sync }) => {
