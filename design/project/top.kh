@@ -1,7 +1,7 @@
-import std::types::bool;
-import std::types::bits;
-import std::types::uint;
-import std::io::print;
+import std.types.bool;
+import std.types.bits;
+import std.types.uint;
+import std.io.print;
 
 pub module top ports(
     clk: input clock,

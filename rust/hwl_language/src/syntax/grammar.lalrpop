@@ -424,7 +424,7 @@ ExprControlFlow: ExpressionKind = {
 }
 
 Path: Path = {
-    <start:@L> <steps: (<Id> "::")*> <id: Id> <end:@R>
+    <start:@L> <steps: (<Id> ".")*> <id: Id> <end:@R>
         => Path { span: loc.span(start, end), steps, id }
 }
 
