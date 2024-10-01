@@ -1,6 +1,6 @@
 import {EditorState} from "@codemirror/state"
 import {EditorView, highlightActiveLineGutter, keymap, lineNumbers} from "@codemirror/view"
-import {defaultKeymap, history, indentWithTab} from "@codemirror/commands"
+import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands"
 import {
     bracketMatching,
     defaultHighlightStyle,
@@ -143,6 +143,7 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
 
 let common_extensions = [
     keymap.of(defaultKeymap),
+    keymap.of(historyKeymap),
     keymap.of([indentWithTab]),
     history(),
 
