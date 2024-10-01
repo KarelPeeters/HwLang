@@ -110,6 +110,7 @@ impl<V> ScopeInfo<V> {
         }
     }
 
+    // TODO make this immediately create the error entry value if not found
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
@@ -146,6 +147,7 @@ impl<V> ScopeInfo<V> {
             scopes[parent].find(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis))
         } else {
             // TODO add fuzzy-matched suggestions as info
+            // TODO insert identifier into the current scope to sureness downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here, and its parents")
@@ -179,6 +181,7 @@ impl<V> ScopeInfo<V> {
 
             Ok(ScopeFound { defining_span: value_span, value })
         } else {
+            // TODO insert identifier into the current scope to sureness downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id))
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here")
                 .finish();

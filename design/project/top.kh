@@ -1,6 +1,4 @@
-import std.types.bool;
-import std.types.bits;
-import std.types.uint;
+import std.types.[bool, bits, uint];
 import std.io.print;
 
 pub module top ports(

@@ -34,7 +34,20 @@ pub enum Item {
 #[derive(Debug, Clone)]
 pub struct ItemImport {
     pub span: Span,
-    pub path: Path,
+    pub parents: Spanned<Vec<Identifier>>,
+    pub entry: Spanned<ImportFinalKind>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportFinalKind {
+    Single(ImportEntry),
+    Multi(Vec<ImportEntry>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    pub span: Span,
+    pub id: Identifier,
     pub as_: Option<MaybeIdentifier>,
 }
 
@@ -280,7 +293,7 @@ pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
     Any,
-    
+
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
@@ -422,13 +435,6 @@ pub struct Identifier {
     pub string: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Path {
-    pub span: Span,
-    pub steps: Vec<Identifier>,
-    pub id: Identifier,
-}
-
 // TODO move to parser utilities module
 pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
     ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right))
@@ -510,36 +516,43 @@ impl MaybeIdentifier {
 pub struct ItemCommonInfo {
     pub span_full: Span,
     pub span_short: Span,
+}
+
+#[derive(Debug)]
+pub struct ItemDeclarationInfo<'s> {
     pub vis: Visibility,
-    pub id: MaybeIdentifier,
+    pub id: &'s Identifier,
 }
 
 impl Item {
     pub fn common_info(&self) -> ItemCommonInfo {
+        self.info().0
+    }
+
+    pub fn declaration_info(&self) -> Option<ItemDeclarationInfo> {
+        self.info().1
+    }
+
+    fn info(&self) -> (ItemCommonInfo, Option<ItemDeclarationInfo>) {
         match self {
-            Item::Import(item) => {
-                let id = match &item.as_ {
-                    None => MaybeIdentifier::Identifier(item.path.id.clone()),
-                    Some(as_) => as_.clone(),
-                };
-                ItemCommonInfo { span_full: item.span, span_short: item.span, vis: Visibility::Private, id }
-            },
+            Item::Import(item) =>
+                (ItemCommonInfo { span_full: item.span, span_short: item.span }, None),
             Item::Const(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Type(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Struct(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Enum(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Function(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Module(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
             Item::Interface(item) =>
-                ItemCommonInfo { span_full: item.span, span_short: item.id.span, vis: item.vis, id: MaybeIdentifier::Identifier(item.id.clone()) },
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
         }
-    } 
+    }
 }
 
 impl BinaryOp {

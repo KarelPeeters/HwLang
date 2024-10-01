@@ -38,9 +38,9 @@ macro_rules! impl_index_mut {
 pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
 
 pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
-    pub file_scope: IndexMap<FileId, Result<Scope, ErrorGuaranteed>>,
     pub scopes: Scopes<ScopedEntry>,
 
+    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
     pub items: Arena<Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>>,
 
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
@@ -62,6 +62,13 @@ impl_index!(generic_value_params, GenericValueParameter, GenericValueParameterIn
 impl_index!(module_ports, ModulePort, ModulePortInfo);
 impl_index!(registers, Register, RegisterInfo);
 impl_index!(variables, Variable, VariableInfo);
+
+impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
+    type Output = Result<FileScopes, ErrorGuaranteed>;
+    fn index(&self, index: FileId) -> &Self::Output {
+        self.file_scopes.get(&index).unwrap()
+    }
+}
 
 pub trait CompiledStage {
     type ItemInfoSignature;
@@ -88,6 +95,14 @@ new_index_type!(pub GenericValueParameter);
 new_index_type!(pub ModulePort);
 new_index_type!(pub Register);
 new_index_type!(pub Variable);
+
+#[derive(Debug)]
+pub struct FileScopes {
+    /// The scope that only includes top-level items defined in this file. 
+    pub scope_outer_declare: Scope,
+    /// Child scope of [scope_declare] that includes all imported items.
+    pub scope_inner_import: Scope,
+}
 
 pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
 

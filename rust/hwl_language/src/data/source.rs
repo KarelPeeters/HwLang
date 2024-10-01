@@ -10,7 +10,7 @@ use itertools::enumerate;
 #[derive(Clone)]
 pub struct SourceDatabase {
     // TODO use arena for this too?
-    pub files: IndexMap<FileId, FileInfo>,
+    pub files: IndexMap<FileId, FileSourceInfo>,
     pub directories: Arena<Directory, DirectoryInfo>,
     pub root_directory: Directory,
 }
@@ -27,7 +27,7 @@ pub enum CompileSetError {
 pub struct FilePath(pub Vec<String>);
 
 #[derive(Clone)]
-pub struct FileInfo {
+pub struct FileSourceInfo {
     #[allow(dead_code)]
     pub id: FileId,
     #[allow(dead_code)]
@@ -76,7 +76,7 @@ impl SourceDatabase {
         let file_id = FileId(self.files.len());
         eprintln!("adding {:?} => {:?}", file_id, path);
         let directory = self.get_directory(&path);
-        let info = FileInfo {
+        let info = FileSourceInfo {
             id: file_id,
             directory,
             path_raw,
@@ -133,7 +133,7 @@ impl SourceDatabase {
 }
 
 impl std::ops::Index<FileId> for SourceDatabase {
-    type Output = FileInfo;
+    type Output = FileSourceInfo;
     fn index(&self, index: FileId) -> &Self::Output {
         self.files.get(&index).unwrap()
     }

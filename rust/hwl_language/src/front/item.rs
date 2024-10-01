@@ -1,16 +1,14 @@
 use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, Path, PortKind, Spanned, StructField, SyncDomain, SyncKind};
+use crate::syntax::ast::{EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain, SyncKind};
 use crate::util::data::IndexMapExt;
-use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::Itertools;
 
 impl CompileState<'_, '_> {
     // TODO this signature is wrong: items are not always type constructors
@@ -21,10 +19,11 @@ impl CompileState<'_, '_> {
         assert!(self.compiled[item].signature.is_none());
 
         // item lookup
-        let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
-        let scope_file = match *self.compiled.file_scope.get(&self.compiled[item].ast_ref.file).unwrap() {
-            Ok(scope_file) => scope_file,
-            Err(e) => return MaybeConstructor::Error(e),
+        let item_info = &self.compiled[item];
+        let item_ast = self.parsed.item_ast(item_info.ast_ref);
+        let file_scope = match self.compiled.file_scopes.get(&item_info.ast_ref.file).unwrap() {
+            Ok(scope_file) => scope_file.scope_inner_import,
+            &Err(e) => return MaybeConstructor::Error(e),
         };
 
         // always use a static context for types
@@ -32,23 +31,19 @@ impl CompileState<'_, '_> {
 
         // actual resolution
         match *item_ast {
-            // use indirection
-            ast::Item::Import(ItemImport { span: _, ref path, as_: _ }) => {
-                // TODO why are we handling use items here? can they not be eliminated by scope building
-                //  this is really weird, use items don't even really have signatures
-                match self.resolve_use_path(path) {
-                    Ok(next_item) => self.resolve_item_signature(next_item).clone(),
-                    Err(e) => MaybeConstructor::Error(e),
-                }
+            // resolving import signatures doesn't make sense
+            ast::Item::Import(ItemImport { span, .. }) => {
+                let e = self.diags.report_internal_error(span, "import item should not be resolved directly");
+                MaybeConstructor::Error(e)
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
-                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, _args, scope_inner| {
+                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, _args, scope_inner| {
                     Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
-                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // map fields
                     let mut fields_map = IndexMap::new();
                     for field in fields {
@@ -72,7 +67,7 @@ impl CompileState<'_, '_> {
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
-                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // map variants
                     let mut variants_map = IndexMap::new();
                     for variant in variants {
@@ -99,7 +94,7 @@ impl CompileState<'_, '_> {
             }
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
-                self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
@@ -156,7 +151,7 @@ impl CompileState<'_, '_> {
             ast::Item::Const(_) =>
                 MaybeConstructor::Error(self.diags.report_todo(item_ast.common_info().span_short, "const definition")),
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
-                self.resolve_new_generic_def(item, scope_file, Some(params), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, file_scope, Some(params), |s, args, scope_inner| {
                     // no need to use args for anything, they are mostly used for nominal type uniqueness
                     //   which does not apply to functions
                     let _ = args;
@@ -286,64 +281,6 @@ impl CompileState<'_, '_> {
                     None => ItemChecked::Error(self.diags.report_todo(item_span, "interface body")),
                 }
             }
-        }
-    }
-
-    fn resolve_use_path(&self, path: &Path) -> Result<Item, ErrorGuaranteed> {
-        // TODO the current path design does not allow private sub-modules
-        //   are they really necessary? if all inner items are private it's effectively equivalent
-        //   -> no it's not equivalent, things can also be private from the parent
-
-        // TODO allow private visibility in child and sibling paths
-        let vis = Visibility::Public;
-        let mut curr_dir = self.source.root_directory;
-
-        let Path { span: _, steps, id } = path;
-
-        for step in steps {
-            let curr_dir_info = &self.source[curr_dir];
-
-            curr_dir = match curr_dir_info.children.get(&step.string) {
-                Some(&child_dir) => child_dir,
-                None => {
-                    let mut options = curr_dir_info.children.keys().cloned().collect_vec();
-                    options.sort();
-
-                    let diag = Diagnostic::new("invalid path step")
-                        .snippet(path.span)
-                        .add_error(step.span, "invalid step")
-                        .finish()
-                        .footer(Level::Info, format!("possible options: {:?}", options))
-                        .finish();
-                    let err = self.diags.report(diag);
-                    return Err(err);
-                }
-            };
-        }
-
-        let file = match self.source[curr_dir].file {
-            Some(file) => file,
-            None => {
-                let diag = Diagnostic::new_simple("expected path to file", path.span, "no file exists at this path");
-                let err = self.diags.report(diag);
-                return Err(err);
-            }
-        };
-
-        let file_scope = match *self.compiled.file_scope.get(&file).unwrap() {
-            Ok(scope) => scope,
-            Err(e) => return Err(e),
-        };
-
-        // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let entry = match self.compiled[file_scope].find(&self.compiled.scopes, self.diags, id, vis) {
-            Err(e) => return Err(e),
-            Ok(entry) => entry,
-        };
-        match entry.value {
-            &ScopedEntry::Item(item) => Ok(item),
-            // TODO is this still true?
-            ScopedEntry::Direct(_) => unreachable!("file root entries should not exist"),
         }
     }
 }

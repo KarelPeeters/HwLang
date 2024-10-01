@@ -29,16 +29,12 @@ pub enum ExpressionContext {
     CombinatorialBlock,
 }
 
-// TODO pick a better name for this
-// TODO is this still necessary? can't items also be sorted into types or values immediately? 
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(Item),
     Direct(ScopedEntryDirect),
 }
 
-// TODO transpose or not?
-// TODO find a better name for this
 pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

@@ -1,22 +1,26 @@
-use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, Item, ItemInfo, ItemInfoPartial};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FileScopes, Item, ItemInfo, ItemInfoPartial};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, TypeOrValue};
-use crate::front::scope::{Scopes, Visibility};
+use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::MaybeConstructor;
+use crate::syntax::ast::{Identifier, ImportEntry, ImportFinalKind, ItemImport, MaybeIdentifier, Spanned};
+use crate::syntax::pos::FileId;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
+use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
-pub fn compile(diag: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
+pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now file ids are still not deterministic
-    let files_sorted = database.files.keys()
+    let files_sorted = source.files.keys()
         .copied()
-        .sorted_by_key(|&file| &database[database[file].directory].path)
+        .sorted_by_key(|&file| &source[source[file].directory].path)
         .collect_vec();
 
     // items only exists to serve as a level of indirection between values,
@@ -24,39 +28,44 @@ pub fn compile(diag: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase
     let mut items: Arena<Item, ItemInfoPartial> = Arena::default();
 
     // parse all files and populate local scopes
-    let mut file_ast = IndexMap::new();
-    let mut file_scope = IndexMap::new();
+    let mut map_file_ast = IndexMap::new();
+    let mut map_file_scopes = IndexMap::new();
     let mut scopes = Scopes::default();
 
-    for file in files_sorted {
-        let file_info = &database[file];
+    for &file in &files_sorted {
+        let file_source = &source[file];
 
         // parse
-        let (ast, scope) = match parse_file_content(file, &file_info.source) {
+        let (ast, scope) = match parse_file_content(file, &file_source.source) {
             Ok(ast) => {
-                // build local scope
+                // build declaration scope
                 // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-                let local_scope = scopes.new_root(file_info.offsets.full_span(file));
-                let local_scope_info = &mut scopes[local_scope];
+                let file_span = file_source.offsets.full_span(file);
+                let scope_declare = scopes.new_root(file_span);
+                let scope_import = scopes.new_child(scope_declare, file_span, Visibility::Private);
+
+                let local_scope_info = &mut scopes[scope_declare];
 
                 for (file_item_index, ast_item) in enumerate(&ast.items) {
-                    let common_info = ast_item.common_info();
-                    let vis = match common_info.vis {
-                        ast::Visibility::Public(_) => Visibility::Public,
-                        ast::Visibility::Private => Visibility::Private,
-                    };
+                    // TODO add enum-match safety here
+                    if let Some(declaration_info) = ast_item.declaration_info() {
+                        let vis = match declaration_info.vis {
+                            ast::Visibility::Public(_) => Visibility::Public,
+                            ast::Visibility::Private => Visibility::Private,
+                        };
 
-                    let item = items.push(ItemInfo {
-                        defining_id: common_info.id.clone(),
-                        ast_ref: ItemAstReference { file, file_item_index },
-                        signature: None,
-                        body: None,
-                    });
+                        let item = items.push(ItemInfo {
+                            defining_id: MaybeIdentifier::Identifier(declaration_info.id.clone()),
+                            ast_ref: ItemAstReference { file, file_item_index },
+                            signature: None,
+                            body: None,
+                        });
 
-                    local_scope_info.maybe_declare(diag, &common_info.id, ScopedEntry::Item(item), vis);
+                        local_scope_info.declare(diag, declaration_info.id, ScopedEntry::Item(item), vis);
+                    }
                 }
 
-                (Ok(ast), Ok(local_scope))
+                (Ok(ast), Ok(FileScopes { scope_outer_declare: scope_declare, scope_inner_import: scope_import }))
             }
             Err(e) => {
                 let e = diag.report(parse_error_to_diagnostic(e));
@@ -64,22 +73,34 @@ pub fn compile(diag: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase
             }
         };
 
-        file_ast.insert_first(file, ast);
-        file_scope.insert_first(file, scope);
+        map_file_ast.insert_first(file, ast);
+        map_file_scopes.insert_first(file, scope);
     }
 
-    let parsed = ParsedDatabase { file_ast };
+    // populate import scopes
+    for &file in &files_sorted {
+        if let (Ok(file_ast), Ok(file_scopes)) = (map_file_ast.get(&file).as_ref().unwrap(), map_file_scopes.get(&file).as_ref().unwrap()) {
+            for item in &file_ast.items {
+                if let ast::Item::Import(item) = item {
+                    add_import_to_scope(diag, &source, &mut scopes, &map_file_scopes, file_scopes.scope_inner_import, item);
+                }
+            }
+        }
+    }
+
+    // group into state
+    let parsed = ParsedDatabase { file_ast: map_file_ast };
 
     let mut state = CompileState {
         diags: diag,
-        source: database,
+        source,
         parsed: &parsed,
         log_const_eval: false,
         item_signature_stack: Vec::new(),
         item_signatures_finished: false,
         compiled: CompiledDatabase {
             items,
-            file_scope,
+            file_scopes: map_file_scopes,
             scopes,
             generic_type_params: Arena::default(),
             generic_value_params: Arena::default(),
@@ -122,8 +143,8 @@ pub fn compile(diag: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase
     });
 
     let compiled = CompiledDatabase {
-        file_scope: state.compiled.file_scope,
         scopes: state.compiled.scopes,
+        file_scopes: state.compiled.file_scopes,
         items,
         generic_type_params: state.compiled.generic_type_params,
         generic_value_params: state.compiled.generic_value_params,
@@ -219,4 +240,94 @@ impl CompileState<'_, '_> {
         let result = slot.insert(result);
         result
     }
+}
+
+fn add_import_to_scope(
+    diags: &Diagnostics,
+    source: &SourceDatabase,
+    scopes: &mut Scopes<ScopedEntry>,
+    file_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    target_scope: Scope,
+    item: &ItemImport,
+) {
+    // TODO the current path design does not allow private sub-modules
+    //   are they really necessary? if all inner items are private it's effectively equivalent
+    //   -> no it's not equivalent, things can also be private from the parent
+
+    let ItemImport { span: _, parents, entry } = item;
+
+    let parent_scope = find_parent_scope(diags, source, file_scopes, parents);
+
+    let import_entries = match &entry.inner {
+        ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
+        ImportFinalKind::Multi(entries) => entries,
+    };
+
+    for import_entry in import_entries {
+        let ImportEntry { span: _, id, as_ } = import_entry;
+
+        // TODO allow private visibility into child scopes?
+        let entry = match parent_scope {
+            Ok(parent_scope) => scopes[parent_scope].find(&scopes, diags, id, Visibility::Public),
+            Err(e) => Err(e),
+        }
+            .map(|entry| entry.value.clone())
+            .unwrap_or_else(|e| ScopedEntry::Direct(ScopedEntryDirect::Error(e)));
+
+        let target_scope = &mut scopes[target_scope];
+        match as_ {
+            Some(as_) => target_scope.maybe_declare(diags, as_, entry, Visibility::Private),
+            None => target_scope.declare(diags, id, entry, Visibility::Private),
+        };
+    }
+}
+
+fn find_parent_scope(
+    diags: &Diagnostics,
+    source: &SourceDatabase,
+    file_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    parents: &Spanned<Vec<Identifier>>,
+) -> Result<Scope, ErrorGuaranteed> {
+    // TODO the current path design does not allow private sub-modules
+    //   are they really necessary? if all inner items are private it's effectively equivalent
+    //   -> no it's not equivalent, things can also be private from the parent
+    let mut curr_dir = source.root_directory;
+
+    // get the span without the trailing separator
+    let parents_span = if parents.inner.is_empty() {
+        parents.span
+    } else {
+        parents.inner.first().unwrap().span.join(parents.inner.last().unwrap().span)
+    };
+
+    for step in &parents.inner {
+        let curr_dir_info = &source[curr_dir];
+
+        curr_dir = match curr_dir_info.children.get(&step.string) {
+            Some(&child_dir) => child_dir,
+            None => {
+                let mut options = curr_dir_info.children.keys().cloned().collect_vec();
+                options.sort();
+
+                // TODO without trailing separator
+                let diag = Diagnostic::new("invalid path step")
+                    .snippet(parents.span)
+                    .add_error(step.span, "invalid step")
+                    .finish()
+                    .footer(Level::Info, format!("possible options: {:?}", options))
+                    .finish();
+                return Err(diags.report(diag));
+            }
+        };
+    }
+
+    let file = match source[curr_dir].file {
+        Some(file) => file,
+        None => {
+            return Err(diags.report_simple("expected path to file", parents_span, "no file exists at this path"))
+        }
+    };
+
+    file_scopes.get(&file).unwrap().as_ref_ok()
+        .map(|scopes| scopes.scope_outer_declare)
 }

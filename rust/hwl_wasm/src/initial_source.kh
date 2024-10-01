@@ -1,11 +1,7 @@
-import std.types.bool;
-import std.types.bits;
-import std.types.int;
-import std.types.uint;
-import std.types.uint_bits;
-import std.types.int_bits;
-import std.types.int_range;
-import std.types.Array;
+import std.types.[
+    bool, bits, int_range, int, uint, natural,
+    int_bits, uint_bits, Array
+];
 
 type my_array(T: type, N: uint) = Array(T, N);
 type vector = bits(4);

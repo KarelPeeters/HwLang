@@ -12,6 +12,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, Identifier, PortDirection, PortKind, SyncDomain, SyncKind};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
 use crate::{swriteln, throw};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
@@ -455,7 +456,7 @@ fn find_top_module(
         let title = "no top file found, should be called `top` and be in the root directory of the project";
         diag.report(Diagnostic::new(title).finish())
     })?;
-    let top_file_scope = (*compiled.file_scope.get(&top_file).unwrap())?;
+    let top_file_scope = compiled[top_file].as_ref_ok()?.scope_outer_declare;
     let top_entry = compiled[top_file_scope].find_immediate_str(diag, "top", Visibility::Public)?;
 
     match top_entry.value {
