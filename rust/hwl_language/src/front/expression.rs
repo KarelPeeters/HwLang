@@ -1,7 +1,7 @@
 use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
-use crate::front::driver::{CompileState, ResolveResult};
+use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -16,52 +16,52 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<ScopedEntryDirect> {
-        let diag = self.diag;
+    fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
+        let diags = self.diags;
 
-        let result = match expr.inner {
+        match expr.inner {
             ExpressionKind::Dummy =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "dummy expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dummy expression")),
             ExpressionKind::Any =>
                 ScopedEntryDirect::Immediate(TypeOrValue::Type(Type::Any)),
             ExpressionKind::Wrapped(ref inner) =>
-                self.eval_expression(ctx, scope, inner)?,
+                self.eval_expression(ctx, scope, inner),
             ExpressionKind::Id(ref id) => {
-                let entry = match self.compiled[scope].find(&self.compiled.scopes, diag, id, Visibility::Private) {
-                    Err(e) => return Ok(ScopedEntryDirect::Error(e)),
+                let entry = match self.compiled[scope].find(&self.compiled.scopes, diags, id, Visibility::Private) {
+                    Err(e) => return ScopedEntryDirect::Error(e),
                     Ok(entry) => entry,
                 };
                 match entry.value {
-                    &ScopedEntry::Item(item) => self.resolve_item_signature(item)?.clone(),
+                    &ScopedEntry::Item(item) => self.resolve_item_signature(item).clone(),
                     ScopedEntry::Direct(entry) => entry.clone(),
                 }
             }
             ExpressionKind::TypeFunc(_, _) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "type func expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "type func expression")),
             ExpressionKind::Block(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "block expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "block expression")),
             ExpressionKind::If(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "if expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "if expression")),
             ExpressionKind::Loop(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "loop expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "loop expression")),
             ExpressionKind::While(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "while expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "while expression")),
             ExpressionKind::For(ref expr_for) => {
                 let ForExpression { index, index_ty, iter, body } = expr_for;
 
                 // define index variable
                 let iter_span = iter.span;
                 if let Some(index_ty) = index_ty {
-                    diag.report_todo(index_ty.span, "for loop index type");
+                    diags.report_todo(index_ty.span, "for loop index type");
                 }
-                let iter = self.eval_expression_as_value(ctx, scope, iter)?;
+                let iter = self.eval_expression_as_value(ctx, scope, iter);
 
                 let _: Result<(), ErrorGuaranteed> = self.check_type_contains(expr.span, iter_span, &Type::Range, &iter);
                 let (start, end, end_inclusive) = match &iter {
                     &Value::Error(e) => (Value::Error(e), Value::Error(e), false),
                     Value::Range(info) => {
                         // avoid duplicate error if both ends are missing
-                        let report_unbounded = || diag.report_simple("for loop over unbounded range", iter_span, "range");
+                        let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
 
                         let &RangeInfo { ref start, ref end, end_inclusive } = info;
                         let (start, end) = match (start, end) {
@@ -76,7 +76,7 @@ impl CompileState<'_, '_> {
                         (start, end, end_inclusive)
                     }
                     _ => {
-                        let e = diag.report_todo(iter_span, "for loop over non-range literal");
+                        let e = diags.report_todo(iter_span, "for loop over non-range literal");
                         (Value::Error(e), Value::Error(e), false)
                     }
                 };
@@ -94,18 +94,17 @@ impl CompileState<'_, '_> {
 
                 let scope_index = self.compiled.scopes.new_child(scope, body.span, Visibility::Private);
                 let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
-                self.compiled[scope_index].maybe_declare(diag, index, entry, Visibility::Private);
+                self.compiled[scope_index].maybe_declare(diags, index, entry, Visibility::Private);
 
                 // typecheck body
-                self.visit_block(ctx, scope_index, &body)?;
+                self.visit_block(ctx, scope_index, &body);
 
                 // for loops always return unit
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Unit))
             }
             ExpressionKind::Return(ref ret_value) => {
                 let ret_value = ret_value.as_ref()
-                    .map(|v| self.eval_expression_as_value(ctx, scope, v).map(|e| (v.span, e)))
-                    .transpose()?;
+                    .map(|v| (v.span, self.eval_expression_as_value(ctx, scope, v)));
 
                 match ctx {
                     &ExpressionContext::FunctionBody { ret_ty_span, ref ret_ty } => {
@@ -114,7 +113,7 @@ impl CompileState<'_, '_> {
                                 // accept
                             }
                             (None, _) => {
-                                diag.report_simple("missing return value", expr.span, "return");
+                                diags.report_simple("missing return value", expr.span, "return");
                             },
                             (Some((ret_value_span, ret_value)), expected_ret_ty) => {
                                 let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ret_ty_span, ret_value_span, expected_ret_ty, &ret_value);
@@ -122,22 +121,22 @@ impl CompileState<'_, '_> {
                         }
                     },
                     _ => {
-                        diag.report_simple("return outside function body", expr.span, "return");
+                        diags.report_simple("return outside function body", expr.span, "return");
                     }
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Never))
             }
             ExpressionKind::Break(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "break expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "break expression")),
             ExpressionKind::Continue =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "continue expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "continue expression")),
             ExpressionKind::IntPattern(ref pattern) => {
                 match pattern {
                     IntPattern::Hex(_) =>
-                        ScopedEntryDirect::Error(diag.report_todo(expr.span, "hex int-pattern expression")),
+                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "hex int-pattern expression")),
                     IntPattern::Bin(_) =>
-                        ScopedEntryDirect::Error(diag.report_todo(expr.span, "bin int-pattern expression")),
+                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "bin int-pattern expression")),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         let value = str_clean.parse::<BigInt>().unwrap();
@@ -146,33 +145,31 @@ impl CompileState<'_, '_> {
                 }
             }
             ExpressionKind::BoolLiteral(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "bool literal expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "bool literal expression")),
             ExpressionKind::StringLiteral(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "string literal expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "string literal expression")),
             ExpressionKind::ArrayLiteral(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "array literal expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "array literal expression")),
             ExpressionKind::TupleLiteral(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "tuple literal expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "tuple literal expression")),
             ExpressionKind::StructLiteral(_) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "struct literal expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "struct literal expression")),
             ExpressionKind::RangeLiteral(ref range) => {
                 let &RangeLiteral { end_inclusive, ref start, ref end } = range;
 
-                let mut map_point = |point: &Option<Box<Expression>>| -> ResolveResult<_> {
-                    match point {
-                        None => Ok(None),
-                        Some(point) => Ok(Some(Box::new(self.eval_expression_as_value(ctx, scope, point)?))),
-                    }
+                let mut map_point = |point: &Option<Box<Expression>>| {
+                    point.as_ref()
+                        .map(|p| Box::new(self.eval_expression_as_value(ctx, scope, p)))
                 };
 
-                let start = map_point(start)?;
-                let end = map_point(end)?;
+                let start = map_point(start);
+                let end = map_point(end);
 
                 if let (Some(start), Some(end)) = (&start, &end) {
                     let op = if end_inclusive { BinaryOp::CmpLt } else { BinaryOp::CmpLte };
                     match self.require_value_true_for_range(expr.span, &Value::Binary(op, start.clone(), end.clone())) {
                         Ok(()) => {}
-                        Err(e) => return Ok(ScopedEntryDirect::Error(e)),
+                        Err(e) => return ScopedEntryDirect::Error(e),
                     }
                 }
 
@@ -185,32 +182,32 @@ impl CompileState<'_, '_> {
                         Value::Binary(
                             BinaryOp::Sub,
                             Box::new(Value::Int(BigInt::ZERO)),
-                            Box::new(self.eval_expression_as_value(ctx, scope, inner)?),
+                            Box::new(self.eval_expression_as_value(ctx, scope, inner)),
                         )
                     }
                     UnaryOp::Not =>
-                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, scope, inner)?)),
+                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, scope, inner))),
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
             }
             ExpressionKind::BinaryOp(op, ref left, ref right) => {
-                let left = self.eval_expression_as_value(ctx, scope, left)?;
-                let right = self.eval_expression_as_value(ctx, scope, right)?;
+                let left = self.eval_expression_as_value(ctx, scope, left);
+                let right = self.eval_expression_as_value(ctx, scope, right);
 
                 let result = Value::Binary(op, Box::new(left), Box::new(right));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
             }
             ExpressionKind::TernarySelect(_, _, _) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "ternary select expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "ternary select expression")),
             ExpressionKind::ArrayIndex(_, _) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "array index expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "array index expression")),
             ExpressionKind::DotIdIndex(_, _) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "dot id index expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot id index expression")),
             ExpressionKind::DotIntIndex(_, _) =>
-                ScopedEntryDirect::Error(diag.report_todo(expr.span, "dot int index expression")),
+                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
-                let target_entry = self.eval_expression(ctx, scope, target)?;
+                let target_entry = self.eval_expression(ctx, scope, target);
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
@@ -224,7 +221,7 @@ impl CompileState<'_, '_> {
                                 args.span,
                                 format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
                             );
-                            return Ok(ScopedEntryDirect::Error(diag.report(err)));
+                            return ScopedEntryDirect::Error(diags.report(err));
                         }
 
                         // check kind and type match, and collect in replacement map
@@ -235,13 +232,13 @@ impl CompileState<'_, '_> {
                         for (&param, arg) in zip_eq(&parameters.vec, &args.inner) {
                             match param {
                                 GenericParameter::Type(param) => {
-                                    let arg_ty = self.eval_expression_as_ty(scope, arg)?;
+                                    let arg_ty = self.eval_expression_as_ty(scope, arg);
                                     // TODO use for bound-check (once we add type bounds)
                                     let _param_info = &self.compiled[param];
                                     map_ty.insert_first(param, arg_ty)
                                 }
                                 GenericParameter::Value(param) => {
-                                    let arg_value = self.eval_expression_as_value(ctx, scope, arg)?;
+                                    let arg_value = self.eval_expression_as_value(ctx, scope, arg);
 
                                     // immediately use the existing generic params to replace the current one
                                     let param_info = &self.compiled[param];
@@ -260,7 +257,7 @@ impl CompileState<'_, '_> {
 
                         // only bail once all parameters have been checked
                         if let Some(e) = last_err {
-                            return Ok(ScopedEntryDirect::Error(e));
+                            return ScopedEntryDirect::Error(e);
                         }
 
                         // do the actual replacement
@@ -271,78 +268,77 @@ impl CompileState<'_, '_> {
                         match entry {
                             TypeOrValue::Type(_) => {
                                 let err = Diagnostic::new_simple("invalid call target", target.span, "invalid call target kind 'type'");
-                                ScopedEntryDirect::Error(diag.report(err))
+                                ScopedEntryDirect::Error(diags.report(err))
                             }
                             TypeOrValue::Value(_) =>
-                                ScopedEntryDirect::Error(diag.report_todo(target.span, "value call target")),
+                                ScopedEntryDirect::Error(diags.report_todo(target.span, "value call target")),
                         }
                     }
                     ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
                 }
             }
             ExpressionKind::Builtin(ref args) => {
-                return match self.eval_builtin_call(scope, expr.span, args)? {
-                    Ok(result) => Ok(MaybeConstructor::Immediate(result)),
-                    Err(e) => Ok(MaybeConstructor::Error(e)),
-                };
+                match self.eval_builtin_call(scope, expr.span, args) {
+                    Ok(result) => MaybeConstructor::Immediate(result),
+                    Err(e) => MaybeConstructor::Error(e),
+                }
             }
-        };
-        Ok(result)
+        }
     }
 
-    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> ResolveResult<Type> {
+    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
         let ctx = &ExpressionContext::Type;
-        let entry = self.eval_expression(ctx, scope, expr)?;
+        let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
             // TODO unify these error strings somewhere
             // TODO maybe move back to central error collection place for easier unit testing?
             ScopedEntryDirect::Constructor(_) => {
                 let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
-                Ok(Type::Error(self.diag.report(diag)))
+                Type::Error(self.diags.report(diag))
             }
             ScopedEntryDirect::Immediate(entry) => match entry {
-                TypeOrValue::Type(ty) => Ok(ty),
+                TypeOrValue::Type(ty) => ty,
                 TypeOrValue::Value(_) => {
                     let diag = Diagnostic::new_simple("expected type, got value", expr.span, "value");
-                    Ok(Type::Error(self.diag.report(diag)))
+                    Type::Error(self.diags.report(diag))
                 }
             }
-            ScopedEntryDirect::Error(e) => Ok(Type::Error(e))
+            ScopedEntryDirect::Error(e) => Type::Error(e)
         }
     }
 
-    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ResolveResult<Value> {
-        let entry = self.eval_expression(ctx, scope, expr)?;
+    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> Value {
+        let entry = self.eval_expression(ctx, scope, expr);
         match entry {
             ScopedEntryDirect::Constructor(_) => {
                 let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
-                Ok(Value::Error(self.diag.report(err)))
+                Value::Error(self.diags.report(err))
             }
             ScopedEntryDirect::Immediate(entry) => match entry {
                 TypeOrValue::Type(_) => {
                     let err = Diagnostic::new_simple("expected value, got type", expr.span, "type");
-                    Ok(Value::Error(self.diag.report(err)))
+                    Value::Error(self.diags.report(err))
                 }
-                TypeOrValue::Value(value) => Ok(value),
+                TypeOrValue::Value(value) => value,
             }
-            ScopedEntryDirect::Error(e) => Ok(Value::Error(e)),
+            ScopedEntryDirect::Error(e) => Value::Error(e),
         }
     }
 
-    pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> ResolveResult<SyncDomain<Value>> {
+    pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> SyncDomain<Value> {
         let ctx = &ExpressionContext::Type;
-        let clock = self.eval_expression_as_value(ctx, scope, &domain.clock)?;
-        let reset = self.eval_expression_as_value(ctx, scope, &domain.reset)?;
+        let clock = self.eval_expression_as_value(ctx, scope, &domain.clock);
+        let reset = self.eval_expression_as_value(ctx, scope, &domain.reset);
 
         // TODO check that clock is a clock
         // TODO check that reset is a boolean
         // TODO check that reset is either async or sync to the same clock
 
-        Ok(SyncDomain {
+        SyncDomain {
             clock,
             reset,
-        })
+        }
     }
 
     fn eval_builtin_call(
@@ -350,7 +346,7 @@ impl CompileState<'_, '_> {
         scope: Scope,
         expr_span: Span,
         args: &Args,
-    ) -> ResolveResult<Result<TypeOrValue, ErrorGuaranteed>> {
+    ) -> Result<TypeOrValue, ErrorGuaranteed> {
         let get_arg_str = |i: usize| -> Option<&str> {
             args.inner.get(i).and_then(|e| match &e.inner {
                 ExpressionKind::StringLiteral(s) => Some(s.as_str()),
@@ -364,35 +360,35 @@ impl CompileState<'_, '_> {
 
             match (first, second, rest) {
                 ("type", "bool", &[]) =>
-                    return Ok(Ok(TypeOrValue::Type(Type::Boolean))),
+                    return Ok(TypeOrValue::Type(Type::Boolean)),
                 ("type", "int", &[]) => {
                     let range = Box::new(Value::Range(RangeInfo::unbounded()));
-                    return Ok(Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range }))));
+                    return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
                 }
                 ("type", "int_range", [range]) => {
                     // TODO typecheck (range must be integer)
-                    let range = Box::new(self.eval_expression_as_value(ctx, scope, range)?);
+                    let range = Box::new(self.eval_expression_as_value(ctx, scope, range));
                     let ty_info = IntegerTypeInfo { range };
-                    return Ok(Ok(TypeOrValue::Type(Type::Integer(ty_info))));
+                    return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
                 }
                 ("type", "Range", &[]) =>
-                    return Ok(Ok(TypeOrValue::Type(Type::Range))),
+                    return Ok(TypeOrValue::Type(Type::Range)),
                 ("type", "bits_inf", &[]) =>
-                    return Ok(Ok(TypeOrValue::Type(Type::Bits(None)))),
+                    return Ok(TypeOrValue::Type(Type::Bits(None))),
                 ("type", "bits", [bits]) => {
                     // TODO typecheck (bits must be non-negative integer)
-                    let bits = self.eval_expression_as_value(ctx, scope, bits)?;
-                    return Ok(Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits))))));
+                    let bits = self.eval_expression_as_value(ctx, scope, bits);
+                    return Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits)))));
                 }
                 ("type", "Array", [ty, len]) => {
                     // TODO typecheck: len must be uint
-                    let ty = self.eval_expression_as_ty(scope, ty)?;
-                    let len = self.eval_expression_as_value(ctx, scope, len)?;
-                    return Ok(Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len)))));
+                    let ty = self.eval_expression_as_ty(scope, ty);
+                    let len = self.eval_expression_as_value(ctx, scope, len);
+                    return Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len))));
                 }
                 ("function", "print", [value]) => {
-                    let _: Value = self.eval_expression_as_value(ctx, scope, value)?;
-                    return Ok(Ok(TypeOrValue::Value(Value::Unit)));
+                    let _: Value = self.eval_expression_as_value(ctx, scope, value);
+                    return Ok(TypeOrValue::Value(Value::Unit));
                 }
                 // fallthrough into error
                 _ => {}
@@ -405,7 +401,7 @@ impl CompileState<'_, '_> {
             .finish()
             .finish()
             .into();
-        Ok(Err(self.diag.report(err)))
+        Err(self.diags.report(err))
     }
 }
 

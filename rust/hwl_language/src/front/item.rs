@@ -1,7 +1,7 @@
 use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
-use crate::front::driver::{CompileState, ResolveResult};
+use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, Value};
@@ -16,7 +16,7 @@ impl CompileState<'_, '_> {
     // TODO this signature is wrong: items are not always type constructors
     // TODO clarify: this resolves the _signature_, not the body, right?
     //   for type aliases it appears to resolve the body too.
-    pub fn resolve_item_signature_new(&mut self, item: Item) -> ResolveResult<MaybeConstructor<TypeOrValue>> {
+    pub fn resolve_item_signature_new(&mut self, item: Item) -> MaybeConstructor<TypeOrValue> {
         // check that this is indeed a new query
         assert!(self.compiled[item].signature.is_none());
 
@@ -24,7 +24,7 @@ impl CompileState<'_, '_> {
         let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
         let scope_file = match *self.compiled.file_scope.get(&self.compiled[item].ast_ref.file).unwrap() {
             Ok(scope_file) => scope_file,
-            Err(e) => return Ok(MaybeConstructor::Error(e)),
+            Err(e) => return MaybeConstructor::Error(e),
         };
 
         // always use a static context for types
@@ -36,16 +36,15 @@ impl CompileState<'_, '_> {
             ast::Item::Import(ItemImport { span: _, ref path, as_: _ }) => {
                 // TODO why are we handling use items here? can they not be eliminated by scope building
                 //  this is really weird, use items don't even really have signatures
-                let next_item = self.resolve_use_path(path)?;
-                match next_item {
-                    Ok(next_item) => Ok(self.resolve_item_signature(next_item)?.clone()),
-                    Err(e) => Ok(MaybeConstructor::Error(e)),
+                match self.resolve_use_path(path) {
+                    Ok(next_item) => self.resolve_item_signature(next_item).clone(),
+                    Err(e) => MaybeConstructor::Error(e),
                 }
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
                 self.resolve_new_generic_def(item, scope_file, params.as_ref(), |s, _args, scope_inner| {
-                    Ok(Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)?)))
+                    Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
@@ -54,13 +53,13 @@ impl CompileState<'_, '_> {
                     let mut fields_map = IndexMap::new();
                     for field in fields {
                         let StructField { span: _, id: field_id, ty } = field;
-                        let field_ty = s.eval_expression_as_ty(scope_inner, ty)?;
+                        let field_ty = s.eval_expression_as_ty(scope_inner, ty);
 
                         let prev = fields_map.insert(field_id.string.clone(), (field_id, field_ty));
                         if let Some(prev) = prev {
                             let diag = Diagnostic::new_defined_twice("struct field", span, field_id, prev.0);
-                            let err = s.diag.report(diag);
-                            return Ok(Err(err));
+                            let err = s.diags.report(diag);
+                            return Err(err);
                         }
                     }
 
@@ -69,7 +68,7 @@ impl CompileState<'_, '_> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         fields: fields_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(Ok(TypeOrValue::Type(Type::Struct(ty))))
+                    Ok(TypeOrValue::Type(Type::Struct(ty)))
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
@@ -80,14 +79,13 @@ impl CompileState<'_, '_> {
                         let EnumVariant { span: _, id: variant_id, content } = variant;
 
                         let content = content.as_ref()
-                            .map(|content| s.eval_expression_as_ty(scope_inner, content))
-                            .transpose()?;
+                            .map(|content| s.eval_expression_as_ty(scope_inner, content));
 
                         let prev = variants_map.insert(variant_id.string.clone(), (variant_id, content));
                         if let Some(prev) = prev {
                             let diag = Diagnostic::new_defined_twice("enum variant", span, variant_id, prev.0);
-                            let err = s.diag.report(diag);
-                            return Ok(Err(err));
+                            let err = s.diags.report(diag);
+                            return Err(err);
                         }
                     }
 
@@ -96,7 +94,7 @@ impl CompileState<'_, '_> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         variants: variants_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(Ok(TypeOrValue::Type(Type::Enum(ty))))
+                    Ok(TypeOrValue::Type(Type::Enum(ty)))
                 })
             }
             // value definitions
@@ -122,12 +120,12 @@ impl CompileState<'_, '_> {
                                         sync: match &sync.inner {
                                             SyncKind::Async => SyncKind::Async,
                                             SyncKind::Sync(SyncDomain { clock, reset }) => {
-                                                let clock = s.eval_expression_as_value(ctx, scope_ports, clock)?;
-                                                let reset = s.eval_expression_as_value(ctx, scope_ports, reset)?;
+                                                let clock = s.eval_expression_as_value(ctx, scope_ports, clock);
+                                                let reset = s.eval_expression_as_value(ctx, scope_ports, reset);
                                                 SyncKind::Sync(SyncDomain { clock, reset })
                                             }
                                         },
-                                        ty: s.eval_expression_as_ty(scope_ports, ty)?,
+                                        ty: s.eval_expression_as_ty(scope_ports, ty),
                                     }
                                 }
                             },
@@ -136,7 +134,7 @@ impl CompileState<'_, '_> {
                         port_vec.push(module_port);
 
                         s.compiled.scopes[scope_ports].declare(
-                            s.diag,
+                            s.diags,
                             &port_id,
                             ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
                             Visibility::Private,
@@ -152,11 +150,11 @@ impl CompileState<'_, '_> {
                         ports: port_vec,
                     };
 
-                    Ok(Ok(TypeOrValue::Type(Type::Module(module_ty_info))))
+                    Ok(TypeOrValue::Type(Type::Module(module_ty_info)))
                 })
             }
             ast::Item::Const(_) =>
-                Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "const definition"))),
+                MaybeConstructor::Error(self.diags.report_todo(item_ast.common_info().span_short, "const definition")),
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
                 self.resolve_new_generic_def(item, scope_file, Some(params), |s, args, scope_inner| {
                     // no need to use args for anything, they are mostly used for nominal type uniqueness
@@ -165,7 +163,7 @@ impl CompileState<'_, '_> {
 
                     let ret_ty = match ret_ty {
                         None => Type::Unit,
-                        Some(ret_ty) => s.eval_expression_as_ty(scope_inner, ret_ty)?,
+                        Some(ret_ty) => s.eval_expression_as_ty(scope_inner, ret_ty),
                     };
 
                     // keep scope for later
@@ -176,11 +174,11 @@ impl CompileState<'_, '_> {
                     s.compiled.function_info.insert_first(item, info);
 
                     // result
-                    Ok(Ok(TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty }))))
+                    Ok(TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty })))
                 })
             }
             ast::Item::Interface(_) =>
-                Ok(MaybeConstructor::Error(self.diag.report_todo(item_ast.common_info().span_short, "interface definition"))),
+                MaybeConstructor::Error(self.diags.report_todo(item_ast.common_info().span_short, "interface definition")),
         }
     }
 
@@ -189,8 +187,8 @@ impl CompileState<'_, '_> {
         item: Item,
         scope_outer: Scope,
         params: Option<&Spanned<Vec<ast::GenericParameter>>>,
-        build: impl FnOnce(&mut Self, GenericArguments, Scope) -> ResolveResult<Result<T, ErrorGuaranteed>>,
-    ) -> ResolveResult<MaybeConstructor<T>> {
+        build: impl FnOnce(&mut Self, GenericArguments, Scope) -> Result<T, ErrorGuaranteed>,
+    ) -> MaybeConstructor<T> {
         let item_span = self.parsed.item_ast(self.compiled[item].ast_ref).common_info().span_full;
         let scope_inner = self.compiled.scopes.new_child(scope_outer, item_span, Visibility::Private);
 
@@ -199,9 +197,9 @@ impl CompileState<'_, '_> {
                 // there are no parameters, just map directly
                 // the scope still needs to be "nested" since the builder needs an owned scope
                 let arguments = GenericArguments { vec: vec![] };
-                match build(self, arguments, scope_inner)? {
-                    Ok(ty) => Ok(MaybeConstructor::Immediate(ty)),
-                    Err(e) => Ok(MaybeConstructor::Error(e)),
+                match build(self, arguments, scope_inner) {
+                    Ok(ty) => MaybeConstructor::Immediate(ty),
+                    Err(e) => MaybeConstructor::Error(e),
                 }
             }
             Some(params) => {
@@ -220,7 +218,7 @@ impl CompileState<'_, '_> {
                             (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
                         }
                         GenericParameterKind::Value(ty_expr) => {
-                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr)?;
+                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr);
                             let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
@@ -236,7 +234,7 @@ impl CompileState<'_, '_> {
 
                     // TODO should we nest scopes here, or is incremental declaration in a single scope equivalent?
                     let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(arg));
-                    self.compiled[scope_inner].declare(self.diag, &param_ast.id, entry, Visibility::Private);
+                    self.compiled[scope_inner].declare(self.diags, &param_ast.id, entry, Visibility::Private);
                 }
 
                 let parameters = GenericParameters { vec: parameters };
@@ -244,19 +242,18 @@ impl CompileState<'_, '_> {
 
                 // build inner type
                 let inner = match build(self, arguments, scope_inner) {
-                    Ok(Ok(inner)) => inner,
-                    Ok(Err(e)) => return Ok(MaybeConstructor::Error(e)),
-                    Err(first) => return Err(first),
+                    Ok(inner) => inner,
+                    Err(e) => return MaybeConstructor::Error(e),
                 };
 
                 // result
                 let ty_constr = Constructor { parameters, inner };
-                Ok(MaybeConstructor::Constructor(ty_constr))
+                MaybeConstructor::Constructor(ty_constr)
             }
         }
     }
 
-    pub fn check_item_body(&mut self, item: Item) -> ResolveResult<ItemChecked> {
+    pub fn check_item_body(&mut self, item: Item) -> ItemChecked {
         assert!(self.compiled[item].body.is_none());
 
         // TODO remove this, no point in forcing this to be two-phase
@@ -270,30 +267,29 @@ impl CompileState<'_, '_> {
         let item_ast = self.parsed.item_ast(self.compiled[item].ast_ref);
         let item_span = item_ast.common_info().span_short;
 
-        let body = match item_ast {
+        match item_ast {
             // these items are fully defined by their type, which was already checked earlier
             ast::Item::Import(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemChecked::None,
             ast::Item::Const(_) => {
                 match item_signature_err {
                     Some(e) => ItemChecked::Error(e),
-                    None => ItemChecked::Error(self.diag.report_todo(item_span, "const body")),
+                    None => ItemChecked::Error(self.diags.report_todo(item_span, "const body")),
                 }
             }
             ast::Item::Function(item_ast) =>
-                ItemChecked::Function(self.check_function_body(item, item_ast)?),
+                ItemChecked::Function(self.check_function_body(item, item_ast)),
             ast::Item::Module(item_ast) =>
-                ItemChecked::Module(self.check_module_body(item, item_ast)?),
+                ItemChecked::Module(self.check_module_body(item, item_ast)),
             ast::Item::Interface(_) => {
                 match item_signature_err {
                     Some(e) => ItemChecked::Error(e),
-                    None => ItemChecked::Error(self.diag.report_todo(item_span, "interface body")),
+                    None => ItemChecked::Error(self.diags.report_todo(item_span, "interface body")),
                 }
             }
-        };
-        Ok(body)
+        }
     }
 
-    fn resolve_use_path(&self, path: &Path) -> ResolveResult<Result<Item, ErrorGuaranteed>> {
+    fn resolve_use_path(&self, path: &Path) -> Result<Item, ErrorGuaranteed> {
         // TODO the current path design does not allow private sub-modules
         //   are they really necessary? if all inner items are private it's effectively equivalent
         //   -> no it's not equivalent, things can also be private from the parent
@@ -319,8 +315,8 @@ impl CompileState<'_, '_> {
                         .finish()
                         .footer(Level::Info, format!("possible options: {:?}", options))
                         .finish();
-                    let err = self.diag.report(diag);
-                    return Ok(Err(err));
+                    let err = self.diags.report(diag);
+                    return Err(err);
                 }
             };
         }
@@ -329,23 +325,23 @@ impl CompileState<'_, '_> {
             Some(file) => file,
             None => {
                 let diag = Diagnostic::new_simple("expected path to file", path.span, "no file exists at this path");
-                let err = self.diag.report(diag);
-                return Ok(Err(err));
+                let err = self.diags.report(diag);
+                return Err(err);
             }
         };
 
         let file_scope = match *self.compiled.file_scope.get(&file).unwrap() {
             Ok(scope) => scope,
-            Err(e) => return Ok(Err(e)),
+            Err(e) => return Err(e),
         };
 
         // TODO change root scope to just be a map instead of a scope so we can avoid this unwrap
-        let entry = match self.compiled[file_scope].find(&self.compiled.scopes, self.diag, id, vis) {
-            Err(e) => return Ok(Err(e)),
+        let entry = match self.compiled[file_scope].find(&self.compiled.scopes, self.diags, id, vis) {
+            Err(e) => return Err(e),
             Ok(entry) => entry,
         };
         match entry.value {
-            &ScopedEntry::Item(item) => Ok(Ok(item)),
+            &ScopedEntry::Item(item) => Ok(item),
             // TODO is this still true?
             ScopedEntry::Direct(_) => unreachable!("file root entries should not exist"),
         }

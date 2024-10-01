@@ -90,7 +90,7 @@ impl CompileState<'_, '_> {
             .add_error(span_value, "value used here")
             .add_error(span_ty, "type defined here")
             .finish();
-        Err(self.diag.report(err))
+        Err(self.diags.report(err))
     }
 
     pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
@@ -100,7 +100,7 @@ impl CompileState<'_, '_> {
             let err = Diagnostic::new(title)
                 .add_error(span_range, "when checking that this range is non-decreasing")
                 .finish();
-            self.diag.report(err).into()
+            self.diags.report(err).into()
         })
     }
 
@@ -113,7 +113,7 @@ impl CompileState<'_, '_> {
                 .add_error(span_value, "when type checking this value")
                 .add_info(span_ty, "against this type")
                 .finish();
-            self.diag.report(err).into()
+            self.diags.report(err).into()
         })
     }
 
@@ -298,7 +298,7 @@ impl CompileState<'_, '_> {
                             let err = Diagnostic::new(title)
                                 .add_error(origin, "while checking this expression")
                                 .finish();
-                            self.diag.report(err)
+                            self.diags.report(err)
                         })?;
                         let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::Int(BigInt::ZERO)), right_start.clone());
                         self.try_eval_bool_true(origin, &cond)
@@ -308,7 +308,7 @@ impl CompileState<'_, '_> {
                                 let err = Diagnostic::new(title)
                                     .add_error(origin, "while checking this expression")
                                     .finish();
-                                self.diag.report(err)
+                                self.diags.report(err)
                             })?;
 
                         let left_start = try_opt_result!(left.start);

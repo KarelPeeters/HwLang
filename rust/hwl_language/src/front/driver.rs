@@ -11,7 +11,7 @@ use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
-pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
+pub fn compile(diag: &Diagnostics, database: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now file ids are still not deterministic
     let files_sorted = database.files.keys()
@@ -53,13 +53,13 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
                         body: None,
                     });
 
-                    local_scope_info.maybe_declare(diagnostics, &common_info.id, ScopedEntry::Item(item), vis);
+                    local_scope_info.maybe_declare(diag, &common_info.id, ScopedEntry::Item(item), vis);
                 }
 
                 (Ok(ast), Ok(local_scope))
             }
             Err(e) => {
-                let e = diagnostics.report(parse_error_to_diagnostic(e));
+                let e = diag.report(parse_error_to_diagnostic(e));
                 (Err(e), Err(e))
             }
         };
@@ -71,9 +71,12 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
     let parsed = ParsedDatabase { file_ast };
 
     let mut state = CompileState {
-        diag: diagnostics,
+        diags: diag,
         source: database,
         parsed: &parsed,
+        log_const_eval: false,
+        item_signature_stack: Vec::new(),
+        item_signatures_finished: false,
         compiled: CompiledDatabase {
             items,
             file_scope,
@@ -86,24 +89,24 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
             registers: Arena::default(),
             variables: Arena::default(),
         },
-        log_const_eval: false,
     };
 
     // resolve all item types (which is mostly their signatures)
     // TODO randomize order to check for dependency bugs? but then diagnostics have random orders
     let item_keys = state.compiled.items.keys().collect_vec();
     for &item in &item_keys {
-        state.resolve_item_signature_fully(item);
+        let _ = state.resolve_item_signature(item);
     }
+
+    // tell future checks that they're expected to complete immediately
+    state.item_signatures_finished = true;
 
     // typecheck all item bodies
     // TODO merge this with the previous pass: better for LSP and maybe for local items
+    // TODO alternatively: don't merge, this part can easily be parallelized
     for &item in &item_keys {
         assert!(state.compiled[item].body.is_none());
-        let body = match state.check_item_body(item) {
-            Ok(body) => body,
-            Err(ResolveFirst(_)) => panic!("all types should be resolved by now"),
-        };
+        let body = state.check_item_body(item);
 
         let slot = &mut state.compiled[item].body;
         assert!(slot.is_none());
@@ -136,17 +139,18 @@ pub fn compile(diagnostics: &Diagnostics, database: &SourceDatabase) -> (ParsedD
 
 // TODO create some dedicated auxiliary data structure, with dense and non-dense variants
 pub(super) struct CompileState<'d, 'a> {
-    pub(super) log_const_eval: bool,
-    pub(super) diag: &'d Diagnostics,
+    pub(super) diags: &'d Diagnostics,
     pub(super) source: &'d SourceDatabase,
     pub(super) parsed: &'a ParsedDatabase,
+
+    pub(super) log_const_eval: bool,
+    /// The stack of items that are currently being resolved.
+    /// This is used to detect cycles in type resolution.
+    item_signature_stack: Vec<Item>,
+    item_signatures_finished: bool,
+
     pub(super) compiled: CompiledDatabasePartial,
 }
-
-#[derive(Debug, Copy, Clone)]
-pub struct ResolveFirst(Item);
-
-pub type ResolveResult<T> = Result<T, ResolveFirst>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum EvalTrueError {
@@ -164,69 +168,55 @@ impl EvalTrueError {
     }
 }
 
-impl<'d, 'a> CompileState<'d, 'a> {
-    fn resolve_item_signature_fully(&mut self, item: Item) {
-        let mut stack = vec![item];
+impl CompileState<'_, '_> {
+    pub fn resolve_item_signature(&mut self, item: Item) -> &MaybeConstructor<TypeOrValue> {
+        // return existing signature if there is sone
+        //   ideally we could just do `if let Some(...)` here, but for some reason the borrow checker rejects that
+        if self.compiled.items[item].signature.is_some() {
+            return &self.compiled.items[item].signature.as_ref().unwrap();
+        }
 
-        // TODO avoid repetitive work by switching to async instead?
-        while let Some(curr) = stack.pop() {
-            if self.compiled[curr].signature.is_some() {
-                // already resolved, skip
-                continue;
+        // check for unexpected new signatures
+        if self.item_signatures_finished {
+            self.diags.report_internal_error(
+                self.compiled[item].defining_id.span(),
+                "all signatures should be resolved before body checking starts",
+            );
+        }
+
+        // check for cycle
+        let cycle_start_index = self.item_signature_stack.iter().position(|s| s == &item);
+        let result: MaybeConstructor<TypeOrValue> = if let Some(cycle_start_index) = cycle_start_index {
+            // cycle detected, report error
+            let cycle = &self.item_signature_stack[cycle_start_index..];
+
+            // build diagnostic
+            // TODO the order is nondeterministic, it depends on which items happened to be visited first
+            let mut err = Diagnostic::new("cyclic signature dependency");
+            for &stack_item in cycle {
+                let item_ast = self.parsed.item_ast(self.compiled[stack_item].ast_ref);
+                err = err.add_error(item_ast.common_info().span_short, "part of cycle");
             }
+            let err = self.diags.report(err.finish());
+            MaybeConstructor::Error(err)
+        } else {
+            // push current onto stack
+            self.item_signature_stack.push(item);
 
-            let resolved = match self.resolve_item_signature_new(curr) {
-                Ok(resolved) => resolved,
-                Err(ResolveFirst(first)) => {
-                    assert!(self.compiled[first].signature.is_none(), "request to resolve {first:?} first, but it already has a signature");
+            // resolve new signature
+            let result = self.resolve_item_signature_new(item);
 
-                    // push curr failed attempt back on the stack
-                    stack.push(curr);
+            // pop current from stack
+            let popped = self.item_signature_stack.pop();
+            assert_eq!(popped, Some(item));
 
-                    // check for cycle
-                    let cycle_start_index = stack.iter().position(|s| s == &first);
-                    if let Some(cycle_start_index) = cycle_start_index {
-                        // cycle detected, report error
-                        let cycle = &stack[cycle_start_index..];
+            result
+        };
 
-                        // build diagnostic
-                        // TODO the order is nondeterministic, it depends on which items happened to be visited first
-                        let mut diag = Diagnostic::new("cyclic signature dependency");
-                        for &stack_item in cycle {
-                            let item_ast = self.parsed.item_ast(self.compiled[stack_item].ast_ref);
-                            diag = diag.add_error(item_ast.common_info().span_short, "part of cycle");
-                        }
-                        let err = self.diag.report(diag.finish());
-
-                        // set slot of all involved items
-                        for &stack_item in cycle {
-                            let slot = &mut self.compiled[stack_item].signature;
-                            assert!(slot.is_none(), "someone else already set the signature for {curr:?}");
-                            *slot = Some(MaybeConstructor::Error(err));
-                        }
-
-                        // remove cycle from the stack
-                        drop(stack.drain(cycle_start_index..));
-                        continue;
-                    } else {
-                        // no cycle, visit the next item
-                        stack.push(first);
-                        continue;
-                    }
-                }
-            };
-
-            // managed to resolve the current item, store its type
-            let slot = &mut self.compiled[curr].signature;
-            assert!(slot.is_none(), "someone else already set the type for {curr:?}");
-            *slot = Some(resolved);
-        }
-    }
-
-    pub fn resolve_item_signature(&self, item: Item) -> ResolveResult<&MaybeConstructor<TypeOrValue>> {
-        match self.compiled[item].signature {
-            Some(ref r) => Ok(r),
-            None => Err(ResolveFirst(item)),
-        }
+        // store and return result
+        let slot = &mut self.compiled[item].signature;
+        assert!(slot.is_none(), "someone else already set the signature for {item:?}");
+        let result = slot.insert(result);
+        result
     }
 }
