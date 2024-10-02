@@ -29,6 +29,7 @@ extern {
         "ports" => TokenType::Ports,
         "body" => TokenType::Body,
         "module" => TokenType::Module,
+        "instance" => TokenType::Instance,
         "function" => TokenType::Function,
         "combinatorial" => TokenType::Combinatorial,
         "clock" => TokenType::Clock,
@@ -182,6 +183,28 @@ ModuleStatementKind: ModuleStatementKind = {
         };
         ModuleStatementKind::ClockedBlock(inner)
     },
+    // module instance
+    // TODO this is ugly syntax: why are generics and ports different
+    <start:@L>
+        "instance" <id:(<Id> "=")?> <module:Id>
+        <generic_args:("generics" "(" <Spanned<Separated<GenericNamedArg, ",">>> ")")?>
+        "ports" "(" <port_connections:Spanned<Separated<PortNamedArg, ",">>> ")"
+        ";"
+    <end:@R> => {
+        let instance = ModuleInstance {
+            id, module, generic_args, port_connections,
+            span: loc.span(start, end),
+        };
+        ModuleStatementKind::Instance(instance)
+    },
+}
+
+GenericNamedArg: (Identifier, Expression) = {
+    <id:Id> "=" <value:Expr> => (id, value),
+}
+
+PortNamedArg: (Identifier, Expression) = {
+    "." <id:Id> "(" <value:Expr> ")" => (id, value),
 }
 
 BlockStatementKind: BlockStatementKind = {
@@ -475,6 +498,10 @@ AssignOpInner: Option<BinaryOp> = {
 }
 
 // utilities
+GroupedList<P>: Spanned<Vec<P>> = {
+    <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
+}
+
 Separated<T, S>: Vec<T> = {
     <mut v:(<T> S)*> <e:T?> => match e {
         None => v,

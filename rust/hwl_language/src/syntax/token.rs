@@ -356,6 +356,7 @@ declare_tokens! {
         Ports("ports", TC::Keyword, TP::Normal),
         Body("body", TC::Keyword, TP::Normal),
         Module("module", TC::Keyword, TP::Normal),
+        Instance("instance", TC::Keyword, TP::Normal),
         Function("function", TC::Keyword, TP::Normal),
         Combinatorial("combinatorial", TC::Keyword, TP::Normal),
         Clock("clock", TC::Keyword, TP::Normal),

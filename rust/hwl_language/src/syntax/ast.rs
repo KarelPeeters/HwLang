@@ -219,6 +219,7 @@ pub enum ModuleStatementKind {
     WireDeclaration(WireDeclaration),
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
+    Instance(ModuleInstance),
     // TODO if, for
     // TODO function/type/module(?) definitions
 }
@@ -282,6 +283,15 @@ pub struct ClockedBlock {
     pub clock: Box<Expression>,
     pub reset: Box<Expression>,
     pub block: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleInstance {
+    pub span: Span,
+    pub id: Option<Identifier>,
+    pub module: Identifier,
+    pub generic_args: Option<Spanned<Vec<(Identifier, Expression)>>>,
+    pub port_connections: Spanned<Vec<(Identifier, Expression)>>,
 }
 
 pub type Expression = Spanned<ExpressionKind>;

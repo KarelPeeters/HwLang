@@ -41,6 +41,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
                 ModuleStatementKind::ClockedBlock(_) => {}
+                ModuleStatementKind::Instance(_) => {}
             }
         }
 
@@ -57,6 +58,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
                 ModuleStatementKind::ClockedBlock(ref clocked_block) => {
                     self.process_module_block_clocked(&mut module_blocks, scope_body, clocked_block);
+                }
+                // instances
+                ModuleStatementKind::Instance(_) => {
+                    self.diags.report_todo(top_statement.span, "module instance");
                 }
             }
         }

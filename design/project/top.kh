@@ -1,5 +1,4 @@
 import std.types.[bool, bits, uint];
-import std.io.print;
 
 pub module top ports(
     clk: input clock,
@@ -7,20 +6,25 @@ pub module top ports(
     x: input sync(clk, rst) bits(4),
     y: output sync(clk, rst) bits(4),
 ) body {
-    val n: uint = test(8);
+    instance i_child = child generics(
+        N=4,
+    ) ports(
+        .clk(clk),
+        .rst(rst),
+        .x(x),
+        .y(y),
+    );
+}
 
+module child generics(
+    N: uint,
+) ports(
+    clk: input clock,
+    rst: input async bool,
+    x: input sync(clk, rst) bits(N),
+    y: output sync(clk, rst) bits(N),
+) body {
     combinatorial {
          y = x;
     }
-
-    clocked(clk, rst) {
-
-    }
-}
-
-function test(n: uint): uint {
-    for (i in 0..n) {
-        print(i);
-    };
-    return n;
 }
