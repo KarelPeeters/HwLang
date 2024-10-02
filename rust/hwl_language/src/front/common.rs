@@ -73,6 +73,25 @@ impl<T, V> TypeOrValue<T, V> {
     }
 }
 
+#[derive(Debug)]
+pub enum ValueDomainKind {
+    Const,
+    Async,
+    Sync(SyncDomain<Value>),
+}
+
+impl ValueDomainKind {
+    pub fn from_domain_kind(domain: DomainKind<Value>) -> Self {
+        match domain {
+            DomainKind::Async => ValueDomainKind::Async,
+            DomainKind::Sync(sync) => ValueDomainKind::Sync(SyncDomain {
+                clock: sync.clock,
+                reset: sync.reset,
+            }),
+        }
+    }
+}
+
 /// A Monad trait, specifically for replacing generic parameters in a type or value with more concrete arguments.
 // TODO replace this a more general "map" trait, where the user can supply their own closure
 pub trait GenericContainer {

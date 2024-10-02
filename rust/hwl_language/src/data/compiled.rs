@@ -2,7 +2,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleChecked;
 use crate::data::parsed::ItemAstReference;
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, TypeOrValue};
+use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomainKind};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -303,10 +303,11 @@ impl<S: CompiledStage> CompiledDatabase<S> {
         }
     }
 
-    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &DomainKind<Value>) -> String {
+    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &ValueDomainKind) -> String {
         match sync {
-            DomainKind::Async => "async".to_string(),
-            DomainKind::Sync(SyncDomain { clock, reset }) => {
+            ValueDomainKind::Const => "const".to_string(),
+            ValueDomainKind::Async => "async".to_string(),
+            ValueDomainKind::Sync(SyncDomain { clock, reset }) => {
                 let clock_str = self.value_to_readable_str(source, clock);
                 let reset_str = self.value_to_readable_str(source, reset);
                 format!("sync({clock_str}, {reset_str})")

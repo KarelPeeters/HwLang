@@ -1,12 +1,12 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
-use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, DomainKind, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
 
@@ -274,20 +274,20 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         // async block, we just need source->target to be valid
                         self.check_sync_assign(
                             assignment.target.span,
-                            target_sync,
+                            &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             assignment.value.span,
-                            value_sync,
+                            &ValueDomainKind::from_domain_kind(value_sync.clone()),
                             UserControlled::Both,
                             "in a combinatorial block, for each assignment, target and source must be in the same domain",
                         )?;
                     }
                     Some(Spanned { span: block_sync_span, inner: block_sync }) => {
                         // clocked block, we need source->block and block->target to be valid
-                        let block_sync = DomainKind::Sync(block_sync.clone());
+                        let block_sync = ValueDomainKind::Sync(block_sync.clone());
 
                         let result_0 = self.check_sync_assign(
                             assignment.target.span,
-                            target_sync,
+                            &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             block_sync_span,
                             &block_sync,
                             UserControlled::Target,
@@ -297,7 +297,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             block_sync_span,
                             &block_sync,
                             assignment.value.span,
-                            value_sync,
+                            &ValueDomainKind::from_domain_kind(value_sync.clone()),
                             UserControlled::Source,
                             "in a clocked block, each source must be in the same domain as the block",
                         );
@@ -322,34 +322,45 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn check_sync_assign(
         &self,
         target_span: Span,
-        target: &DomainKind<Value>,
+        target: &ValueDomainKind,
         source_span: Span,
-        source: &DomainKind<Value>,
+        source: &ValueDomainKind,
         user_controlled: UserControlled,
         hint: &str,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.diags;
 
         let invalid_reason = match (target, source) {
-            (DomainKind::Async, _) => None,
-            (DomainKind::Sync(_), DomainKind::Async) => Some("async to sync"),
-            (DomainKind::Sync(target), DomainKind::Sync(source)) => {
+            // const target must have const source
+            (ValueDomainKind::Const, ValueDomainKind::Const) => None,
+            (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
+            (ValueDomainKind::Const, ValueDomainKind::Sync(_)) => Some("sync to const"),
+            // const can be the source of everything
+            (ValueDomainKind::Async, ValueDomainKind::Const) => None,
+            (ValueDomainKind::Sync(_), ValueDomainKind::Const) => None,
+            // async can be the target of everything
+            (ValueDomainKind::Async, _) => None,
+            // sync cannot be the target of async
+            (ValueDomainKind::Sync(_), ValueDomainKind::Async) => Some("async to sync"),
+            // sync pair is allowed if clock and reset match
+            (ValueDomainKind::Sync(target), ValueDomainKind::Sync(source)) => {
                 let SyncDomain { clock: target_clock, reset: target_reset } = target;
                 let SyncDomain { clock: source_clock, reset: source_reset } = source;
 
                 // TODO equality is _probably_ the wrong operation for this
-                let value_neq = |a: &Value, b: &Value| {
+                let value_eq = |a: &Value, b: &Value| {
                     match (a, b) {
-                        (&Value::Error(e), _) | (_, &Value::Error(e)) => Err(e),
-                        (a, b) => Ok(a != b),
+                        // optimistically assume they match
+                        (&Value::Error(_), _) | (_, &Value::Error(_)) => true,
+                        (a, b) => a == b,
                     }
                 };
 
-                match (value_neq(target_clock, source_clock), value_neq(target_reset, source_reset)) {
-                    (Ok(true), Ok(true)) => Some("different clock and reset"),
-                    (Ok(true), Ok(false)) => Some("different clock"),
-                    (Ok(false), Ok(true)) => Some("different reset"),
-                    (Ok(false), Ok(false)) | (Err(_), _) | (_, Err(_)) => None,
+                match (value_eq(target_clock, source_clock), value_eq(target_reset, source_reset)) {
+                    (false, false) => Some("different clock and reset"),
+                    (false, true) => Some("different clock"),
+                    (true, false) => Some("different reset"),
+                    (true, true) => None,
                 }
             }
         };
