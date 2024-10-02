@@ -173,20 +173,17 @@ pub struct ModulePort {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    pub kind: Spanned<PortKind<Sync<Box<Expression>>, Box<Expression>>>,
+    pub kind: Spanned<PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PortKind<S, T> {
     Clock,
-    Normal { sync: S, ty: T },
+    Normal { domain: S, ty: T },
 }
 
-pub type Sync<S> = Spanned<SyncKind<S>>;
-
-// TODO rename this to "domain" too?
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum SyncKind<S> {
+pub enum DomainKind<S> {
     Async,
     Sync(SyncDomain<S>),
 }
@@ -248,7 +245,7 @@ pub struct WireDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     // TODO make optional and infer
-    pub sync: Spanned<SyncKind<Box<Expression>>>,
+    pub sync: Spanned<DomainKind<Box<Expression>>>,
     pub ty: Box<Expression>,
     pub value: Option<Box<Expression>>,
 }

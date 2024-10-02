@@ -62,7 +62,7 @@ impl CompileState<'_, '_> {
             }
             (ty, &Value::ModulePort(port)) => {
                 // TODO weird, will solve itself once we switch to type-type
-                if let PortKind::Normal { sync: _, ty: ref port_ty } = self.compiled[port].kind {
+                if let PortKind::Normal { domain: _, ty: ref port_ty } = self.compiled[port].kind {
                     if ty == port_ty {
                         return Ok(());
                     }
@@ -248,7 +248,7 @@ impl CompileState<'_, '_> {
             Value::ModulePort(port) => {
                 match &self.compiled[port].kind {
                     PortKind::Clock => Ok(None),
-                    PortKind::Normal { sync: _, ty } => ty_as_range(ty),
+                    PortKind::Normal { domain: _, ty } => ty_as_range(ty),
                 }
             }
             Value::Binary(op, ref left, ref right) => {

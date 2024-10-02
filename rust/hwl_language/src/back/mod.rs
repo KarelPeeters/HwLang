@@ -9,7 +9,7 @@ use crate::front::scope::Visibility;
 use crate::front::types::{GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, Identifier, PortDirection, PortKind, SyncDomain, SyncKind};
+use crate::syntax::ast::{BinaryOp, DomainKind, Identifier, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
@@ -148,7 +148,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id: _, sync, ty } = &compiled[reg];
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
-        let sync_str = sync_to_comment_str(source, compiled, &SyncKind::Sync(sync.clone()));
+        let sync_str = sync_to_comment_str(source, compiled, &DomainKind::Sync(sync.clone()));
 
         swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
     }
@@ -255,7 +255,7 @@ fn port_to_verilog(
 
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
-        PortKind::Normal { sync, ty } => {
+        PortKind::Normal { domain: sync, ty } => {
             // TODO include full type in comment
             let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty));
             let comment = sync_to_comment_str(source, compiled, sync);
@@ -268,14 +268,14 @@ fn port_to_verilog(
     format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
 }
 
-fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, sync: &SyncKind<Value>) -> String {
+fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>) -> String {
     match sync {
-        SyncKind::Sync(SyncDomain { clock, reset }) => {
+        DomainKind::Sync(SyncDomain { clock, reset }) => {
             let clock_str = compiled.value_to_readable_str(source, clock);
             let reset_str = compiled.value_to_readable_str(source, reset);
             format!("sync({}, {})", clock_str, reset_str)
         }
-        SyncKind::Async => "async".to_owned(),
+        DomainKind::Async => "async".to_owned(),
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
-use crate::syntax::ast::{PortKind, SyncDomain, SyncKind};
+use crate::syntax::ast::{DomainKind, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
 use indexmap::IndexMap;
 // TODO move all common stuff to the data module, since multiple stages depend on it
@@ -171,10 +171,10 @@ impl GenericContainer for ModulePort {
 
         let kind_new = match compiled[port].kind.clone() {
             PortKind::Clock => PortKind::Clock,
-            PortKind::Normal { sync, ty } => PortKind::Normal {
-                sync: match sync {
-                    SyncKind::Async => SyncKind::Async,
-                    SyncKind::Sync(domain) => SyncKind::Sync(SyncDomain {
+            PortKind::Normal { domain: sync, ty } => PortKind::Normal {
+                domain: match sync {
+                    DomainKind::Async => DomainKind::Async,
+                    DomainKind::Sync(domain) => DomainKind::Sync(SyncDomain {
                         clock: domain.clock.replace_generic_params(compiled, map_ty, map_value),
                         reset: domain.reset.replace_generic_params(compiled, map_ty, map_value),
                     }),

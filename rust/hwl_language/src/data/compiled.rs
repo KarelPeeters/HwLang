@@ -7,7 +7,7 @@ use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain, SyncKind};
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
@@ -172,7 +172,7 @@ pub struct ModulePortInfo {
     pub defining_id: Identifier,
     pub direction: PortDirection,
     // TODO this is probably wrong, the type and value here don't get replaced properly
-    pub kind: PortKind<SyncKind<Value>, Type>,
+    pub kind: PortKind<DomainKind<Value>, Type>,
 }
 
 #[derive(Debug)]
@@ -303,10 +303,10 @@ impl<S: CompiledStage> CompiledDatabase<S> {
         }
     }
 
-    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &SyncKind<Value>) -> String {
+    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &DomainKind<Value>) -> String {
         match sync {
-            SyncKind::Async => "async".to_string(),
-            SyncKind::Sync(SyncDomain { clock, reset }) => {
+            DomainKind::Async => "async".to_string(),
+            DomainKind::Sync(SyncDomain { clock, reset }) => {
                 let clock_str = self.value_to_readable_str(source, clock);
                 let reset_str = self.value_to_readable_str(source, reset);
                 format!("sync({clock_str}, {reset_str})")

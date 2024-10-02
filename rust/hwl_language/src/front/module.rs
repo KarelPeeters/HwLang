@@ -6,7 +6,7 @@ use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, SyncKind, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, DomainKind, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
 
@@ -268,7 +268,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             // TODO careful about delta cycles and the verilog equivalent!
             (PortKind::Clock, PortKind::Clock) =>
                 Err(self.diags.report_todo(span, "clock assignment")),
-            (PortKind::Normal { sync: target_sync, ty: target_ty }, PortKind::Normal { sync: value_sync, ty: value_ty }) => {
+            (PortKind::Normal { domain: target_sync, ty: target_ty }, PortKind::Normal { domain: value_sync, ty: value_ty }) => {
                 match block_sync {
                     None => {
                         // async block, we just need source->target to be valid
@@ -283,7 +283,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                     Some(Spanned { span: block_sync_span, inner: block_sync }) => {
                         // clocked block, we need source->block and block->target to be valid
-                        let block_sync = SyncKind::Sync(block_sync.clone());
+                        let block_sync = DomainKind::Sync(block_sync.clone());
 
                         let result_0 = self.check_sync_assign(
                             assignment.target.span,
@@ -322,18 +322,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn check_sync_assign(
         &self,
         target_span: Span,
-        target: &SyncKind<Value>,
+        target: &DomainKind<Value>,
         source_span: Span,
-        source: &SyncKind<Value>,
+        source: &DomainKind<Value>,
         user_controlled: UserControlled,
         hint: &str,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.diags;
 
         let invalid_reason = match (target, source) {
-            (SyncKind::Async, _) => None,
-            (SyncKind::Sync(_), SyncKind::Async) => Some("async to sync"),
-            (SyncKind::Sync(target), SyncKind::Sync(source)) => {
+            (DomainKind::Async, _) => None,
+            (DomainKind::Sync(_), DomainKind::Async) => Some("async to sync"),
+            (DomainKind::Sync(target), DomainKind::Sync(source)) => {
                 let SyncDomain { clock: target_clock, reset: target_reset } = target;
                 let SyncDomain { clock: source_clock, reset: source_reset } = source;
 

@@ -160,7 +160,7 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
-    <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<SyncKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
+    <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<DomainKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
         let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
         ModuleStatementKind::WireDeclaration(decl)
     },
@@ -230,9 +230,9 @@ ModulePort: ModulePort = {
         => ModulePort { id, direction, kind, span: loc.span(start, end) },
 }
 
-PortKind: PortKind<Spanned<SyncKind<Box<Expression>>>, Box<Expression>> = {
+PortKind: PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
     "clock" => PortKind::Clock,
-    <sync:Spanned<SyncKind>> <ty:BoxExpr> => PortKind::Normal { sync, ty },
+    <domain:Spanned<DomainKind>> <ty:BoxExpr> => PortKind::Normal { domain, ty },
 }
 
 PortDirection: PortDirection = {
@@ -240,9 +240,9 @@ PortDirection: PortDirection = {
     "output" => PortDirection::Output,
 }
 
-SyncKind: SyncKind<Box<Expression>> = {
-    "async" => SyncKind::Async,
-    <SyncDomain> => SyncKind::Sync(<>),
+DomainKind: DomainKind<Box<Expression>> = {
+    "async" => DomainKind::Async,
+    <SyncDomain> => DomainKind::Sync(<>),
 }
 
 SyncDomain: SyncDomain<Box<Expression>> = {

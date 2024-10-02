@@ -6,7 +6,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain, SyncKind};
+use crate::syntax::ast::{DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 
@@ -110,14 +110,14 @@ impl CompileState<'_, '_> {
                             direction: direction.inner,
                             kind: match &kind.inner {
                                 PortKind::Clock => PortKind::Clock,
-                                PortKind::Normal { sync, ty } => {
+                                PortKind::Normal { domain: sync, ty } => {
                                     PortKind::Normal {
-                                        sync: match &sync.inner {
-                                            SyncKind::Async => SyncKind::Async,
-                                            SyncKind::Sync(SyncDomain { clock, reset }) => {
+                                        domain: match &sync.inner {
+                                            DomainKind::Async => DomainKind::Async,
+                                            DomainKind::Sync(SyncDomain { clock, reset }) => {
                                                 let clock = s.eval_expression_as_value(ctx, scope_ports, clock);
                                                 let reset = s.eval_expression_as_value(ctx, scope_ports, reset);
-                                                SyncKind::Sync(SyncDomain { clock, reset })
+                                                DomainKind::Sync(SyncDomain { clock, reset })
                                             }
                                         },
                                         ty: s.eval_expression_as_ty(scope_ports, ty),
