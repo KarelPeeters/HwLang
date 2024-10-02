@@ -146,7 +146,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         let _ = init;
 
         // TODO use id in the name?
-        let RegisterInfo { defining_item: _, defining_id: _, sync, ty } = &compiled[reg];
+        let RegisterInfo { defining_item: _, defining_id: _, domain: sync, ty } = &compiled[reg];
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
         let sync_str = sync_to_comment_str(source, compiled, &DomainKind::Sync(sync.clone()));
 
@@ -381,7 +381,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
 fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
-        Value::Int(i) => Ok(i.clone()),
+        Value::InstConstant(i) => Ok(i.clone()),
         Value::Binary(op, left, right) => {
             let left = value_evaluate_int(diag, span, left)?;
             let right = value_evaluate_int(diag, span, right)?;

@@ -213,6 +213,7 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
+    // TODO replace this with "const", reserving variables for inside blocks and functions
     VariableDeclaration(VariableDeclaration),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),

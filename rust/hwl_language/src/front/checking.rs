@@ -1,17 +1,102 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::front::common::ValueDomainKind;
 use crate::front::driver::{CompileState, EvalTrueError};
 use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{BinaryOp, PortKind};
+use crate::syntax::ast::{BinaryOp, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::try_opt_result;
 use num_bigint::BigInt;
 use num_traits::One;
 
 impl CompileState<'_, '_> {
+    pub fn domain_of_value(&self, span: Span, value: &Value) -> ValueDomainKind {
+        let diags = self.diags;
+
+        match value {
+            &Value::Error(e) => ValueDomainKind::Error(e),
+            &Value::ModulePort(port) => {
+                match &self.compiled[port].kind {
+                    PortKind::Clock => ValueDomainKind::Clock,
+                    PortKind::Normal { domain, ty: _ } => ValueDomainKind::from_domain_kind(domain.clone()),
+                }
+            }
+            &Value::GenericParameter(_) => ValueDomainKind::Const,
+            &Value::Never => ValueDomainKind::Const,
+            &Value::Unit => ValueDomainKind::Const,
+            &Value::InstConstant(_) => ValueDomainKind::Const,
+            Value::Range(info) => {
+                let RangeInfo { start, end, end_inclusive: _ } = info;
+
+                let start = start.as_ref().map(|v| self.domain_of_value(span, v));
+                let end = end.as_ref().map(|v| self.domain_of_value(span, v));
+
+                match (start, end) {
+                    (None, None) =>
+                        ValueDomainKind::Const,
+                    (Some(single), None) | (None, Some(single)) =>
+                        single,
+                    (Some(start), Some(end)) =>
+                        self.merge_domains(span, &start, &end),
+                }
+            }
+            Value::Binary(_, left, right) =>
+                self.merge_domains(span, &self.domain_of_value(span, left), &self.domain_of_value(span, right)),
+            Value::UnaryNot(inner) =>
+                self.domain_of_value(span, inner),
+            // TODO just join all argument domains
+            &Value::FunctionReturn(_) =>
+                ValueDomainKind::Error(diags.report_todo(span, "domain of function return value")),
+            &Value::Module(_) =>
+                ValueDomainKind::Error(diags.report_simple("cannot get domain of module value", span, "module")),
+            &Value::Wire =>
+                ValueDomainKind::Error(diags.report_todo(span, "domain of wire value")),
+            &Value::Register(reg) =>
+                ValueDomainKind::Sync(self.compiled[reg].domain.clone()),
+            // TODO this is a bit confusing, the origin of the variable matters!
+            &Value::Variable(_) =>
+                ValueDomainKind::Error(diags.report_todo(span, "domain of variable value")),
+        }
+    }
+
+    /// Merge two sync domains, as they would be if they were used as part of a single expression.
+    /// Reports an error if this is not possible.
+    pub fn merge_domains(&self, span: Span, left: &ValueDomainKind, right: &ValueDomainKind) -> ValueDomainKind {
+        match (left, right) {
+            // propagate errors
+            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) => ValueDomainKind::Error(e),
+            // const can merge with anything and become that other domain
+            (ValueDomainKind::Const, other) | (other, ValueDomainKind::Const) => other.clone(),
+            // sync can merge if both domains match
+            (ValueDomainKind::Sync(left), ValueDomainKind::Sync(right)) => {
+                match sync_domains_equal(left, right) {
+                    Ok(SyncDomainsEqual::Equal) => ValueDomainKind::Sync(left.clone()),
+                    Ok(SyncDomainsEqual::NotEqual(reason)) => {
+                        let label = format!(
+                            "{}: domains {} and {}",
+                            reason,
+                            self.compiled.sync_kind_to_readable_string(&self.source, &ValueDomainKind::Sync(left.clone())),
+                            self.compiled.sync_kind_to_readable_string(&self.source, &ValueDomainKind::Sync(right.clone())),
+                        );
+                        let e = self.diags.report_simple("cannot merge different sync domains", span, label);
+                        ValueDomainKind::Error(e)
+                    }
+                    Err(e) => ValueDomainKind::Error(e),
+                }
+            }
+            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) => {
+                ValueDomainKind::Error(self.diags.report_simple("cannot merge clock domain with anything", span, "clock domain"))
+            }
+            (ValueDomainKind::Async, _) | (_, ValueDomainKind::Async) => {
+                ValueDomainKind::Error(self.diags.report_simple("cannot merge async domain with anything", span, "async domain"))
+            }
+        }
+    }
+
     // TODO double-check that all of these type-checking functions do their error handling correctly
     //   and don't short-circuit unnecessarily, preventing multiple errors
     // TODO change this to be type-type based instead of type-value
+    // TODO move error formatting out of this function, it depends too much on the context and spans are not always available
     pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         match (ty, value) {
             // propagate errors, we can't just silently ignore them:
@@ -80,7 +165,7 @@ impl CompileState<'_, '_> {
             }
 
             // fallthrough into error
-            _ => {},
+            _ => {}
         };
 
         let ty_str = self.compiled.type_to_readable_str(self.source, ty);
@@ -240,9 +325,9 @@ impl CompileState<'_, '_> {
             // a single integer corresponds to the range containing only that integer
             // TODO should we generate an inclusive or exclusive range here?
             //   this will become moot once we switch to +1 deltas
-            Value::Int(ref value) => Ok(Some(RangeInfo {
-                start: Some(Box::new(Value::Int(value.clone()))),
-                end: Some(Box::new(Value::Int(value + 1u32))),
+            Value::InstConstant(ref value) => Ok(Some(RangeInfo {
+                start: Some(Box::new(Value::InstConstant(value.clone()))),
+                end: Some(Box::new(Value::InstConstant(value + 1u32))),
                 end_inclusive: false,
             })),
             Value::ModulePort(port) => {
@@ -279,7 +364,7 @@ impl CompileState<'_, '_> {
                         let range = RangeInfo {
                             start: option_pair(left.start.as_ref(), right.end.as_ref())
                                 .map(|(left_start, right_end)| {
-                                    let right_end_inclusive = Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::Int(BigInt::one()))));
+                                    let right_end_inclusive = Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::InstConstant(BigInt::one()))));
                                     Box::new(Value::Binary(BinaryOp::Sub, left_start.clone(), right_end_inclusive))
                                 }),
                             end: option_pair(left.end.as_ref(), right.start.as_ref())
@@ -300,7 +385,7 @@ impl CompileState<'_, '_> {
                                 .finish();
                             self.diags.report(err)
                         })?;
-                        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::Int(BigInt::ZERO)), right_start.clone());
+                        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::InstConstant(BigInt::ZERO)), right_start.clone());
                         self.try_eval_bool_true(origin, &cond)
                             .map_err(|e| {
                                 let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
@@ -315,10 +400,10 @@ impl CompileState<'_, '_> {
 
                         // if base is >0, then the result is >0 too
                         // TODO this range can be improved a lot: consider cases +,0,- separately
-                        let base_positive = self.try_eval_bool(origin, &Value::Binary(BinaryOp::CmpLt, Box::new(Value::Int(BigInt::ZERO)), left_start))?;
+                        let base_positive = self.try_eval_bool(origin, &Value::Binary(BinaryOp::CmpLt, Box::new(Value::InstConstant(BigInt::ZERO)), left_start))?;
                         if base_positive == Some(true) {
                             Ok(Some(RangeInfo {
-                                start: Some(Box::new(Value::Int(BigInt::one()))),
+                                start: Some(Box::new(Value::InstConstant(BigInt::one()))),
                                 end: None,
                                 end_inclusive: false,
                             }))
@@ -349,9 +434,9 @@ pub fn simplify_value(value: Value) -> Value {
 
             if let Some((left, right)) = option_pair(value_as_int(&left), value_as_int(&right)) {
                 match op {
-                    BinaryOp::Add => return Value::Int(left + right),
-                    BinaryOp::Sub => return Value::Int(left - right),
-                    BinaryOp::Mul => return Value::Int(left * right),
+                    BinaryOp::Add => return Value::InstConstant(left + right),
+                    BinaryOp::Sub => return Value::InstConstant(left - right),
+                    BinaryOp::Mul => return Value::InstConstant(left * right),
                     _ => {}
                 }
             }
@@ -366,7 +451,7 @@ pub fn simplify_value(value: Value) -> Value {
 // TODO return error if value is error?
 pub fn value_as_int(value: &Value) -> Option<&BigInt> {
     match value {
-        Value::Int(value) => Some(value),
+        Value::InstConstant(value) => Some(value),
         _ => None,
     }
 }
@@ -375,5 +460,32 @@ fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
     match (left, right) {
         (Some(left), Some(right)) => Some((left, right)),
         _ => None,
+    }
+}
+
+pub enum SyncDomainsEqual {
+    Equal,
+    NotEqual(&'static str),
+}
+
+pub fn sync_domains_equal(left: &SyncDomain<Value>, right: &SyncDomain<Value>) -> Result<SyncDomainsEqual, ErrorGuaranteed> {
+    let SyncDomain { clock: target_clock, reset: target_reset } = left;
+    let SyncDomain { clock: source_clock, reset: source_reset } = right;
+
+    let value_eq = |a: &Value, b: &Value| {
+        match (a, b) {
+            // optimistically assume they match
+            (&Value::Error(e), _) | (_, &Value::Error(e)) => Err(e),
+            // TODO equality is _probably_ the wrong operation for this
+            (a, b) => Ok(a == b),
+        }
+    };
+
+    // we're intentionally not emitting any error if _either_ of them is an error already, to prevent confusion
+    match (value_eq(target_clock, source_clock)?, value_eq(target_reset, source_reset)?) {
+        (false, false) => Ok(SyncDomainsEqual::NotEqual("different clock and reset")),
+        (false, true) => Ok(SyncDomainsEqual::NotEqual("different clock")),
+        (true, false) => Ok(SyncDomainsEqual::NotEqual("different reset")),
+        (true, true) => Ok(SyncDomainsEqual::Equal),
     }
 }

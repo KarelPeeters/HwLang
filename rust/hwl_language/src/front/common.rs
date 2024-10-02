@@ -1,4 +1,5 @@
 use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{DomainKind, PortKind, SyncDomain};
@@ -73,9 +74,11 @@ impl<T, V> TypeOrValue<T, V> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ValueDomainKind {
+    Error(ErrorGuaranteed),
     Const,
+    Clock,
     Async,
     Sync(SyncDomain<Value>),
 }

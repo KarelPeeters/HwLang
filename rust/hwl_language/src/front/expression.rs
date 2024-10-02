@@ -140,7 +140,7 @@ impl CompileState<'_, '_> {
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         let value = str_clean.parse::<BigInt>().unwrap();
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Int(value)))
+                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::InstConstant(value)))
                     }
                 }
             }
@@ -181,7 +181,7 @@ impl CompileState<'_, '_> {
                     UnaryOp::Neg => {
                         Value::Binary(
                             BinaryOp::Sub,
-                            Box::new(Value::Int(BigInt::ZERO)),
+                            Box::new(Value::InstConstant(BigInt::ZERO)),
                             Box::new(self.eval_expression_as_value(ctx, scope, inner)),
                         )
                     }

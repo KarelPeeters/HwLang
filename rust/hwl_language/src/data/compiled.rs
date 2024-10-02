@@ -181,7 +181,7 @@ pub struct RegisterInfo {
     pub defining_id: MaybeIdentifier,
 
     // TODO is it okay that this type and value does not get its generics replaced?
-    pub sync: SyncDomain<Value>,
+    pub domain: SyncDomain<Value>,
     pub ty: Type,
 }
 
@@ -240,7 +240,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             }
             Value::Never => "never".to_string(),
             Value::Unit => "()".to_string(),
-            Value::Int(v) => {
+            Value::InstConstant(v) => {
                 if v.is_negative() {
                     format!("({})", v)
                 } else {
@@ -305,7 +305,9 @@ impl<S: CompiledStage> CompiledDatabase<S> {
 
     pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &ValueDomainKind) -> String {
         match sync {
+            ValueDomainKind::Error(_) => "error".to_string(),
             ValueDomainKind::Const => "const".to_string(),
+            ValueDomainKind::Clock => "clock".to_string(),
             ValueDomainKind::Async => "async".to_string(),
             ValueDomainKind::Sync(SyncDomain { clock, reset }) => {
                 let clock_str = self.value_to_readable_str(source, clock);

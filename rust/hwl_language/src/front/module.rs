@@ -108,7 +108,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let reg = self.compiled.registers.push(RegisterInfo {
             defining_item: module_item,
             defining_id: id.clone(),
-            sync,
+            domain: sync,
             ty,
         });
         module_regs.push((reg, init));
@@ -185,9 +185,33 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let ctx_clocked = &ExpressionContext::ClockedBlock;
 
         // TODO typecheck: clock must be a single-bit clock, reset must be a single-bit reset
-        let clock = self.eval_expression_as_value(ctx_clocked, scope, clock);
-        let reset = self.eval_expression_as_value(ctx_clocked, scope, reset);
-        let domain = SyncDomain { clock, reset };
+        let clock_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, clock);
+        let reset_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, reset);
+
+        // check that clock is a clock
+        let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
+        let clock_value = if let ValueDomainKind::Clock = &clock_domain {
+            clock_value_unchecked
+        } else {
+            let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &clock_domain));
+            let e = self.diags.report_simple(title, clock.span, "clock value");
+            Value::Error(e)
+        };
+
+        // check that reset is async
+        // TODO this is not fully correct, we're confusing the port domain with the reset kind
+        let reset_domain = self.domain_of_value(reset.span, &reset_value_unchecked);
+        let reset_value = if let ValueDomainKind::Async = &reset_domain {
+            reset_value_unchecked
+        } else {
+            let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &reset_domain));
+            let e = self.diags.report_simple(title, reset.span, "reset value");
+            Value::Error(e)
+        };
+
+        // TODO check that reset is a boolean
+
+        let domain = SyncDomain { clock: clock_value, reset: reset_value };
         let ctx_sync = Some(Spanned { span: span_domain, inner: &domain });
 
         let mut result_statements = vec![];
@@ -331,6 +355,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let diags = self.diags;
 
         let invalid_reason = match (target, source) {
+            // propagate errors
+            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) =>
+                return Err(e),
+            // clock assignments are not yet implemented
+            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) =>
+                return Err(self.diags.report_todo(target_span.join(source_span), "clock assignment")),
             // const target must have const source
             (ValueDomainKind::Const, ValueDomainKind::Const) => None,
             (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
