@@ -164,6 +164,12 @@ impl CompileState<'_, '_> {
                 }
             }
 
+            // unary not does not change the type
+            // TODO check that the input is a boolean or bits?
+            (ty, Value::UnaryNot(inner)) => {
+                return self.check_type_contains(span_ty, span_value, ty, inner);
+            }
+
             // fallthrough into error
             _ => {}
         };
