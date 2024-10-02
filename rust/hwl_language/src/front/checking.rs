@@ -97,7 +97,7 @@ impl CompileState<'_, '_> {
     //   and don't short-circuit unnecessarily, preventing multiple errors
     // TODO change this to be type-type based instead of type-value
     // TODO move error formatting out of this function, it depends too much on the context and spans are not always available
-    pub fn check_type_contains(&self, span_ty: Span, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
+    pub fn check_type_contains(&self, span_ty: Option<Span>, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         match (ty, value) {
             // propagate errors, we can't just silently ignore them:
             //   downstream compiler code might actually depend on the type matching
@@ -173,7 +173,7 @@ impl CompileState<'_, '_> {
         let title = format!("type mismatch: value {} does not match type {}", value_str, ty_str);
         let err = Diagnostic::new(title)
             .add_error(span_value, "value used here")
-            .add_error(span_ty, "type defined here")
+            .add_info_maybe(span_ty, "type defined here")
             .finish();
         Err(self.diags.report(err))
     }
@@ -189,14 +189,14 @@ impl CompileState<'_, '_> {
         })
     }
 
-    pub fn require_value_true_for_type_check(&self, span_ty: Span, span_value: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
+    pub fn require_value_true_for_type_check(&self, span_ty: Option<Span>, span_value: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
         self.try_eval_bool_true(span_value, value).map_err(|e| {
             let value_str = self.compiled.value_to_readable_str(self.source, value);
             let title = format!("type check failed: value {} {}", value_str, e.to_message());
             // TODO include the type of the value and the target type, with generics it's not always obvious
             let err = Diagnostic::new(title)
                 .add_error(span_value, "when type checking this value")
-                .add_info(span_ty, "against this type")
+                .add_info_maybe(span_ty, "against this type")
                 .finish();
             self.diags.report(err).into()
         })

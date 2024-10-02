@@ -56,7 +56,7 @@ impl CompileState<'_, '_> {
                 }
                 let iter = self.eval_expression_as_value(ctx, scope, iter);
 
-                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(expr.span, iter_span, &Type::Range, &iter);
+                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(None, iter_span, &Type::Range, &iter);
                 let (start, end, end_inclusive) = match &iter {
                     &Value::Error(e) => (Value::Error(e), Value::Error(e), false),
                     Value::Range(info) => {
@@ -116,7 +116,7 @@ impl CompileState<'_, '_> {
                                 diags.report_simple("missing return value", expr.span, "return");
                             },
                             (Some((ret_value_span, ret_value)), expected_ret_ty) => {
-                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ret_ty_span, ret_value_span, expected_ret_ty, &ret_value);
+                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty_span), ret_value_span, expected_ret_ty, &ret_value);
                             }
                         }
                     },
@@ -246,7 +246,7 @@ impl CompileState<'_, '_> {
                                     let ty_replaced = param_info.ty.clone()
                                         .replace_generic_params(&mut self.compiled, &map_ty, &map_value);
 
-                                    match self.check_type_contains(ty_span, arg.span, &ty_replaced, &arg_value) {
+                                    match self.check_type_contains(Some(ty_span), arg.span, &ty_replaced, &arg_value) {
                                         Ok(()) => {}
                                         Err(e) => last_err = Some(e),
                                     }

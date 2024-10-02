@@ -4,6 +4,7 @@ use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCo
 use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
+use crate::front::types::Type;
 use crate::front::values::Value;
 use crate::syntax::ast;
 use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
@@ -78,7 +79,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let ty_eval = self.eval_expression_as_ty(scope_body, ty);
                     let init_eval = self.eval_expression_as_value(ctx_module, scope_body, init);
 
-                    let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval);
+                    let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ty.span), init.span, &ty_eval, &init_eval);
 
                     let var = self.compiled.variables.push(VariableInfo {
                         defining_id: id.clone(),
@@ -198,18 +199,19 @@ impl<'d, 'a> CompileState<'d, 'a> {
             Value::Error(e)
         };
 
-        // check that reset is async
-        // TODO this is not fully correct, we're confusing the port domain with the reset kind
-        let reset_domain = self.domain_of_value(reset.span, &reset_value_unchecked);
+        // check that reset is an async bool
+        let reset_value_bool = match self.check_type_contains(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
+            Ok(()) => reset_value_unchecked,
+            Err(e) => Value::Error(e),
+        };
+        let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
         let reset_value = if let ValueDomainKind::Async = &reset_domain {
-            reset_value_unchecked
+            reset_value_bool
         } else {
             let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &reset_domain));
             let e = self.diags.report_simple(title, reset.span, "reset value");
             Value::Error(e)
         };
-
-        // TODO check that reset is a boolean
 
         let domain = SyncDomain { clock: clock_value, reset: reset_value };
         let ctx_sync = Some(Spanned { span: span_domain, inner: &domain });
@@ -333,7 +335,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
                 // TODO fix this once we support type-type checking
                 let _ = value_ty;
-                self.check_type_contains(assignment.target.span, assignment.value.span, &target_ty, &Value::ModulePort(value))?;
+                self.check_type_contains(None, assignment.value.span, &target_ty, &Value::ModulePort(value))?;
 
                 Ok(())
             }

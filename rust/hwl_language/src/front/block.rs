@@ -36,7 +36,7 @@ impl CompileState<'_, '_> {
 
                     // type check
                     if let (Some(ty), Some(init)) = (ty, init) {
-                        let _: Result<(), ErrorGuaranteed> = self.check_type_contains(ty.span, init.span, &ty_eval, &init_eval);
+                        let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ty.span), init.span, &ty_eval, &init_eval);
                     }
 
                     // declare

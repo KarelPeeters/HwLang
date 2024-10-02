@@ -324,7 +324,23 @@ pub trait DiagnosticAddable: Sized {
         self.add(Level::Error, span, label)
     }
 
+    fn add_error_maybe(self, span: Option<Span>, label: impl Into<String>) -> Self {
+        if let Some(span) = span {
+            self.add_error(span, label)
+        } else {
+            self
+        }
+    }
+
     fn add_info(self, span: Span, label: impl Into<String>) -> Self {
         self.add(Level::Info, span, label)
+    }
+
+    fn add_info_maybe(self, span: Option<Span>, label: impl Into<String>) -> Self {
+        if let Some(span) = span {
+            self.add_info(span, label)
+        } else {
+            self
+        }
     }
 }
