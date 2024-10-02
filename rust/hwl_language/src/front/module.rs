@@ -196,12 +196,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         // check that clock is a clock
         let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
-        let clock_value = if let ValueDomainKind::Clock = &clock_domain {
-            clock_value_unchecked
-        } else {
-            let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &clock_domain));
-            let e = self.diags.report_simple(title, clock.span, "clock value");
-            Value::Error(e)
+        let clock_value = match &clock_domain {
+            ValueDomainKind::Clock => clock_value_unchecked,
+            &ValueDomainKind::Error(e) => Value::Error(e),
+            _ => {
+                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &clock_domain));
+                let e = self.diags.report_simple(title, clock.span, "clock value");
+                Value::Error(e)
+            }
         };
 
         // check that reset is an async bool
@@ -210,12 +212,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
             Err(e) => Value::Error(e),
         };
         let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
-        let reset_value = if let ValueDomainKind::Async = &reset_domain {
-            reset_value_bool
-        } else {
-            let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &reset_domain));
-            let e = self.diags.report_simple(title, reset.span, "reset value");
-            Value::Error(e)
+        let reset_value = match &reset_domain {
+            ValueDomainKind::Async => reset_value_bool,
+            &ValueDomainKind::Error(e) => Value::Error(e),
+            _ => {
+                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &reset_domain));
+                let e = self.diags.report_simple(title, reset.span, "reset value");
+                Value::Error(e)
+            }
         };
 
         let domain = SyncDomain { clock: clock_value, reset: reset_value };
