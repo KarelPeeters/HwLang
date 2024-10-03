@@ -767,3 +767,21 @@ Also think about how the module instantiator can specify the reset polarity and 
 * How should constraints be handled?
     * They should be declared within the module they apply to for proper composition.
     * How do we solve the O(N) tool vendor problem? Allow mapping though a compiler extension API? 
+
+## Intermediate representation
+
+* Potential users:
+  * Code lowering in the compiler itself
+  * The interpreter in the compiler itself
+  * Arbitrary downstream user code through a Python API
+  * Simulator implementations
+
+* There are multiple levels this IR could be define at:
+  * AST + type-checking
+    * Needs to exist anyway
+    * Useful for linting and maybe function execution
+  * Post-elaboration, with all compile-time code fully flattened away
+    * Useful for simulation and codegen
+    * Useful to mess with hierarchies for synthesis workarounds
+
+Do both levels!
