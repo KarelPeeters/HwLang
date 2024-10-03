@@ -1,10 +1,10 @@
 import std.types.[bool, bits, uint];
 
 pub module top ports(
-    clk: input clock,
-    rst: input async bool,
-    x: input sync(clk, rst) bits(4),
-    y: output sync(clk, rst) bits(4),
+    clk: in clock,
+    rst: in async bool,
+    x: in sync(clk, rst) bits(4),
+    y: out sync(clk, rst) bits(4),
 ) body {
     instance i_child = child generics(
         N=4,
@@ -19,10 +19,10 @@ pub module top ports(
 module child generics(
     N: uint,
 ) ports(
-    clk: input clock,
-    rst: input async bool,
-    x: input sync(clk, rst) bits(N),
-    y: output sync(clk, rst) bits(N),
+    clk: in clock,
+    rst: in async bool,
+    x: in sync(clk, rst) bits(N),
+    y: out sync(clk, rst) bits(N),
 ) body {
     combinatorial {
          y = x;

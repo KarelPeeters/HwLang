@@ -7,22 +7,22 @@ type my_array(T: type, N: uint) = Array(T, N);
 type vector = bits(4);
 
 pub module top ports(
-    clk_a: input clock,
-    clk_b: input clock,
-    rst_a: input async bool,
-    rst_b: input async bool,
+    clk_a: in clock,
+    clk_b: in clock,
+    rst_a: in async bool,
+    rst_b: in async bool,
 
-    in_a: input sync(clk_a, !rst_a) vector,
-    in_b: input sync(clk_b, !rst_b) vector,
-    out_a: output sync(clk_a, !rst_a) vector,
-    out_b: output sync(clk_b, !rst_b) vector,
+    in_a: in sync(clk_a, !rst_a) vector,
+    in_b: in sync(clk_b, !rst_b) vector,
+    out_a: out sync(clk_a, !rst_a) vector,
+    out_b: out sync(clk_b, !rst_b) vector,
 
-    in_async: input async vector,
-    out_async: output async vector,
+    in_async: in async vector,
+    out_async: out async vector,
 
-    in_int_range: input async int_range(-3..27),
-    in_int_bits: input async int_bits(3),
-    in_uint_bits: input async uint_bits(3),
+    in_int_range: in async int_range(-3..27),
+    in_int_bits: in async int_bits(3),
+    in_uint_bits: in async uint_bits(3),
 ) body {
     val test_pos: int = 8;
     //val test_neg: uint = test_pos; //type err

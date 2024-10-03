@@ -39,8 +39,8 @@ extern {
         "var" => TokenType::Var,
         "wire" => TokenType::Wire,
         "reg" => TokenType::Reg,
-        "input" => TokenType::Input,
-        "output" => TokenType::Output,
+        "in" => TokenType::In,
+        "out" => TokenType::Out,
         "async" => TokenType::Async,
         "sync" => TokenType::Sync,
         "return" => TokenType::Return,
@@ -52,7 +52,6 @@ extern {
         "else" => TokenType::Else,
         "loop" => TokenType::Loop,
         "for" => TokenType::For,
-        "in" => TokenType::In,
         "while" => TokenType::While,
         "pub" => TokenType::Public,
         "__builtin" => TokenType::Builtin,
@@ -259,8 +258,8 @@ PortKind: PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
 }
 
 PortDirection: PortDirection = {
-    "input" => PortDirection::Input,
-    "output" => PortDirection::Output,
+    "in" => PortDirection::Input,
+    "out" => PortDirection::Output,
 }
 
 DomainKind: DomainKind<Box<Expression>> = {
