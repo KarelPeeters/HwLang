@@ -141,25 +141,40 @@ impl CompileState<'_, '_> {
             // type-type checks
             // TODO type equality is not good enough (and should be removed entirely), eg. this does not support broadcasting
             (ty, &Value::GenericParameter(param)) => {
-                if ty == &self.compiled[param].ty {
+                let param_ty = &self.compiled[param].ty;
+                if let &Type::Error(e) = param_ty {
+                    return Err(e);
+                }
+                if ty == param_ty {
                     return Ok(());
                 }
             }
             (ty, &Value::ModulePort(port)) => {
                 // TODO weird, will solve itself once we switch to type-type
                 if let PortKind::Normal { domain: _, ty: ref port_ty } = self.compiled[port].kind {
+                    if let &Type::Error(e) = port_ty {
+                        return Err(e);
+                    }
                     if ty == port_ty {
                         return Ok(());
                     }
                 }
             }
             (ty, &Value::Variable(var)) => {
-                if ty == &self.compiled[var].ty {
+                let var_ty = &self.compiled[var].ty;
+                if let &Type::Error(e) = var_ty {
+                    return Err(e);
+                }
+                if ty == var_ty {
                     return Ok(());
                 }
             }
             (ty, &Value::Register(reg)) => {
-                if ty == &self.compiled[reg].ty {
+                let reg_ty = &self.compiled[reg].ty;
+                if let &Type::Error(e) = reg_ty {
+                    return Err(e);
+                }
+                if ty == reg_ty {
                     return Ok(());
                 }
             }
