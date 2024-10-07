@@ -104,7 +104,11 @@ pub struct FileScopes {
     pub scope_inner_import: Scope,
 }
 
-pub type GenericParameter = TypeOrValue<GenericTypeParameter, GenericValueParameter>;
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum GenericParameter {
+    Type(GenericTypeParameter),
+    Value(GenericValueParameter),
+}
 
 pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked>>;
 
@@ -261,7 +265,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Value::FunctionReturn(ret) =>
                 format!("function_return({})", defining_id_to_string_pair(source, &self[ret.item].defining_id)),
             Value::Module(module) =>
-                format!("module({})", defining_id_to_string_pair(source, &self[module.ty.nominal_type_unique.item].defining_id)),
+                format!("module({})", defining_id_to_string_pair(source, &self[module.nominal_type_unique.item].defining_id)),
             Value::Wire => "wire".to_string(),
             &Value::Register(reg) =>
                 format!("register({})", defining_id_to_string_pair(source, &self[reg].defining_id)),
@@ -299,7 +303,6 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Tuple(_) => "tuple".to_string(),
             Type::Struct(_) => "struct".to_string(),
             Type::Enum(_) => "enum".to_string(),
-            Type::Module(_) => "module".to_string(),
         }
     }
 

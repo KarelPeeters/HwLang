@@ -1,7 +1,7 @@
 use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericValueParameter, Item, ModulePort, Register, Variable};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
-use crate::front::types::{ModuleTypeInfo, Type};
+use crate::front::types::{NominalTypeUnique, Type};
 use crate::syntax::ast::BinaryOp;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
@@ -62,8 +62,9 @@ pub struct FunctionReturnValue {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleValueInfo {
-    pub ty: ModuleTypeInfo,
-    // TODO body
+    // TODO should this be here or not?
+    pub nominal_type_unique: NominalTypeUnique,
+    pub ports: Vec<ModulePort>,
 }
 
 impl<V> RangeInfo<V> {

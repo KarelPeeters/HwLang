@@ -288,8 +288,8 @@ pub struct ClockedBlock {
 #[derive(Debug, Clone)]
 pub struct ModuleInstance {
     pub span: Span,
-    pub id: Option<Identifier>,
-    pub module: Identifier,
+    pub name: Option<Identifier>,
+    pub module: Box<Expression>,
     pub generic_args: Option<Spanned<Vec<(Identifier, Expression)>>>,
     pub port_connections: Spanned<Vec<(Identifier, Expression)>>,
 }

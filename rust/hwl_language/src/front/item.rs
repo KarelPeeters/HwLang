@@ -1,10 +1,10 @@
 use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
-use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
+use crate::data::diagnostic::Diagnostic;
 use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, ModuleTypeInfo, NominalTypeUnique, StructTypeInfo, Type};
-use crate::front::values::{FunctionReturnValue, Value};
+use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
+use crate::front::values::{FunctionReturnValue, ModuleValueInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
 use crate::util::data::IndexMapExt;
@@ -27,7 +27,7 @@ impl CompileState<'_, '_> {
         };
 
         // always use a static context for types
-        let ctx = &ExpressionContext::Type;
+        let ctx = &ExpressionContext::NotFunctionBody;
 
         // actual resolution
         match *item_ast {
@@ -39,7 +39,7 @@ impl CompileState<'_, '_> {
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
                 self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, _args, scope_inner| {
-                    Ok(TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner)))
+                    TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
@@ -54,7 +54,7 @@ impl CompileState<'_, '_> {
                         if let Some(prev) = prev {
                             let diag = Diagnostic::new_defined_twice("struct field", span, field_id, prev.0);
                             let err = s.diags.report(diag);
-                            return Err(err);
+                            return TypeOrValue::Type(Type::Error(err));
                         }
                     }
 
@@ -63,7 +63,7 @@ impl CompileState<'_, '_> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         fields: fields_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(TypeOrValue::Type(Type::Struct(ty)))
+                    TypeOrValue::Type(Type::Struct(ty))
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
@@ -80,7 +80,7 @@ impl CompileState<'_, '_> {
                         if let Some(prev) = prev {
                             let diag = Diagnostic::new_defined_twice("enum variant", span, variant_id, prev.0);
                             let err = s.diags.report(diag);
-                            return Err(err);
+                            return TypeOrValue::Type(Type::Error(err));
                         }
                     }
 
@@ -89,7 +89,7 @@ impl CompileState<'_, '_> {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         variants: variants_map.into_iter().map(|(k, v)| (k, v.1)).collect(),
                     };
-                    Ok(TypeOrValue::Type(Type::Enum(ty)))
+                    TypeOrValue::Type(Type::Enum(ty))
                 })
             }
             // value definitions
@@ -140,12 +140,12 @@ impl CompileState<'_, '_> {
                     let module_info = ModuleSignatureInfo { scope_ports };
                     s.compiled.module_info.insert_first(item, module_info);
 
-                    let module_ty_info = ModuleTypeInfo {
+                    let module_ty_info = ModuleValueInfo {
                         nominal_type_unique: NominalTypeUnique { item, args },
                         ports: port_vec,
                     };
 
-                    Ok(TypeOrValue::Type(Type::Module(module_ty_info)))
+                    TypeOrValue::Value(Value::Module(module_ty_info))
                 })
             }
             ast::Item::Const(_) =>
@@ -169,7 +169,7 @@ impl CompileState<'_, '_> {
                     s.compiled.function_info.insert_first(item, info);
 
                     // result
-                    Ok(TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty })))
+                    TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty }))
                 })
             }
             ast::Item::Interface(_) =>
@@ -182,7 +182,7 @@ impl CompileState<'_, '_> {
         item: Item,
         scope_outer: Scope,
         params: Option<&Spanned<Vec<ast::GenericParameter>>>,
-        build: impl FnOnce(&mut Self, GenericArguments, Scope) -> Result<T, ErrorGuaranteed>,
+        build: impl FnOnce(&mut Self, GenericArguments, Scope) -> T,
     ) -> MaybeConstructor<T> {
         let item_span = self.parsed.item_ast(self.compiled[item].ast_ref).common_info().span_full;
         let scope_inner = self.compiled.scopes.new_child(scope_outer, item_span, Visibility::Private);
@@ -192,10 +192,7 @@ impl CompileState<'_, '_> {
                 // there are no parameters, just map directly
                 // the scope still needs to be "nested" since the builder needs an owned scope
                 let arguments = GenericArguments { vec: vec![] };
-                match build(self, arguments, scope_inner) {
-                    Ok(ty) => MaybeConstructor::Immediate(ty),
-                    Err(e) => MaybeConstructor::Error(e),
-                }
+                MaybeConstructor::Immediate(build(self, arguments, scope_inner))
             }
             Some(params) => {
                 // build inner scope
@@ -235,11 +232,8 @@ impl CompileState<'_, '_> {
                 let parameters = GenericParameters { vec: parameters };
                 let arguments = GenericArguments { vec: arguments };
 
-                // build inner type
-                let inner = match build(self, arguments, scope_inner) {
-                    Ok(inner) => inner,
-                    Err(e) => return MaybeConstructor::Error(e),
-                };
+                // build inner
+                let inner = build(self, arguments, scope_inner);
 
                 // result
                 let ty_constr = Constructor { parameters, inner };

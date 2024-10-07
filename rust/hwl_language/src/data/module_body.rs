@@ -7,14 +7,16 @@ use crate::syntax::pos::Span;
 // TODO include body comments for eg. the values that values were resolved to
 #[derive(Debug)]
 pub struct ModuleChecked {
-    pub blocks: Vec<ModuleBlockInfo>,
+    pub statements: Vec<ModuleStatement>,
     pub regs: Vec<(Register, Value)>,
 }
 
 #[derive(Debug)]
-pub enum ModuleBlockInfo {
+pub enum ModuleStatement {
+    Instance(ModuleInstance),
     Combinatorial(ModuleBlockCombinatorial),
     Clocked(ModuleBlockClocked),
+    Err(ErrorGuaranteed),
 }
 
 #[derive(Debug)]
@@ -34,6 +36,9 @@ pub struct ModuleBlockClocked {
     pub on_reset: Vec<LowerStatement>, // TODO IR
     pub on_block: Vec<LowerStatement>, // TODO IR
 }
+
+#[derive(Debug)]
+pub struct ModuleInstance {}
 
 #[derive(Debug)]
 pub enum LowerStatement {

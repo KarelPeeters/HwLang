@@ -16,7 +16,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
+    pub fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
         let diags = self.diags;
 
         match expr.inner {
@@ -272,6 +272,8 @@ impl CompileState<'_, '_> {
                             }
                             TypeOrValue::Value(_) =>
                                 ScopedEntryDirect::Error(diags.report_todo(target.span, "value call target")),
+                            TypeOrValue::Error(e)
+                            => ScopedEntryDirect::Error(e),
                         }
                     }
                     ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
@@ -286,8 +288,21 @@ impl CompileState<'_, '_> {
         }
     }
 
+    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
+        let entry = self.eval_expression(ctx, scope, expr);
+
+        match entry {
+            ScopedEntryDirect::Immediate(entry) => entry,
+            ScopedEntryDirect::Constructor(_) => {
+                let diag = Diagnostic::new_simple("expected type or value, got constructor", expr.span, "constructor");
+                TypeOrValue::Error(self.diags.report(diag))
+            }
+            ScopedEntryDirect::Error(e) => TypeOrValue::Error(e),
+        }
+    }
+
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        let ctx = &ExpressionContext::Type;
+        let ctx = &ExpressionContext::NotFunctionBody;
         let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
@@ -303,8 +318,9 @@ impl CompileState<'_, '_> {
                     let diag = Diagnostic::new_simple("expected type, got value", expr.span, "value");
                     Type::Error(self.diags.report(diag))
                 }
+                TypeOrValue::Error(e) => Type::Error(e),
             }
-            ScopedEntryDirect::Error(e) => Type::Error(e)
+            ScopedEntryDirect::Error(e) => Type::Error(e),
         }
     }
 
@@ -321,13 +337,14 @@ impl CompileState<'_, '_> {
                     Value::Error(self.diags.report(err))
                 }
                 TypeOrValue::Value(value) => value,
+                TypeOrValue::Error(e) => Value::Error(e),
             }
             ScopedEntryDirect::Error(e) => Value::Error(e),
         }
     }
 
     pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> SyncDomain<Value> {
-        let ctx = &ExpressionContext::Type;
+        let ctx = &ExpressionContext::NotFunctionBody;
         let clock = self.eval_expression_as_value(ctx, scope, &domain.clock);
         let reset = self.eval_expression_as_value(ctx, scope, &domain.reset);
 
@@ -356,7 +373,7 @@ impl CompileState<'_, '_> {
 
         if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
             let rest = &args.inner[2..];
-            let ctx = &ExpressionContext::Type;
+            let ctx = &ExpressionContext::NotFunctionBody;
 
             match (first, second, rest) {
                 ("type", "bool", &[]) =>

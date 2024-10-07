@@ -1,15 +1,16 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleStatement};
 use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::Type;
-use crate::front::values::Value;
+use crate::front::types::{Constructor, Type};
+use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
+use itertools::Itertools;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
@@ -18,13 +19,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         // TODO do we event want to convert to some simpler IR here,
         //   or just leave the backend to walk the AST if it wants?
-        let mut module_blocks = vec![];
+        let mut module_statements = vec![];
         let mut module_regs = vec![];
 
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
-        let ctx_module = &ExpressionContext::ModuleTopLevel;
+        let ctx_module = &ExpressionContext::NotFunctionBody;
 
         // first pass: populate scope with declarations
         for top_statement in statements {
@@ -54,20 +55,23 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ModuleStatementKind::WireDeclaration(_) => {}
                 // actual blocks
                 ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
-                    self.process_module_block_combinatorial(&mut module_blocks, scope_body, comb_block);
+                    let block = self.process_module_block_combinatorial(scope_body, comb_block);
+                    module_statements.push(ModuleStatement::Combinatorial(block));
                 }
                 ModuleStatementKind::ClockedBlock(ref clocked_block) => {
-                    self.process_module_block_clocked(&mut module_blocks, scope_body, clocked_block);
+                    let block = self.process_module_block_clocked(scope_body, clocked_block);
+                    module_statements.push(ModuleStatement::Clocked(block));
                 }
                 // instances
-                ModuleStatementKind::Instance(_) => {
-                    self.diags.report_todo(top_statement.span, "module instance");
+                ModuleStatementKind::Instance(instance) => {
+                    let block = self.process_module_instance(&ctx_module, scope_body, instance);
+                    module_statements.push(block);
                 }
             }
         }
 
         ModuleChecked {
-            blocks: module_blocks,
+            statements: module_statements,
             regs: module_regs,
         }
     }
@@ -77,7 +81,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         let entry = if mutable {
             let e = self.diags.report_todo(span, "mutable variable in module body");
-            ScopedEntryDirect::Error(e)
+            ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Error(e)))
         } else {
             match (ty, init) {
                 (Some(ty), Some(init)) => {
@@ -95,7 +99,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
                 _ => {
                     let e = self.diags.report_todo(span, "variable declaration without type and/or init");
-                    ScopedEntryDirect::Error(e)
+                    ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Error(e)))
                 }
             }
         };
@@ -123,12 +127,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
         self.compiled[scope_body].maybe_declare(&self.diags, &id, entry, Visibility::Private);
     }
 
-    fn process_module_block_combinatorial(&mut self, module_blocks: &mut Vec<ModuleBlockInfo>, scope_body: Scope, comb_block: &CombinatorialBlock) {
+    #[must_use]
+    fn process_module_block_combinatorial(&mut self, scope_body: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
         let ast::Block { span: _, statements } = block;
 
         let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
-        let ctx_comb = &ExpressionContext::CombinatorialBlock;
+        let ctx_comb = &ExpressionContext::NotFunctionBody;
         let ctx_sync = None;
 
         let mut result_statements = vec![];
@@ -173,14 +178,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         }
 
-        let result_block = ModuleBlockCombinatorial {
+        ModuleBlockCombinatorial {
             span,
             statements: result_statements,
-        };
-        module_blocks.push(ModuleBlockInfo::Combinatorial(result_block));
+        }
     }
 
-    fn process_module_block_clocked(&mut self, module_blocks: &mut Vec<ModuleBlockInfo>, scope_body: Scope, clocked_block: &ClockedBlock) {
+    #[must_use]
+    fn process_module_block_clocked(&mut self, scope_body: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
         let &ClockedBlock {
             span, span_keyword: _, ref clock, ref reset, ref block
         } = clocked_block;
@@ -188,7 +193,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let span_domain = clock.span.join(reset.span);
 
         let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
-        let ctx_clocked = &ExpressionContext::ClockedBlock;
+        let ctx_clocked = &ExpressionContext::NotFunctionBody;
 
         // TODO typecheck: clock must be a single-bit clock, reset must be a single-bit reset
         let clock_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, clock);
@@ -267,13 +272,92 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         }
 
-        let result_block = ModuleBlockClocked {
+        ModuleBlockClocked {
             span,
             domain,
             on_reset: vec![],
             on_block: result_statements,
-        };
-        module_blocks.push(ModuleBlockInfo::Clocked(result_block));
+        }
+    }
+
+    #[must_use]
+    fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
+        // TODO check that ID is unique, both with other IDs but also signals and wires
+        //   (or do we leave that to backend?)
+        let ast::ModuleInstance { span: _, name: _, module, generic_args, port_connections } = instance;
+
+        // evaluate generic args and ports by themselves, so they're checked even if the module is not found
+        let generic_args = generic_args.as_ref().map(|generic_args| {
+            let vec = generic_args.inner.iter().map(|(id, expr)| {
+                (id, self.eval_expression_as_ty_or_value(ctx_module, scope_body, expr))
+            }).collect_vec();
+            Spanned { span: generic_args.span, inner: vec }
+        });
+        let port_connections = port_connections.inner.iter().map(|(id, expr)|
+            (id, self.eval_expression_as_value(ctx_module, scope_body, expr))
+        ).collect_vec();
+
+        // find the module, fill in generics
+        let module_with_generics = self.eval_expr_as_module_with_generics(ctx_module, scope_body, module, &generic_args);
+
+        // fill in ports, including type/domain/inout checking
+        // TODO
+        let _ = port_connections;
+        let _ = module_with_generics;
+        ModuleStatement::Err(self.diags.report_todo(instance.span, "module instance ports"))
+    }
+
+    fn eval_expr_as_module_with_generics(
+        &mut self,
+        ctx_module: &ExpressionContext,
+        scope: Scope,
+        module_expr: &ast::Expression,
+        generic_args: &Option<Spanned<Vec<(&Identifier, TypeOrValue)>>>,
+    ) -> Result<ModuleValueInfo, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        match self.eval_expression(ctx_module, scope, module_expr) {
+            ScopedEntryDirect::Constructor(constr) => {
+                match constr {
+                    Constructor { parameters, inner } => {
+                        match inner {
+                            TypeOrValue::Value(value) => {
+                                match value {
+                                    Value::Module(value) => {
+                                        // TODO
+                                        let _ = generic_args;
+                                        let _ = parameters;
+                                        let _ = value;
+                                        Err(diags.report_simple("module type constructor", module_expr.span, "type constructor"))
+                                    }
+                                    Value::Error(e) => Err(e),
+                                    _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
+                                }
+                            }
+                            TypeOrValue::Type(_) => Err(diags.report_simple("expected module, got type constructor", module_expr.span, "type constructor")),
+                            TypeOrValue::Error(e) => Err(e),
+                        }
+                    }
+                }
+            }
+            ScopedEntryDirect::Immediate(imm) => {
+                match imm {
+                    TypeOrValue::Type(_) =>
+                        Err(diags.report_simple("expected module, got type", module_expr.span, "type")),
+                    TypeOrValue::Value(value) => {
+                        match value {
+                            Value::Module(module) => {
+                                Ok(module)
+                            }
+                            Value::Error(e) => Err(e),
+                            _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
+                        }
+                    }
+                    TypeOrValue::Error(e) => Err(e),
+                }
+            }
+            ScopedEntryDirect::Error(e) => Err(e)
+        }
     }
 
     fn check_assign_port_port(&mut self, block_sync: Option<Spanned<&SyncDomain<Value>>>, assignment: &ast::Assignment, target: ModulePort, value: ModulePort) -> Result<(), ErrorGuaranteed> {

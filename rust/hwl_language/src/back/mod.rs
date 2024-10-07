@@ -1,7 +1,7 @@
 use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, RegisterInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleBlockInfo, ModuleChecked};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -100,7 +100,7 @@ fn generate_module_source(
     let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
 
     let module_info = match &item_info.signature {
-        MaybeConstructor::Immediate(TypeOrValue::Type(Type::Module(info))) => {
+        MaybeConstructor::Immediate(TypeOrValue::Value(Value::Module(info))) => {
             assert!(module_args.is_none());
             info
         }
@@ -134,7 +134,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleChecked { blocks, regs } = body;
+    let ModuleChecked { statements, regs } = body;
 
     for (reg_index, &(reg, ref init)) in enumerate(regs) {
         if reg_index != 0 {
@@ -157,13 +157,13 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         swriteln!(f);
     }
 
-    for (block_index, block) in enumerate(blocks) {
-        if block_index != 0 {
+    for (statement_index, statement) in enumerate(statements) {
+        if statement_index != 0 {
             swriteln!(f);
         }
 
-        match block {
-            ModuleBlockInfo::Combinatorial(block) => {
+        match statement {
+            ModuleStatement::Combinatorial(block) => {
                 let ModuleBlockCombinatorial { span: _, statements } = block;
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
@@ -173,7 +173,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 }
                 swriteln!(f, "{I}end");
             }
-            ModuleBlockInfo::Clocked(block) => {
+            ModuleStatement::Clocked(block) => {
                 let &ModuleBlockClocked {
                     span, ref domain, ref on_reset, ref on_block
                 } = block;
@@ -214,6 +214,13 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 swriteln!(f, "{I}{I}end");
 
                 swriteln!(f, "{I}end");
+            }
+            ModuleStatement::Instance(_) => {
+                diag.report_todo(module_span, "module instance lowering");
+            }
+            &ModuleStatement::Err(e) => {
+                let _: ErrorGuaranteed = e;
+                swriteln!(f, "{I}// error statement");
             }
         }
     }
@@ -373,7 +380,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
             VerilogType::Error(diag.report_todo(span, "lower type 'enum'")),
         // invalid RTL types
         // TODO redesign type-type such that these are statically impossible at this point?
-        Type::Any | Type::GenericParameter(_) | Type::Range | Type::Function(_) | Type::Module(_) | Type::Unchecked | Type::Never =>
+        Type::Any | Type::GenericParameter(_) | Type::Range | Type::Function(_) | Type::Unchecked | Type::Never =>
             VerilogType::Error(diag.report_internal_error(span, format!("type '{ty:?}' should not materialize"))),
     }
 }
@@ -473,7 +480,7 @@ fn find_top_module(
                 }
                 MaybeConstructor::Immediate(imm) => {
                     match imm {
-                        TypeOrValue::Type(Type::Module(_)) =>
+                        TypeOrValue::Value(Value::Module(_)) =>
                             Ok(item),
                         TypeOrValue::Type(_) => {
                             Err(diag.report_simple(
@@ -484,11 +491,12 @@ fn find_top_module(
                         }
                         TypeOrValue::Value(_) => {
                             Err(diag.report_simple(
-                                "top should be a module, got a value",
+                                "top should be a module, got a non-module value",
                                 top_entry.defining_span,
                                 "defined here",
                             ))
                         }
+                        &TypeOrValue::Error(e) => Err(e),
                     }
                 }
             }

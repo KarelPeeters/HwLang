@@ -128,6 +128,7 @@ impl Default for DiagnosticStringSettings {
     }
 }
 
+// TODO make it clear in which phase each diagnostic is reported: file loading, parsing, type checking, lowering
 impl Diagnostic {
     pub fn new(title: impl Into<String>) -> DiagnosticBuilder {
         DiagnosticBuilder {

@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericValueParameter, Item, ModulePort};
+use crate::data::compiled::{CompiledDatabasePartial, GenericParameter, GenericTypeParameter, GenericValueParameter, Item};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::GenericContainer;
 use crate::front::common::TypeOrValue;
@@ -6,10 +6,12 @@ use crate::front::values::Value;
 use derivative::Derivative;
 use indexmap::IndexMap;
 
+// TODO find a better name for this
 #[derive(Debug, Clone)]
 pub enum MaybeConstructor<T> {
-    Constructor(Constructor<T>),
     Immediate(T),
+    Constructor(Constructor<T>),
+    /// This error case means we don't know whether this is a constructor or not.
     Error(ErrorGuaranteed),
 }
 
@@ -57,9 +59,6 @@ pub enum Type {
     Tuple(Vec<Type>),
     Struct(StructTypeInfo),
     Enum(EnumTypeInfo),
-
-    // should module be a separate thing, neither type nor value? or just a value?
-    Module(ModuleTypeInfo),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -105,18 +104,6 @@ pub struct EnumTypeInfo {
     #[derivative(PartialEq = "ignore")]
     #[derivative(Hash = "ignore")]
     pub variants: IndexMap<String, Option<Type>>,
-}
-
-// TODO should modules be structural types instead? or are interfaces already the structural variant of modules?
-//  the end use case would be passing a module constructor as a parameter to another module
-#[derive(Debug, Clone)]
-#[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
-pub struct ModuleTypeInfo {
-    pub nominal_type_unique: NominalTypeUnique,
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(Hash = "ignore")]
-    pub ports: Vec<ModulePort>,
 }
 
 impl<T> MaybeConstructor<T> {
@@ -170,8 +157,8 @@ impl GenericContainer for Type {
             Type::Function(ref info) => {
                 Type::Function(FunctionTypeInfo {
                     params: info.params.iter()
-                            .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
-                            .collect(),
+                        .map(|p| p.replace_generic_params(compiled, map_ty, map_value))
+                        .collect(),
                     ret: Box::new(info.ret.replace_generic_params(compiled, map_ty, map_value)),
                 })
             }
@@ -196,7 +183,6 @@ impl GenericContainer for Type {
                         .collect(),
                 })
             }
-            Type::Module(_) => todo!(),
         }
     }
 }

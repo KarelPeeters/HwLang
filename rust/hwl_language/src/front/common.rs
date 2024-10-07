@@ -17,17 +17,10 @@ use indexmap::IndexMap;
 /// TODO maybe allow break to be used in clocked blocks too?
 #[derive(Debug)]
 pub enum ExpressionContext {
-    /// Used in type declaration.
-    Type,
     /// Used in function body as part of normal statements or expressions.
     FunctionBody { ret_ty_span: Span, ret_ty: Type },
-    /// Used at the top level of a module, eg. in variables or register initialization.
-    ModuleTopLevel,
-    // TODO add the sync domain here, and immediate sync-check all expressions
-    /// Used in clocked block.
-    ClockedBlock,
-    /// Used in combinatorial block.
-    CombinatorialBlock,
+    /// Anything else, even including type definitions inside of function bodies.
+    NotFunctionBody,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +35,8 @@ pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
 pub enum TypeOrValue<T = Type, V = Value> {
     Type(T),
     Value(V),
+    /// This error case means we don't know whether this is a type or value.
+    Error(ErrorGuaranteed),
 }
 
 impl<T, V> TypeOrValue<T, V> {
@@ -49,27 +44,7 @@ impl<T, V> TypeOrValue<T, V> {
         match self {
             TypeOrValue::Type(t) => TypeOrValue::Type(t),
             TypeOrValue::Value(v) => TypeOrValue::Value(v),
-        }
-    }
-
-    pub fn unwrap_type(self) -> T {
-        match self {
-            TypeOrValue::Type(t) => t,
-            TypeOrValue::Value(_) => panic!("Expected type, got value"),
-        }
-    }
-
-    pub fn unwrap_value(self) -> V {
-        match self {
-            TypeOrValue::Type(_) => panic!("Expected value, got type"),
-            TypeOrValue::Value(v) => v,
-        }
-    }
-
-    pub fn unit(&self) -> TypeOrValue<(), ()> {
-        match self {
-            TypeOrValue::Type(_) => TypeOrValue::Type(()),
-            TypeOrValue::Value(_) => TypeOrValue::Value(()),
+            &TypeOrValue::Error(e) => TypeOrValue::Error(e),
         }
     }
 }
@@ -121,6 +96,7 @@ impl GenericContainer for TypeOrValue {
         match self {
             TypeOrValue::Type(t) => TypeOrValue::Type(t.replace_generic_params(compiled, map_ty, map_value)),
             TypeOrValue::Value(v) => TypeOrValue::Value(v.replace_generic_params(compiled, map_ty, map_value)),
+            &TypeOrValue::Error(e) => TypeOrValue::Error(e),
         }
     }
 }
