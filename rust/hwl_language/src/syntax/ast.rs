@@ -288,6 +288,7 @@ pub struct ClockedBlock {
 #[derive(Debug, Clone)]
 pub struct ModuleInstance {
     pub span: Span,
+    pub span_keyword: Span,
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
     pub generic_args: Option<Spanned<Vec<(Identifier, Expression)>>>,

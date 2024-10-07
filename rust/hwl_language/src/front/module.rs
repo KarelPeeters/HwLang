@@ -284,7 +284,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
-        let ast::ModuleInstance { span: _, name: _, module, generic_args, port_connections } = instance;
+        let &ast::ModuleInstance { span: _, span_keyword: keyword_span, name: _, ref module, ref generic_args, ref port_connections } = instance;
 
         // evaluate generic args and ports by themselves, so they're checked even if the module is not found
         let generic_args = generic_args.as_ref().map(|generic_args| {
@@ -298,7 +298,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ).collect_vec();
 
         // find the module, fill in generics
-        let module_with_generics = self.eval_expr_as_module_with_generics(ctx_module, scope_body, module, &generic_args);
+        let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
 
         // fill in ports, including type/domain/inout checking
         // TODO
@@ -309,6 +309,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn eval_expr_as_module_with_generics(
         &mut self,
+        keyword_span: Span,
         ctx_module: &ExpressionContext,
         scope: Scope,
         module_expr: &ast::Expression,
@@ -316,8 +317,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
     ) -> Result<ModuleValueInfo, ErrorGuaranteed> {
         let diags = self.diags;
 
-        match self.eval_expression(ctx_module, scope, module_expr) {
-            ScopedEntryDirect::Constructor(constr) => {
+        let module_value = self.eval_expression(ctx_module, scope, module_expr);
+        match (module_value, generic_args) {
+            (ScopedEntryDirect::Constructor(constr), Some(generic_args)) => {
                 match constr {
                     Constructor { parameters, inner } => {
                         match inner {
@@ -328,7 +330,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                         let _ = generic_args;
                                         let _ = parameters;
                                         let _ = value;
-                                        Err(diags.report_simple("module type constructor", module_expr.span, "type constructor"))
+                                        Err(diags.report_todo(keyword_span, "instance with generic args"))
                                     }
                                     Value::Error(e) => Err(e),
                                     _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
@@ -340,15 +342,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     }
                 }
             }
-            ScopedEntryDirect::Immediate(imm) => {
+            (ScopedEntryDirect::Immediate(imm), None) => {
                 match imm {
                     TypeOrValue::Type(_) =>
                         Err(diags.report_simple("expected module, got type", module_expr.span, "type")),
                     TypeOrValue::Value(value) => {
                         match value {
-                            Value::Module(module) => {
-                                Ok(module)
-                            }
+                            Value::Module(module) => Ok(module),
                             Value::Error(e) => Err(e),
                             _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
                         }
@@ -356,7 +356,23 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     TypeOrValue::Error(e) => Err(e),
                 }
             }
-            ScopedEntryDirect::Error(e) => Err(e)
+            (ScopedEntryDirect::Constructor(_), None) => {
+                // TODO point to module definition
+                let diag = Diagnostic::new("instance of generic module is missing generic args")
+                    .add_error(keyword_span, "instance here does not provide generic args")
+                    .add_info(module_expr.span, "module used here needs generics")
+                    .finish();
+                Err(diags.report(diag))
+            }
+            (ScopedEntryDirect::Immediate(_), Some(_)) => {
+                // TODO point to module definition
+                let diag = Diagnostic::new("instance of non-generic module has generic args")
+                    .add_error(keyword_span, "instance here provides generic args")
+                    .add_info(module_expr.span, "module used here does not need generics")
+                    .finish();
+                Err(diags.report(diag))
+            }
+            (ScopedEntryDirect::Error(e), _) => Err(e)
         }
     }
 

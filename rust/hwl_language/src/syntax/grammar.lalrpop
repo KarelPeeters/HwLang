@@ -185,13 +185,14 @@ ModuleStatementKind: ModuleStatementKind = {
     // module instance
     // TODO this is ugly syntax: why are generics and ports different
     <start:@L>
-        "instance" <name:(<Id> "=")?> <module:BoxExpr>
+        "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
         <generic_args:("generics" "(" <Spanned<Separated<GenericNamedArg, ",">>> ")")?>
         "ports" "(" <port_connections:Spanned<Separated<PortNamedArg, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
             name, module, generic_args, port_connections,
+            span_keyword: loc.span(start, instance_end),
             span: loc.span(start, end),
         };
         ModuleStatementKind::Instance(instance)
