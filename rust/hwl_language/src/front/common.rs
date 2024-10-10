@@ -71,31 +71,36 @@ impl ValueDomainKind {
 }
 
 /// A Monad trait, specifically for replacing generic parameters in a type or value with more concrete arguments.
-// TODO replace this a more general "map" trait, where the user can supply their own closure
+// TODO this while concept is pretty tricky, maybe it's better to switch to something rust-like
+//   where generics don't get deep-replaced, but stay as at least one level of "parameter"
 pub trait GenericContainer {
     type Result;
 
     /// The implementation can assume the replacement has already been kind- and type-checked.
-    fn replace_generic_params(
+    fn replace_generics(
         &self,
         compiled: &mut CompiledDatabasePartial,
-        map_ty: &IndexMap<GenericTypeParameter, Type>,
-        map_value: &IndexMap<GenericValueParameter, Value>,
+        map: &GenericMap,
     ) -> Self::Result;
+}
+
+pub struct GenericMap<'a> {
+    pub generic_ty: &'a IndexMap<GenericTypeParameter, Type>,
+    pub generic_value: &'a IndexMap<GenericValueParameter, Value>,
+    pub module_port: &'a IndexMap<ModulePort, Value>,
 }
 
 impl GenericContainer for TypeOrValue {
     type Result = TypeOrValue;
 
-    fn replace_generic_params(
+    fn replace_generics(
         &self,
         compiled: &mut CompiledDatabasePartial,
-        map_ty: &IndexMap<GenericTypeParameter, Type>,
-        map_value: &IndexMap<GenericValueParameter, Value>,
+        map: &GenericMap,
     ) -> Self {
         match self {
-            TypeOrValue::Type(t) => TypeOrValue::Type(t.replace_generic_params(compiled, map_ty, map_value)),
-            TypeOrValue::Value(v) => TypeOrValue::Value(v.replace_generic_params(compiled, map_ty, map_value)),
+            TypeOrValue::Type(t) => TypeOrValue::Type(t.replace_generics(compiled, map)),
+            TypeOrValue::Value(v) => TypeOrValue::Value(v.replace_generics(compiled, map)),
             &TypeOrValue::Error(e) => TypeOrValue::Error(e),
         }
     }
@@ -106,15 +111,14 @@ impl GenericContainer for TypeOrValue {
 impl GenericContainer for GenericTypeParameter {
     type Result = Type;
 
-    fn replace_generic_params(
+    fn replace_generics(
         &self,
         compiled: &mut CompiledDatabasePartial,
-        map_ty: &IndexMap<GenericTypeParameter, Type>,
-        _map_value: &IndexMap<GenericValueParameter, Value>,
+        map: &GenericMap,
     ) -> Type {
         let param = *self;
 
-        if let Some(replacement) = map_ty.get(&param) {
+        if let Some(replacement) = map.generic_ty.get(&param) {
             // replace the entire parameter
             replacement.clone()
         } else {
@@ -129,21 +133,20 @@ impl GenericContainer for GenericTypeParameter {
 impl GenericContainer for GenericValueParameter {
     type Result = Value;
 
-    fn replace_generic_params(
+    fn replace_generics(
         &self,
         compiled: &mut CompiledDatabasePartial,
-        map_ty: &IndexMap<GenericTypeParameter, Type>,
-        map_value: &IndexMap<GenericValueParameter, Value>,
+        map: &GenericMap,
     ) -> Value {
         let param = *self;
 
-        if let Some(replacement) = map_value.get(&param) {
+        if let Some(replacement) = map.generic_value.get(&param) {
             // replace the entire parameter
             replacement.clone()
         } else {
             // check if bounds of the parameter need to be replaced
             // (for now this doesn't do anything, but this is a compile-type check for added fields, eg. bounds)
-            let ty_new = compiled[param].ty.clone().replace_generic_params(compiled, map_ty, map_value);
+            let ty_new = compiled[param].ty.clone().replace_generics(compiled, map);
             let GenericValueParameterInfo { defining_item, defining_id, ty, ty_span } = &compiled[param];
 
             if &ty_new != ty {
@@ -164,7 +167,10 @@ impl GenericContainer for GenericValueParameter {
 impl GenericContainer for ModulePort {
     type Result = ModulePort;
 
-    fn replace_generic_params(&self, compiled: &mut CompiledDatabasePartial, map_ty: &IndexMap<GenericTypeParameter, Type>, map_value: &IndexMap<GenericValueParameter, Value>) -> Self::Result {
+    fn replace_generics(&self, compiled: &mut CompiledDatabasePartial, map: &GenericMap) -> Self::Result {
+        // we intentionally don't replace the port itself, we might need it to stay a port during module port mapping
+        // in the [Value] enum the port will still potentially be replaced by an arbitrary value
+
         let port = *self;
 
         let kind_new = match compiled[port].kind.clone() {
@@ -173,11 +179,11 @@ impl GenericContainer for ModulePort {
                 domain: match sync {
                     DomainKind::Async => DomainKind::Async,
                     DomainKind::Sync(domain) => DomainKind::Sync(SyncDomain {
-                        clock: domain.clock.replace_generic_params(compiled, map_ty, map_value),
-                        reset: domain.reset.replace_generic_params(compiled, map_ty, map_value),
+                        clock: domain.clock.replace_generics(compiled, map),
+                        reset: domain.reset.replace_generics(compiled, map),
                     }),
                 },
-                ty: ty.replace_generic_params(compiled, map_ty, map_value),
+                ty: ty.replace_generics(compiled, map),
             },
         };
 

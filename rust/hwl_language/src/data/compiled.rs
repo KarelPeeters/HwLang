@@ -175,7 +175,6 @@ pub struct ModulePortInfo {
     pub defining_item: Item,
     pub defining_id: Identifier,
     pub direction: PortDirection,
-    // TODO this is probably wrong, the type and value here don't get replaced properly
     pub kind: PortKind<DomainKind<Value>, Type>,
 }
 

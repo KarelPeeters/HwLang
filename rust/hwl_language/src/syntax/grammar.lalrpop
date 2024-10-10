@@ -186,7 +186,7 @@ ModuleStatementKind: ModuleStatementKind = {
     // TODO this is ugly syntax: why are generics and ports different
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        <generic_args:("generics" "(" <Spanned<Separated<GenericNamedArg, ",">>> ")")?>
+        <generic_args:("generics" "(" <CallArgs> ")")?>
         "ports" "(" <port_connections:Spanned<Separated<PortNamedArg, ",">>> ")"
         ";"
     <end:@R> => {

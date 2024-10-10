@@ -1,15 +1,15 @@
-use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, VariableInfo};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::front::common::{ExpressionContext, GenericContainer, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, ModulePort, VariableInfo};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{Constructor, IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::types::{GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
-use itertools::zip_eq;
+use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
 
 impl CompileState<'_, '_> {
@@ -114,12 +114,12 @@ impl CompileState<'_, '_> {
                             }
                             (None, _) => {
                                 diags.report_simple("missing return value", expr.span, "return");
-                            },
+                            }
                             (Some((ret_value_span, ret_value)), expected_ret_ty) => {
                                 let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty_span), ret_value_span, expected_ret_ty, &ret_value);
                             }
                         }
-                    },
+                    }
                     _ => {
                         diags.report_simple("return outside function body", expr.span, "return");
                     }
@@ -211,58 +211,10 @@ impl CompileState<'_, '_> {
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
-                        // goal: replace parameters with the arguments of this call
-                        let Constructor { inner, parameters } = constr;
-
-                        // check count match
-                        if parameters.vec.len() != args.inner.len() {
-                            let err = Diagnostic::new_simple(
-                                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
-                                args.span,
-                                format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
-                            );
-                            return ScopedEntryDirect::Error(diags.report(err));
+                        match self.eval_constructor_call(ctx, scope, &constr.parameters, &constr.inner, &args) {
+                            Ok(v) => MaybeConstructor::Immediate(v),
+                            Err(e) => MaybeConstructor::Error(e),
                         }
-
-                        // check kind and type match, and collect in replacement map
-                        let mut map_ty: IndexMap<GenericTypeParameter, Type> = IndexMap::new();
-                        let mut map_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
-                        let mut last_err = None;
-
-                        for (&param, arg) in zip_eq(&parameters.vec, &args.inner) {
-                            match param {
-                                GenericParameter::Type(param) => {
-                                    let arg_ty = self.eval_expression_as_ty(scope, arg);
-                                    // TODO use for bound-check (once we add type bounds)
-                                    let _param_info = &self.compiled[param];
-                                    map_ty.insert_first(param, arg_ty)
-                                }
-                                GenericParameter::Value(param) => {
-                                    let arg_value = self.eval_expression_as_value(ctx, scope, arg);
-
-                                    // immediately use the existing generic params to replace the current one
-                                    let param_info = &self.compiled[param];
-                                    let ty_span = param_info.ty_span;
-                                    let ty_replaced = param_info.ty.clone()
-                                        .replace_generic_params(&mut self.compiled, &map_ty, &map_value);
-
-                                    match self.check_type_contains(Some(ty_span), arg.span, &ty_replaced, &arg_value) {
-                                        Ok(()) => {}
-                                        Err(e) => last_err = Some(e),
-                                    }
-                                    map_value.insert_first(param, arg_value)
-                                }
-                            }
-                        }
-
-                        // only bail once all parameters have been checked
-                        if let Some(e) = last_err {
-                            return ScopedEntryDirect::Error(e);
-                        }
-
-                        // do the actual replacement
-                        let result = inner.replace_generic_params(&mut self.compiled, &map_ty, &map_value);
-                        MaybeConstructor::Immediate(result)
                     }
                     ScopedEntryDirect::Immediate(entry) => {
                         match entry {
@@ -288,6 +240,81 @@ impl CompileState<'_, '_> {
         }
     }
 
+    pub fn eval_constructor_call<T: GenericContainer>(&mut self, ctx: &ExpressionContext, scope: Scope, parameters: &GenericParameters, inner: &T, args: &Args) -> Result<T::Result, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        // evaluate the args first, to allow them to report their errors if any
+        let all_args_span = args.span;
+        let args = args.inner.iter()
+            .map(|e| (e.span, self.eval_expression_as_ty_or_value(ctx, scope, e)))
+            .collect_vec();
+
+        // check count match
+        if parameters.vec.len() != args.len() {
+            let err = Diagnostic::new_simple(
+                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.len()),
+                all_args_span,
+                format!("expected {} arguments, got {}", parameters.vec.len(), args.len()),
+            );
+            return Err(diags.report(err));
+        }
+
+        // check kind and type match, and collect in replacement map
+        let mut map_generic_ty: IndexMap<GenericTypeParameter, Type> = IndexMap::new();
+        let mut map_generic_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
+        let map_module_port: IndexMap<ModulePort, Value> = IndexMap::new();
+        let mut last_err = None;
+
+        for (&param, (arg_span, arg)) in zip_eq(&parameters.vec, args) {
+            // immediately use the existing generic params to replace the current one
+            let map = GenericMap {
+                generic_ty: &map_generic_ty,
+                generic_value: &map_generic_value,
+                module_port: &map_module_port,
+            };
+
+            match param {
+                GenericParameter::Type(param) => {
+                    let arg_ty = arg.unwrap_ty(diags, arg_span);
+
+                    // TODO use for bound-check (once we add type bounds)
+                    // TODO apply generic map to info, certainly for the bounds
+                    let _param_info = &self.compiled[param];
+                    map_generic_ty.insert_first(param, arg_ty)
+                }
+                GenericParameter::Value(param) => {
+                    let arg_value = arg.unwrap_value(diags, arg_span);
+
+                    let param_info = &self.compiled[param];
+                    let ty_span = param_info.ty_span;
+                    let ty_replaced = param_info.ty.clone()
+                        .replace_generics(&mut self.compiled, &map);
+
+                    match self.check_type_contains(Some(ty_span), arg_span, &ty_replaced, &arg_value) {
+                        Ok(()) => {}
+                        Err(e) => last_err = Some(e),
+                    }
+                    map_generic_value.insert_first(param, arg_value)
+                }
+            }
+        }
+
+        // only bail once all parameters have been checked
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+
+        // do the actual replacement
+        let map = GenericMap {
+            generic_ty: &map_generic_ty,
+            generic_value: &map_generic_value,
+            module_port: &map_module_port,
+        };
+        let result = inner.replace_generics(&mut self.compiled, &map);
+
+        Ok(result)
+    }
+
     pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
         let entry = self.eval_expression(ctx, scope, expr);
 
@@ -308,37 +335,25 @@ impl CompileState<'_, '_> {
         match entry {
             // TODO unify these error strings somewhere
             // TODO maybe move back to central error collection place for easier unit testing?
+            // TODO report span for the _reason_ why we expect one or the other
             ScopedEntryDirect::Constructor(_) => {
                 let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
                 Type::Error(self.diags.report(diag))
             }
-            ScopedEntryDirect::Immediate(entry) => match entry {
-                TypeOrValue::Type(ty) => ty,
-                TypeOrValue::Value(_) => {
-                    let diag = Diagnostic::new_simple("expected type, got value", expr.span, "value");
-                    Type::Error(self.diags.report(diag))
-                }
-                TypeOrValue::Error(e) => Type::Error(e),
-            }
+            ScopedEntryDirect::Immediate(entry) => entry.unwrap_ty(self.diags, expr.span),
             ScopedEntryDirect::Error(e) => Type::Error(e),
         }
     }
 
     pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> Value {
         let entry = self.eval_expression(ctx, scope, expr);
+
         match entry {
             ScopedEntryDirect::Constructor(_) => {
                 let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
                 Value::Error(self.diags.report(err))
             }
-            ScopedEntryDirect::Immediate(entry) => match entry {
-                TypeOrValue::Type(_) => {
-                    let err = Diagnostic::new_simple("expected value, got type", expr.span, "type");
-                    Value::Error(self.diags.report(err))
-                }
-                TypeOrValue::Value(value) => value,
-                TypeOrValue::Error(e) => Value::Error(e),
-            }
+            ScopedEntryDirect::Immediate(entry) => entry.unwrap_value(self.diags, expr.span),
             ScopedEntryDirect::Error(e) => Value::Error(e),
         }
     }
@@ -422,3 +437,26 @@ impl CompileState<'_, '_> {
     }
 }
 
+impl TypeOrValue<Type, Value> {
+    pub fn unwrap_ty(self, diags: &Diagnostics, span: Span) -> Type {
+        match self {
+            TypeOrValue::Type(ty) => ty,
+            TypeOrValue::Value(_) => {
+                let diag = Diagnostic::new_simple("expected type, got value", span, "value");
+                Type::Error(diags.report(diag))
+            }
+            TypeOrValue::Error(e) => Type::Error(e),
+        }
+    }
+
+    pub fn unwrap_value(self, diags: &Diagnostics, span: Span) -> Value {
+        match self {
+            TypeOrValue::Type(_) => {
+                let diag = Diagnostic::new_simple("expected value, got type", span, "type");
+                Value::Error(diags.report(diag))
+            }
+            TypeOrValue::Value(value) => value,
+            TypeOrValue::Error(e) => Value::Error(e),
+        }
+    }
+}

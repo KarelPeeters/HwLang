@@ -7,7 +7,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
 use itertools::Itertools;
@@ -286,19 +286,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance { span: _, span_keyword: keyword_span, name: _, ref module, ref generic_args, ref port_connections } = instance;
 
-        // evaluate generic args and ports by themselves, so they're checked even if the module is not found
-        let generic_args = generic_args.as_ref().map(|generic_args| {
-            let vec = generic_args.inner.iter().map(|(id, expr)| {
-                (id, self.eval_expression_as_ty_or_value(ctx_module, scope_body, expr))
-            }).collect_vec();
-            Spanned { span: generic_args.span, inner: vec }
-        });
+        // find the module, fill in generics
+        let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
+
+        // always evaluate ports, so they can emit errors even if the module or its generics are invalid
         let port_connections = port_connections.inner.iter().map(|(id, expr)|
             (id, self.eval_expression_as_value(ctx_module, scope_body, expr))
         ).collect_vec();
-
-        // find the module, fill in generics
-        let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
 
         // fill in ports, including type/domain/inout checking
         // TODO
@@ -313,7 +307,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ctx_module: &ExpressionContext,
         scope: Scope,
         module_expr: &ast::Expression,
-        generic_args: &Option<Spanned<Vec<(&Identifier, TypeOrValue)>>>,
+        generic_args: &Option<ast::Args>,
     ) -> Result<ModuleValueInfo, ErrorGuaranteed> {
         let diags = self.diags;
 
@@ -325,12 +319,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         match inner {
                             TypeOrValue::Value(value) => {
                                 match value {
-                                    Value::Module(value) => {
-                                        // TODO
-                                        let _ = generic_args;
-                                        let _ = parameters;
-                                        let _ = value;
-                                        Err(diags.report_todo(keyword_span, "instance with generic args"))
+                                    Value::Module(module) => {
+                                        self.eval_constructor_call(ctx_module, scope, &parameters, &module, &generic_args)
                                     }
                                     Value::Error(e) => Err(e),
                                     _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))

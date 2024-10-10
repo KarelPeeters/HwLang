@@ -291,7 +291,8 @@ pub struct ModuleInstance {
     pub span_keyword: Span,
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
-    pub generic_args: Option<Spanned<Vec<(Identifier, Expression)>>>,
+    // TODO force module generics to be named
+    pub generic_args: Option<Args>,
     pub port_connections: Spanned<Vec<(Identifier, Expression)>>,
 }
 
