@@ -312,57 +312,64 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let diags = self.diags;
 
         let module_value = self.eval_expression(ctx_module, scope, module_expr);
-        match (module_value, generic_args) {
-            (ScopedEntryDirect::Constructor(constr), Some(generic_args)) => {
-                match constr {
-                    Constructor { parameters, inner } => {
-                        match inner {
-                            TypeOrValue::Value(value) => {
-                                match value {
-                                    Value::Module(module) => {
-                                        self.eval_constructor_call(ctx_module, scope, &parameters, &module, &generic_args)
-                                    }
-                                    Value::Error(e) => Err(e),
-                                    _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
-                                }
-                            }
-                            TypeOrValue::Type(_) => Err(diags.report_simple("expected module, got type constructor", module_expr.span, "type constructor")),
-                            TypeOrValue::Error(e) => Err(e),
-                        }
-                    }
+
+        let (constructor_params, module_inner) = match module_value {
+            ScopedEntryDirect::Immediate(inner) => (Ok(None), inner),
+            ScopedEntryDirect::Constructor(Constructor { parameters, inner }) => (Ok(Some(parameters)), inner),
+            ScopedEntryDirect::Error(e) => (Err(e), TypeOrValue::Error(e)),
+        };
+
+        let constructor_str = match constructor_params {
+            Ok(Some(_)) => " constructor",
+            Ok(None) => "",
+            // this error case should not show up in user output
+            Err(_) => " error",
+        };
+        let module_inner_raw = match module_inner {
+            TypeOrValue::Type(_) =>
+                Err(diags.report_simple(format!("expected module, got type{}", constructor_str), module_expr.span, format!("type{}", constructor_str))),
+            TypeOrValue::Value(value) => {
+                match value {
+                    Value::Error(e) => Err(e),
+                    Value::Module(inner) => Ok(inner),
+                    _ => Err(diags.report_simple(
+                        format!("expected module, got other non-module{} {}", constructor_str, self.compiled.value_to_readable_str(&self.source, &value)),
+                        module_expr.span,
+                        "value",
+                    ))
                 }
             }
-            (ScopedEntryDirect::Immediate(imm), None) => {
-                match imm {
-                    TypeOrValue::Type(_) =>
-                        Err(diags.report_simple("expected module, got type", module_expr.span, "type")),
-                    TypeOrValue::Value(value) => {
-                        match value {
-                            Value::Module(module) => Ok(module),
-                            Value::Error(e) => Err(e),
-                            _ => Err(diags.report_simple(format!("expected module, got other value {}", self.compiled.value_to_readable_str(&self.source, &value)), module_expr.span, "value"))
-                        }
-                    }
-                    TypeOrValue::Error(e) => Err(e),
-                }
-            }
-            (ScopedEntryDirect::Constructor(_), None) => {
-                // TODO point to module definition
+            TypeOrValue::Error(e) => Err(e),
+        };
+
+        match (constructor_params, generic_args, module_inner_raw) {
+            // immediate module
+            (Ok(None), None, module_inner_raw) => module_inner_raw,
+            // generic module with args
+            (Ok(Some(constructor_params)), Some(generic_args), Ok(module_inner_raw)) =>
+                self.eval_constructor_call(ctx_module, scope, &constructor_params, &module_inner_raw, generic_args),
+
+            // error: we don't know if module is generic or not
+            (Err(e), _, _) => Err(e),
+            (_, _, Err(e)) => Err(e),
+
+            // error: not generic but args provided
+            (Ok(Some(_)), None, Ok(module_inner_raw)) => {
                 let diag = Diagnostic::new("instance of generic module is missing generic args")
                     .add_error(keyword_span, "instance here does not provide generic args")
                     .add_info(module_expr.span, "module used here needs generics")
+                    .add_info(self.compiled[module_inner_raw.nominal_type_unique.item].defining_id.span(), "module defined here")
                     .finish();
                 Err(diags.report(diag))
             }
-            (ScopedEntryDirect::Immediate(_), Some(_)) => {
-                // TODO point to module definition
-                let diag = Diagnostic::new("instance of non-generic module has generic args")
-                    .add_error(keyword_span, "instance here provides generic args")
+            (Ok(None), Some(_), Ok(module_inner_raw)) => {
+                let diag = Diagnostic::new("instance of non-generic module has generic parameters")
+                    .add_error(keyword_span, "instance here does provide generic args")
                     .add_info(module_expr.span, "module used here does not need generics")
+                    .add_info(self.compiled[module_inner_raw.nominal_type_unique.item].defining_id.span(), "module defined here")
                     .finish();
                 Err(diags.report(diag))
             }
-            (ScopedEntryDirect::Error(e), _) => Err(e)
         }
     }
 

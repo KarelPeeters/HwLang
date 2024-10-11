@@ -244,6 +244,8 @@ impl CompileState<'_, '_> {
         let diags = self.diags;
 
         // evaluate the args first, to allow them to report their errors if any
+        // TODO move this even earlier, outside of this function:
+        //   the caller should do this themselves even before deciding that this is in fact a constructor
         let all_args_span = args.span;
         let args = args.inner.iter()
             .map(|e| (e.span, self.eval_expression_as_ty_or_value(ctx, scope, e)))
