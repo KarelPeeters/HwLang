@@ -24,7 +24,9 @@ impl CompileState<'_, '_> {
             &Value::GenericParameter(_) => ValueDomainKind::Const,
             &Value::Never => ValueDomainKind::Const,
             &Value::Unit => ValueDomainKind::Const,
-            &Value::InstConstant(_) => ValueDomainKind::Const,
+            &Value::BoolConstant(_) => ValueDomainKind::Const,
+            &Value::IntConstant(_) => ValueDomainKind::Const,
+            &Value::StringConstant(_) => ValueDomainKind::Const,
             Value::Range(info) => {
                 let RangeInfo { start, end, end_inclusive: _ } = info;
 
@@ -111,6 +113,7 @@ impl CompileState<'_, '_> {
             (Type::Never, Value::Never) => return Ok(()),
             // TODO differentiate between arbitrary open, half-open, ...
             (Type::Range, Value::Range(_)) => return Ok(()),
+            (Type::Boolean, Value::BoolConstant(_)) => return Ok(()),
 
             // integer range check
             (Type::Integer(IntegerTypeInfo { range }), value) => {
@@ -343,14 +346,16 @@ impl CompileState<'_, '_> {
 
             // TODO return the same as error?
             Value::Never => Ok(None),
+            Value::BoolConstant(_) => Ok(None),
             // a single integer corresponds to the range containing only that integer
             // TODO should we generate an inclusive or exclusive range here?
             //   this will become moot once we switch to +1 deltas
-            Value::InstConstant(ref value) => Ok(Some(RangeInfo {
-                start: Some(Box::new(Value::InstConstant(value.clone()))),
-                end: Some(Box::new(Value::InstConstant(value + 1u32))),
+            Value::IntConstant(ref value) => Ok(Some(RangeInfo {
+                start: Some(Box::new(Value::IntConstant(value.clone()))),
+                end: Some(Box::new(Value::IntConstant(value + 1u32))),
                 end_inclusive: false,
             })),
+            Value::StringConstant(_) => Ok(None),
             Value::ModulePort(port) => {
                 match &self.compiled[port].kind {
                     PortKind::Clock => Ok(None),
@@ -385,7 +390,7 @@ impl CompileState<'_, '_> {
                         let range = RangeInfo {
                             start: option_pair(left.start.as_ref(), right.end.as_ref())
                                 .map(|(left_start, right_end)| {
-                                    let right_end_inclusive = Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::InstConstant(BigInt::one()))));
+                                    let right_end_inclusive = Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::IntConstant(BigInt::one()))));
                                     Box::new(Value::Binary(BinaryOp::Sub, left_start.clone(), right_end_inclusive))
                                 }),
                             end: option_pair(left.end.as_ref(), right.start.as_ref())
@@ -406,7 +411,7 @@ impl CompileState<'_, '_> {
                                 .finish();
                             self.diags.report(err)
                         })?;
-                        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::InstConstant(BigInt::ZERO)), right_start.clone());
+                        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::IntConstant(BigInt::ZERO)), right_start.clone());
                         self.try_eval_bool_true(origin, &cond)
                             .map_err(|e| {
                                 let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
@@ -421,10 +426,10 @@ impl CompileState<'_, '_> {
 
                         // if base is >0, then the result is >0 too
                         // TODO this range can be improved a lot: consider cases +,0,- separately
-                        let base_positive = self.try_eval_bool(origin, &Value::Binary(BinaryOp::CmpLt, Box::new(Value::InstConstant(BigInt::ZERO)), left_start))?;
+                        let base_positive = self.try_eval_bool(origin, &Value::Binary(BinaryOp::CmpLt, Box::new(Value::IntConstant(BigInt::ZERO)), left_start))?;
                         if base_positive == Some(true) {
                             Ok(Some(RangeInfo {
-                                start: Some(Box::new(Value::InstConstant(BigInt::one()))),
+                                start: Some(Box::new(Value::IntConstant(BigInt::one()))),
                                 end: None,
                                 end_inclusive: false,
                             }))
@@ -455,9 +460,9 @@ pub fn simplify_value(value: Value) -> Value {
 
             if let Some((left, right)) = option_pair(value_as_int(&left), value_as_int(&right)) {
                 match op {
-                    BinaryOp::Add => return Value::InstConstant(left + right),
-                    BinaryOp::Sub => return Value::InstConstant(left - right),
-                    BinaryOp::Mul => return Value::InstConstant(left * right),
+                    BinaryOp::Add => return Value::IntConstant(left + right),
+                    BinaryOp::Sub => return Value::IntConstant(left - right),
+                    BinaryOp::Mul => return Value::IntConstant(left * right),
                     _ => {}
                 }
             }
@@ -472,7 +477,7 @@ pub fn simplify_value(value: Value) -> Value {
 // TODO return error if value is error?
 pub fn value_as_int(value: &Value) -> Option<&BigInt> {
     match value {
-        Value::InstConstant(value) => Some(value),
+        Value::IntConstant(value) => Some(value),
         _ => None,
     }
 }

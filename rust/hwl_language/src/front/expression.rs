@@ -5,12 +5,15 @@ use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, SyncDomain, UnaryOp};
+use crate::syntax::ast;
+use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
+use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
+use std::cmp::min;
 
 impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
@@ -140,14 +143,14 @@ impl CompileState<'_, '_> {
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
                         let value = str_clean.parse::<BigInt>().unwrap();
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::InstConstant(value)))
+                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::IntConstant(value)))
                     }
                 }
             }
-            ExpressionKind::BoolLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "bool literal expression")),
-            ExpressionKind::StringLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "string literal expression")),
+            ExpressionKind::BoolLiteral(b) =>
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::BoolConstant(b))),
+            ExpressionKind::StringLiteral(ref s) =>
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::StringConstant(s.clone()))),
             ExpressionKind::ArrayLiteral(_) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "array literal expression")),
             ExpressionKind::TupleLiteral(_) =>
@@ -181,7 +184,7 @@ impl CompileState<'_, '_> {
                     UnaryOp::Neg => {
                         Value::Binary(
                             BinaryOp::Sub,
-                            Box::new(Value::InstConstant(BigInt::ZERO)),
+                            Box::new(Value::IntConstant(BigInt::ZERO)),
                             Box::new(self.eval_expression_as_value(ctx, scope, inner)),
                         )
                     }
@@ -208,10 +211,11 @@ impl CompileState<'_, '_> {
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
                 let target_entry = self.eval_expression(ctx, scope, target);
+                let args_entry = args.map_inner(|e| self.eval_expression_as_ty_or_value(ctx, scope, e));
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
-                        match self.eval_constructor_call(ctx, scope, &constr.parameters, &constr.inner, &args) {
+                        match self.eval_constructor_call(&constr.parameters, &constr.inner, args_entry, true) {
                             Ok(v) => MaybeConstructor::Immediate(v),
                             Err(e) => MaybeConstructor::Error(e),
                         }
@@ -232,7 +236,7 @@ impl CompileState<'_, '_> {
                 }
             }
             ExpressionKind::Builtin(ref args) => {
-                match self.eval_builtin_call(scope, expr.span, args) {
+                match self.eval_builtin_call(ctx, scope, expr.span, args) {
                     Ok(result) => MaybeConstructor::Immediate(result),
                     Err(e) => MaybeConstructor::Error(e),
                 }
@@ -240,34 +244,70 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_constructor_call<T: GenericContainer>(&mut self, ctx: &ExpressionContext, scope: Scope, parameters: &GenericParameters, inner: &T, args: &Args) -> Result<T::Result, ErrorGuaranteed> {
+    pub fn eval_constructor_call<T: GenericContainer>(
+        &mut self,
+        parameters: &GenericParameters,
+        inner: &T,
+        args: ast::Args<TypeOrValue>,
+        allow_positional: bool,
+    ) -> Result<T::Result, ErrorGuaranteed> {
         let diags = self.diags;
-
-        // evaluate the args first, to allow them to report their errors if any
-        // TODO move this even earlier, outside of this function:
-        //   the caller should do this themselves even before deciding that this is in fact a constructor
-        let all_args_span = args.span;
-        let args = args.inner.iter()
-            .map(|e| (e.span, self.eval_expression_as_ty_or_value(ctx, scope, e)))
-            .collect_vec();
+        let mut any_err = None;
 
         // check count match
-        if parameters.vec.len() != args.len() {
+        if parameters.vec.len() != args.inner.len() {
             let err = Diagnostic::new_simple(
-                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.len()),
-                all_args_span,
-                format!("expected {} arguments, got {}", parameters.vec.len(), args.len()),
+                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
+                args.span,
+                format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
             );
-            return Err(diags.report(err));
+            any_err = Some(diags.report(err));
         }
+        let min_len = min(parameters.vec.len(), args.inner.len());
 
         // check kind and type match, and collect in replacement map
         let mut map_generic_ty: IndexMap<GenericTypeParameter, Type> = IndexMap::new();
         let mut map_generic_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
         let map_module_port: IndexMap<ModulePort, Value> = IndexMap::new();
-        let mut last_err = None;
+        let mut any_named = false;
 
-        for (&param, (arg_span, arg)) in zip_eq(&parameters.vec, args) {
+        for (&param, arg) in zip_eq(&parameters.vec[..min_len], args.inner.into_iter().take(min_len)) {
+            let ast::Arg { span: arg_span, name: arg_name, expr: arg_value, } = arg;
+
+            // check positional allowed or name match
+            match arg_name {
+                None => {
+                    if !allow_positional {
+                        let err = Diagnostic::new_simple("positional arguments are not allowed here", arg_span, "positional argument");
+                        any_err = Some(diags.report(err));
+                    }
+                    if any_named {
+                        let err = Diagnostic::new_simple("positional argument is not allowed after named argument", arg_span, "positional argument");
+                        any_err = Some(diags.report(err));
+                    }
+                }
+                Some(arg_name) => {
+                    any_named = true;
+
+                    let param_id = match param {
+                        GenericParameter::Type(param) => &self.compiled[param].defining_id,
+                        GenericParameter::Value(param) => &self.compiled[param].defining_id,
+                    };
+
+                    if arg_name.string != param_id.string {
+                        let err = Diagnostic::new("argument name mismatch")
+                            .add_info(param_id.span, format!("expected `{}`, defined here", param_id.string))
+                            .add_error(arg_span, format!("got `{}`", arg_name.string))
+                            .footer(Level::Note, "different parameter and argument orderings are not yet supported")
+                            .finish();
+                        any_err = Some(diags.report(err));
+
+                        // from now on generic replacement is broken, so we have to stop the loop
+                        break;
+                    }
+                }
+            }
+
             // immediately use the existing generic params to replace the current one
             let map = GenericMap {
                 generic_ty: &map_generic_ty,
@@ -277,7 +317,7 @@ impl CompileState<'_, '_> {
 
             match param {
                 GenericParameter::Type(param) => {
-                    let arg_ty = arg.unwrap_ty(diags, arg_span);
+                    let arg_ty = arg_value.unwrap_ty(diags, arg_span);
 
                     // TODO use for bound-check (once we add type bounds)
                     // TODO apply generic map to info, certainly for the bounds
@@ -285,7 +325,7 @@ impl CompileState<'_, '_> {
                     map_generic_ty.insert_first(param, arg_ty)
                 }
                 GenericParameter::Value(param) => {
-                    let arg_value = arg.unwrap_value(diags, arg_span);
+                    let arg_value = arg_value.unwrap_value(diags, arg_span);
 
                     let param_info = &self.compiled[param];
                     let ty_span = param_info.ty_span;
@@ -294,7 +334,7 @@ impl CompileState<'_, '_> {
 
                     match self.check_type_contains(Some(ty_span), arg_span, &ty_replaced, &arg_value) {
                         Ok(()) => {}
-                        Err(e) => last_err = Some(e),
+                        Err(e) => any_err = Some(e),
                     }
                     map_generic_value.insert_first(param, arg_value)
                 }
@@ -302,7 +342,7 @@ impl CompileState<'_, '_> {
         }
 
         // only bail once all parameters have been checked
-        if let Some(e) = last_err {
+        if let Some(e) = any_err {
             return Err(e);
         }
 
@@ -377,20 +417,34 @@ impl CompileState<'_, '_> {
 
     fn eval_builtin_call(
         &mut self,
+        ctx: &ExpressionContext,
         scope: Scope,
         expr_span: Span,
         args: &Args,
     ) -> Result<TypeOrValue, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let args_span = args.span;
+        let args = args.inner.iter()
+            .map(|arg| {
+                let ast::Arg { span: _, name, expr: arg_expr } = arg;
+                if let Some(name) = name {
+                    diags.report_simple("named arguments are not allowed for __builtin calls", name.span, "named argument");
+                }
+                let inner = self.eval_expression_as_ty_or_value(ctx, scope, arg_expr);
+                Spanned { span: arg.span, inner }
+            })
+            .collect_vec();
+
         let get_arg_str = |i: usize| -> Option<&str> {
-            args.inner.get(i).and_then(|e| match &e.inner {
-                ExpressionKind::StringLiteral(s) => Some(s.as_str()),
+            args.get(i).and_then(|e| match &e.inner {
+                TypeOrValue::Value(Value::StringConstant(s)) => Some(s.as_str()),
                 _ => None,
             })
         };
 
         if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
-            let rest = &args.inner[2..];
-            let ctx = &ExpressionContext::NotFunctionBody;
+            let rest = &args[2..];
 
             match (first, second, rest) {
                 ("type", "bool", &[]) =>
@@ -401,7 +455,7 @@ impl CompileState<'_, '_> {
                 }
                 ("type", "int_range", [range]) => {
                     // TODO typecheck (range must be integer)
-                    let range = Box::new(self.eval_expression_as_value(ctx, scope, range));
+                    let range = Box::new(range.inner.clone().unwrap_value(diags, range.span));
                     let ty_info = IntegerTypeInfo { range };
                     return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
                 }
@@ -411,17 +465,17 @@ impl CompileState<'_, '_> {
                     return Ok(TypeOrValue::Type(Type::Bits(None))),
                 ("type", "bits", [bits]) => {
                     // TODO typecheck (bits must be non-negative integer)
-                    let bits = self.eval_expression_as_value(ctx, scope, bits);
+                    let bits = bits.inner.clone().unwrap_value(diags, bits.span);
                     return Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits)))));
                 }
                 ("type", "Array", [ty, len]) => {
                     // TODO typecheck: len must be uint
-                    let ty = self.eval_expression_as_ty(scope, ty);
-                    let len = self.eval_expression_as_value(ctx, scope, len);
+                    let ty = ty.inner.clone().unwrap_ty(diags, ty.span);
+                    let len = len.inner.clone().unwrap_value(diags, len.span);
                     return Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len))));
                 }
                 ("function", "print", [value]) => {
-                    let _: Value = self.eval_expression_as_value(ctx, scope, value);
+                    let _: Value = value.inner.clone().unwrap_value(diags, value.span);
                     return Ok(TypeOrValue::Value(Value::Unit));
                 }
                 // fallthrough into error
@@ -431,7 +485,7 @@ impl CompileState<'_, '_> {
 
         let err = Diagnostic::new("invalid arguments for __builtin call")
             .snippet(expr_span)
-            .add_error(args.span, "invalid arguments")
+            .add_error(args_span, "invalid arguments")
             .finish()
             .finish()
             .into();

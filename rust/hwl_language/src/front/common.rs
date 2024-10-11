@@ -15,6 +15,7 @@ use indexmap::IndexMap;
 /// * return is only allowed in functions
 /// * break/continue are only allowed in loops
 /// TODO maybe allow break to be used in clocked blocks too?
+/// TODO create a wrapper type for (ExpressionContext, Scope), they're very often used together
 #[derive(Debug)]
 pub enum ExpressionContext {
     /// Used in function body as part of normal statements or expressions.

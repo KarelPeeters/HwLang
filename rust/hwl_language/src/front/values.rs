@@ -23,7 +23,9 @@ pub enum Value {
     // basic
     Never,
     Unit,
-    InstConstant(BigInt),
+    BoolConstant(bool),
+    IntConstant(BigInt),
+    StringConstant(String),
     // TODO long-term this should become a standard struct instead of compiler magic
     Range(RangeInfo<Box<Value>>),
     // TODO this BinaryOp should probably be separate from the ast one
@@ -113,7 +115,9 @@ impl GenericContainer for Value {
             Value::Unit => Value::Unit,
             Value::Never => Value::Never,
 
-            Value::InstConstant(ref info) => Value::InstConstant(info.clone()),
+            Value::BoolConstant(b) => Value::BoolConstant(b),
+            Value::IntConstant(ref info) => Value::IntConstant(info.clone()),
+            Value::StringConstant(ref info) => Value::StringConstant(info.clone()),
             Value::Range(ref info) => Value::Range(RangeInfo {
                 start: info.start.as_ref()
                     .map(|v| Box::new(v.replace_generics(compiled, map))),

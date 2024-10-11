@@ -291,7 +291,6 @@ pub struct ModuleInstance {
     pub span_keyword: Span,
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
-    // TODO force module generics to be named
     pub generic_args: Option<Args>,
     pub port_connections: Spanned<Vec<(Identifier, Expression)>>,
 }
@@ -350,11 +349,29 @@ pub enum ExpressionKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct Args {
+pub struct Args<T = Expression> {
     pub span: Span,
-    pub inner: Vec<Expression>,
-    // TODO implement named args
-    // pub named: Vec<(Identifier, Expression)>,
+    pub inner: Vec<Arg<T>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Arg<T = Expression> {
+    pub span: Span,
+    pub name: Option<Identifier>,
+    pub expr: T,
+}
+
+impl<T> Args<T> {
+    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<U> {
+        Args {
+            span: self.span,
+            inner: self.inner.iter().map(|arg| Arg {
+                span: arg.span,
+                name: arg.name.clone(),
+                expr: f(&arg.expr),
+            }).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

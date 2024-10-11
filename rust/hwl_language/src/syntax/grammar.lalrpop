@@ -119,6 +119,7 @@ Item: Item = {
     <start:@L> <vis:Vis> "module" <id:Id> <params:("generics" <Parameters<GenericParameter>>)?> "ports" <ports:Parameters<ModulePort>> "body" <body:Block<ModuleStatement>> <end:@R>
         => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
+    // TODO return to "->" for the return type, necessary for higher order function type syntax
     <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<GenericParameter>> <ret_ty:(":" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
@@ -186,8 +187,8 @@ ModuleStatementKind: ModuleStatementKind = {
     // TODO this is ugly syntax: why are generics and ports different
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        <generic_args:("generics" "(" <CallArgs> ")")?>
-        "ports" "(" <port_connections:Spanned<Separated<PortNamedArg, ",">>> ")"
+        <generic_args:("generics" "(" <Args> ")")?>
+        "ports" "(" <port_connections:Spanned<Separated<InstancePortConnection, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
@@ -199,11 +200,9 @@ ModuleStatementKind: ModuleStatementKind = {
     },
 }
 
-GenericNamedArg: (Identifier, Expression) = {
-    <id:Id> "=" <value:Expr> => (id, value),
-}
-
-PortNamedArg: (Identifier, Expression) = {
+// TODO better port syntax, maybe including directionality?
+//   now it's different from both generics and struct literals
+InstancePortConnection: (Identifier, Expression) = {
     "." <id:Id> "(" <value:Expr> ")" => (id, value),
 }
 
@@ -365,19 +364,23 @@ ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
 ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
 ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
-    "__builtin" "(" <args:CallArgs> ")" =>
+    "__builtin" "(" <args:Args> ")" =>
         ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "(" <args:CallArgs> ")" =>
+    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "(" <args:Args> ")" =>
         ExpressionKind::Call(target, args),
-    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:CallArgs> "]" =>
+    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:Args> "]" =>
         ExpressionKind::ArrayIndex(target, args),
     ExprLevelDotIndex<AtomicInner>,
 }
 
-CallArgs: Args = {
-    // TODO support named args
-    <start:@L> <inner:Separated<Expr, ",">> <end:@L> =>
+Args: Args = {
+    <start:@L> <inner:Separated<Arg, ",">> <end:@L> =>
         Args { inner, span: loc.span(start, end) },
+}
+
+Arg: Arg = {
+    <start:@L> <name:(<Id> "=")?> <expr:Expr> <end:@L> =>
+        Arg { name, expr, span: loc.span(start, end) },
 }
 
 ExprLevelDotIndex<AtomicInner>: ExpressionKind = {

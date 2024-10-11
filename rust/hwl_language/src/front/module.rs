@@ -295,7 +295,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ).collect_vec();
 
         // fill in ports, including type/domain/inout checking
-        // TODO
+        // TODO these ports don't really have an ordering, they're just name-based
+        //   follow the declaration ordering for type checking, similar to how named function args and generics will work
+        //   won't that have weird consequences for expression eval ordering? or do we stick to the declaration order there too?
+        //   (or even simpler: just enforce a marching ordering for now)
         let _ = port_connections;
         let _ = module_with_generics;
         ModuleStatement::Err(self.diags.report_todo(instance.span, "module instance ports"))
@@ -346,8 +349,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
             // immediate module
             (Ok(None), None, module_inner_raw) => module_inner_raw,
             // generic module with args
-            (Ok(Some(constructor_params)), Some(generic_args), Ok(module_inner_raw)) =>
-                self.eval_constructor_call(ctx_module, scope, &constructor_params, &module_inner_raw, generic_args),
+            (Ok(Some(constructor_params)), Some(generic_args), Ok(module_inner_raw)) => {
+                let generic_args = generic_args.map_inner(|arg| self.eval_expression_as_ty_or_value(ctx_module, scope, arg));
+                self.eval_constructor_call(&constructor_params, &module_inner_raw, generic_args, false)
+            }
 
             // error: we don't know if module is generic or not
             (Err(e), _, _) => Err(e),

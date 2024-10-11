@@ -7,7 +7,7 @@ pub module top ports(
     y: out sync(clk, rst) bits(4),
 ) body {
     instance i_child = child generics(
-        4,
+        N=4,
     ) ports(
         .clk(clk),
         .rst(rst),

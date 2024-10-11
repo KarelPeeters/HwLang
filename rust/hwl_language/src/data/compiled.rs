@@ -243,13 +243,15 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             }
             Value::Never => "never".to_string(),
             Value::Unit => "()".to_string(),
-            Value::InstConstant(v) => {
+            Value::BoolConstant(b) => format!("{}", b),
+            Value::IntConstant(v) => {
                 if v.is_negative() {
                     format!("({})", v)
                 } else {
                     format!("{}", v)
                 }
             }
+            Value::StringConstant(s) => format!("{:?}", s),
             Value::Range(range) => self.range_to_readable_str(source, range),
             &Value::Binary(op, ref left, ref right) => {
                 let left = self.value_to_readable_str(source, left);

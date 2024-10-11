@@ -388,7 +388,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
 fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
-        Value::InstConstant(i) => Ok(i.clone()),
+        Value::IntConstant(i) => Ok(i.clone()),
         Value::Binary(op, left, right) => {
             let left = value_evaluate_int(diag, span, left)?;
             let right = value_evaluate_int(diag, span, right)?;
@@ -409,20 +409,22 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
                             Err(diag.report_simple(format!("power exponent too large: {}", right), span, "used here")),
                     }
                 }
-                _ => Err(diag.report_todo(span, format!("evaluate binary value {value:?}")))
+                _ => Err(diag.report_todo(span, format!("value_evaluate_int binary value {value:?}")))
             }
         }
-        Value::Unit => Err(diag.report_todo(span, "evaluate value Unit")),
-        Value::UnaryNot(_) => Err(diag.report_todo(span, "evaluate value UnaryNot")),
-        Value::GenericParameter(_) => Err(diag.report_todo(span, "evaluate value GenericParameter")),
-        Value::ModulePort(_) => Err(diag.report_todo(span, "evaluate value ModulePort")),
-        Value::Range(_) => Err(diag.report_todo(span, "evaluate value Range")),
-        Value::FunctionReturn(_) => Err(diag.report_todo(span, "evaluate value Function")),
-        Value::Module(_) => Err(diag.report_todo(span, "evaluate value Module")),
-        Value::Wire => Err(diag.report_todo(span, "evaluate value Wire")),
-        Value::Register(_) => Err(diag.report_todo(span, "evaluate value Reg")),
-        Value::Variable(_) => Err(diag.report_todo(span, "evaluate value Variable")),
-        Value::Never => Err(diag.report_todo(span, "evaluate value Never")),
+        Value::BoolConstant(_) => Err(diag.report_todo(span, "value_evaluate_int value BoolConstant")),
+        Value::StringConstant(_) => Err(diag.report_todo(span, "value_evaluate_int value StringConstant")),
+        Value::Unit => Err(diag.report_todo(span, "value_evaluate_int value Unit")),
+        Value::UnaryNot(_) => Err(diag.report_todo(span, "value_evaluate_int value UnaryNot")),
+        Value::GenericParameter(_) => Err(diag.report_todo(span, "value_evaluate_int value GenericParameter")),
+        Value::ModulePort(_) => Err(diag.report_todo(span, "value_evaluate_int value ModulePort")),
+        Value::Range(_) => Err(diag.report_todo(span, "value_evaluate_int value Range")),
+        Value::FunctionReturn(_) => Err(diag.report_todo(span, "value_evaluate_int value Function")),
+        Value::Module(_) => Err(diag.report_todo(span, "value_evaluate_int value Module")),
+        Value::Wire => Err(diag.report_todo(span, "value_evaluate_int value Wire")),
+        Value::Register(_) => Err(diag.report_todo(span, "value_evaluate_int value Reg")),
+        Value::Variable(_) => Err(diag.report_todo(span, "value_evaluate_int value Variable")),
+        Value::Never => Err(diag.report_todo(span, "value_evaluate_int value Never")),
     }
 }
 
