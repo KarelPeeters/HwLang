@@ -120,17 +120,17 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(I);
-        port_string.push_str(&port_to_verilog(diag, source, compiled, port, comma_str));
+        port_string.push_str(&port_to_verilog(diag, source, parsed, compiled, port, comma_str));
         port_string.push_str("\n");
     }
 
     let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body);
-    let body_str = module_body_to_verilog(diag, source, compiled, item_ast.span, body);
+    let body_str = module_body_to_verilog(diag, source, parsed, compiled, item_ast.span, body);
 
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
-fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleChecked) -> String {
+fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase, compiled: &CompiledDatabase, module_span: Span, body: &ModuleChecked) -> String {
     let mut result = String::new();
     let f = &mut result;
 
@@ -148,7 +148,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id: _, domain: sync, ty } = &compiled[reg];
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
-        let sync_str = sync_to_comment_str(source, compiled, &DomainKind::Sync(sync.clone()));
+        let sync_str = sync_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()));
 
         swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
     }
@@ -169,7 +169,7 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 // TODO add metadata pointing to source as comments
                 swriteln!(f, "{I}always @(*) begin");
                 for statement in statements {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
+                    swriteln!(f, "{I}{I}{}", statement_to_string(parsed, compiled, statement));
                 }
                 swriteln!(f, "{I}end");
             }
@@ -184,10 +184,10 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                         Value::Error(_) =>
                             return ("0 /* error */", "posedge", ""),
                         &Value::ModulePort(port) =>
-                            return (&compiled[port].defining_id.string, "posedge", ""),
+                            return (&parsed.module_port_ast(compiled[port].ast).id.string, "posedge", ""),
                         Value::UnaryNot(inner) => {
                             if let &Value::ModulePort(port) = &**inner {
-                                return (&compiled[port].defining_id.string, "negedge", "!");
+                                return (&parsed.module_port_ast(compiled[port].ast).id.string, "negedge", "!");
                             }
                             // fallthrough
                         }
@@ -205,11 +205,11 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
                 swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
                 swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
                 for statement in on_reset {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(compiled, statement));
+                    swriteln!(f, "{I}{I}{}", statement_to_string(parsed, compiled, statement));
                 }
                 swriteln!(f, "{I}{I}end else begin");
                 for statement in on_block {
-                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(compiled, statement));
+                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(parsed, compiled, statement));
                 }
                 swriteln!(f, "{I}{I}end");
 
@@ -228,11 +228,11 @@ fn module_body_to_verilog(diag: &Diagnostics, source: &SourceDatabase, compiled:
     result
 }
 
-fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) -> String {
+fn statement_to_string(parsed: &ParsedDatabase, compiled: &CompiledDatabase, statement: &LowerStatement) -> String {
     match statement {
         &LowerStatement::PortPortAssignment(target, value) => {
-            let target_str = &compiled[target].defining_id.string;
-            let value_str = &compiled[value].defining_id.string;
+            let target_str = &parsed.module_port_ast(compiled[target].ast).id.string;
+            let value_str = &parsed.module_port_ast(compiled[value].ast).id.string;
             format!("{target_str} <= {value_str};")
         }
         &LowerStatement::Error(_) => {
@@ -244,16 +244,17 @@ fn statement_to_string(compiled: &CompiledDatabase, statement: &LowerStatement) 
 fn port_to_verilog(
     diag: &Diagnostics,
     source: &SourceDatabase,
+    parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     port: ModulePort,
     comma_str: &str,
 ) -> String {
     let &ModulePortInfo {
-        defining_item: _,
-        ref defining_id,
+        ast,
         direction,
         ref kind
     } = &compiled[port];
+    let defining_id = &parsed.module_port_ast(ast).id;
 
     let dir_str = match direction {
         PortDirection::Input => "input",
@@ -265,7 +266,7 @@ fn port_to_verilog(
         PortKind::Normal { domain: sync, ty } => {
             // TODO include full type in comment
             let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty));
-            let comment = sync_to_comment_str(source, compiled, sync);
+            let comment = sync_to_comment_str(source, parsed, compiled, sync);
             (ty_str, comment)
         }
     };
@@ -275,11 +276,11 @@ fn port_to_verilog(
     format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
 }
 
-fn sync_to_comment_str(source: &SourceDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>) -> String {
+fn sync_to_comment_str(source: &SourceDatabase, parsed: &ParsedDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>) -> String {
     match sync {
         DomainKind::Sync(SyncDomain { clock, reset }) => {
-            let clock_str = compiled.value_to_readable_str(source, clock);
-            let reset_str = compiled.value_to_readable_str(source, reset);
+            let clock_str = compiled.value_to_readable_str(source, parsed, clock);
+            let reset_str = compiled.value_to_readable_str(source, parsed, reset);
             format!("sync({}, {})", clock_str, reset_str)
         }
         DomainKind::Async => "async".to_owned(),

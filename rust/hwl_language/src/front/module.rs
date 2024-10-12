@@ -1,7 +1,7 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleStatement};
-use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, Type};
@@ -9,8 +9,11 @@ use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
+use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
-use itertools::Itertools;
+use indexmap::IndexMap;
+use itertools::{zip_eq, Itertools};
+use std::cmp::min;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
@@ -205,7 +208,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ValueDomainKind::Clock => clock_value_unchecked,
             &ValueDomainKind::Error(e) => Value::Error(e),
             _ => {
-                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &clock_domain));
+                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
                 let e = self.diags.report_simple(title, clock.span, "clock value");
                 Value::Error(e)
             }
@@ -221,7 +224,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ValueDomainKind::Async => reset_value_bool,
             &ValueDomainKind::Error(e) => Value::Error(e),
             _ => {
-                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(&self.source, &reset_domain));
+                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
                 let e = self.diags.report_simple(title, reset.span, "reset value");
                 Value::Error(e)
             }
@@ -282,6 +285,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     #[must_use]
     fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
+        let diags = self.diags;
+
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance { span: _, span_keyword: keyword_span, name: _, ref module, ref generic_args, ref port_connections } = instance;
@@ -290,18 +295,137 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
 
         // always evaluate ports, so they can emit errors even if the module or its generics are invalid
+        let port_connections_span = port_connections.span;
         let port_connections = port_connections.inner.iter().map(|(id, expr)|
-            (id, self.eval_expression_as_value(ctx_module, scope_body, expr))
+            (id, Spanned { span: expr.span, inner: self.eval_expression_as_value(ctx_module, scope_body, expr) })
         ).collect_vec();
 
+        // to continue checking ports we need the module to be valid
+        let module_with_generics = match module_with_generics {
+            Ok(module_with_generics) => module_with_generics,
+            Err(e) => return ModuleStatement::Err(e),
+        };
+
         // fill in ports, including type/domain/inout checking
-        // TODO these ports don't really have an ordering, they're just name-based
-        //   follow the declaration ordering for type checking, similar to how named function args and generics will work
-        //   won't that have weird consequences for expression eval ordering? or do we stick to the declaration order there too?
-        //   (or even simpler: just enforce a marching ordering for now)
-        let _ = port_connections;
-        let _ = module_with_generics;
-        ModuleStatement::Err(self.diags.report_todo(instance.span, "module instance ports"))
+        // TODO allow different declaration and use orderings, be careful about interactions
+        let ports = &module_with_generics.ports;
+
+        let mut any_err = None;
+        if ports.len() != port_connections.len() {
+            let err = Diagnostic::new_simple(
+                format!("constructor port count mismatch, expected {}, got {}", ports.len(), port_connections.len()),
+                port_connections_span,
+                "connected here",
+            );
+            any_err = Some(diags.report(err));
+        }
+        let min_len = min(ports.len(), port_connections.len());
+
+        let mut map_port = IndexMap::new();
+        for (&port, (connection_id, connection)) in zip_eq(&ports[..min_len], &port_connections[..min_len]) {
+            let port_ast = self.parsed.module_port_ast(self.compiled[port].ast);
+
+            if port_ast.id.string != connection_id.string {
+                let err = Diagnostic::new("port name mismatch")
+                    .add_info(port_ast.id.span, format!("expected {}, defined here", port_ast.id.string))
+                    .add_error(connection_id.span, format!("got {}, connected here", connection_id.string))
+                    .footer(Level::Note, "different port and connection orderings are not yet supported")
+                    .finish();
+                any_err = Some(diags.report(err));
+
+                // from now on port replacement is broken, so we have to stop the loop
+                break;
+            }
+
+            // immediately use existing generic params to replace the current one
+            // (actual generics are already replaced in this module instance, so no need to keep applying them)
+            let map = GenericMap {
+                generic_ty: &Default::default(),
+                generic_value: &Default::default(),
+                module_port: &map_port,
+            };
+            let replaced = port.replace_generics(&mut self.compiled, &map);
+
+            // kind/type/domain check
+            let &Spanned { span: connection_value_span, inner: ref connection_value } = connection;
+
+            let &ModulePortInfo {
+                ast: _,
+                direction: port_dir,
+                kind: ref port_kind
+            } = &self.compiled[replaced];
+
+            // TODO centrally, at the end of every module: read/write checking for all regs,wires,ports
+            //   specifically here: register reads and writes
+            let port_replacement = match port_kind {
+                PortKind::Clock => {
+                    match self.check_type_contains(None, connection_value_span, &Type::Clock, connection_value) {
+                        Ok(()) => connection_value.clone(),
+                        Err(e) => Value::Error(e),
+                    }
+                }
+                PortKind::Normal { domain: domain_port, ty: ty_port } => {
+                    let domain_value = self.domain_of_value(connection_value_span, connection_value);
+
+                    let (e_domain, e_ty) = match port_dir {
+                        PortDirection::Input => {
+                            let e_domain = self.check_domain_assign(
+                                port_ast.id.span,
+                                &ValueDomainKind::from_domain_kind(domain_port.clone()),
+                                connection_value_span,
+                                &domain_value,
+                                UserControlled::Source,
+                                "instance port connections must respect domains",
+                            );
+                            let e_ty = self.check_type_contains(
+                                Some(port_ast.kind.span),
+                                connection_value_span,
+                                ty_port,
+                                connection_value,
+                            );
+                            (e_domain, e_ty)
+                        }
+                        PortDirection::Output => {
+                            let e_domain = self.check_domain_assign(
+                                connection_value_span,
+                                &domain_value,
+                                port_ast.id.span,
+                                &ValueDomainKind::from_domain_kind(domain_port.clone()),
+                                UserControlled::Target,
+                                "instance port connections must respect domains",
+                            );
+                            // TODO for port connections, should we assert that the types match exactly?
+                            //   or should we disable the implicit expansion for all assignments,
+                            //   and force exact type equalities?
+                            let e_ty = self.check_type_contains(
+                                Some(connection_value_span),
+                                port_ast.kind.span,
+                                &self.type_of_value(connection_value_span, &connection_value),
+                                // TODO this is hacky, hopefully the next type system rewrite can fix this
+                                &Value::ModulePort(port),
+                            );
+                            (e_domain, e_ty)
+                        }
+                    };
+
+                    match (e_domain, e_ty) {
+                        (Ok(()), Ok(())) => connection_value.clone(),
+                        (Err(e), _) | (_, Err(e)) => Value::Error(e),
+                    }
+                }
+            };
+
+            // add port to replacement
+            map_port.insert_first(port, port_replacement)
+        }
+
+        // bail
+        if let Some(e) = any_err {
+            return ModuleStatement::Err(e);
+        }
+
+        // successfully created instance
+        ModuleStatement::Instance(ModuleInstance {})
     }
 
     fn eval_expr_as_module_with_generics(
@@ -336,7 +460,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     Value::Error(e) => Err(e),
                     Value::Module(inner) => Ok(inner),
                     _ => Err(diags.report_simple(
-                        format!("expected module, got other non-module{} {}", constructor_str, self.compiled.value_to_readable_str(&self.source, &value)),
+                        format!("expected module, got other non-module{} {}", constructor_str, self.compiled.value_to_readable_str(self.source, self.parsed, &value)),
                         module_expr.span,
                         "value",
                     ))
@@ -378,13 +502,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
+    // TODO this will get significantly refactored, assignments between ports are just a singel special case
     fn check_assign_port_port(&mut self, block_sync: Option<Spanned<&SyncDomain<Value>>>, assignment: &ast::Assignment, target: ModulePort, value: ModulePort) -> Result<(), ErrorGuaranteed> {
         let span = assignment.span;
-        let &ModulePortInfo { defining_item: target_item, defining_id: _, direction: target_dir, kind: ref target_kind } = &self.compiled[target];
-        let &ModulePortInfo { defining_item: value_item, defining_id: _, direction: value_dir, kind: ref value_kind } = &self.compiled[value];
+        let &ModulePortInfo { ast: target_ast, direction: target_dir, kind: ref target_kind } = &self.compiled[target];
+        let &ModulePortInfo { ast: value_ast, direction: value_dir, kind: ref value_kind } = &self.compiled[value];
 
         // check item
-        if target_item != value_item {
+        if target_ast.item != value_ast.item {
             return Err(self.diags.report_internal_error(span, "port assignment between different modules"));
         }
 
@@ -409,7 +534,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 match block_sync {
                     None => {
                         // async block, we just need source->target to be valid
-                        self.check_sync_assign(
+                        self.check_domain_assign(
                             assignment.target.span,
                             &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             assignment.value.span,
@@ -422,7 +547,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         // clocked block, we need source->block and block->target to be valid
                         let block_sync = ValueDomainKind::Sync(block_sync.clone());
 
-                        let result_0 = self.check_sync_assign(
+                        let result_0 = self.check_domain_assign(
                             assignment.target.span,
                             &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             block_sync_span,
@@ -430,7 +555,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             UserControlled::Target,
                             "in a clocked block, each assignment target must be in the same domain as the block",
                         );
-                        let result_1 = self.check_sync_assign(
+                        let result_1 = self.check_domain_assign(
                             block_sync_span,
                             &block_sync,
                             assignment.value.span,
@@ -456,7 +581,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     /// Checks whether the source sync domain can be assigned to the target sync domain.
     /// This is equivalent to checking whether source is more contained that target.
-    fn check_sync_assign(
+    fn check_domain_assign(
         &self,
         target_span: Span,
         target: &ValueDomainKind,
@@ -516,8 +641,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         if let Some(invalid_reason) = invalid_reason {
             let err = Diagnostic::new(format!("unsafe domain crossing: {}", invalid_reason))
-                .add(target_level, target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, target)))
-                .add(source_level, source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, source)))
+                .add(target_level, target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, target)))
+                .add(source_level, source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, source)))
                 .footer(Level::Help, hint)
                 .finish();
             Err(diags.report(err))

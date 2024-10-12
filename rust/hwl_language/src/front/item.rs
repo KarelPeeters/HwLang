@@ -1,5 +1,6 @@
 use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::Diagnostic;
+use crate::data::parsed::ModulePortAstReference;
 use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
@@ -9,6 +10,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
+use itertools::enumerate;
 
 impl CompileState<'_, '_> {
     // TODO this signature is wrong: items are not always type constructors
@@ -20,7 +22,8 @@ impl CompileState<'_, '_> {
 
         // item lookup
         let item_info = &self.compiled[item];
-        let item_ast = self.parsed.item_ast(item_info.ast_ref);
+        let item_ast_reference = item_info.ast_ref;
+        let item_ast = self.parsed.item_ast(item_ast_reference);
         let file_scope = match self.compiled.file_scopes.get(&item_info.ast_ref.file).unwrap() {
             Ok(scope_file) => scope_file.scope_inner_import,
             &Err(e) => return MaybeConstructor::Error(e),
@@ -101,12 +104,14 @@ impl CompileState<'_, '_> {
                     // map ports
                     let mut port_vec = vec![];
 
-                    for port in &ports.inner {
+                    for (port_index, port) in enumerate(&ports.inner) {
                         let ast::ModulePort { span: _, id: port_id, direction, kind, } = port;
 
                         let module_port_info = ModulePortInfo {
-                            defining_item: item,
-                            defining_id: port_id.clone(),
+                            ast: ModulePortAstReference {
+                                item: item_ast_reference,
+                                index: port_index,
+                            },
                             direction: direction.inner,
                             kind: match &kind.inner {
                                 PortKind::Clock => PortKind::Clock,

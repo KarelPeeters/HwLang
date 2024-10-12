@@ -77,8 +77,8 @@ impl CompileState<'_, '_> {
                         let label = format!(
                             "{}: domains {} and {}",
                             reason,
-                            self.compiled.sync_kind_to_readable_string(&self.source, &ValueDomainKind::Sync(left.clone())),
-                            self.compiled.sync_kind_to_readable_string(&self.source, &ValueDomainKind::Sync(right.clone())),
+                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomainKind::Sync(left.clone())),
+                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomainKind::Sync(right.clone())),
                         );
                         let e = self.diags.report_simple("cannot merge different sync domains", span, label);
                         ValueDomainKind::Error(e)
@@ -123,9 +123,18 @@ impl CompileState<'_, '_> {
             Value::Range(_) => Type::Range,
             &Value::Binary(op, ref left, ref right) =>
                 self.type_of_binary(span, op, &left, &right),
-            Value::UnaryNot(_) => {
-                // TODO check that inner is bool or bits, then return inner type
-                Type::Error(diags.report_todo(span, "type of unary not"))
+            Value::UnaryNot(inner) => {
+                let inner = self.type_of_value(span, inner);
+                match inner {
+                    // valid types
+                    Type::Boolean | Type::Bits(_) => inner,
+                    // other types are not allowed
+                    _ => {
+                        let inner_ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &inner);
+                        let title = format!("unary not only works for boolean or bits type, got {}", inner_ty_str);
+                        Type::Error(diags.report_simple(title, span, "for this expression"))
+                    }
+                }
             }
             Value::FunctionReturn(func) => func.ret_ty.clone(),
             Value::Module(_) => Type::Error(diags.report_todo(span, "type of module")),
@@ -137,8 +146,8 @@ impl CompileState<'_, '_> {
         if self.log_type_check {
             eprintln!(
                 "type_of_value({}) -> {}",
-                self.compiled.value_to_readable_str(self.source, &value),
-                self.compiled.type_to_readable_str(&self.source, &result)
+                self.compiled.value_to_readable_str(self.source, self.parsed, &value),
+                self.compiled.type_to_readable_str(self.source, self.parsed, &result)
             );
         }
 
@@ -154,7 +163,7 @@ impl CompileState<'_, '_> {
                 (Some(a), Some(b)) => {
                     let value = simplify_value(Value::Binary(op, a.clone(), b.clone()));
                     Some(Box::new(value))
-                },
+                }
                 _ => None,
             }
         }
@@ -176,7 +185,7 @@ impl CompileState<'_, '_> {
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
                     }
                 }
-            },
+            }
             BinaryOp::Sub => {
                 let left_range = self.require_int_range_ty(origin, &left_ty);
                 let right_range = self.require_int_range_ty(origin, &right_ty);
@@ -197,7 +206,7 @@ impl CompileState<'_, '_> {
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
                     }
                 }
-            },
+            }
             BinaryOp::Pow => {
                 let base_range = self.require_int_range_ty(origin, &left_ty);
                 let exp_range = self.require_int_range_ty(origin, &right_ty);
@@ -221,7 +230,7 @@ impl CompileState<'_, '_> {
         // check that exponent is non-negative
         let exp_start = match exp_start {
             None => {
-                let exp_str = self.compiled.range_to_readable_str(self.source, &exp_range);
+                let exp_str = self.compiled.range_to_readable_str(self.source, self.parsed, &exp_range);
                 let title = format!("power exponent cannot be negative, got range without lower bound {:?}", exp_str);
                 let e = diags.report_simple(title, origin, "while checking this expression");
                 return Type::Error(e);
@@ -232,7 +241,7 @@ impl CompileState<'_, '_> {
         match self.try_eval_bool_true(origin, &cond) {
             Ok(()) => {}
             Err(e) => {
-                let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
+                let cond_str = self.compiled.value_to_readable_str(self.source, self.parsed, &cond);
                 let title = format!("power exponent cannot be negative, check failed: value {} {}", cond_str, e.to_message());
                 let e = diags.report_simple(title, origin, "while checking this expression");
                 return Type::Error(e);
@@ -309,7 +318,7 @@ impl CompileState<'_, '_> {
             &Type::Error(e) => Err(e),
             Type::Integer(IntegerTypeInfo { range }) => self.require_int_range_direct(span, range.as_ref()),
             _ => {
-                let ty_str = self.compiled.type_to_readable_str(&self.source, ty);
+                let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, ty);
                 Err(diags.report_simple(format!("expected integer type, got {}", ty_str), span, "for this expression"))
             }
         }
@@ -369,9 +378,9 @@ impl CompileState<'_, '_> {
             _ => {}
         };
 
-        let ty_str = self.compiled.type_to_readable_str(self.source, ty);
-        let value_str = self.compiled.value_to_readable_str(self.source, value);
-        let value_ty_str = self.compiled.type_to_readable_str(self.source, &ty_value);
+        let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, ty);
+        let value_str = self.compiled.value_to_readable_str(self.source, self.parsed, value);
+        let value_ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_value);
 
         let title = format!("type mismatch: value {} with type {} does not match type {}", value_str, value_ty_str, ty_str);
         let err = Diagnostic::new(title)
@@ -383,7 +392,7 @@ impl CompileState<'_, '_> {
 
     pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
         self.try_eval_bool_true(span_range, value).map_err(|e| {
-            let value_str = self.compiled.value_to_readable_str(self.source, value);
+            let value_str = self.compiled.value_to_readable_str(self.source, self.parsed, value);
             let title = format!("range valid check failed: value {} {}", value_str, e.to_message());
             let err = Diagnostic::new(title)
                 .add_error(span_range, "when checking that this range is non-decreasing")
@@ -394,7 +403,7 @@ impl CompileState<'_, '_> {
 
     pub fn require_value_true_for_type_check(&self, span_ty: Option<Span>, span_value: Span, value: &Value) -> Result<(), ErrorGuaranteed> {
         self.try_eval_bool_true(span_value, value).map_err(|e| {
-            let value_str = self.compiled.value_to_readable_str(self.source, value);
+            let value_str = self.compiled.value_to_readable_str(self.source, self.parsed, value);
             let title = format!("type check failed: value {} {}", value_str, e.to_message());
             // TODO include the type of the value and the target type, with generics it's not always obvious
             let err = Diagnostic::new(title)
@@ -432,7 +441,7 @@ impl CompileState<'_, '_> {
         if self.log_type_check {
             eprintln!(
                 "try_eval_bool({}) -> {:?}",
-                self.compiled.value_to_readable_str(self.source, value),
+                self.compiled.value_to_readable_str(self.source, self.parsed, value),
                 result
             );
         }

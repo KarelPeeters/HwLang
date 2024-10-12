@@ -1,6 +1,6 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::ModuleChecked;
-use crate::data::parsed::ItemAstReference;
+use crate::data::parsed::{ItemAstReference, ModulePortAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomainKind};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
@@ -12,7 +12,6 @@ use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
 use num_traits::Signed;
-
 
 macro_rules! impl_index {
     ($arena:ident, $index:ty, $info:ty) => {
@@ -171,9 +170,7 @@ pub struct ModuleSignatureInfo {
 
 #[derive(Debug)]
 pub struct ModulePortInfo {
-    // These ids might not be unique, compilation continues even if a duplicate port name was used.
-    pub defining_item: Item,
-    pub defining_id: Identifier,
+    pub ast: ModulePortAstReference,
     pub direction: PortDirection,
     pub kind: PortKind<DomainKind<Value>, Type>,
 }
@@ -218,18 +215,18 @@ pub struct FunctionChecked {
 impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO make sure generic variables are properly disambiguated
     // TODO insert this into value_to_readable_str, no point keeping this one separate
-    pub fn range_to_readable_str(&self, source: &SourceDatabase, range: &RangeInfo<Box<Value>>) -> String {
+    pub fn range_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, range: &RangeInfo<Box<Value>>) -> String {
         let RangeInfo { ref start, ref end } = *range;
 
-        let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
-        let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
+        let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
+        let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
 
         format!("({}..{})", start, end)
     }
 
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
     // TODO make this less ugly for end users, eg. omit the span if there's no ambiguity
-    pub fn value_to_readable_str(&self, source: &SourceDatabase, value: &Value) -> String {
+    pub fn value_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, value: &Value) -> String {
         match value {
             Value::Error(_) => "error".to_string(),
             &Value::GenericParameter(p) => {
@@ -237,7 +234,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
             &Value::ModulePort(p) => {
-                let id = &self[p].defining_id;
+                let id = &parsed.module_port_ast(self[p].ast).id;
                 format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
             }
             Value::Never => "never".to_string(),
@@ -251,15 +248,15 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 }
             }
             Value::StringConstant(s) => format!("{:?}", s),
-            Value::Range(range) => self.range_to_readable_str(source, range),
+            Value::Range(range) => self.range_to_readable_str(source, parsed, range),
             &Value::Binary(op, ref left, ref right) => {
-                let left = self.value_to_readable_str(source, left);
-                let right = self.value_to_readable_str(source, right);
+                let left = self.value_to_readable_str(source, parsed, left);
+                let right = self.value_to_readable_str(source, parsed, right);
                 let symbol = op.symbol();
                 format!("({} {} {})", left, symbol, right)
             }
             Value::UnaryNot(inner) => {
-                let inner = self.value_to_readable_str(source, inner);
+                let inner = self.value_to_readable_str(source, parsed, inner);
                 format!("(!{})", inner)
             }
             Value::FunctionReturn(ret) =>
@@ -275,7 +272,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     }
 
     // TODO make sure to always print in disambiguated form
-    pub fn type_to_readable_str(&self, source: &SourceDatabase, ty: &Type) -> String {
+    pub fn type_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, ty: &Type) -> String {
         match ty {
             Type::Error(_) => "error".to_string(),
             &Type::GenericParameter(p) => {
@@ -291,14 +288,14 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::String => "string".to_string(),
             Type::Bits(n) => match n {
                 None => "bits".to_string(),
-                Some(n) => format!("bits({})", self.value_to_readable_str(source, n)),
+                Some(n) => format!("bits({})", self.value_to_readable_str(source, parsed, n)),
             },
             Type::Range => "range".to_string(),
             Type::Array(inner, n) =>
-                format!("Array({}, {})", self.type_to_readable_str(source, inner), self.value_to_readable_str(source, n)),
+                format!("Array({}, {})", self.type_to_readable_str(source, parsed, inner), self.value_to_readable_str(source, parsed, n)),
             Type::Integer(IntegerTypeInfo { range }) => {
                 // TODO match specific patterns again, eg. uint?
-                format!("int_range({})", self.value_to_readable_str(source, range))
+                format!("int_range({})", self.value_to_readable_str(source, parsed, range))
             }
             // TODO
             Type::Function(_) => "function".to_string(),
@@ -308,15 +305,16 @@ impl<S: CompiledStage> CompiledDatabase<S> {
         }
     }
 
-    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, sync: &ValueDomainKind) -> String {
+    // TODO these interfaces are getting really ugly, create combined database types
+    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, parsed: &ParsedDatabase, sync: &ValueDomainKind) -> String {
         match sync {
             ValueDomainKind::Error(_) => "error".to_string(),
             ValueDomainKind::Const => "const".to_string(),
             ValueDomainKind::Clock => "clock".to_string(),
             ValueDomainKind::Async => "async".to_string(),
             ValueDomainKind::Sync(SyncDomain { clock, reset }) => {
-                let clock_str = self.value_to_readable_str(source, clock);
-                let reset_str = self.value_to_readable_str(source, reset);
+                let clock_str = self.value_to_readable_str(source, parsed, clock);
+                let reset_str = self.value_to_readable_str(source, parsed, reset);
                 format!("sync({clock_str}, {reset_str})")
             }
         }

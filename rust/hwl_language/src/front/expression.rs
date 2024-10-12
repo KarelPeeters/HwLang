@@ -250,12 +250,14 @@ impl CompileState<'_, '_> {
         let diags = self.diags;
         let mut any_err = None;
 
+        // TODO allow different declaration and use orderings, be careful about interactions
+        // TODO add span where the parameters are defined
         // check count match
         if parameters.vec.len() != args.inner.len() {
             let err = Diagnostic::new_simple(
                 format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
                 args.span,
-                format!("expected {} arguments, got {}", parameters.vec.len(), args.inner.len()),
+                "arguments here",
             );
             any_err = Some(diags.report(err));
         }
@@ -311,6 +313,7 @@ impl CompileState<'_, '_> {
                 module_port: &map_module_port,
             };
 
+            // TODO call replace_generics instead?
             match param {
                 GenericParameter::Type(param) => {
                     let arg_ty = arg_value.unwrap_ty(diags, arg_span);

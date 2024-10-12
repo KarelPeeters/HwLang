@@ -55,6 +55,7 @@ pub enum ValueDomainKind {
     Error(ErrorGuaranteed),
     Const,
     Clock,
+    // TODO allow separate sync/async per edge, necessary for "async" reset
     Async,
     Sync(SyncDomain<Value>),
 }
@@ -188,12 +189,11 @@ impl GenericContainer for ModulePort {
             },
         };
 
-        let ModulePortInfo { defining_item, defining_id, direction, kind } = &compiled[port];
+        let &ModulePortInfo { ast, direction, ref kind } = &compiled[port];
         if &kind_new != kind {
             let port_new = compiled.module_ports.push(ModulePortInfo {
-                defining_item: *defining_item,
-                defining_id: defining_id.clone(),
-                direction: *direction,
+                ast,
+                direction,
                 kind: kind_new,
             });
             port_new
