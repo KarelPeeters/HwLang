@@ -423,9 +423,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
         if let Some(e) = any_err {
             return ModuleStatement::Err(e);
         }
+        let port_values = port_connections.into_iter().map(|(_, v)| v.inner).collect_vec();
 
         // successfully created instance
-        ModuleStatement::Instance(ModuleInstance {})
+        ModuleStatement::Instance(ModuleInstance {
+            module: module_with_generics.nominal_type_unique.item,
+            port_values,
+        })
     }
 
     fn eval_expr_as_module_with_generics(

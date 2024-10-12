@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use hwl_language::back::lower;
+use hwl_language::back::core::lower;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::data::lowered::LoweredDatabase;
@@ -58,7 +58,7 @@ fn main() {
     }
 
     // print result
-    let LoweredDatabase { top_module_name, verilog_source } = lowered;
+    let LoweredDatabase { top_module_name, verilog_source, module_names: _ } = lowered;
     println!("top module name: {:?}", top_module_name);
     println!("verilog source:");
     println!("----------------------------------------");

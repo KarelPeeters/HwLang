@@ -1,4 +1,4 @@
-use crate::data::compiled::{ModulePort, Register};
+use crate::data::compiled::{Item, ModulePort, Register};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::values::Value;
 use crate::syntax::ast::SyncDomain;
@@ -38,7 +38,12 @@ pub struct ModuleBlockClocked {
 }
 
 #[derive(Debug)]
-pub struct ModuleInstance {}
+pub struct ModuleInstance {
+    pub module: Item,
+    // generic args need to be re-replaced during lowering,
+    //   since they can use values that come all the way from the parent
+    pub port_values: Vec<Value>,
+}
 
 #[derive(Debug)]
 pub enum LowerStatement {
