@@ -343,6 +343,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
             VerilogType::Error(e),
         Type::Unit => VerilogType::MultiBit(Signed::Unsigned, 0),
         Type::Boolean => VerilogType::SingleBit,
+        Type::Clock => VerilogType::SingleBit,
         Type::Bits(n) => {
             match n {
                 None => {
@@ -380,7 +381,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
             VerilogType::Error(diag.report_todo(span, "lower type 'enum'")),
         // invalid RTL types
         // TODO redesign type-type such that these are statically impossible at this point?
-        Type::Any | Type::GenericParameter(_) | Type::Range | Type::Function(_) | Type::Unchecked | Type::Never =>
+        Type::Any | Type::String | Type::GenericParameter(_) | Type::Range | Type::Function(_) | Type::Unchecked | Type::Never =>
             VerilogType::Error(diag.report_internal_error(span, format!("type '{ty:?}' should not materialize"))),
     }
 }
@@ -432,7 +433,7 @@ fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Re
     match value {
         &Value::Error(e) => Err(e),
         Value::Range(info) => {
-            let &RangeInfo { ref start, ref end, end_inclusive } = info;
+            let &RangeInfo { ref start, ref end } = info;
 
             let (start, end) = match (start, end) {
                 (Some(start), Some(end)) => (start, end),
@@ -442,12 +443,7 @@ fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Re
             let start = value_evaluate_int(diag, span, start.as_ref())?;
             let end = value_evaluate_int(diag, span, end.as_ref())?;
 
-            let result = if end_inclusive {
-                start..(end + 1)
-            } else {
-                start..end
-            };
-            Ok(result)
+            Ok(start..end)
         }
         _ => Err(diag.report_todo(span, format!("evaluate range of non-range value {value:?}"))),
     }

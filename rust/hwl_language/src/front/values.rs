@@ -52,7 +52,6 @@ pub enum Value {
 pub struct RangeInfo<V> {
     pub start: Option<V>,
     pub end: Option<V>,
-    pub end_inclusive: bool,
 }
 
 // TODO double check which fields should be used for eq and hash
@@ -70,25 +69,16 @@ pub struct ModuleValueInfo {
 }
 
 impl<V> RangeInfo<V> {
-    pub fn new(start: Option<V>, end: Option<V>, end_inclusive: bool) -> Self {
-        let result = Self { start, end, end_inclusive };
-        result.assert_valid();
-        result
-    }
+    pub const UNBOUNDED: RangeInfo<V> = RangeInfo {
+        start: None,
+        end: None,
+    };
 
-    pub fn unbounded() -> Self {
-        Self {
-            start: None,
-            end: None,
-            end_inclusive: false,
+    pub fn map_inner<U>(self, mut f: impl FnMut(V) -> U) -> RangeInfo<U> {
+        RangeInfo {
+            start: self.start.map(&mut f),
+            end: self.end.map(&mut f),
         }
-    }
-
-    pub fn assert_valid(&self) {
-        if self.end.is_none() {
-            assert!(!self.end_inclusive);
-        }
-        // TODO typecheck and assert that start <= end?
     }
 }
 
@@ -123,7 +113,6 @@ impl GenericContainer for Value {
                     .map(|v| Box::new(v.replace_generics(compiled, map))),
                 end: info.end.as_ref()
                     .map(|v| Box::new(v.replace_generics(compiled, map))),
-                end_inclusive: info.end_inclusive,
             }),
             Value::Binary(op, ref left, ref right) => {
                 Value::Binary(

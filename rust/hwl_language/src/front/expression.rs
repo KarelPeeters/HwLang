@@ -6,7 +6,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{Args, BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -57,16 +57,17 @@ impl CompileState<'_, '_> {
                 if let Some(index_ty) = index_ty {
                     diags.report_todo(index_ty.span, "for loop index type");
                 }
-                let iter = self.eval_expression_as_value(ctx, scope, iter);
 
-                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(None, iter_span, &Type::Range, &iter);
-                let (start, end, end_inclusive) = match &iter {
-                    &Value::Error(e) => (Value::Error(e), Value::Error(e), false),
-                    Value::Range(info) => {
+                let iter = self.eval_expression_as_value(ctx, scope, iter);
+                let iter = self.require_int_range_direct(iter_span, &iter);
+
+                let (start, end) = match &iter {
+                    &Err(e) => (Value::Error(e), Value::Error(e)),
+                    Ok(info) => {
                         // avoid duplicate error if both ends are missing
                         let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
 
-                        let &RangeInfo { ref start, ref end, end_inclusive } = info;
+                        let &RangeInfo { ref start, ref end } = info;
                         let (start, end) = match (start, end) {
                             (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
                             (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
@@ -76,18 +77,13 @@ impl CompileState<'_, '_> {
                                 (Value::Error(e), Value::Error(e))
                             }
                         };
-                        (start, end, end_inclusive)
-                    }
-                    _ => {
-                        let e = diags.report_todo(iter_span, "for loop over non-range literal");
-                        (Value::Error(e), Value::Error(e), false)
+                        (start, end)
                     }
                 };
 
                 let index_range = Value::Range(RangeInfo {
                     start: Some(Box::new(start)),
                     end: Some(Box::new(end)),
-                    end_inclusive,
                 });
                 let index_var = self.compiled.variables.push(VariableInfo {
                     defining_id: index.clone(),
@@ -176,7 +172,7 @@ impl CompileState<'_, '_> {
                     }
                 }
 
-                let value = Value::Range(RangeInfo::new(start, end, end_inclusive));
+                let value = Value::Range(RangeInfo { start, end });
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             }
             ExpressionKind::UnaryOp(op, ref inner) => {
@@ -420,7 +416,7 @@ impl CompileState<'_, '_> {
         ctx: &ExpressionContext,
         scope: Scope,
         expr_span: Span,
-        args: &Args,
+        args: &ast::Args,
     ) -> Result<TypeOrValue, ErrorGuaranteed> {
         let diags = self.diags;
 
@@ -450,7 +446,7 @@ impl CompileState<'_, '_> {
                 ("type", "bool", &[]) =>
                     return Ok(TypeOrValue::Type(Type::Boolean)),
                 ("type", "int", &[]) => {
-                    let range = Box::new(Value::Range(RangeInfo::unbounded()));
+                    let range = Box::new(Value::Range(RangeInfo::UNBOUNDED));
                     return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
                 }
                 ("type", "int_range", [range]) => {

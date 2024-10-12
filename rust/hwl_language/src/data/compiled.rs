@@ -219,13 +219,12 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO make sure generic variables are properly disambiguated
     // TODO insert this into value_to_readable_str, no point keeping this one separate
     pub fn range_to_readable_str(&self, source: &SourceDatabase, range: &RangeInfo<Box<Value>>) -> String {
-        let RangeInfo { ref start, ref end, end_inclusive } = *range;
+        let RangeInfo { ref start, ref end } = *range;
 
         let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
         let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, v));
-        let symbol = if end_inclusive { "..=" } else { ".." };
 
-        format!("({}{}{})", start, symbol, end)
+        format!("({}..{})", start, end)
     }
 
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
@@ -288,6 +287,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Never => "never".to_string(),
             Type::Unit => "()".to_string(),
             Type::Boolean => "bool".to_string(),
+            Type::Clock => "clock".to_string(),
+            Type::String => "string".to_string(),
             Type::Bits(n) => match n {
                 None => "bits".to_string(),
                 Some(n) => format!("bits({})", self.value_to_readable_str(source, n)),

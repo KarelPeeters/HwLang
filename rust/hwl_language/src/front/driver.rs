@@ -95,7 +95,7 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
         diags: diag,
         source,
         parsed: &parsed,
-        log_const_eval: false,
+        log_type_check: false,
         item_signature_stack: Vec::new(),
         item_signatures_finished: false,
         compiled: CompiledDatabase {
@@ -164,7 +164,7 @@ pub(super) struct CompileState<'d, 'a> {
     pub(super) source: &'d SourceDatabase,
     pub(super) parsed: &'a ParsedDatabase,
 
-    pub(super) log_const_eval: bool,
+    pub(super) log_type_check: bool,
     /// The stack of items that are currently being resolved.
     /// This is used to detect cycles in type resolution.
     item_signature_stack: Vec<Item>,

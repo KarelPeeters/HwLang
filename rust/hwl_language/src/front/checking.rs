@@ -5,7 +5,7 @@ use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
-use crate::try_opt_result;
+use crate::util::option_pair;
 use num_bigint::BigInt;
 use num_traits::One;
 
@@ -28,7 +28,7 @@ impl CompileState<'_, '_> {
             &Value::IntConstant(_) => ValueDomainKind::Const,
             &Value::StringConstant(_) => ValueDomainKind::Const,
             Value::Range(info) => {
-                let RangeInfo { start, end, end_inclusive: _ } = info;
+                let RangeInfo { start, end } = info;
 
                 let start = start.as_ref().map(|v| self.domain_of_value(span, v));
                 let end = end.as_ref().map(|v| self.domain_of_value(span, v));
@@ -95,97 +95,274 @@ impl CompileState<'_, '_> {
         }
     }
 
+    pub fn type_of_value(&self, span: Span, value: &Value) -> Type {
+        let diags = self.diags;
+        let value = simplify_value(value.clone());
+
+        let result = match &value {
+            &Value::Error(e) => Type::Error(e),
+            &Value::GenericParameter(param) =>
+                self.compiled[param].ty.clone(),
+            &Value::ModulePort(port) => {
+                match &self.compiled[port].kind {
+                    PortKind::Clock => Type::Clock,
+                    PortKind::Normal { domain: _, ty } => ty.clone(),
+                }
+            }
+            Value::Never => Type::Never,
+            Value::Unit => Type::Unit,
+            Value::BoolConstant(_) => Type::Boolean,
+            Value::IntConstant(value) => {
+                let range = RangeInfo {
+                    start: Some(Box::new(Value::IntConstant(value.clone()))),
+                    end: Some(Box::new(Value::IntConstant(value + 1u32))),
+                };
+                Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+            }
+            Value::StringConstant(_) => Type::String,
+            Value::Range(_) => Type::Range,
+            &Value::Binary(op, ref left, ref right) =>
+                self.type_of_binary(span, op, &left, &right),
+            Value::UnaryNot(_) => {
+                // TODO check that inner is bool or bits, then return inner type
+                Type::Error(diags.report_todo(span, "type of unary not"))
+            }
+            Value::FunctionReturn(func) => func.ret_ty.clone(),
+            Value::Module(_) => Type::Error(diags.report_todo(span, "type of module")),
+            Value::Wire => Type::Error(diags.report_todo(span, "type of wire")),
+            &Value::Register(reg) => self.compiled[reg].ty.clone(),
+            &Value::Variable(var) => self.compiled[var].ty.clone(),
+        };
+
+        if self.log_type_check {
+            eprintln!(
+                "type_of_value({}) -> {}",
+                self.compiled.value_to_readable_str(self.source, &value),
+                self.compiled.type_to_readable_str(&self.source, &result)
+            );
+        }
+
+        result
+    }
+
+    fn type_of_binary(&self, origin: Span, op: BinaryOp, left: &Value, right: &Value) -> Type {
+        let left_ty = self.type_of_value(origin, left);
+        let right_ty = self.type_of_value(origin, right);
+
+        fn option_op(op: BinaryOp, a: &Option<Box<Value>>, b: &Option<Box<Value>>) -> Option<Box<Value>> {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    let value = simplify_value(Value::Binary(op, a.clone(), b.clone()));
+                    Some(Box::new(value))
+                },
+                _ => None,
+            }
+        }
+
+        match op {
+            BinaryOp::Add => {
+                let left_range = self.require_int_range_ty(origin, &left_ty);
+                let right_range = self.require_int_range_ty(origin, &right_ty);
+
+                match (left_range, right_range) {
+                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
+                    (Ok(left_range), Ok(right_range)) => {
+                        let RangeInfo { start: left_start, end: left_end } = left_range;
+                        let RangeInfo { start: right_start, end: right_end } = right_range;
+                        let range = RangeInfo {
+                            start: option_op(BinaryOp::Add, left_start, right_start),
+                            end: option_op(BinaryOp::Add, left_end, right_end),
+                        };
+                        Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+                    }
+                }
+            },
+            BinaryOp::Sub => {
+                let left_range = self.require_int_range_ty(origin, &left_ty);
+                let right_range = self.require_int_range_ty(origin, &right_ty);
+
+                match (left_range, right_range) {
+                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
+                    (Ok(left_range), Ok(right_range)) => {
+                        let RangeInfo { start: left_start, end: left_end } = left_range;
+                        let RangeInfo { start: right_start, end: right_end } = right_range;
+
+                        let right_end_inclusive = right_end.as_ref()
+                            .map(|right_end| Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::IntConstant(BigInt::one())))));
+
+                        let range = RangeInfo {
+                            start: option_op(BinaryOp::Sub, left_start, &right_end_inclusive),
+                            end: option_op(BinaryOp::Sub, left_end, right_start),
+                        };
+                        Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+                    }
+                }
+            },
+            BinaryOp::Pow => {
+                let base_range = self.require_int_range_ty(origin, &left_ty);
+                let exp_range = self.require_int_range_ty(origin, &right_ty);
+                match (base_range, exp_range) {
+                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
+                    (Ok(base_range), Ok(exp_range)) => {
+                        self.type_of_binary_power(origin, base_range, exp_range)
+                    }
+                }
+            }
+            _ => Type::Error(self.diags.report_todo(origin, format!("type of binary operator `{:?}`", op.symbol()))),
+        }
+    }
+
+    fn type_of_binary_power(&self, origin: Span, base_range: &RangeInfo<Box<Value>>, exp_range: &RangeInfo<Box<Value>>) -> Type {
+        let diags = self.diags;
+
+        let RangeInfo { start: base_start, end: _ } = base_range;
+        let RangeInfo { start: exp_start, end: _ } = exp_range;
+
+        // check that exponent is non-negative
+        let exp_start = match exp_start {
+            None => {
+                let exp_str = self.compiled.range_to_readable_str(self.source, &exp_range);
+                let title = format!("power exponent cannot be negative, got range without lower bound {:?}", exp_str);
+                let e = diags.report_simple(title, origin, "while checking this expression");
+                return Type::Error(e);
+            }
+            Some(exp_start) => exp_start
+        };
+        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::IntConstant(BigInt::ZERO)), exp_start.clone());
+        match self.try_eval_bool_true(origin, &cond) {
+            Ok(()) => {}
+            Err(e) => {
+                let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
+                let title = format!("power exponent cannot be negative, check failed: value {} {}", cond_str, e.to_message());
+                let e = diags.report_simple(title, origin, "while checking this expression");
+                return Type::Error(e);
+            }
+        }
+
+        // compute facts about the ranges
+        let eval_known_optional = |op: BinaryOp, left: Option<Box<Value>>, right: Option<Box<Value>>| {
+            let result = match (left, right) {
+                (Some(left), Some(right)) => {
+                    let base_positive = Value::Binary(op, left, right);
+                    self.try_eval_bool(origin, &base_positive)
+                }
+                (None, _) | (_, None) => Ok(None),
+            };
+            match result {
+                Ok(Some(b)) => Ok(b),
+                Ok(None) => Ok(false),
+                Err(e) => Err(e),
+            }
+        };
+        macro_rules! throw_type {
+            ($e:expr) => {
+                match $e {
+                    Ok(v) => v,
+                    Err(e) => return Type::Error(e),
+                }
+            };
+        }
+
+        let known_base_positive = throw_type!(
+            eval_known_optional(BinaryOp::CmpLt, Some(Box::new(Value::IntConstant(BigInt::ZERO))), base_start.clone()));
+        let known_base_negative = throw_type!(
+            eval_known_optional(BinaryOp::CmpGt, Some(Box::new(Value::IntConstant(BigInt::ZERO))), base_start.clone()));
+        let known_base_non_zero = known_base_positive | known_base_negative;
+        let known_exponent_positive = throw_type!(
+            eval_known_optional(BinaryOp::CmpLt, Some(Box::new(Value::IntConstant(BigInt::ZERO))), Some(exp_start.clone())));
+
+        // check that `0 ** 0` can't happen
+        // TODO at some point this should be lifted into the statement prover,
+        //   users should be allowed to check for this themselves!
+        if !(known_base_non_zero || known_exponent_positive) {
+            let e = diags.report_simple(
+                "power expression where base and exponent can both be zero is not allowed",
+                origin,
+                "while checking this expression",
+            );
+            return Type::Error(e);
+        }
+
+        // some simple range result logic
+        // TODO this can be improved:
+        // * is exp is 1, the result range is the base range
+        // * if exp is 0, the result range is 1
+        // * if exp is even, result is non-negative
+        // * if exp is odd, result is the same sign as base
+        let range = if known_base_positive {
+            // (>0) ** (>=0) = (>0)
+            RangeInfo { start: Some(BigInt::one()), end: None }
+        } else {
+            RangeInfo { start: None, end: None }
+        };
+
+        let range = range.map_inner(|x| Box::new(Value::IntConstant(x)));
+        Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+    }
+
+    // TODO if range ends are themselves params with ranges, assume the worst case
+    //   although that misses things like (n < n+1)
+    fn require_int_range_ty<'a>(&self, span: Span, ty: &'a Type) -> Result<&'a RangeInfo<Box<Value>>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        match ty {
+            &Type::Error(e) => Err(e),
+            Type::Integer(IntegerTypeInfo { range }) => self.require_int_range_direct(span, range.as_ref()),
+            _ => {
+                let ty_str = self.compiled.type_to_readable_str(&self.source, ty);
+                Err(diags.report_simple(format!("expected integer type, got {}", ty_str), span, "for this expression"))
+            }
+        }
+    }
+
+    pub fn require_int_range_direct<'a>(&self, span: Span, range: &'a Value) -> Result<&'a RangeInfo<Box<Value>>, ErrorGuaranteed> {
+        match range {
+            &Value::Error(e) => Err(e),
+            Value::Range(range) => Ok(range),
+            _ => Err(self.diags.report_todo(span, "indirect integer range")),
+        }
+    }
+
     // TODO double-check that all of these type-checking functions do their error handling correctly
     //   and don't short-circuit unnecessarily, preventing multiple errors
-    // TODO change this to be type-type based instead of type-value
     // TODO move error formatting out of this function, it depends too much on the context and spans are not always available
     pub fn check_type_contains(&self, span_ty: Option<Span>, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
-        match (ty, value) {
+        let ty_value = self.type_of_value(span_value, value);
+
+        match (ty, &ty_value) {
             // propagate errors, we can't just silently ignore them:
             //   downstream compiler code might actually depend on the type matching
-            (&Type::Error(e), _) | (_, &Value::Error(e)) => return Err(e),
+            (&Type::Error(e), _) | (_, &Type::Error(e)) => return Err(e),
+
+            // equal types are always fine
+            _ if ty == &ty_value => return Ok(()),
 
             // any contains everything
             (&Type::Any, _) => return Ok(()),
 
             // basic types that only contain themselves
-            (Type::Unit, Value::Unit) => return Ok(()),
-            (Type::Never, Value::Never) => return Ok(()),
+            (Type::Unit, Type::Unit) => return Ok(()),
+            (Type::Never, Type::Never) => return Ok(()),
             // TODO differentiate between arbitrary open, half-open, ...
-            (Type::Range, Value::Range(_)) => return Ok(()),
-            (Type::Boolean, Value::BoolConstant(_)) => return Ok(()),
+            (Type::Range, Type::Range) => return Ok(()),
+            (Type::Boolean, Type::Boolean) => return Ok(()),
 
             // integer range check
-            (Type::Integer(IntegerTypeInfo { range }), value) => {
-                // only continue checking if the value has at least a range, which means that it's an integer
-                match self.range_of_value(span_value, value) {
-                    Ok(Some(_)) => {
-                        if let Value::Range(range) = range.as_ref() {
-                            // check that the value fits in the required range
-                            let &RangeInfo { ref start, ref end, end_inclusive } = range;
-                            if let Some(start) = start {
-                                let cond = Value::Binary(BinaryOp::CmpLte, start.clone(), Box::new(value.clone()));
-                                self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
-                            }
-                            if let Some(end) = end {
-                                let cmp_op = if end_inclusive { BinaryOp::CmpLte } else { BinaryOp::CmpLt };
-                                let cond = Value::Binary(cmp_op, Box::new(value.clone()), end.clone());
-                                self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
-                            }
-                            return Ok(());
-                        }
-                    }
-                    // fallthrough into error
-                    Ok(None) => {}
-                    Err(e) => return Err(e),
-                }
-            }
+            (Type::Integer(IntegerTypeInfo { range: range_ty }), Type::Integer(_)) => {
+                let range_ty = self.require_int_range_direct(span_ty.unwrap_or(span_value), range_ty)?;
 
-            // type-type checks
-            // TODO type equality is not good enough (and should be removed entirely), eg. this does not support broadcasting
-            (ty, &Value::GenericParameter(param)) => {
-                let param_ty = &self.compiled[param].ty;
-                if let &Type::Error(e) = param_ty {
-                    return Err(e);
-                }
-                if ty == param_ty {
-                    return Ok(());
-                }
-            }
-            (ty, &Value::ModulePort(port)) => {
-                // TODO weird, will solve itself once we switch to type-type
-                if let PortKind::Normal { domain: _, ty: ref port_ty } = self.compiled[port].kind {
-                    if let &Type::Error(e) = port_ty {
-                        return Err(e);
-                    }
-                    if ty == port_ty {
-                        return Ok(());
-                    }
-                }
-            }
-            (ty, &Value::Variable(var)) => {
-                let var_ty = &self.compiled[var].ty;
-                if let &Type::Error(e) = var_ty {
-                    return Err(e);
-                }
-                if ty == var_ty {
-                    return Ok(());
-                }
-            }
-            (ty, &Value::Register(reg)) => {
-                let reg_ty = &self.compiled[reg].ty;
-                if let &Type::Error(e) = reg_ty {
-                    return Err(e);
-                }
-                if ty == reg_ty {
-                    return Ok(());
-                }
-            }
+                let RangeInfo { start: start_ty, end: end_ty } = range_ty;
 
-            // unary not does not change the type
-            // TODO check that the input is a boolean or bits?
-            (ty, Value::UnaryNot(inner)) => {
-                return self.check_type_contains(span_ty, span_value, ty, inner);
+                // check that the value fits in the required range
+                if let Some(start_ty) = start_ty {
+                    let cond = Value::Binary(BinaryOp::CmpLte, start_ty.clone(), Box::new(value.clone()));
+                    self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
+                }
+                if let Some(end_ty) = end_ty {
+                    let cond = Value::Binary(BinaryOp::CmpLt, Box::new(value.clone()), end_ty.clone());
+                    self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
+                }
+                return Ok(());
             }
 
             // fallthrough into error
@@ -194,7 +371,9 @@ impl CompileState<'_, '_> {
 
         let ty_str = self.compiled.type_to_readable_str(self.source, ty);
         let value_str = self.compiled.value_to_readable_str(self.source, value);
-        let title = format!("type mismatch: value {} does not match type {}", value_str, ty_str);
+        let value_ty_str = self.compiled.type_to_readable_str(self.source, &ty_value);
+
+        let title = format!("type mismatch: value {} with type {} does not match type {}", value_str, value_ty_str, ty_str);
         let err = Diagnostic::new(title)
             .add_error(span_value, "value used here")
             .add_info_maybe(span_ty, "type defined here")
@@ -250,7 +429,7 @@ impl CompileState<'_, '_> {
     // TODO return true for vacuous truths, eg. comparisons between empty ranges?
     pub fn try_eval_bool(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
         let result = self.try_eval_bool_inner(origin, value);
-        if self.log_const_eval {
+        if self.log_type_check {
             eprintln!(
                 "try_eval_bool({}) -> {:?}",
                 self.compiled.value_to_readable_str(self.source, value),
@@ -265,18 +444,25 @@ impl CompileState<'_, '_> {
         match *value {
             Value::Error(e) => return Err(e),
             Value::Binary(binary_op, ref left, ref right) => {
-                let left = try_opt_result!(self.range_of_value(origin, left)?);
-                let right = try_opt_result!(self.range_of_value(origin, right)?);
+                let left_ty = self.type_of_value(origin, left);
+                let left_range = self.require_int_range_ty(origin, &left_ty)?;
+                let right_ty = self.type_of_value(origin, right);
+                let right_range = self.require_int_range_ty(origin, &right_ty)?;
+
+                if self.log_type_check {
+                    eprintln!("comparing ranges with op {:?}", binary_op);
+                    eprintln!("  {:?}", left_range);
+                    eprintln!("  {:?}", right_range);
+                }
 
                 let compare_lt = |allow_eq: bool| {
-                    let end_delta = if left.end_inclusive { 0 } else { 1 };
-                    let left_end = value_as_int(left.end.as_ref()?)? - end_delta;
-                    let right_start = value_as_int(right.start.as_ref()?)?;
+                    let right_start = value_as_int(right_range.start.as_ref()?)?;
+                    let left_end_inclusive = value_as_int(left_range.end.as_ref()?)? - 1;
 
                     if allow_eq {
-                        Some(&left_end <= right_start)
+                        Some(&left_end_inclusive <= right_start)
                     } else {
-                        Some(&left_end < right_start)
+                        Some(&left_end_inclusive < right_start)
                     }
                 };
 
@@ -290,165 +476,6 @@ impl CompileState<'_, '_> {
             _ => {}
         }
         Ok(None)
-    }
-
-    // TODO This needs to be split up into a tight and loose range:
-    //   we _know_ all values in the tight range are reachable,
-    //   and we _know_ no values outside of the loose range are
-    pub fn range_of_value(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
-        let result = self.range_of_value_inner(origin, value)?;
-        let result_simplified = result.clone().map(|r| {
-            RangeInfo {
-                start: r.start.map(|v| Box::new(simplify_value(*v))),
-                end: r.end.map(|v| Box::new(simplify_value(*v))),
-                end_inclusive: r.end_inclusive,
-            }
-        });
-        if self.log_const_eval {
-            let result_str = result.as_ref()
-                .map_or("None".to_string(), |r| self.compiled.range_to_readable_str(self.source, &r));
-            let result_simple_str = result_simplified.as_ref()
-                .map_or("None".to_string(), |r| self.compiled.range_to_readable_str(self.source, &r));
-            eprintln!(
-                "range_of_value({}) -> {:?} -> {:?}",
-                self.compiled.value_to_readable_str(self.source, value),
-                result_str,
-                result_simple_str,
-            );
-        }
-        Ok(result_simplified)
-    }
-
-    fn range_of_value_inner(&self, origin: Span, value: &Value) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
-        // TODO if range ends are themselves params with ranges, assume the worst case
-        //   although that misses things like (n < n+1)
-        fn ty_as_range(ty: &Type) -> Result<Option<RangeInfo<Box<Value>>>, ErrorGuaranteed> {
-            match ty {
-                &Type::Error(e) => Err(e),
-                Type::Integer(IntegerTypeInfo { range }) => {
-                    match range.as_ref() {
-                        &Value::Error(e) => Err(e),
-                        Value::Range(range) => Ok(Some(range.clone())),
-                        _ => Ok(None),
-                    }
-                }
-                _ => Ok(None)
-            }
-        }
-
-        // TODO for unchecked type, return unchecked value?
-
-        match *value {
-            Value::Error(e) => Err(e),
-            // params have types which we can use to extract a range
-            Value::GenericParameter(param) => ty_as_range(&self.compiled[param].ty),
-            Value::Unit => Ok(None),
-
-            // TODO return the same as error?
-            Value::Never => Ok(None),
-            Value::BoolConstant(_) => Ok(None),
-            // a single integer corresponds to the range containing only that integer
-            // TODO should we generate an inclusive or exclusive range here?
-            //   this will become moot once we switch to +1 deltas
-            Value::IntConstant(ref value) => Ok(Some(RangeInfo {
-                start: Some(Box::new(Value::IntConstant(value.clone()))),
-                end: Some(Box::new(Value::IntConstant(value + 1u32))),
-                end_inclusive: false,
-            })),
-            Value::StringConstant(_) => Ok(None),
-            Value::ModulePort(port) => {
-                match &self.compiled[port].kind {
-                    PortKind::Clock => Ok(None),
-                    PortKind::Normal { domain: _, ty } => ty_as_range(ty),
-                }
-            }
-            Value::Binary(op, ref left, ref right) => {
-                let left = try_opt_result!(self.range_of_value(origin, left)?);
-                let right = try_opt_result!(self.range_of_value(origin, right)?);
-
-                // TODO replace end_inclusive with a +1 delta to get rid of this trickiness forever
-                if left.end_inclusive || right.end_inclusive {
-                    return Ok(None);
-                }
-
-                match op {
-                    BinaryOp::Add => {
-                        let range = RangeInfo {
-                            start: option_pair(left.start.as_ref(), right.start.as_ref())
-                                .map(|(left_start, right_start)|
-                                    Box::new(Value::Binary(BinaryOp::Add, left_start.clone(), right_start.clone()))
-                                ),
-                            end: option_pair(left.end.as_ref(), right.end.as_ref())
-                                .map(|(left_end, right_end)|
-                                    Box::new(Value::Binary(BinaryOp::Add, left_end.clone(), right_end.clone()))
-                                ),
-                            end_inclusive: false,
-                        };
-                        Ok(Some(range))
-                    }
-                    BinaryOp::Sub => {
-                        let range = RangeInfo {
-                            start: option_pair(left.start.as_ref(), right.end.as_ref())
-                                .map(|(left_start, right_end)| {
-                                    let right_end_inclusive = Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::IntConstant(BigInt::one()))));
-                                    Box::new(Value::Binary(BinaryOp::Sub, left_start.clone(), right_end_inclusive))
-                                }),
-                            end: option_pair(left.end.as_ref(), right.start.as_ref())
-                                .map(|(left_end, right_start)|
-                                    Box::new(Value::Binary(BinaryOp::Sub, left_end.clone(), right_start.clone()))
-                                ),
-                            end_inclusive: false,
-                        };
-                        Ok(Some(range))
-                    }
-                    BinaryOp::Pow => {
-                        // check that exponent is non-negative
-                        let right_start = right.start.as_ref().ok_or_else(|| {
-                            let right_str = self.compiled.range_to_readable_str(self.source, &right);
-                            let title = format!("power exponent cannot be negative, got range without lower bound {:?}", right_str);
-                            let err = Diagnostic::new(title)
-                                .add_error(origin, "while checking this expression")
-                                .finish();
-                            self.diags.report(err)
-                        })?;
-                        let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::IntConstant(BigInt::ZERO)), right_start.clone());
-                        self.try_eval_bool_true(origin, &cond)
-                            .map_err(|e| {
-                                let cond_str = self.compiled.value_to_readable_str(self.source, &cond);
-                                let title = format!("power exponent range check failed: value {} {}", cond_str, e.to_message());
-                                let err = Diagnostic::new(title)
-                                    .add_error(origin, "while checking this expression")
-                                    .finish();
-                                self.diags.report(err)
-                            })?;
-
-                        let left_start = try_opt_result!(left.start);
-
-                        // if base is >0, then the result is >0 too
-                        // TODO this range can be improved a lot: consider cases +,0,- separately
-                        let base_positive = self.try_eval_bool(origin, &Value::Binary(BinaryOp::CmpLt, Box::new(Value::IntConstant(BigInt::ZERO)), left_start))?;
-                        if base_positive == Some(true) {
-                            Ok(Some(RangeInfo {
-                                start: Some(Box::new(Value::IntConstant(BigInt::one()))),
-                                end: None,
-                                end_inclusive: false,
-                            }))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    _ => Ok(None),
-                }
-            }
-            Value::UnaryNot(_) => Ok(None),
-            Value::Range(_) => panic!("range can't itself have a range type"),
-            Value::FunctionReturn(ref ret) => ty_as_range(&ret.ret_ty),
-            Value::Module(_) => panic!("module can't have a range type"),
-            // TODO get their types
-            Value::Wire => Ok(None),
-            Value::Register(reg) => ty_as_range(&self.compiled[reg].ty),
-            Value::Variable(var) => ty_as_range(&self.compiled[var].ty),
-        }
     }
 }
 
@@ -469,6 +496,10 @@ pub fn simplify_value(value: Value) -> Value {
 
             Value::Binary(op, Box::new(left), Box::new(right))
         }
+        Value::UnaryNot(inner) => {
+            let inner = simplify_value(*inner);
+            Value::UnaryNot(Box::new(inner))
+        }
         // TODO at least recursively call simplify
         value => value,
     }
@@ -478,13 +509,6 @@ pub fn simplify_value(value: Value) -> Value {
 pub fn value_as_int(value: &Value) -> Option<&BigInt> {
     match value {
         Value::IntConstant(value) => Some(value),
-        _ => None,
-    }
-}
-
-fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some((left, right)),
         _ => None,
     }
 }

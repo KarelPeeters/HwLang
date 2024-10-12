@@ -50,7 +50,9 @@ pub enum Type {
     // TODO make unit just a special case of tuple
     Never,
     Boolean,
+    Clock,
     Bits(Option<Box<Value>>),
+    String,
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
     Range,
     Array(Box<Type>, Box<Value>),
@@ -138,6 +140,8 @@ impl GenericContainer for Type {
             Type::Never => Type::Never,
             Type::Unit => Type::Unit,
             Type::Boolean => Type::Boolean,
+            Type::Clock => Type::Clock,
+            Type::String => Type::String,
             Type::Bits(ref width) => {
                 Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generics(compiled, map))))
             }

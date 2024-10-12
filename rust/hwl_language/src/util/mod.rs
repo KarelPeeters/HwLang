@@ -47,7 +47,14 @@ impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
 pub fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
     match (left, right) {
         (Some(left), Some(right)) => Some((left, right)),
-        _ => None,
+        (None, _) | (_, None) => None,
+    }
+}
+
+pub fn result_pair<A, B, E>(left: Result<A, E>, right: Result<B, E>) -> Result<(A, B), E> {
+    match (left, right) {
+        (Ok(left), Ok(right)) => Ok((left, right)),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     }
 }
 
