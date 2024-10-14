@@ -4,10 +4,10 @@ use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCo
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{Constructor, Type};
+use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -285,44 +285,74 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     #[must_use]
     fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
-        let diags = self.diags;
-
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
-        let &ast::ModuleInstance { span: _, span_keyword: keyword_span, name: _, ref module, ref generic_args, ref port_connections } = instance;
+        let &ast::ModuleInstance {
+            span: _,
+            span_keyword: keyword_span,
+            ref name,
+            ref module,
+            ref generic_args,
+            ref port_connections
+        } = instance;
+
+        // always evaluate generic args
+        let generic_args = generic_args.as_ref().map(|generic_args| {
+            generic_args.map_inner(|arg| {
+                self.eval_expression_as_ty_or_value(ctx_module, scope_body, arg)
+            })
+        });
 
         // find the module, fill in generics
         let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
 
         // always evaluate ports, so they can emit errors even if the module or its generics are invalid
-        let port_connections_span = port_connections.span;
-        let port_connections = port_connections.inner.iter().map(|(id, expr)|
-            (id, Spanned { span: expr.span, inner: self.eval_expression_as_value(ctx_module, scope_body, expr) })
-        ).collect_vec();
+        let connections = port_connections.as_ref().map_inner(|port_connections| {
+            port_connections.iter().map(|(id, expr)| {
+                (id.clone(), expr.as_ref().map_inner(|_| self.eval_expression_as_value(ctx_module, scope_body, expr)))
+            }).collect_vec()
+        });
 
         // to continue checking ports we need the module to be valid
-        let module_with_generics = match module_with_generics {
-            Ok(module_with_generics) => module_with_generics,
+        let (module_with_generics, generic_arguments) = match module_with_generics {
+            Ok(m) => m,
             Err(e) => return ModuleStatement::Err(e),
         };
 
-        // fill in ports, including type/domain/inout checking
-        // TODO allow different declaration and use orderings, be careful about interactions
-        let ports = &module_with_generics.ports;
+        // check port connections
+        let port_connections = match self.check_module_instance_ports(&module_with_generics.ports, &connections) {
+            Ok(p) => p,
+            Err(e) => return ModuleStatement::Err(e),
+        };
 
-        let mut any_err = None;
-        if ports.len() != port_connections.len() {
+        // successfully created instance
+        ModuleStatement::Instance(ModuleInstance {
+            module: module_with_generics.nominal_type_unique.item,
+            name: name.as_ref().map(|s| s.string.clone()),
+            generic_arguments,
+            port_connections,
+        })
+    }
+
+    // TODO allow different declaration and use orderings, be careful about interactions
+    fn check_module_instance_ports(&mut self, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let mut any_err = Ok(());
+        if ports.len() != connections.inner.len() {
             let err = Diagnostic::new_simple(
-                format!("constructor port count mismatch, expected {}, got {}", ports.len(), port_connections.len()),
-                port_connections_span,
+                format!("constructor port count mismatch, expected {}, got {}", ports.len(), connections.inner.len()),
+                connections.span,
                 "connected here",
             );
-            any_err = Some(diags.report(err));
+            any_err = Err(diags.report(err));
         }
-        let min_len = min(ports.len(), port_connections.len());
+        let min_len = min(ports.len(), connections.inner.len());
 
         let mut map_port = IndexMap::new();
-        for (&port, (connection_id, connection)) in zip_eq(&ports[..min_len], &port_connections[..min_len]) {
+        let mut ordered_connections = vec![];
+
+        for (&port, (connection_id, connection)) in zip_eq(&ports[..min_len], &connections.inner[..min_len]) {
             let port_ast = self.parsed.module_port_ast(self.compiled[port].ast);
 
             if port_ast.id.string != connection_id.string {
@@ -331,7 +361,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     .add_error(connection_id.span, format!("got {}, connected here", connection_id.string))
                     .footer(Level::Note, "different port and connection orderings are not yet supported")
                     .finish();
-                any_err = Some(diags.report(err));
+                any_err = Err(diags.report(err));
 
                 // from now on port replacement is broken, so we have to stop the loop
                 break;
@@ -416,20 +446,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
             };
 
             // add port to replacement
-            map_port.insert_first(port, port_replacement)
+            map_port.insert_first(port, port_replacement.clone());
+            ordered_connections.push(Spanned { span: connection_value_span, inner: port_replacement });
         }
 
-        // bail
-        if let Some(e) = any_err {
-            return ModuleStatement::Err(e);
-        }
-        let port_values = port_connections.into_iter().map(|(_, v)| v.inner).collect_vec();
-
-        // successfully created instance
-        ModuleStatement::Instance(ModuleInstance {
-            module: module_with_generics.nominal_type_unique.item,
-            port_values,
-        })
+        any_err.map(|()| PortConnections { vec: ordered_connections })
     }
 
     fn eval_expr_as_module_with_generics(
@@ -438,8 +459,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ctx_module: &ExpressionContext,
         scope: Scope,
         module_expr: &ast::Expression,
-        generic_args: &Option<ast::Args>,
-    ) -> Result<ModuleValueInfo, ErrorGuaranteed> {
+        generic_args: &Option<ast::Args<TypeOrValue>>,
+    ) -> Result<(ModuleValueInfo, Option<GenericArguments>), ErrorGuaranteed> {
         let diags = self.diags;
 
         let module_value = self.eval_expression(ctx_module, scope, module_expr);
@@ -475,11 +496,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         match (constructor_params, generic_args, module_inner_raw) {
             // immediate module
-            (Ok(None), None, module_inner_raw) => module_inner_raw,
+            (Ok(None), None, module_inner_raw) => {
+                module_inner_raw.map(|inner| (inner, None))
+            }
             // generic module with args
             (Ok(Some(constructor_params)), Some(generic_args), Ok(module_inner_raw)) => {
-                let generic_args = generic_args.map_inner(|arg| self.eval_expression_as_ty_or_value(ctx_module, scope, arg));
-                self.eval_constructor_call(&constructor_params, &module_inner_raw, generic_args, false)
+                self.eval_constructor_call(&constructor_params, &module_inner_raw, generic_args.clone(), false)
+                    .map(|(inner, generic_args)| (inner, Some(generic_args)))
             }
 
             // error: we don't know if module is generic or not

@@ -2,7 +2,7 @@ use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
 use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, RegisterInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleStatement};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue};
@@ -13,8 +13,8 @@ use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::ResultExt;
-use crate::{swriteln, throw};
-use itertools::{enumerate, Itertools};
+use crate::{swrite, swriteln, throw};
+use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 use num_traits::{Signed as _, ToPrimitive};
 use std::cmp::max;
@@ -78,8 +78,8 @@ fn generate_module_source(
             info
         }
         MaybeConstructor::Constructor(_) => {
-            diag.report_todo(item_ast.span, "module instance with generic params/args");
-            return "".to_string();
+            diag.report_todo(item_ast.span, "lowering module with generic params");
+            return format!("// error module declaration of {module_name}");
         }
         _ => unreachable!(),
     };
@@ -196,9 +196,36 @@ fn module_body_to_verilog(
 
                 swriteln!(f, "{I}end");
             }
-            ModuleStatement::Instance(_) => {
-                let _ = todo;
-                diag.report_todo(module_span, "module instance lowering");
+            ModuleStatement::Instance(instance) => {
+                let &ModuleInstance {
+                    module: child,
+                    name: ref child_instance_name,
+                    generic_arguments: ref child_generic_arguments,
+                    port_connections: ref child_port_connections
+                } = instance;
+
+                // TODO replace current generic params in child generic args
+                let child_module_name = todo.push(parsed, compiled, BackModule { item: child, args: child_generic_arguments.clone() });
+
+                if let Some(child_instance_name) = child_instance_name {
+                    swrite!(f, "{I}{child_module_name} {child_instance_name} (");
+                } else {
+                    swrite!(f, "{I}{child_module_name} (");
+                }
+
+                if !child_port_connections.vec.is_empty() {
+                    swriteln!(f);
+                    let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
+                    for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
+                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, connection.span, &connection.inner));
+                        // no trailing comma
+                        if i != child_port_connections.vec.len() - 1 {
+                            swrite!(f, ",");
+                        }
+                        swriteln!(f);
+                    }
+                }
+                swriteln!(f, "{I});");
             }
             &ModuleStatement::Err(e) => {
                 let _: ErrorGuaranteed = e;
@@ -317,6 +344,24 @@ impl Signed {
             Signed::Unsigned => "",
             Signed::Signed => "signed ",
         }
+    }
+}
+
+fn value_to_verilog(diag: &Diagnostics, parsed: &ParsedDatabase, compiled: &CompiledDatabase, span: Span, value: &Value) -> String {
+    value_to_verilog_inner(diag, parsed, compiled, span, value)
+        .unwrap_or_else(|_| "/* error */".to_string())
+}
+
+// TODO careful about scoping, are we sure we're never accidentally referring to the wrong value?
+fn value_to_verilog_inner(diag: &Diagnostics, parsed: &ParsedDatabase, compiled: &CompiledDatabase, span: Span, value: &Value) -> Result<String, ErrorGuaranteed> {
+    match value {
+        &Value::Error(e) => Err(e),
+        &Value::GenericParameter(_) =>
+            Err(diag.report_internal_error(span, "generic parameters should not materialize")),
+        &Value::ModulePort(port) =>
+            Ok(parsed.module_port_ast(compiled[port].ast).id.string.clone()),
+
+        _ => Err(diag.report_todo(span, format!("value_to_verilog {:?}", value))),
     }
 }
 

@@ -3,7 +3,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
@@ -212,7 +212,7 @@ impl CompileState<'_, '_> {
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
                         match self.eval_constructor_call(&constr.parameters, &constr.inner, args_entry, true) {
-                            Ok(v) => MaybeConstructor::Immediate(v),
+                            Ok((v, _)) => MaybeConstructor::Immediate(v),
                             Err(e) => MaybeConstructor::Error(e),
                         }
                     }
@@ -246,7 +246,7 @@ impl CompileState<'_, '_> {
         inner: &T,
         args: ast::Args<TypeOrValue>,
         allow_positional: bool,
-    ) -> Result<T::Result, ErrorGuaranteed> {
+    ) -> Result<(T::Result, GenericArguments), ErrorGuaranteed> {
         let diags = self.diags;
         let mut any_err = None;
 
@@ -268,6 +268,8 @@ impl CompileState<'_, '_> {
         let mut map_generic_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
         let map_module_port: IndexMap<ModulePort, Value> = IndexMap::new();
         let mut any_named = false;
+
+        let mut ordered_args = vec![];
 
         for (&param, arg) in zip_eq(&parameters.vec[..min_len], args.inner.into_iter().take(min_len)) {
             let ast::Arg { span: arg_span, name: arg_name, expr: arg_value, } = arg;
@@ -321,7 +323,8 @@ impl CompileState<'_, '_> {
                     // TODO use for bound-check (once we add type bounds)
                     // TODO apply generic map to info, certainly for the bounds
                     let _param_info = &self.compiled[param];
-                    map_generic_ty.insert_first(param, arg_ty)
+                    map_generic_ty.insert_first(param, arg_ty.clone());
+                    ordered_args.push(TypeOrValue::Type(arg_ty));
                 }
                 GenericParameter::Value(param) => {
                     let arg_value = arg_value.unwrap_value(diags, arg_span);
@@ -335,7 +338,8 @@ impl CompileState<'_, '_> {
                         Ok(()) => {}
                         Err(e) => any_err = Some(e),
                     }
-                    map_generic_value.insert_first(param, arg_value)
+                    map_generic_value.insert_first(param, arg_value.clone());
+                    ordered_args.push(TypeOrValue::Value(arg_value));
                 }
             }
         }
@@ -345,6 +349,12 @@ impl CompileState<'_, '_> {
             return Err(e);
         }
 
+        // at this point we know the generic arg count is right, and the order is correct
+        assert_eq!(parameters.vec.len(), ordered_args.len());
+        let generic_args = GenericArguments {
+            vec: ordered_args,
+        };
+
         // do the actual replacement
         let map = GenericMap {
             generic_ty: &map_generic_ty,
@@ -353,7 +363,7 @@ impl CompileState<'_, '_> {
         };
         let result = inner.replace_generics(&mut self.compiled, &map);
 
-        Ok(result)
+        Ok((result, generic_args))
     }
 
     pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {

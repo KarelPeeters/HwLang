@@ -185,6 +185,7 @@ ModuleStatementKind: ModuleStatementKind = {
     },
     // module instance
     // TODO this is ugly syntax: why are generics and ports different
+    // TODO allow strings as instance names? necessary for modules instantiated in loops
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
         <generic_args:("generics" "(" <Args> ")")?>

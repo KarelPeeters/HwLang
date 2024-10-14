@@ -521,6 +521,13 @@ impl<T> Spanned<T> {
             inner: f(self.inner),
         }
     }
+
+    pub fn as_ref(&self) -> Spanned<&T> {
+        Spanned {
+            span: self.span,
+            inner: &self.inner,
+        }
+    }
 }
 
 impl MaybeIdentifier {

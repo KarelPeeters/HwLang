@@ -32,10 +32,14 @@ impl ParsedDatabase {
         &aux.items[file_item_index]
     }
 
+    pub fn module_ast(&self, item: ItemAstReference) -> &ast::ItemDefModule {
+        let item_ast = self.item_ast(item);
+        unwrap_match!(item_ast, ast::Item::Module(item) => item)
+    }
+
     pub fn module_port_ast(&self, port: ModulePortAstReference) -> &ast::ModulePort {
         let ModulePortAstReference { item, index } = port;
-        let item_ast = self.item_ast(item);
-        let module_ast = unwrap_match!(item_ast, ast::Item::Module(item) => item);
+        let module_ast = self.module_ast(item);
         &module_ast.ports.inner[index]
     }
 }

@@ -1,5 +1,6 @@
 use crate::data::compiled::{Item, ModulePort, Register};
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::front::types::{GenericArguments, PortConnections};
 use crate::front::values::Value;
 use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::Span;
@@ -40,9 +41,9 @@ pub struct ModuleBlockClocked {
 #[derive(Debug)]
 pub struct ModuleInstance {
     pub module: Item,
-    // generic args need to be re-replaced during lowering,
-    //   since they can use values that come all the way from the parent
-    pub port_values: Vec<Value>,
+    pub name: Option<String>,
+    pub generic_arguments: Option<GenericArguments>,
+    pub port_connections: PortConnections,
 }
 
 #[derive(Debug)]

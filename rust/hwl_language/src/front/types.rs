@@ -3,6 +3,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::TypeOrValue;
 use crate::front::common::{GenericContainer, GenericMap};
 use crate::front::values::Value;
+use crate::syntax::ast::Spanned;
 use derivative::Derivative;
 use indexmap::IndexMap;
 
@@ -28,7 +29,14 @@ pub struct GenericParameters {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct GenericArguments {
+    // guaranteed to be the same length and ordering as the parameters
     pub vec: Vec<TypeOrValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PortConnections {
+    // guaranteed to be the same length and ordering as the ports
+    pub vec: Vec<Spanned<Value>>,
 }
 
 // TODO function arguments?
