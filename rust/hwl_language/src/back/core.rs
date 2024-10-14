@@ -1,5 +1,5 @@
 use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
-use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, RegisterInfo};
+use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
@@ -12,13 +12,15 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 use crate::{swrite, swriteln, throw};
+use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 use num_traits::{Signed as _, ToPrimitive};
 use std::cmp::max;
-use std::fmt::Write;
+use std::fmt::{Display, Formatter, Write};
 use unwrap_match::unwrap_match;
 
 // TODO make backend configurable between verilog and VHDL?
@@ -103,6 +105,14 @@ fn generate_module_source(
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
+struct RegisterName(usize);
+
+impl Display for RegisterName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "module_reg_{}", self.0)
+    }
+}
+
 fn module_body_to_verilog(
     diag: &Diagnostics,
     source: &SourceDatabase,
@@ -116,6 +126,7 @@ fn module_body_to_verilog(
     let f = &mut result;
 
     let ModuleChecked { statements, regs } = body;
+    let mut reg_map = IndexMap::new();
 
     for (reg_index, &(reg, ref init)) in enumerate(regs) {
         if reg_index != 0 {
@@ -131,7 +142,10 @@ fn module_body_to_verilog(
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
         let sync_str = sync_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()));
 
-        swriteln!(f, "{I}reg {ty_str}module_reg_{reg_index}; // {sync_str}");
+        let name = RegisterName(reg_index);
+        swriteln!(f, "{I}reg {ty_str}{name}; // {sync_str}");
+
+        reg_map.insert_first(reg, name);
     }
 
     if regs.len() > 0 {
@@ -217,7 +231,7 @@ fn module_body_to_verilog(
                     swriteln!(f);
                     let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
                     for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
-                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, connection.span, &connection.inner));
+                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, &reg_map, connection.span, &connection.inner));
                         // no trailing comma
                         if i != child_port_connections.vec.len() - 1 {
                             swrite!(f, ",");
@@ -347,13 +361,27 @@ impl Signed {
     }
 }
 
-fn value_to_verilog(diag: &Diagnostics, parsed: &ParsedDatabase, compiled: &CompiledDatabase, span: Span, value: &Value) -> String {
-    value_to_verilog_inner(diag, parsed, compiled, span, value)
+fn value_to_verilog(
+    diag: &Diagnostics,
+    parsed: &ParsedDatabase,
+    compiled: &CompiledDatabase,
+    reg_map: &IndexMap<Register, RegisterName>,
+    span: Span,
+    value: &Value,
+) -> String {
+    value_to_verilog_inner(diag, parsed, compiled, reg_map, span, value)
         .unwrap_or_else(|_| "/* error */".to_string())
 }
 
 // TODO careful about scoping, are we sure we're never accidentally referring to the wrong value?
-fn value_to_verilog_inner(diag: &Diagnostics, parsed: &ParsedDatabase, compiled: &CompiledDatabase, span: Span, value: &Value) -> Result<String, ErrorGuaranteed> {
+fn value_to_verilog_inner(
+    diag: &Diagnostics,
+    parsed: &ParsedDatabase,
+    compiled: &CompiledDatabase,
+    reg_map: &IndexMap<Register, RegisterName>,
+    span: Span,
+    value: &Value,
+) -> Result<String, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         &Value::GenericParameter(_) =>
@@ -361,7 +389,59 @@ fn value_to_verilog_inner(diag: &Diagnostics, parsed: &ParsedDatabase, compiled:
         &Value::ModulePort(port) =>
             Ok(parsed.module_port_ast(compiled[port].ast).id.string.clone()),
 
-        _ => Err(diag.report_todo(span, format!("value_to_verilog {:?}", value))),
+        &Value::BoolConstant(b) => Ok(if b { "1" } else { "0" }.to_string()),
+        Value::IntConstant(i) => Ok(i.to_string()),
+
+        Value::Binary(op, a, b) => {
+            // TODO reduce the amount of parentheses
+            let op = binary_op_to_verilog(diag, span, *op)?;
+            let a = value_to_verilog_inner(diag, parsed, compiled, reg_map, span, a)?;
+            let b = value_to_verilog_inner(diag, parsed, compiled, reg_map, span, b)?;
+            Ok(format!("({} {} {})", a, op, b))
+        },
+        Value::UnaryNot(x) => {
+            Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, reg_map, span, x)?))
+        },
+
+        &Value::Wire =>
+            Err(diag.report_internal_error(span, "wire should not materialize")),
+        &Value::Register(reg) => {
+            match reg_map.get(&reg) {
+                None => Err(diag.report_internal_error(span, "register not found in register map")),
+                Some(reg_name) => Ok(format!("{}", reg_name)),
+            }
+        }
+        &Value::Variable(_) =>
+            Err(diag.report_todo(span, "value_to_verilog for variables")),
+
+        Value::Never | Value::Unit | Value::StringConstant(_) | Value::Range(_) | Value::FunctionReturn(_) | Value::Module(_) =>
+            Err(diag.report_internal_error(span, format!("value '{value:?}' should not materialize"))),
+    }
+}
+
+// TODO check that all of these exist and behave as expected
+fn binary_op_to_verilog(diag: &Diagnostics, span: Span, op: BinaryOp) -> Result<&'static str, ErrorGuaranteed> {
+    match op {
+        BinaryOp::Add => Ok("+"),
+        BinaryOp::Sub => Ok("-"),
+        BinaryOp::Mul => Ok("*"),
+        BinaryOp::Div => Ok("/"),
+        BinaryOp::Mod => Ok("%"),
+        BinaryOp::Pow => Ok("**"),
+        BinaryOp::BitAnd => Ok("&"),
+        BinaryOp::BitOr => Ok("|"),
+        BinaryOp::BitXor => Ok("^"),
+        BinaryOp::BoolAnd => Ok("&&"),
+        BinaryOp::BoolOr => Ok("||"),
+        BinaryOp::Shl => Ok("<<"),
+        BinaryOp::Shr => Ok(">>"),
+        BinaryOp::CmpEq => Ok("=="),
+        BinaryOp::CmpNeq => Ok("!="),
+        BinaryOp::CmpLt => Ok("<"),
+        BinaryOp::CmpLte => Ok("<="),
+        BinaryOp::CmpGt => Ok(">"),
+        BinaryOp::CmpGte => Ok(">="),
+        BinaryOp::In => Err(diag.report_todo(span, "binary op 'in'")),
     }
 }
 
