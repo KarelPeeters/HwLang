@@ -86,10 +86,20 @@ pub trait GenericContainer {
     ) -> Self::Result;
 }
 
-pub struct GenericMap<'a> {
-    pub generic_ty: &'a IndexMap<GenericTypeParameter, Type>,
-    pub generic_value: &'a IndexMap<GenericValueParameter, Value>,
-    pub module_port: &'a IndexMap<ModulePort, Value>,
+pub struct GenericMap {
+    pub generic_ty: IndexMap<GenericTypeParameter, Type>,
+    pub generic_value: IndexMap<GenericValueParameter, Value>,
+    pub module_port: IndexMap<ModulePort, Value>,
+}
+
+impl GenericMap {
+    pub fn empty() -> Self {
+        Self {
+            generic_ty: IndexMap::new(),
+            generic_value: IndexMap::new(),
+            module_port: IndexMap::new(),
+        }
+    }
 }
 
 impl GenericContainer for TypeOrValue {

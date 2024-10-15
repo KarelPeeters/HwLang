@@ -1,13 +1,13 @@
 use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
-use crate::data::compiled::{CompiledDatabase, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo};
+use crate::data::compiled::{CompiledDatabase, GenericParameter, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, TypeOrValue};
+use crate::front::common::{GenericMap, ScopedEntry, TypeOrValue};
 use crate::front::scope::Visibility;
-use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::types::{Constructor, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, SyncDomain};
@@ -74,16 +74,31 @@ fn generate_module_source(
     let item_info = &compiled[item];
     let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
 
-    let module_info = match &item_info.signature {
+    let (generic_map, module_info) = match &item_info.signature {
         MaybeConstructor::Immediate(TypeOrValue::Value(Value::Module(info))) => {
             assert!(module_args.is_none());
-            info
+            (GenericMap::empty(), info)
         }
-        MaybeConstructor::Constructor(_) => {
-            diag.report_todo(item_ast.span, "lowering module with generic params");
+        MaybeConstructor::Constructor(Constructor { parameters, inner: TypeOrValue::Value(Value::Module(info)) }) => {
+            let module_args = module_args.unwrap();
+            assert_eq!(parameters.vec.len(), module_args.vec.len());
+
+            let mut map = GenericMap::empty();
+            for (&param, arg) in zip_eq(&parameters.vec, &module_args.vec) {
+                match (param, arg) {
+                    (GenericParameter::Type(param), TypeOrValue::Type(arg)) =>
+                        map.generic_ty.insert_first(param, arg.clone()),
+                    (GenericParameter::Value(param), TypeOrValue::Value(arg)) =>
+                        map.generic_value.insert_first(param, arg.clone()),
+                    _ => unreachable!(),
+                }
+            }
+            (map, info)
+        }
+        _ => {
+            diag.report_internal_error(item_ast.span, "trying to lower module with value that is not a module");
             return format!("// error module declaration of {module_name}");
-        }
-        _ => unreachable!(),
+        },
     };
 
     // TODO build this in a single pass?
@@ -95,12 +110,12 @@ fn generate_module_source(
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
         port_string.push_str(I);
-        port_string.push_str(&port_to_verilog(diag, source, parsed, compiled, port, comma_str));
+        port_string.push_str(&port_to_verilog(diag, source, parsed, compiled, &generic_map, port, comma_str));
         port_string.push_str("\n");
     }
 
     let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body);
-    let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, item_ast.span, body);
+    let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, &generic_map, item_ast.span, body);
 
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
@@ -119,6 +134,7 @@ fn module_body_to_verilog(
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     todo: &mut BackModuleList,
+    map: &GenericMap,
     module_span: Span,
     body: &ModuleChecked,
 ) -> String {
@@ -139,7 +155,7 @@ fn module_body_to_verilog(
 
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id: _, domain: sync, ty } = &compiled[reg];
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, module_span, &ty));
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, &ty));
         let sync_str = sync_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()));
 
         let name = RegisterName(reg_index);
@@ -269,6 +285,7 @@ fn port_to_verilog(
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
+    map: &GenericMap,
     port: ModulePort,
     comma_str: &str,
 ) -> String {
@@ -288,7 +305,7 @@ fn port_to_verilog(
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { domain: sync, ty } => {
             // TODO include full type in comment
-            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, defining_id.span, ty));
+            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, map, defining_id.span, ty));
             let comment = sync_to_comment_str(source, parsed, compiled, sync);
             (ty_str, comment)
         }
@@ -404,7 +421,7 @@ fn value_to_verilog_inner(
         },
 
         &Value::Wire =>
-            Err(diag.report_internal_error(span, "wire should not materialize")),
+            Err(diag.report_todo(span, "value_to_verilog for wires")),
         &Value::Register(reg) => {
             match reg_map.get(&reg) {
                 None => Err(diag.report_internal_error(span, "register not found in register map")),
@@ -445,7 +462,7 @@ fn binary_op_to_verilog(diag: &Diagnostics, span: Span, op: BinaryOp) -> Result<
     }
 }
 
-fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
+fn type_to_verilog(diag: &Diagnostics, map: &GenericMap, span: Span, ty: &Type) -> VerilogType {
     match ty {
         &Type::Error(e) =>
             VerilogType::Error(e),
@@ -458,7 +475,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
                     VerilogType::Error(diag.report_internal_error(span, "infinite bit widths should never materialize"))
                 }
                 Some(n) => {
-                    match value_evaluate_int(diag, span, n).map(|n| n.to_u32()) {
+                    match value_evaluate_int(diag, map, span, n).map(|n| n.to_u32()) {
                         Ok(Some(n)) => VerilogType::MultiBit(Signed::Unsigned, n),
                         Ok(None) => {
                             // TODO negative should be an internal error
@@ -475,7 +492,7 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
             VerilogType::Error(diag.report_todo(span, "lower type 'array'")),
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
-            let range = match value_evaluate_int_range(diag, span, range) {
+            let range = match value_evaluate_int_range(diag, map, span, range) {
                 Ok(range) => range,
                 Err(e) => return VerilogType::Error(e),
             };
@@ -494,13 +511,13 @@ fn type_to_verilog(diag: &Diagnostics, span: Span, ty: &Type) -> VerilogType {
     }
 }
 
-fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
+fn value_evaluate_int(diag: &Diagnostics, map: &GenericMap, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::IntConstant(i) => Ok(i.clone()),
         Value::Binary(op, left, right) => {
-            let left = value_evaluate_int(diag, span, left)?;
-            let right = value_evaluate_int(diag, span, right)?;
+            let left = value_evaluate_int(diag, map, span, left)?;
+            let right = value_evaluate_int(diag, map, span, right)?;
             match op {
                 BinaryOp::Add => Ok(left + right),
                 BinaryOp::Sub => Ok(left - right),
@@ -525,7 +542,12 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
         Value::StringConstant(_) => Err(diag.report_todo(span, "value_evaluate_int value StringConstant")),
         Value::Unit => Err(diag.report_todo(span, "value_evaluate_int value Unit")),
         Value::UnaryNot(_) => Err(diag.report_todo(span, "value_evaluate_int value UnaryNot")),
-        Value::GenericParameter(_) => Err(diag.report_todo(span, "value_evaluate_int value GenericParameter")),
+        Value::GenericParameter(param) => {
+            match map.generic_value.get(param) {
+                Some(value) => value_evaluate_int(diag, map, span, value),
+                None => Err(diag.report_internal_error(span, "unbound generic parameter")),
+            }
+        },
         Value::ModulePort(_) => Err(diag.report_todo(span, "value_evaluate_int value ModulePort")),
         Value::Range(_) => Err(diag.report_todo(span, "value_evaluate_int value Range")),
         Value::FunctionReturn(_) => Err(diag.report_todo(span, "value_evaluate_int value Function")),
@@ -537,7 +559,7 @@ fn value_evaluate_int(diag: &Diagnostics, span: Span, value: &Value) -> Result<B
     }
 }
 
-fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
+fn value_evaluate_int_range(diag: &Diagnostics, map: &GenericMap, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::Range(info) => {
@@ -548,8 +570,8 @@ fn value_evaluate_int_range(diag: &Diagnostics, span: Span, value: &Value) -> Re
                 _ => throw!(diag.report_internal_error(span, "unbound integers should not materialize")),
             };
 
-            let start = value_evaluate_int(diag, span, start.as_ref())?;
-            let end = value_evaluate_int(diag, span, end.as_ref())?;
+            let start = value_evaluate_int(diag, map, span, start.as_ref())?;
+            let end = value_evaluate_int(diag, map, span, end.as_ref())?;
 
             Ok(start..end)
         }

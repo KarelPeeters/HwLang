@@ -370,11 +370,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
             // immediately use existing generic params to replace the current one
             // (actual generics are already replaced in this module instance, so no need to keep applying them)
             let map = GenericMap {
-                generic_ty: &Default::default(),
-                generic_value: &Default::default(),
-                module_port: &map_port,
+                generic_ty: Default::default(),
+                generic_value: Default::default(),
+                module_port: map_port,
             };
             let replaced = port.replace_generics(&mut self.compiled, &map);
+            map_port = map.module_port;
 
             // kind/type/domain check
             let &Spanned { span: connection_value_span, inner: ref connection_value } = connection;

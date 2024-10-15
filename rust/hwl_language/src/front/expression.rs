@@ -1,4 +1,4 @@
-use crate::data::compiled::{GenericParameter, GenericTypeParameter, GenericValueParameter, ModulePort, VariableInfo};
+use crate::data::compiled::{GenericParameter, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
@@ -10,7 +10,6 @@ use crate::syntax::ast::{BinaryOp, Expression, ExpressionKind, ForExpression, In
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
-use indexmap::IndexMap;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
 use std::cmp::min;
@@ -264,9 +263,7 @@ impl CompileState<'_, '_> {
         let min_len = min(parameters.vec.len(), args.inner.len());
 
         // check kind and type match, and collect in replacement map
-        let mut map_generic_ty: IndexMap<GenericTypeParameter, Type> = IndexMap::new();
-        let mut map_generic_value: IndexMap<GenericValueParameter, Value> = IndexMap::new();
-        let map_module_port: IndexMap<ModulePort, Value> = IndexMap::new();
+        let mut map = GenericMap::empty();
         let mut any_named = false;
 
         let mut ordered_args = vec![];
@@ -309,12 +306,6 @@ impl CompileState<'_, '_> {
             }
 
             // immediately use the existing generic params to replace the current one
-            let map = GenericMap {
-                generic_ty: &map_generic_ty,
-                generic_value: &map_generic_value,
-                module_port: &map_module_port,
-            };
-
             // TODO call replace_generics instead?
             match param {
                 GenericParameter::Type(param) => {
@@ -323,7 +314,7 @@ impl CompileState<'_, '_> {
                     // TODO use for bound-check (once we add type bounds)
                     // TODO apply generic map to info, certainly for the bounds
                     let _param_info = &self.compiled[param];
-                    map_generic_ty.insert_first(param, arg_ty.clone());
+                    map.generic_ty.insert_first(param, arg_ty.clone());
                     ordered_args.push(TypeOrValue::Type(arg_ty));
                 }
                 GenericParameter::Value(param) => {
@@ -338,7 +329,7 @@ impl CompileState<'_, '_> {
                         Ok(()) => {}
                         Err(e) => any_err = Some(e),
                     }
-                    map_generic_value.insert_first(param, arg_value.clone());
+                    map.generic_value.insert_first(param, arg_value.clone());
                     ordered_args.push(TypeOrValue::Value(arg_value));
                 }
             }
@@ -356,11 +347,6 @@ impl CompileState<'_, '_> {
         };
 
         // do the actual replacement
-        let map = GenericMap {
-            generic_ty: &map_generic_ty,
-            generic_value: &map_generic_value,
-            module_port: &map_module_port,
-        };
         let result = inner.replace_generics(&mut self.compiled, &map);
 
         Ok((result, generic_args))
