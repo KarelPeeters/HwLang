@@ -24,7 +24,23 @@ module child generics(
     x: in sync(clk, rst) bits(N),
     y: out sync(clk, rst) bits(N),
 ) body {
+    instance i_inner = inner generics(
+        N=N,
+    ) ports(
+        .clk(clk),
+        .rst(rst),
+        .x(x),
+        .y(y),
+    );
+}
+
+module inner generics(N: uint) ports(
+    clk: in clock,
+    rst: in async bool,
+    x: in sync(clk, rst) bits(N),
+    y: out sync(clk, rst) bits(N),
+) body {
     combinatorial {
-         y = x;
+        y = x;
     }
 }

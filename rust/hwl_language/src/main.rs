@@ -44,8 +44,8 @@ fn main() {
 
     // run compilation
     let diag = Diagnostics::new_with_handler(handler);
-    let (parsed, compiled) = compile(&diag, &source);
-    let lowered = lower(&diag, &source, &parsed, &compiled);
+    let (parsed, mut compiled) = compile(&diag, &source);
+    let lowered = lower(&diag, &source, &parsed, &mut compiled);
 
     // print diagnostics
     let diagnostics = diag.finish();

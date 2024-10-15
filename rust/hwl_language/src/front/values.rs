@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, GenericValueParameter, Item, ModulePort, Register, Variable};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericValueParameter, Item, ModulePort, Register, Variable};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::{GenericContainer, GenericMap};
 use crate::front::types::{NominalTypeUnique, Type};
@@ -85,9 +85,9 @@ impl<V> RangeInfo<V> {
 impl GenericContainer for Value {
     type Result = Value;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Value {
         match *self {
@@ -142,7 +142,7 @@ impl GenericContainer for Value {
 impl GenericContainer for ModuleValueInfo {
     type Result = ModuleValueInfo;
 
-    fn replace_generics(&self, compiled: &mut CompiledDatabasePartial, map: &GenericMap) -> Self::Result {
+    fn replace_generics<S: CompiledStage>(&self, compiled: &mut CompiledDatabase<S>, map: &GenericMap) -> Self::Result {
         ModuleValueInfo {
             nominal_type_unique: self.nominal_type_unique.clone(),
             ports: self.ports.iter().map(|p| p.replace_generics(compiled, map)).collect_vec(),

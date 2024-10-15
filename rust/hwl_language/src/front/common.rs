@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
@@ -79,9 +79,9 @@ pub trait GenericContainer {
     type Result;
 
     /// The implementation can assume the replacement has already been kind- and type-checked.
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Self::Result;
 }
@@ -105,9 +105,9 @@ impl GenericMap {
 impl GenericContainer for TypeOrValue {
     type Result = TypeOrValue;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Self {
         match self {
@@ -123,9 +123,9 @@ impl GenericContainer for TypeOrValue {
 impl GenericContainer for GenericTypeParameter {
     type Result = Type;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Type {
         let param = *self;
@@ -145,9 +145,9 @@ impl GenericContainer for GenericTypeParameter {
 impl GenericContainer for GenericValueParameter {
     type Result = Value;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Value {
         let param = *self;
@@ -179,7 +179,7 @@ impl GenericContainer for GenericValueParameter {
 impl GenericContainer for ModulePort {
     type Result = ModulePort;
 
-    fn replace_generics(&self, compiled: &mut CompiledDatabasePartial, map: &GenericMap) -> Self::Result {
+    fn replace_generics<S: CompiledStage>(&self, compiled: &mut CompiledDatabase<S>, map: &GenericMap) -> Self::Result {
         // we intentionally don't replace the port itself, we might need it to stay a port during module port mapping
         // in the [Value] enum the port will still potentially be replaced by an arbitrary value
 

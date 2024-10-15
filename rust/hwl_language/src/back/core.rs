@@ -5,9 +5,9 @@ use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::front::common::{GenericMap, ScopedEntry, TypeOrValue};
+use crate::front::common::{GenericContainer, GenericMap, ScopedEntry, TypeOrValue};
 use crate::front::scope::Visibility;
-use crate::front::types::{Constructor, IntegerTypeInfo, MaybeConstructor, Type};
+use crate::front::types::{Constructor, GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, SyncDomain};
@@ -30,7 +30,7 @@ pub fn lower(
     diag: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
 ) -> LoweredDatabase {
     // generate module sources
     // delay concatenation, we still need to flip the order
@@ -65,7 +65,7 @@ fn generate_module_source(
     diag: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
     todo: &mut BackModuleList,
     module_name: BackModuleName,
     module: BackModule,
@@ -114,8 +114,9 @@ fn generate_module_source(
         port_string.push_str("\n");
     }
 
-    let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body);
-    let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, &generic_map, item_ast.span, body);
+    // TODO remove this clone once generics are implemented to avoid substitution
+    let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body).clone();
+    let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, &generic_map, item_ast.span, &body);
 
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
@@ -132,7 +133,7 @@ fn module_body_to_verilog(
     diag: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
     todo: &mut BackModuleList,
     map: &GenericMap,
     module_span: Span,
@@ -230,12 +231,18 @@ fn module_body_to_verilog(
                 let &ModuleInstance {
                     module: child,
                     name: ref child_instance_name,
-                    generic_arguments: ref child_generic_arguments,
+                    generic_arguments: ref child_generic_arguments_raw,
                     port_connections: ref child_port_connections
                 } = instance;
 
-                // TODO replace current generic params in child generic args
-                let child_module_name = todo.push(parsed, compiled, BackModule { item: child, args: child_generic_arguments.clone() });
+                let child_generic_arguments = child_generic_arguments_raw.as_ref().map(|args| {
+                    GenericArguments {
+                        vec: args.vec.iter().map(|arg| {
+                            arg.replace_generics(compiled, map)
+                        }).collect(),
+                    }
+                });
+                let child_module_name = todo.push(parsed, compiled, BackModule { item: child, args: child_generic_arguments });
 
                 if let Some(child_instance_name) = child_instance_name {
                     swrite!(f, "{I}{child_module_name} {child_instance_name} (");

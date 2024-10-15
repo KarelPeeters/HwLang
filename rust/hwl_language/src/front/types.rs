@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabasePartial, GenericParameter, GenericTypeParameter, Item};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericParameter, GenericTypeParameter, Item};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::TypeOrValue;
 use crate::front::common::{GenericContainer, GenericMap};
@@ -132,9 +132,9 @@ impl<T> MaybeConstructor<T> {
 impl GenericContainer for Type {
     type Result = Type;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Self {
         match *self {
@@ -201,9 +201,9 @@ impl GenericContainer for Type {
 impl GenericContainer for NominalTypeUnique {
     type Result = NominalTypeUnique;
 
-    fn replace_generics(
+    fn replace_generics<S: CompiledStage>(
         &self,
-        compiled: &mut CompiledDatabasePartial,
+        compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
     ) -> Self {
         NominalTypeUnique {

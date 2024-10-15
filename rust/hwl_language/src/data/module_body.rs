@@ -6,13 +6,13 @@ use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::Span;
 
 // TODO include body comments for eg. the values that values were resolved to
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleChecked {
     pub statements: Vec<ModuleStatement>,
     pub regs: Vec<(Register, Value)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ModuleStatement {
     Instance(ModuleInstance),
     Combinatorial(ModuleBlockCombinatorial),
@@ -20,7 +20,7 @@ pub enum ModuleStatement {
     Err(ErrorGuaranteed),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleBlockCombinatorial {
     pub span: Span,
 
@@ -28,7 +28,7 @@ pub struct ModuleBlockCombinatorial {
     pub statements: Vec<LowerStatement>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleBlockClocked {
     pub span: Span,
     pub domain: SyncDomain<Value>,
@@ -38,7 +38,7 @@ pub struct ModuleBlockClocked {
     pub on_block: Vec<LowerStatement>, // TODO IR
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleInstance {
     pub module: Item,
     pub name: Option<String>,
@@ -46,7 +46,7 @@ pub struct ModuleInstance {
     pub port_connections: PortConnections,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LowerStatement {
     PortPortAssignment(ModulePort, ModulePort),
     Error(ErrorGuaranteed),
