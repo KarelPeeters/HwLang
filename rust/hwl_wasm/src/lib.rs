@@ -43,9 +43,9 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     ).unwrap();
 
     let diag = Diagnostics::new();
-    let (parsed, compiled) = compile(&diag, &source);
+    let (parsed, mut compiled) = compile(&diag, &source);
     let LoweredDatabase { top_module_name, verilog_source, module_names: _ }
-        = lower(&diag, &source, &parsed, &compiled);
+        = lower(&diag, &source, &parsed, &mut compiled);
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();
