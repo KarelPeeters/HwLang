@@ -51,8 +51,8 @@ impl CompileState<'_, '_> {
                 ValueDomainKind::Error(diags.report_todo(span, "domain of function return value")),
             &Value::Module(_) =>
                 ValueDomainKind::Error(diags.report_simple("cannot get domain of module value", span, "module")),
-            &Value::Wire =>
-                ValueDomainKind::Error(diags.report_todo(span, "domain of wire value")),
+            &Value::Wire(wire) =>
+                ValueDomainKind::from_domain_kind(self.compiled[wire].domain.clone()),
             &Value::Register(reg) =>
                 ValueDomainKind::Sync(self.compiled[reg].domain.clone()),
             // TODO this is a bit confusing, the origin of the variable matters!
@@ -138,7 +138,7 @@ impl CompileState<'_, '_> {
             }
             Value::FunctionReturn(func) => func.ret_ty.clone(),
             Value::Module(_) => Type::Error(diags.report_todo(span, "type of module")),
-            Value::Wire => Type::Error(diags.report_todo(span, "type of wire")),
+            &Value::Wire(wire) => self.compiled[wire].ty.clone(),
             &Value::Register(reg) => self.compiled[reg].ty.clone(),
             &Value::Variable(var) => self.compiled[var].ty.clone(),
         };

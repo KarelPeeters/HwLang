@@ -6,7 +6,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -392,6 +392,15 @@ impl CompileState<'_, '_> {
             }
             ScopedEntryDirect::Immediate(entry) => entry.unwrap_value(self.diags, expr.span),
             ScopedEntryDirect::Error(e) => Value::Error(e),
+        }
+    }
+
+    pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> DomainKind<Value> {
+        match domain {
+            DomainKind::Async =>
+                DomainKind::Async,
+            DomainKind::Sync(sync_domain) =>
+                DomainKind::Sync(self.eval_sync_domain(scope, sync_domain)),
         }
     }
 

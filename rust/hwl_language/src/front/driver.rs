@@ -108,6 +108,7 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
             module_info: IndexMap::new(),
             function_info: IndexMap::new(),
             registers: Arena::default(),
+            wires: Arena::default(),
             variables: Arena::default(),
         },
     };
@@ -152,6 +153,7 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
         module_ports: state.compiled.module_ports,
         function_info: state.compiled.function_info,
         registers: state.compiled.registers,
+        wires: state.compiled.wires,
         variables: state.compiled.variables,
     };
 

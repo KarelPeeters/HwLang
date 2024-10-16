@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericValueParameter, Item, ModulePort, Register, Variable};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericValueParameter, Item, ModulePort, Register, Variable, Wire};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::{GenericContainer, GenericMap};
 use crate::front::types::{NominalTypeUnique, Type};
@@ -41,9 +41,8 @@ pub enum Value {
     // Enum(EnumValue),
 
     // variables
-    // TODO what should these contain? an id? a type?
-    //  how should these behave under generic substitution?
-    Wire,
+    // TODO how should these behave under generic substitution?
+    Wire(Wire),
     Register(Register),
     Variable(Variable),
 }
@@ -132,7 +131,10 @@ impl GenericContainer for Value {
             }
             Value::Module(ref info) => Value::Module(info.replace_generics(compiled, map)),
 
-            Value::Wire => Value::Wire,
+            // TODO replace generics, similar to ports!
+            //   ideally we switch to something where we don't have to replace generics,
+            //   and can just use the original value + a substitution context
+            Value::Wire(w) => Value::Wire(w),
             Value::Register(r) => Value::Register(r),
             Value::Variable(var) => Value::Variable(var),
         }

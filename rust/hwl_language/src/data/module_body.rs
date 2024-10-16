@@ -1,4 +1,4 @@
-use crate::data::compiled::{Item, ModulePort, Register};
+use crate::data::compiled::{Item, ModulePort, Register, Wire};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::types::{GenericArguments, PortConnections};
 use crate::front::values::Value;
@@ -10,6 +10,7 @@ use crate::syntax::pos::Span;
 pub struct ModuleChecked {
     pub statements: Vec<ModuleStatement>,
     pub regs: Vec<(Register, Value)>,
+    pub wires: Vec<(Wire, Option<Value>)>,
 }
 
 #[derive(Debug, Clone)]

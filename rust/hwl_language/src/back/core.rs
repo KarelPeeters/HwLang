@@ -1,5 +1,5 @@
 use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
-use crate::data::compiled::{CompiledDatabase, GenericParameter, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo};
+use crate::data::compiled::{CompiledDatabase, GenericParameter, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
@@ -121,11 +121,18 @@ fn generate_module_source(
     format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
-struct RegisterName(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum Signal {
+    Reg(Register),
+    Wire(Wire),
+}
 
-impl Display for RegisterName {
+#[derive(Debug, Copy, Clone)]
+struct SignalName(usize);
+
+impl Display for SignalName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "module_reg_{}", self.0)
+        write!(f, "module_signal_{}", self.0)
     }
 }
 
@@ -142,30 +149,44 @@ fn module_body_to_verilog(
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleChecked { statements, regs } = body;
-    let mut reg_map = IndexMap::new();
+    let ModuleChecked { statements, regs, wires } = body;
+    let mut signal_map = IndexMap::new();
 
-    for (reg_index, &(reg, ref init)) in enumerate(regs) {
-        if reg_index != 0 {
-            swriteln!(f);
-        }
-
-        // TODO also allow declaration init for FPGAs and simulation?
-        // initialization happens in the corresponding clocked block, not at declaration time
-        let _ = init;
-
+    for &(reg, ref _init) in regs {
         // TODO use id in the name?
-        let RegisterInfo { defining_item: _, defining_id: _, domain: sync, ty } = &compiled[reg];
+        let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
+
+        let name_str = &defining_id.string().unwrap_or("_");
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, &ty));
         let sync_str = sync_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()));
 
-        let name = RegisterName(reg_index);
-        swriteln!(f, "{I}reg {ty_str}{name}; // {sync_str}");
-
-        reg_map.insert_first(reg, name);
+        let name = SignalName(signal_map.len());
+        swriteln!(f, "{I}reg {ty_str}{name}; // reg {name_str:?} {sync_str}");
+        signal_map.insert_first(Signal::Reg(reg), name);
+    }
+    if regs.len() > 0 {
+        swriteln!(f);
     }
 
-    if regs.len() > 0 {
+    for &(wire, ref value) in wires {
+        let WireInfo { defining_item: _, defining_id, domain, ty } = &compiled[wire];
+
+        let name_str = &defining_id.string().unwrap_or("_");
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, &ty));
+        let sync_str = sync_to_comment_str(source, parsed, compiled, domain);
+
+        let (keyword_str, assign_str) = if let Some(value) = value {
+            let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, defining_id.span(), value);
+            ("wire", format!(" = {}", value_str))
+        } else {
+            ("reg", "".to_string())
+        };
+
+        let name = SignalName(signal_map.len());
+        swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {sync_str}");
+        signal_map.insert_first(Signal::Wire(wire), name);
+    }
+    if wires.len() > 0 {
         swriteln!(f);
     }
 
@@ -254,7 +275,7 @@ fn module_body_to_verilog(
                     swriteln!(f);
                     let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
                     for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
-                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, &reg_map, connection.span, &connection.inner));
+                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, &signal_map, connection.span, &connection.inner));
                         // no trailing comma
                         if i != child_port_connections.vec.len() - 1 {
                             swrite!(f, ",");
@@ -389,11 +410,11 @@ fn value_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
-    reg_map: &IndexMap<Register, RegisterName>,
+    signal_map: &IndexMap<Signal, SignalName>,
     span: Span,
     value: &Value,
 ) -> String {
-    value_to_verilog_inner(diag, parsed, compiled, reg_map, span, value)
+    value_to_verilog_inner(diag, parsed, compiled, signal_map, span, value)
         .unwrap_or_else(|_| "/* error */".to_string())
 }
 
@@ -402,7 +423,7 @@ fn value_to_verilog_inner(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
-    reg_map: &IndexMap<Register, RegisterName>,
+    signal_map: &IndexMap<Signal, SignalName>,
     span: Span,
     value: &Value,
 ) -> Result<String, ErrorGuaranteed> {
@@ -419,19 +440,23 @@ fn value_to_verilog_inner(
         Value::Binary(op, a, b) => {
             // TODO reduce the amount of parentheses
             let op = binary_op_to_verilog(diag, span, *op)?;
-            let a = value_to_verilog_inner(diag, parsed, compiled, reg_map, span, a)?;
-            let b = value_to_verilog_inner(diag, parsed, compiled, reg_map, span, b)?;
+            let a = value_to_verilog_inner(diag, parsed, compiled, signal_map, span, a)?;
+            let b = value_to_verilog_inner(diag, parsed, compiled, signal_map, span, b)?;
             Ok(format!("({} {} {})", a, op, b))
         },
         Value::UnaryNot(x) => {
-            Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, reg_map, span, x)?))
+            Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, signal_map, span, x)?))
         },
 
-        &Value::Wire =>
-            Err(diag.report_todo(span, "value_to_verilog for wires")),
+        &Value::Wire(wire) => {
+            match signal_map.get(&Signal::Wire(wire)) {
+                None => Err(diag.report_internal_error(span, "wire not found in signal map")),
+                Some(wire_name) => Ok(format!("{}", wire_name)),
+            }
+        }
         &Value::Register(reg) => {
-            match reg_map.get(&reg) {
-                None => Err(diag.report_internal_error(span, "register not found in register map")),
+            match signal_map.get(&Signal::Reg(reg)) {
+                None => Err(diag.report_internal_error(span, "register not found in signal map")),
                 Some(reg_name) => Ok(format!("{}", reg_name)),
             }
         }
@@ -559,7 +584,7 @@ fn value_evaluate_int(diag: &Diagnostics, map: &GenericMap, span: Span, value: &
         Value::Range(_) => Err(diag.report_todo(span, "value_evaluate_int value Range")),
         Value::FunctionReturn(_) => Err(diag.report_todo(span, "value_evaluate_int value Function")),
         Value::Module(_) => Err(diag.report_todo(span, "value_evaluate_int value Module")),
-        Value::Wire => Err(diag.report_todo(span, "value_evaluate_int value Wire")),
+        Value::Wire(_) => Err(diag.report_todo(span, "value_evaluate_int value Wire")),
         Value::Register(_) => Err(diag.report_todo(span, "value_evaluate_int value Reg")),
         Value::Variable(_) => Err(diag.report_todo(span, "value_evaluate_int value Variable")),
         Value::Never => Err(diag.report_todo(span, "value_evaluate_int value Never")),

@@ -1,4 +1,4 @@
-use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo};
+use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
@@ -7,7 +7,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -24,6 +24,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         //   or just leave the backend to walk the AST if it wants?
         let mut module_statements = vec![];
         let mut module_regs = vec![];
+        let mut module_wires = vec![];
 
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
@@ -37,11 +38,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     self.process_module_declaration_variable(scope_body, ctx_module, decl);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    self.process_module_declaration_reg(module_item, &mut module_regs, scope_body, ctx_module, decl);
+                    let reg = self.process_module_declaration_reg(module_item, scope_body, ctx_module, decl);
+                    module_regs.push(reg);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    // TODO careful if/when implementing this, wire semantics are unclear
-                    self.diags.report_todo(decl.span, "wire declaration");
+                    let wire = self.process_module_declaration_wire(module_item, scope_body, ctx_module, decl);
+                    module_wires.push(wire);
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
                 ModuleStatementKind::ClockedBlock(_) => {}
@@ -76,6 +78,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ModuleChecked {
             statements: module_statements,
             regs: module_regs,
+            wires: module_wires,
         }
     }
 
@@ -109,25 +112,89 @@ impl<'d, 'a> CompileState<'d, 'a> {
         self.compiled[scope_body].maybe_declare(&self.diags, &id, ScopedEntry::Direct(entry), Visibility::Private);
     }
 
-    fn process_module_declaration_reg(&mut self, module_item: Item, module_regs: &mut Vec<(Register, Value)>, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) {
+    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
+        let ty_span = ty.span;
+        let init_span = init.span;
 
         let sync = self.eval_sync_domain(scope_body, &sync.inner);
         let ty = self.eval_expression_as_ty(scope_body, ty);
-
-        // TODO assert that the init value is known at compile time (basically a kind of sync-ness)
         let init = self.eval_expression_as_value(ctx_module, scope_body, init);
 
+        // check ty
+        let init = match self.check_type_contains(Some(ty_span), init_span, &ty, &init) {
+            Ok(()) => init,
+            Err(e) => Value::Error(e),
+        };
+
+        // check domain
+        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+            id.span(),
+            &ValueDomainKind::Const,
+            init_span,
+            &self.domain_of_value(init_span, &init),
+            UserControlled::Source,
+            "register initial value must be const",
+        );
+
+        // create register
         let reg = self.compiled.registers.push(RegisterInfo {
             defining_item: module_item,
             defining_id: id.clone(),
             domain: sync,
             ty,
         });
-        module_regs.push((reg, init));
 
         let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Register(reg))));
         self.compiled[scope_body].maybe_declare(&self.diags, &id, entry, Visibility::Private);
+
+        (reg, init)
+    }
+
+    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
+        let WireDeclaration { span: _, id, sync, ty, value } = decl;
+
+        let sync = self.eval_domain(scope_body, &sync.inner);
+        let ty = self.eval_expression_as_ty(scope_body, ty);
+
+        let value = match value {
+            Some(value) => {
+                let value_span = value.span;
+                let value = self.eval_expression_as_value(ctx_module, scope_body, value);
+
+                // check type
+                let value = match self.check_type_contains(Some(value_span), value_span, &ty, &value) {
+                    Ok(()) => value,
+                    Err(e) => Value::Error(e),
+                };
+
+                // check domain
+                let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+                    id.span(),
+                    &ValueDomainKind::from_domain_kind(sync.clone()),
+                    value_span,
+                    &self.domain_of_value(value_span, &value),
+                    UserControlled::Source,
+                    "wire value must be assignable to the wire domain",
+                );
+
+                Some(value)
+            }
+            None => None,
+        };
+
+        // create wire
+        let wire = self.compiled.wires.push(WireInfo {
+            defining_item: module_item,
+            defining_id: id.clone(),
+            domain: sync,
+            ty,
+        });
+
+        let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Wire(wire))));
+        self.compiled[scope_body].maybe_declare(&self.diags, &id, entry, Visibility::Private);
+
+        (wire, value)
     }
 
     #[must_use]

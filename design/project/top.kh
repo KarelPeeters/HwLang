@@ -1,4 +1,4 @@
-import std.types.[bool, bits, uint];
+import std.types.[bool, bits, uint, int_range];
 
 pub module top ports(
     clk: in clock,
@@ -6,41 +6,6 @@ pub module top ports(
     x: in sync(clk, rst) bits(4),
     y: out sync(clk, rst) bits(4),
 ) body {
-    instance i_child = child generics(
-        N=4,
-    ) ports(
-        .clk(clk),
-        .rst(rst),
-        .x(x),
-        .y(y),
-    );
-}
-
-module child generics(
-    N: uint,
-) ports(
-    clk: in clock,
-    rst: in async bool,
-    x: in sync(clk, rst) bits(N),
-    y: out sync(clk, rst) bits(N),
-) body {
-    instance i_inner = inner generics(
-        N=N,
-    ) ports(
-        .clk(clk),
-        .rst(rst),
-        .x(x),
-        .y(y),
-    );
-}
-
-module inner generics(N: uint) ports(
-    clk: in clock,
-    rst: in async bool,
-    x: in sync(clk, rst) bits(N),
-    y: out sync(clk, rst) bits(N),
-) body {
-    combinatorial {
-        y = x;
-    }
+    reg r: sync(clk, rst) int_range(0..8) = 0;
+    wire w: sync(clk, rst) int_range(0..8) = r;
 }

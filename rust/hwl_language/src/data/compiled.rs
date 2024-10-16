@@ -48,6 +48,7 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub module_ports: Arena<ModulePort, ModulePortInfo>,
     pub function_info: IndexMap<Item, FunctionSignatureInfo>,
     pub registers: Arena<Register, RegisterInfo>,
+    pub wires: Arena<Wire, WireInfo>,
     pub variables: Arena<Variable, VariableInfo>,
 }
 
@@ -60,6 +61,7 @@ impl_index!(generic_type_params, GenericTypeParameter, GenericTypeParameterInfo)
 impl_index!(generic_value_params, GenericValueParameter, GenericValueParameterInfo);
 impl_index!(module_ports, ModulePort, ModulePortInfo);
 impl_index!(registers, Register, RegisterInfo);
+impl_index!(wires, Wire, WireInfo);
 impl_index!(variables, Variable, VariableInfo);
 
 impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
@@ -93,6 +95,7 @@ new_index_type!(pub GenericTypeParameter);
 new_index_type!(pub GenericValueParameter);
 new_index_type!(pub ModulePort);
 new_index_type!(pub Register);
+new_index_type!(pub Wire);
 new_index_type!(pub Variable);
 
 #[derive(Debug)]
@@ -175,13 +178,22 @@ pub struct ModulePortInfo {
     pub kind: PortKind<DomainKind<Value>, Type>,
 }
 
+// TODO should the init value be here or in the module?
 #[derive(Debug)]
 pub struct RegisterInfo {
     pub defining_item: Item,
     pub defining_id: MaybeIdentifier,
 
-    // TODO is it okay that this type and value does not get its generics replaced?
     pub domain: SyncDomain<Value>,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct WireInfo {
+    pub defining_item: Item,
+    pub defining_id: MaybeIdentifier,
+
+    pub domain: DomainKind<Value>,
     pub ty: Type,
 }
 
@@ -263,7 +275,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 format!("function_return({})", defining_id_to_string_pair(source, &self[ret.item].defining_id)),
             Value::Module(module) =>
                 format!("module({})", defining_id_to_string_pair(source, &self[module.nominal_type_unique.item].defining_id)),
-            Value::Wire => "wire".to_string(),
+            &Value::Wire(wire) =>
+                format!("wire({})", defining_id_to_string_pair(source, &self[wire].defining_id)),
             &Value::Register(reg) =>
                 format!("register({})", defining_id_to_string_pair(source, &self[reg].defining_id)),
             &Value::Variable(var) =>
