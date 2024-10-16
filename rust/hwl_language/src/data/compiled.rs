@@ -237,18 +237,12 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     }
 
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
-    // TODO make this less ugly for end users, eg. omit the span if there's no ambiguity
+    // TODO include span if there is any ambiguity
     pub fn value_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, value: &Value) -> String {
         match value {
             Value::Error(_) => "error".to_string(),
-            &Value::GenericParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
-            }
-            &Value::ModulePort(p) => {
-                let id = &parsed.module_port_ast(self[p].ast).id;
-                format!("module_port({:?}, {:?})", id.string, source.expand_pos(id.span.start))
-            }
+            &Value::GenericParameter(p) => self[p].defining_id.string.clone(),
+            &Value::ModulePort(p) => parsed.module_port_ast(self[p].ast).id.string.clone(),
             Value::Never => "never".to_string(),
             Value::Unit => "()".to_string(),
             Value::BoolConstant(b) => format!("{}", b),
@@ -271,16 +265,17 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let inner = self.value_to_readable_str(source, parsed, inner);
                 format!("(!{})", inner)
             }
+            // TODO how to display function return values? we don't know the function call args here any more!
             Value::FunctionReturn(ret) =>
-                format!("function_return({})", defining_id_to_string_pair(source, &self[ret.item].defining_id)),
+                format!("function_return({})", self.defining_id_to_readable_string(&self[ret.item].defining_id)),
             Value::Module(module) =>
-                format!("module({})", defining_id_to_string_pair(source, &self[module.nominal_type_unique.item].defining_id)),
+                format!("module({})", self.defining_id_to_readable_string(&self[module.nominal_type_unique.item].defining_id)),
             &Value::Wire(wire) =>
-                format!("wire({})", defining_id_to_string_pair(source, &self[wire].defining_id)),
+                self.defining_id_to_readable_string(&self[wire].defining_id).to_string(),
             &Value::Register(reg) =>
-                format!("register({})", defining_id_to_string_pair(source, &self[reg].defining_id)),
+                self.defining_id_to_readable_string(&self[reg].defining_id).to_string(),
             &Value::Variable(var) =>
-                format!("variable({})", defining_id_to_string_pair(source, &self[var].defining_id)),
+                self.defining_id_to_readable_string(&self[var].defining_id).to_string(),
         }
     }
 
@@ -288,10 +283,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     pub fn type_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, ty: &Type) -> String {
         match ty {
             Type::Error(_) => "error".to_string(),
-            &Type::GenericParameter(p) => {
-                let id = &self[p].defining_id;
-                format!("generic_param({:?}, {:?})", id.string, source.expand_pos(id.span.start))
-            }
+            &Type::GenericParameter(p) => self[p].defining_id.string.clone(),
             Type::Any => "any".to_string(),
             Type::Unchecked => "unchecked".to_string(),
             Type::Never => "never".to_string(),
@@ -332,12 +324,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             }
         }
     }
-}
 
-fn defining_id_to_string_pair(source: &SourceDatabase, id: &MaybeIdentifier) -> String {
-    let id_str = match id {
-        MaybeIdentifier::Dummy(_) => "_",
-        MaybeIdentifier::Identifier(id) => &id.string,
-    };
-    format!("{:?}, {:?}", id_str, source.expand_pos(id.span().start))
+    pub fn defining_id_to_readable_string<'a>(&self, id: &'a MaybeIdentifier) -> &'a str {
+        id.string().unwrap_or("_")
+    }
 }

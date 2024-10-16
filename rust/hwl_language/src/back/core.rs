@@ -156,9 +156,9 @@ fn module_body_to_verilog(
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
 
-        let name_str = &defining_id.string().unwrap_or("_");
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, &ty));
-        let sync_str = sync_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()));
+        let name_str = compiled.defining_id_to_readable_string(defining_id);
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, ty));
+        let sync_str = sync_ty_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()), ty);
 
         let name = SignalName(signal_map.len());
         swriteln!(f, "{I}reg {ty_str}{name}; // reg {name_str:?} {sync_str}");
@@ -171,9 +171,9 @@ fn module_body_to_verilog(
     for &(wire, ref value) in wires {
         let WireInfo { defining_item: _, defining_id, domain, ty } = &compiled[wire];
 
-        let name_str = &defining_id.string().unwrap_or("_");
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, &ty));
-        let sync_str = sync_to_comment_str(source, parsed, compiled, domain);
+        let name_str = compiled.defining_id_to_readable_string(defining_id);
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, ty));
+        let comment_info = sync_ty_to_comment_str(source, parsed, compiled, domain, ty);
 
         let (keyword_str, assign_str) = if let Some(value) = value {
             let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, defining_id.span(), value);
@@ -183,7 +183,7 @@ fn module_body_to_verilog(
         };
 
         let name = SignalName(signal_map.len());
-        swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {sync_str}");
+        swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {comment_info}");
         signal_map.insert_first(Signal::Wire(wire), name);
     }
     if wires.len() > 0 {
@@ -332,9 +332,8 @@ fn port_to_verilog(
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { domain: sync, ty } => {
-            // TODO include full type in comment
             let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, map, defining_id.span, ty));
-            let comment = sync_to_comment_str(source, parsed, compiled, sync);
+            let comment = sync_ty_to_comment_str(source, parsed, compiled, sync, ty);
             (ty_str, comment)
         }
     };
@@ -344,15 +343,17 @@ fn port_to_verilog(
     format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
 }
 
-fn sync_to_comment_str(source: &SourceDatabase, parsed: &ParsedDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>) -> String {
-    match sync {
+fn sync_ty_to_comment_str(source: &SourceDatabase, parsed: &ParsedDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>, ty: &Type) -> String {
+    let sync_str = match sync {
         DomainKind::Sync(SyncDomain { clock, reset }) => {
             let clock_str = compiled.value_to_readable_str(source, parsed, clock);
             let reset_str = compiled.value_to_readable_str(source, parsed, reset);
             format!("sync({}, {})", clock_str, reset_str)
         }
         DomainKind::Async => "async".to_owned(),
-    }
+    };
+    let ty_str = compiled.type_to_readable_str(source, parsed, ty);
+    format!("{} {}", sync_str, ty_str)
 }
 
 fn verilog_ty_to_str(diag: &Diagnostics, span: Span, ty: VerilogType) -> String {
