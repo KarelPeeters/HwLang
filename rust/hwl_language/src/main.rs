@@ -35,7 +35,7 @@ fn main() {
         let source_database = source.clone();
         let handler = move |diag: &Diagnostic| {
             let s = diag.clone().to_string(&source_database, DiagnosticStringSettings::default());
-            eprintln!("{}", s);
+            eprintln!("{}\n", s);
         };
         Some(Box::new(handler))
     } else {

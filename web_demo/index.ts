@@ -101,7 +101,11 @@ function diagnostics_ansi_to_html(ansi: string): string {
     // TODO escape inner html
     let result = "";
     for (let line of ansi.split("\n")) {
-        result += "<div>" + ansi_to_html.toHtml(escapeHtml(line).replace(/ /g, "&nbsp;")) + "</div>";
+        if (line.length == 0) {
+            result += "<div>&ZeroWidthSpace;</div>";
+        } else {
+            result += "<div>" + ansi_to_html.toHtml(escapeHtml(line).replaceAll(" ", "&nbsp;")) + "</div>";
+        }
     }
     return result;
 }
