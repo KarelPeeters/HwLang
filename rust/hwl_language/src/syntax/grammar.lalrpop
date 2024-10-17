@@ -211,6 +211,8 @@ InstancePortConnection: (Identifier, Expression) = {
 
 BlockStatementKind: BlockStatementKind = {
     // declaration
+    <ConstDeclaration<()>> =>
+        BlockStatementKind::ConstDeclaration(<>),
     <VariableDeclaration> =>
         BlockStatementKind::VariableDeclaration(<>),
     // assignment

@@ -155,7 +155,7 @@ impl CompileState<'_, '_> {
                 })
             }
             ast::Item::Const(ref cst) => {
-                let cst = self.process_const_declaration(file_scope, ctx, cst);
+                let cst = self.process_const(file_scope, ctx, cst);
                 MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
             },
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
@@ -251,7 +251,8 @@ impl CompileState<'_, '_> {
     }
 
     // TODO delay body processing
-    pub fn process_const_declaration<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>) -> Constant {
+    #[must_use]
+    pub fn process_const<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>) -> Constant {
         let &ConstDeclaration { span: _, vis: _, ref id, ref ty, ref value } = decl;
 
         let ty_eval = self.eval_expression_as_ty(scope, ty);
@@ -281,6 +282,12 @@ impl CompileState<'_, '_> {
         });
 
         cst
+    }
+
+    pub fn process_and_declare_const<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>, vis: Visibility) {
+        let cst = self.process_const(scope, ctx, decl);
+        let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst))));
+        self.compiled[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, vis)
     }
 
     pub fn check_item_body(&mut self, item: Item) -> ItemChecked {

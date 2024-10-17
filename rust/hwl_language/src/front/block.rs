@@ -8,6 +8,7 @@ use crate::front::values::Value;
 use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, VariableDeclaration};
 
 impl CompileState<'_, '_> {
+    // TODO merge this with process_module_block_combinatorial and process_module_block_clocked, this is duplication
     pub fn visit_block(
         &mut self,
         ctx: &ExpressionContext,
@@ -19,6 +20,9 @@ impl CompileState<'_, '_> {
 
         for statement in &block.statements {
             match &statement.inner {
+                BlockStatementKind::ConstDeclaration(decl) => {
+                    self.process_and_declare_const(scope, ctx, decl, Visibility::Private);
+                }
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration { span, mutable, id, ty, init } = decl;
                     let span = *span;

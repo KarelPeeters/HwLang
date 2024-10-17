@@ -18,8 +18,6 @@ use std::cmp::min;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
-        let diags = self.diags;
-
         let ast::ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = module_ast;
         let ast::Block { span: _, statements } = body;
 
@@ -38,9 +36,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         for top_statement in statements {
             match &top_statement.inner {
                 ModuleStatementKind::ConstDeclaration(decl) => {
-                    let cst = self.process_const_declaration(scope_body, ctx_module, decl);
-                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Constant(cst))));
-                    self.compiled.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    self.process_and_declare_const(scope_body, ctx_module, decl, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.process_module_declaration_reg(module_item, scope_body, ctx_module, decl);
@@ -172,6 +168,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         (wire, value)
     }
 
+    // TODO merge this with visit_block this is duplication
     #[must_use]
     fn process_module_block_combinatorial(&mut self, scope_body: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
@@ -185,6 +182,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         for statement in statements {
             match &statement.inner {
+                BlockStatementKind::ConstDeclaration(decl) => {
+                    self.process_and_declare_const(scope, ctx_comb, decl, Visibility::Private);
+                }
                 BlockStatementKind::VariableDeclaration(_) => {
                     let err = self.diags.report_todo(statement.span, "combinatorial variable declaration");
                     result_statements.push(LowerStatement::Error(err));
@@ -229,6 +229,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
+    // TODO merge this with visit_block this is duplication
     #[must_use]
     fn process_module_block_clocked(&mut self, scope_body: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
         let &ClockedBlock {
@@ -244,6 +245,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let clock_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, clock);
         let reset_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, reset);
 
+        // TODO move this domain checking to a separate function
         // check that clock is a clock
         let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
         let clock_value = match &clock_domain {
@@ -275,10 +277,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let domain = SyncDomain { clock: clock_value, reset: reset_value };
         let ctx_sync = Some(Spanned { span: span_domain, inner: &domain });
 
+        let scope_block = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
+
         let mut result_statements = vec![];
 
         for statement in statements {
             match &statement.inner {
+                BlockStatementKind::ConstDeclaration(decl) => {
+                    self.process_and_declare_const(scope_block, ctx_clocked, decl, Visibility::Private);
+                }
                 BlockStatementKind::VariableDeclaration(_) => {
                     let err = self.diags.report_todo(statement.span, "clocked variable declaration");
                     result_statements.push(LowerStatement::Error(err));

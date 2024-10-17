@@ -216,6 +216,7 @@ pub enum ModuleStatementKind {
 
 #[derive(Debug, Clone)]
 pub enum BlockStatementKind {
+    ConstDeclaration(ConstDeclaration<()>),
     VariableDeclaration(VariableDeclaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
