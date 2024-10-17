@@ -74,26 +74,42 @@ fn generate_module_source(
     let item_info = &compiled[item];
     let item_ast = unwrap_match!(parsed.item_ast(compiled[item].ast_ref), ast::Item::Module(item_ast) => item_ast);
 
-    let (generic_map, module_info) = match &item_info.signature {
+    let (generic_map, generics_comment, module_info) = match &item_info.signature {
         MaybeConstructor::Immediate(TypeOrValue::Value(Value::Module(info))) => {
             assert!(module_args.is_none());
-            (GenericMap::empty(), info)
+            (GenericMap::empty(), "\n".to_string(), info)
         }
         MaybeConstructor::Constructor(Constructor { parameters, inner: TypeOrValue::Value(Value::Module(info)) }) => {
             let module_args = module_args.unwrap();
             assert_eq!(parameters.vec.len(), module_args.vec.len());
 
             let mut map = GenericMap::empty();
+            let mut generics_comment = " with generic args:\n".to_string();
+
             for (&param, arg) in zip_eq(&parameters.vec, &module_args.vec) {
                 match (param, arg) {
-                    (GenericParameter::Type(param), TypeOrValue::Type(arg)) =>
-                        map.generic_ty.insert_first(param, arg.clone()),
-                    (GenericParameter::Value(param), TypeOrValue::Value(arg)) =>
-                        map.generic_value.insert_first(param, arg.clone()),
+                    (GenericParameter::Type(param), TypeOrValue::Type(arg)) => {
+                        swriteln!(
+                            &mut generics_comment,
+                            "//{I}{} = {}",
+                            compiled.type_to_readable_str(source, parsed, &Type::GenericParameter(param)),
+                            compiled.type_to_readable_str(source, parsed, arg),
+                        );
+                        map.generic_ty.insert_first(param, arg.clone());
+                    }
+                    (GenericParameter::Value(param), TypeOrValue::Value(arg)) => {
+                        swriteln!(
+                            &mut generics_comment,
+                            "//{I}{} = {}",
+                            compiled.value_to_readable_str(source, parsed, &Value::GenericParameter(param)),
+                            compiled.value_to_readable_str(source, parsed, arg),
+                        );
+                        map.generic_value.insert_first(param, arg.clone());
+                    }
                     _ => unreachable!(),
                 }
             }
-            (map, info)
+            (map, generics_comment, info)
         }
         _ => {
             diag.report_internal_error(item_ast.span, "trying to lower module with value that is not a module");
@@ -117,8 +133,10 @@ fn generate_module_source(
     // TODO remove this clone once generics are implemented to avoid substitution
     let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body).clone();
     let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, &generic_map, item_ast.span, &body);
+    let module_id_str = &item_ast.id.string;
 
-    format!("module {module_name} ({port_string});\n{body_str}endmodule\n")
+    let comment_str = format!("// module {module_id_str:?}{generics_comment}");
+    format!("{comment_str}module {module_name} ({port_string});\n{body_str}endmodule\n")
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
