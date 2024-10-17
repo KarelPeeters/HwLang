@@ -24,8 +24,8 @@ pub module top ports(
     in_int_bits: in async int_bits(3),
     in_uint_bits: in async uint_bits(3),
 ) body {
-    val test_pos: int = 8;
-    //val test_neg: uint = test_pos; //type err
+    const test_pos: int = 8;
+    //const test_neg: uint = test_pos; //type err
 
     combinatorial {
         out_a = in_a;
@@ -37,9 +37,28 @@ pub module top ports(
         out_a = in_a;
         //out_b = in_b; //sync err
     }
+
+    instance child generics(N=4) ports(
+        .clk(clk_a),
+        .rst(!rst_a),
+        .x(in_a),
+        // .x(in_b), //sync err
+        .y(out_a),
+    );
 }
 
 function foo(T: type, x: T): T {
     //return 0; //type err
     return x;
+}
+
+module child generics(N: uint) ports(
+    clk: in clock,
+    rst: in async bool,
+    x: in sync(clk, rst) bits(N),
+    y: out sync(clk, rst) bits(N),
+) body {
+    combinatorial {
+        y = x;
+    }
 }
