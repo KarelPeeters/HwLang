@@ -110,6 +110,8 @@ pub FileContent: FileContent = {
 Item: Item = {
     <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
         => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
+    ConstDeclaration<Vis> =>
+        Item::Const(<>),
     <start:@L> <vis:Vis> "type" <id:Id> <params:Parameters<GenericParameter>?> "=" <inner:BoxExpr> ";" <end:@R>
         => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<GenericParameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
@@ -155,8 +157,8 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
 ModuleStatementKind: ModuleStatementKind = {
     // declaration
-    <VariableDeclaration> =>
-        ModuleStatementKind::VariableDeclaration(<>),
+    ConstDeclaration<()> =>
+        ModuleStatementKind::ConstDeclaration(<>),
     <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
@@ -220,6 +222,12 @@ BlockStatementKind: BlockStatementKind = {
     // TODO semicolon is optional for control flow statements
     <start:@L> <inner:BoxExpr> ";" <end:@R> => {
         BlockStatementKind::Expression(inner)
+    },
+}
+
+ConstDeclaration<V>: ConstDeclaration<V> = {
+    <start:@L> <vis:V> "const" <id:MaybeId> ":" <ty:BoxExpr> "=" <value:BoxExpr> ";" <end:@R> => {
+        ConstDeclaration { vis, id, ty, value, span: loc.span(start, end) }
     },
 }
 

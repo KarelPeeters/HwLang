@@ -1,13 +1,14 @@
-use crate::data::compiled::{FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
-use crate::data::diagnostic::Diagnostic;
+use crate::data::compiled::{Constant, ConstantInfo, FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
+use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
 use crate::data::parsed::ModulePortAstReference;
-use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue};
+use crate::front::checking::DomainUserControlled;
+use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
+use crate::syntax::ast::{ConstDeclaration, DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use itertools::enumerate;
@@ -153,8 +154,10 @@ impl CompileState<'_, '_> {
                     TypeOrValue::Value(Value::Module(module_ty_info))
                 })
             }
-            ast::Item::Const(_) =>
-                MaybeConstructor::Error(self.diags.report_todo(item_ast.common_info().span_short, "const definition")),
+            ast::Item::Const(ref cst) => {
+                let cst = self.process_const_declaration(file_scope, ctx, cst);
+                MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
+            },
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
                 self.resolve_new_generic_def(item, file_scope, Some(params), |s, args, scope_inner| {
                     // no need to use args for anything, they are mostly used for nominal type uniqueness
@@ -247,6 +250,39 @@ impl CompileState<'_, '_> {
         }
     }
 
+    // TODO delay body processing
+    pub fn process_const_declaration<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>) -> Constant {
+        let &ConstDeclaration { span: _, vis: _, ref id, ref ty, ref value } = decl;
+
+        let ty_eval = self.eval_expression_as_ty(scope, ty);
+        let value_eval = self.eval_expression_as_value(ctx, scope, value);
+
+        // check ty
+        let value_eval = match self.check_type_contains(Some(ty.span), value.span, &ty_eval, &value_eval) {
+            Ok(()) => value_eval,
+            Err(e) => Value::Error(e),
+        };
+
+        // check domain
+        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+            id.span(),
+            &ValueDomainKind::Const,
+            value.span,
+            &self.domain_of_value(value.span, &value_eval),
+            DomainUserControlled::Source,
+            "const value must be const",
+        );
+
+        // declare constant
+        let cst = self.compiled.constants.push(ConstantInfo {
+            defining_id: id.clone(),
+            ty: ty_eval.clone(),
+            value: value_eval,
+        });
+
+        cst
+    }
+
     pub fn check_item_body(&mut self, item: Item) -> ItemChecked {
         assert!(self.compiled[item].body.is_none());
 
@@ -264,12 +300,8 @@ impl CompileState<'_, '_> {
         match item_ast {
             // these items are fully defined by their type, which was already checked earlier
             ast::Item::Import(_) | ast::Item::Type(_) | ast::Item::Struct(_) | ast::Item::Enum(_) => ItemChecked::None,
-            ast::Item::Const(_) => {
-                match item_signature_err {
-                    Some(e) => ItemChecked::Error(e),
-                    None => ItemChecked::Error(self.diags.report_todo(item_span, "const body")),
-                }
-            }
+            // TODO delay const body checking until this phase, to cut more loops
+            ast::Item::Const(_) => ItemChecked::None,
             ast::Item::Function(item_ast) =>
                 ItemChecked::Function(self.check_function_body(item, item_ast)),
             ast::Item::Module(item_ast) =>

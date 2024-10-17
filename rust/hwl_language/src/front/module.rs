@@ -1,13 +1,14 @@
-use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, VariableInfo, Wire, WireInfo};
+use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, VariableDeclaration, WireDeclaration};
+use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -17,6 +18,8 @@ use std::cmp::min;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
+        let diags = self.diags;
+
         let ast::ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = module_ast;
         let ast::Block { span: _, statements } = body;
 
@@ -34,8 +37,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // first pass: populate scope with declarations
         for top_statement in statements {
             match &top_statement.inner {
-                ModuleStatementKind::VariableDeclaration(decl) => {
-                    self.process_module_declaration_variable(scope_body, ctx_module, decl);
+                ModuleStatementKind::ConstDeclaration(decl) => {
+                    let cst = self.process_const_declaration(scope_body, ctx_module, decl);
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Constant(cst))));
+                    self.compiled.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.process_module_declaration_reg(module_item, scope_body, ctx_module, decl);
@@ -55,7 +60,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         for top_statement in statements {
             match &top_statement.inner {
                 // declarations were already handled
-                ModuleStatementKind::VariableDeclaration(_) => {}
+                ModuleStatementKind::ConstDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
                 ModuleStatementKind::WireDeclaration(_) => {}
                 // actual blocks
@@ -82,36 +87,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn process_module_declaration_variable(&mut self, scope_body: Scope, ctx_module: &ExpressionContext, decl: &VariableDeclaration) {
-        let &VariableDeclaration { span, mutable, ref id, ref ty, ref init } = decl;
-
-        let entry = if mutable {
-            let e = self.diags.report_todo(span, "mutable variable in module body");
-            ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Error(e)))
-        } else {
-            match (ty, init) {
-                (Some(ty), Some(init)) => {
-                    let ty_eval = self.eval_expression_as_ty(scope_body, ty);
-                    let init_eval = self.eval_expression_as_value(ctx_module, scope_body, init);
-
-                    let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ty.span), init.span, &ty_eval, &init_eval);
-
-                    let var = self.compiled.variables.push(VariableInfo {
-                        defining_id: id.clone(),
-                        ty: ty_eval.clone(),
-                        mutable,
-                    });
-                    ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(var)))
-                }
-                _ => {
-                    let e = self.diags.report_todo(span, "variable declaration without type and/or init");
-                    ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Error(e)))
-                }
-            }
-        };
-        self.compiled[scope_body].maybe_declare(&self.diags, &id, ScopedEntry::Direct(entry), Visibility::Private);
-    }
-
     fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
         let ty_span = ty.span;
@@ -133,7 +108,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             &ValueDomainKind::Const,
             init_span,
             &self.domain_of_value(init_span, &init),
-            UserControlled::Source,
+            DomainUserControlled::Source,
             "register initial value must be const",
         );
 
@@ -146,7 +121,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         });
 
         let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Register(reg))));
-        self.compiled[scope_body].maybe_declare(&self.diags, &id, entry, Visibility::Private);
+        self.compiled[scope_body].maybe_declare(&self.diags, id.as_ref(), entry, Visibility::Private);
 
         (reg, init)
     }
@@ -174,7 +149,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     &ValueDomainKind::from_domain_kind(sync.clone()),
                     value_span,
                     &self.domain_of_value(value_span, &value),
-                    UserControlled::Source,
+                    DomainUserControlled::Source,
                     "wire value must be assignable to the wire domain",
                 );
 
@@ -192,7 +167,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         });
 
         let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Wire(wire))));
-        self.compiled[scope_body].maybe_declare(&self.diags, &id, entry, Visibility::Private);
+        self.compiled[scope_body].maybe_declare(&self.diags, id.as_ref(), entry, Visibility::Private);
 
         (wire, value)
     }
@@ -472,7 +447,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 &ValueDomainKind::from_domain_kind(domain_port.clone()),
                                 connection_value_span,
                                 &domain_value,
-                                UserControlled::Source,
+                                DomainUserControlled::Source,
                                 "instance port connections must respect domains",
                             );
                             let e_ty = self.check_type_contains(
@@ -489,7 +464,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 &domain_value,
                                 port_ast.id.span,
                                 &ValueDomainKind::from_domain_kind(domain_port.clone()),
-                                UserControlled::Target,
+                                DomainUserControlled::Target,
                                 "instance port connections must respect domains",
                             );
                             // TODO for port connections, should we assert that the types match exactly?
@@ -634,7 +609,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             assignment.value.span,
                             &ValueDomainKind::from_domain_kind(value_sync.clone()),
-                            UserControlled::Both,
+                            DomainUserControlled::Both,
                             "in a combinatorial block, for each assignment, target and source must be in the same domain",
                         )?;
                     }
@@ -647,7 +622,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             &ValueDomainKind::from_domain_kind(target_sync.clone()),
                             block_sync_span,
                             &block_sync,
-                            UserControlled::Target,
+                            DomainUserControlled::Target,
                             "in a clocked block, each assignment target must be in the same domain as the block",
                         );
                         let result_1 = self.check_domain_assign(
@@ -655,7 +630,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             &block_sync,
                             assignment.value.span,
                             &ValueDomainKind::from_domain_kind(value_sync.clone()),
-                            UserControlled::Source,
+                            DomainUserControlled::Source,
                             "in a clocked block, each source must be in the same domain as the block",
                         );
 
@@ -673,82 +648,4 @@ impl<'d, 'a> CompileState<'d, 'a> {
             _ => Err(self.diags.report_simple("port assignment between different port kinds", span, "assignment")),
         }
     }
-
-    /// Checks whether the source sync domain can be assigned to the target sync domain.
-    /// This is equivalent to checking whether source is more contained that target.
-    fn check_domain_assign(
-        &self,
-        target_span: Span,
-        target: &ValueDomainKind,
-        source_span: Span,
-        source: &ValueDomainKind,
-        user_controlled: UserControlled,
-        hint: &str,
-    ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.diags;
-
-        let invalid_reason = match (target, source) {
-            // propagate errors
-            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) =>
-                return Err(e),
-            // clock assignments are not yet implemented
-            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) =>
-                return Err(self.diags.report_todo(target_span.join(source_span), "clock assignment")),
-            // const target must have const source
-            (ValueDomainKind::Const, ValueDomainKind::Const) => None,
-            (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
-            (ValueDomainKind::Const, ValueDomainKind::Sync(_)) => Some("sync to const"),
-            // const can be the source of everything
-            (ValueDomainKind::Async, ValueDomainKind::Const) => None,
-            (ValueDomainKind::Sync(_), ValueDomainKind::Const) => None,
-            // async can be the target of everything
-            (ValueDomainKind::Async, _) => None,
-            // sync cannot be the target of async
-            (ValueDomainKind::Sync(_), ValueDomainKind::Async) => Some("async to sync"),
-            // sync pair is allowed if clock and reset match
-            (ValueDomainKind::Sync(target), ValueDomainKind::Sync(source)) => {
-                let SyncDomain { clock: target_clock, reset: target_reset } = target;
-                let SyncDomain { clock: source_clock, reset: source_reset } = source;
-
-                // TODO equality is _probably_ the wrong operation for this
-                let value_eq = |a: &Value, b: &Value| {
-                    match (a, b) {
-                        // optimistically assume they match
-                        (&Value::Error(_), _) | (_, &Value::Error(_)) => true,
-                        (a, b) => a == b,
-                    }
-                };
-
-                match (value_eq(target_clock, source_clock), value_eq(target_reset, source_reset)) {
-                    (false, false) => Some("different clock and reset"),
-                    (false, true) => Some("different clock"),
-                    (true, false) => Some("different reset"),
-                    (true, true) => None,
-                }
-            }
-        };
-
-        let (target_level, source_level) = match user_controlled {
-            UserControlled::Target => (Level::Error, Level::Info),
-            UserControlled::Source => (Level::Info, Level::Error),
-            UserControlled::Both => (Level::Error, Level::Error),
-        };
-
-        if let Some(invalid_reason) = invalid_reason {
-            let err = Diagnostic::new(format!("unsafe domain crossing: {}", invalid_reason))
-                .add(target_level, target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, target)))
-                .add(source_level, source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, source)))
-                .footer(Level::Help, hint)
-                .finish();
-            Err(diags.report(err))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-enum UserControlled {
-    Target,
-    Source,
-    Both,
 }

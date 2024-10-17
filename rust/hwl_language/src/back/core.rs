@@ -157,7 +157,7 @@ fn module_body_to_verilog(
         let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
 
         let name_str = compiled.defining_id_to_readable_string(defining_id);
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, ty));
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, map, module_span, ty));
         let sync_str = sync_ty_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()), ty);
 
         let name = SignalName(signal_map.len());
@@ -172,7 +172,7 @@ fn module_body_to_verilog(
         let WireInfo { defining_item: _, defining_id, domain, ty } = &compiled[wire];
 
         let name_str = compiled.defining_id_to_readable_string(defining_id);
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, map, module_span, ty));
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, map, module_span, ty));
         let comment_info = sync_ty_to_comment_str(source, parsed, compiled, domain, ty);
 
         let (keyword_str, assign_str) = if let Some(value) = value {
@@ -332,7 +332,7 @@ fn port_to_verilog(
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { domain: sync, ty } => {
-            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, map, defining_id.span, ty));
+            let ty_str = verilog_ty_to_str(diag, defining_id.span, type_to_verilog(diag, compiled, map, defining_id.span, ty));
             let comment = sync_ty_to_comment_str(source, parsed, compiled, sync, ty);
             (ty_str, comment)
         }
@@ -463,6 +463,9 @@ fn value_to_verilog_inner(
         }
         &Value::Variable(_) =>
             Err(diag.report_todo(span, "value_to_verilog for variables")),
+        // forward to the inner value
+        &Value::Constant(c) =>
+            value_to_verilog_inner(diag, parsed, compiled, signal_map, span, &compiled[c].value),
 
         Value::Never | Value::Unit | Value::StringConstant(_) | Value::Range(_) | Value::FunctionReturn(_) | Value::Module(_) =>
             Err(diag.report_internal_error(span, format!("value '{value:?}' should not materialize"))),
@@ -495,7 +498,7 @@ fn binary_op_to_verilog(diag: &Diagnostics, span: Span, op: BinaryOp) -> Result<
     }
 }
 
-fn type_to_verilog(diag: &Diagnostics, map: &GenericMap, span: Span, ty: &Type) -> VerilogType {
+fn type_to_verilog(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, ty: &Type) -> VerilogType {
     match ty {
         &Type::Error(e) =>
             VerilogType::Error(e),
@@ -508,7 +511,7 @@ fn type_to_verilog(diag: &Diagnostics, map: &GenericMap, span: Span, ty: &Type) 
                     VerilogType::Error(diag.report_internal_error(span, "infinite bit widths should never materialize"))
                 }
                 Some(n) => {
-                    match value_evaluate_int(diag, map, span, n).map(|n| n.to_u32()) {
+                    match value_evaluate_int(diag, compiled, map, span, n).map(|n| n.to_u32()) {
                         Ok(Some(n)) => VerilogType::MultiBit(Signed::Unsigned, n),
                         Ok(None) => {
                             // TODO negative should be an internal error
@@ -525,7 +528,7 @@ fn type_to_verilog(diag: &Diagnostics, map: &GenericMap, span: Span, ty: &Type) 
             VerilogType::Error(diag.report_todo(span, "lower type 'array'")),
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
-            let range = match value_evaluate_int_range(diag, map, span, range) {
+            let range = match value_evaluate_int_range(diag, compiled, map, span, range) {
                 Ok(range) => range,
                 Err(e) => return VerilogType::Error(e),
             };
@@ -544,13 +547,13 @@ fn type_to_verilog(diag: &Diagnostics, map: &GenericMap, span: Span, ty: &Type) 
     }
 }
 
-fn value_evaluate_int(diag: &Diagnostics, map: &GenericMap, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
+fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, value: &Value) -> Result<BigInt, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::IntConstant(i) => Ok(i.clone()),
         Value::Binary(op, left, right) => {
-            let left = value_evaluate_int(diag, map, span, left)?;
-            let right = value_evaluate_int(diag, map, span, right)?;
+            let left = value_evaluate_int(diag, compiled, map, span, left)?;
+            let right = value_evaluate_int(diag, compiled, map, span, right)?;
             match op {
                 BinaryOp::Add => Ok(left + right),
                 BinaryOp::Sub => Ok(left - right),
@@ -577,7 +580,7 @@ fn value_evaluate_int(diag: &Diagnostics, map: &GenericMap, span: Span, value: &
         Value::UnaryNot(_) => Err(diag.report_todo(span, "value_evaluate_int value UnaryNot")),
         Value::GenericParameter(param) => {
             match map.generic_value.get(param) {
-                Some(value) => value_evaluate_int(diag, map, span, value),
+                Some(value) => value_evaluate_int(diag, compiled, map, span, value),
                 None => Err(diag.report_internal_error(span, "unbound generic parameter")),
             }
         },
@@ -588,11 +591,14 @@ fn value_evaluate_int(diag: &Diagnostics, map: &GenericMap, span: Span, value: &
         Value::Wire(_) => Err(diag.report_todo(span, "value_evaluate_int value Wire")),
         Value::Register(_) => Err(diag.report_todo(span, "value_evaluate_int value Reg")),
         Value::Variable(_) => Err(diag.report_todo(span, "value_evaluate_int value Variable")),
+        // forward to the inner value
+        Value::Constant(c) =>
+            value_evaluate_int(diag, compiled, map, span, &compiled[*c].value),
         Value::Never => Err(diag.report_todo(span, "value_evaluate_int value Never")),
     }
 }
 
-fn value_evaluate_int_range(diag: &Diagnostics, map: &GenericMap, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
+fn value_evaluate_int_range(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::Range(info) => {
@@ -603,8 +609,8 @@ fn value_evaluate_int_range(diag: &Diagnostics, map: &GenericMap, span: Span, va
                 _ => throw!(diag.report_internal_error(span, "unbound integers should not materialize")),
             };
 
-            let start = value_evaluate_int(diag, map, span, start.as_ref())?;
-            let end = value_evaluate_int(diag, map, span, end.as_ref())?;
+            let start = value_evaluate_int(diag, compiled, map, span, start.as_ref())?;
+            let end = value_evaluate_int(diag, compiled, map, span, end.as_ref())?;
 
             Ok(start..end)
         }

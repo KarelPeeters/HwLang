@@ -19,7 +19,7 @@ pub enum Visibility {
 pub enum Item {
     Import(ItemImport),
     // Package(ItemDefPackage),
-    Const(ItemDefConst),
+    Const(ConstDeclaration<Visibility>),
     Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
@@ -57,15 +57,6 @@ pub struct ItemDefPackage {
     pub span: Span,
     pub name: MaybeIdentifier,
     pub content: FileContent,
-}
-
-#[derive(Debug, Clone)]
-pub struct ItemDefConst {
-    pub span: Span,
-    pub vis: Visibility,
-    pub id: Identifier,
-    pub ty: Expression,
-    pub value: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,8 +204,7 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
-    // TODO replace this with "const", reserving variables for inside blocks and functions
-    VariableDeclaration(VariableDeclaration),
+    ConstDeclaration(ConstDeclaration<()>),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
     CombinatorialBlock(CombinatorialBlock),
@@ -250,6 +240,15 @@ pub struct WireDeclaration {
     pub sync: Spanned<DomainKind<Box<Expression>>>,
     pub ty: Box<Expression>,
     pub value: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstDeclaration<V> {
+    pub span: Span,
+    pub vis: V,
+    pub id: MaybeIdentifier,
+    pub ty: Box<Expression>,
+    pub value: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -449,9 +448,9 @@ pub enum IntPattern {
 }
 
 #[derive(Debug, Clone)]
-pub enum MaybeIdentifier {
+pub enum MaybeIdentifier<I = Identifier> {
     Dummy(Span),
-    Identifier(Identifier),
+    Identifier(I),
 }
 
 // TODO this is also just a spanned string
@@ -530,10 +529,26 @@ impl<T> Spanned<T> {
     }
 }
 
+impl<I> MaybeIdentifier<I> {
+    pub fn as_ref(&self) -> MaybeIdentifier<&I> {
+        match self {
+            &MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id),
+        }
+    }
+
+    pub fn map_inner<U>(self, f: impl FnOnce(I) -> U) -> MaybeIdentifier<U> {
+        match self {
+            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(f(id)),
+        }
+    }
+}
+
 impl MaybeIdentifier {
     pub fn span(&self) -> Span {
         match self {
-            MaybeIdentifier::Dummy(span) => *span,
+            &MaybeIdentifier::Dummy(span) => span,
             MaybeIdentifier::Identifier(id) => id.span,
         }
     }
@@ -555,7 +570,7 @@ pub struct ItemCommonInfo {
 #[derive(Debug)]
 pub struct ItemDeclarationInfo<'s> {
     pub vis: Visibility,
-    pub id: &'s Identifier,
+    pub id: MaybeIdentifier<&'s Identifier>,
 }
 
 impl Item {
@@ -572,19 +587,19 @@ impl Item {
             Item::Import(item) =>
                 (ItemCommonInfo { span_full: item.span, span_short: item.span }, None),
             Item::Const(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span() }, Some(ItemDeclarationInfo { vis: item.vis, id: item.id.as_ref() })),
             Item::Type(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
             Item::Struct(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
             Item::Enum(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
             Item::Function(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
             Item::Module(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
             Item::Interface(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: &item.id })),
+                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
         }
     }
 }

@@ -92,7 +92,7 @@ impl CompileState<'_, '_> {
 
                 let scope_index = self.compiled.scopes.new_child(scope, body.span, Visibility::Private);
                 let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
-                self.compiled[scope_index].maybe_declare(diags, index, entry, Visibility::Private);
+                self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
 
                 // typecheck body
                 self.visit_block(ctx, scope_index, &body);

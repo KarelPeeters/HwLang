@@ -1,4 +1,4 @@
-use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericValueParameter, Item, ModulePort, Register, Variable, Wire};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, Constant, GenericValueParameter, Item, ModulePort, Register, Variable, Wire};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::{GenericContainer, GenericMap};
 use crate::front::types::{NominalTypeUnique, Type};
@@ -45,6 +45,7 @@ pub enum Value {
     Wire(Wire),
     Register(Register),
     Variable(Variable),
+    Constant(Constant),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -136,7 +137,8 @@ impl GenericContainer for Value {
             //   and can just use the original value + a substitution context
             Value::Wire(w) => Value::Wire(w),
             Value::Register(r) => Value::Register(r),
-            Value::Variable(var) => Value::Variable(var),
+            Value::Variable(v) => Value::Variable(v),
+            Value::Constant(c) => Value::Constant(c),
         }
     }
 }

@@ -50,6 +50,7 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub registers: Arena<Register, RegisterInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub variables: Arena<Variable, VariableInfo>,
+    pub constants: Arena<Constant, ConstantInfo>,
 }
 
 impl_index!(items, Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>);
@@ -63,6 +64,7 @@ impl_index!(module_ports, ModulePort, ModulePortInfo);
 impl_index!(registers, Register, RegisterInfo);
 impl_index!(wires, Wire, WireInfo);
 impl_index!(variables, Variable, VariableInfo);
+impl_index!(constants, Constant, ConstantInfo);
 
 impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
     type Output = Result<FileScopes, ErrorGuaranteed>;
@@ -97,6 +99,7 @@ new_index_type!(pub ModulePort);
 new_index_type!(pub Register);
 new_index_type!(pub Wire);
 new_index_type!(pub Variable);
+new_index_type!(pub Constant);
 
 #[derive(Debug)]
 pub struct FileScopes {
@@ -206,6 +209,15 @@ pub struct VariableInfo {
     pub mutable: bool,
 }
 
+#[derive(Debug)]
+pub struct ConstantInfo {
+    pub defining_id: MaybeIdentifier,
+    // TODO is it okay that this type does not get its generics replaced?
+    pub ty: Type,
+    pub value: Value,
+}
+
+
 /// The result of item body checking.
 ///
 /// Typechecking can store any additional information beyond the AST here,
@@ -276,6 +288,8 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 self.defining_id_to_readable_string(&self[reg].defining_id).to_string(),
             &Value::Variable(var) =>
                 self.defining_id_to_readable_string(&self[var].defining_id).to_string(),
+            &Value::Constant(c) =>
+                self.defining_id_to_readable_string(&self[c].defining_id).to_string(),
         }
     }
 

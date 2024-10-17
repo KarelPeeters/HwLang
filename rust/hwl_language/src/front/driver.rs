@@ -5,7 +5,7 @@ use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::MaybeConstructor;
-use crate::syntax::ast::{Identifier, ImportEntry, ImportFinalKind, ItemImport, MaybeIdentifier, Spanned};
+use crate::syntax::ast::{Identifier, ImportEntry, ImportFinalKind, ItemImport, Spanned};
 use crate::syntax::pos::FileId;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::Arena;
@@ -55,13 +55,13 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
                         };
 
                         let item = items.push(ItemInfo {
-                            defining_id: MaybeIdentifier::Identifier(declaration_info.id.clone()),
+                            defining_id: declaration_info.id.as_ref().map_inner(|&id| id.clone()),
                             ast_ref: ItemAstReference { file, file_item_index },
                             signature: None,
                             body: None,
                         });
 
-                        local_scope_info.declare(diag, declaration_info.id, ScopedEntry::Item(item), vis);
+                        local_scope_info.maybe_declare(diag, declaration_info.id, ScopedEntry::Item(item), vis);
                     }
                 }
 
@@ -110,6 +110,7 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
             registers: Arena::default(),
             wires: Arena::default(),
             variables: Arena::default(),
+            constants: Arena::default(),
         },
     };
 
@@ -155,6 +156,7 @@ pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, 
         registers: state.compiled.registers,
         wires: state.compiled.wires,
         variables: state.compiled.variables,
+        constants: state.compiled.constants,
     };
 
     (parsed, compiled)
@@ -278,7 +280,7 @@ fn add_import_to_scope(
 
         let target_scope = &mut scopes[target_scope];
         match as_ {
-            Some(as_) => target_scope.maybe_declare(diags, as_, entry, Visibility::Private),
+            Some(as_) => target_scope.maybe_declare(diags, as_.as_ref(), entry, Visibility::Private),
             None => target_scope.declare(diags, id, entry, Visibility::Private),
         };
     }

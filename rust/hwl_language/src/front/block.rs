@@ -43,7 +43,7 @@ impl CompileState<'_, '_> {
                     let info = VariableInfo { defining_id: id.clone(), ty: ty_eval.clone(), mutable };
                     let variable = self.compiled.variables.push(info);
                     let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(variable))));
-                    self.compiled[scope].maybe_declare(diags, id, entry, Visibility::Private);
+                    self.compiled[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(assignment) => {
                     diags.report_todo(assignment.span, "assignment in function body");

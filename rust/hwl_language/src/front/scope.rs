@@ -4,6 +4,7 @@ use std::fmt::{Debug, Display, Formatter};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::new_index_type;
 use crate::syntax::ast;
+use crate::syntax::ast::Identifier;
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
@@ -102,7 +103,7 @@ impl<V> ScopeInfo<V> {
         }
     }
 
-    pub fn maybe_declare(&mut self, diagnostics: &Diagnostics, id: &ast::MaybeIdentifier, var: V, vis: Visibility) {
+    pub fn maybe_declare(&mut self, diagnostics: &Diagnostics, id: ast::MaybeIdentifier<&Identifier>, var: V, vis: Visibility) {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
                 self.declare(diagnostics, id, var, vis),

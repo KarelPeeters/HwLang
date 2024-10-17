@@ -6,8 +6,17 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::option_pair;
+use annotate_snippets::Level;
 use num_bigint::BigInt;
 use num_traits::One;
+
+// TODO give this a better name
+#[derive(Debug, Copy, Clone)]
+pub enum DomainUserControlled {
+    Target,
+    Source,
+    Both,
+}
 
 impl CompileState<'_, '_> {
     pub fn domain_of_value(&self, span: Span, value: &Value) -> ValueDomainKind {
@@ -58,6 +67,8 @@ impl CompileState<'_, '_> {
             // TODO this is a bit confusing, the origin of the variable matters!
             &Value::Variable(_) =>
                 ValueDomainKind::Error(diags.report_todo(span, "domain of variable value")),
+            &Value::Constant(_) =>
+                ValueDomainKind::Const,
         }
     }
 
@@ -94,6 +105,79 @@ impl CompileState<'_, '_> {
             }
         }
     }
+
+    /// Checks whether the source sync domain can be assigned to the target sync domain.
+    /// This is equivalent to checking whether source is more contained that target.
+    pub fn check_domain_assign(
+        &self,
+        target_span: Span,
+        target: &ValueDomainKind,
+        source_span: Span,
+        source: &ValueDomainKind,
+        user_controlled: DomainUserControlled,
+        hint: &str,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let invalid_reason = match (target, source) {
+            // propagate errors
+            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) =>
+                return Err(e),
+            // clock assignments are not yet implemented
+            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) =>
+                return Err(self.diags.report_todo(target_span.join(source_span), "clock assignment")),
+            // const target must have const source
+            (ValueDomainKind::Const, ValueDomainKind::Const) => None,
+            (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
+            (ValueDomainKind::Const, ValueDomainKind::Sync(_)) => Some("sync to const"),
+            // const can be the source of everything
+            (ValueDomainKind::Async, ValueDomainKind::Const) => None,
+            (ValueDomainKind::Sync(_), ValueDomainKind::Const) => None,
+            // async can be the target of everything
+            (ValueDomainKind::Async, _) => None,
+            // sync cannot be the target of async
+            (ValueDomainKind::Sync(_), ValueDomainKind::Async) => Some("async to sync"),
+            // sync pair is allowed if clock and reset match
+            (ValueDomainKind::Sync(target), ValueDomainKind::Sync(source)) => {
+                let SyncDomain { clock: target_clock, reset: target_reset } = target;
+                let SyncDomain { clock: source_clock, reset: source_reset } = source;
+
+                // TODO equality is _probably_ the wrong operation for this
+                let value_eq = |a: &Value, b: &Value| {
+                    match (a, b) {
+                        // optimistically assume they match
+                        (&Value::Error(_), _) | (_, &Value::Error(_)) => true,
+                        (a, b) => a == b,
+                    }
+                };
+
+                match (value_eq(target_clock, source_clock), value_eq(target_reset, source_reset)) {
+                    (false, false) => Some("different clock and reset"),
+                    (false, true) => Some("different clock"),
+                    (true, false) => Some("different reset"),
+                    (true, true) => None,
+                }
+            }
+        };
+
+        let (target_level, source_level) = match user_controlled {
+            DomainUserControlled::Target => (Level::Error, Level::Info),
+            DomainUserControlled::Source => (Level::Info, Level::Error),
+            DomainUserControlled::Both => (Level::Error, Level::Error),
+        };
+
+        if let Some(invalid_reason) = invalid_reason {
+            let err = Diagnostic::new(format!("unsafe domain crossing: {}", invalid_reason))
+                .add(target_level, target_span, format!("target in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, target)))
+                .add(source_level, source_span, format!("source in domain {} ", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, source)))
+                .footer(Level::Help, hint)
+                .finish();
+            Err(diags.report(err))
+        } else {
+            Ok(())
+        }
+    }
+
 
     pub fn type_of_value(&self, span: Span, value: &Value) -> Type {
         let diags = self.diags;
@@ -141,6 +225,7 @@ impl CompileState<'_, '_> {
             &Value::Wire(wire) => self.compiled[wire].ty.clone(),
             &Value::Register(reg) => self.compiled[reg].ty.clone(),
             &Value::Variable(var) => self.compiled[var].ty.clone(),
+            &Value::Constant(constant) => self.compiled[constant].ty.clone(),
         };
 
         if self.log_type_check {
