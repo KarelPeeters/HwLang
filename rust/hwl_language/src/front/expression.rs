@@ -12,6 +12,7 @@ use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
+use num_traits::One;
 use std::cmp::min;
 
 impl CompileState<'_, '_> {
@@ -161,11 +162,16 @@ impl CompileState<'_, '_> {
                 };
 
                 let start = map_point(start);
-                let end = map_point(end);
+                let end_raw = map_point(end);
+
+                let end = if end_inclusive {
+                    end_raw.map(|e| Box::new(Value::Binary(BinaryOp::Add, e, Box::new(Value::IntConstant(BigInt::one())))))
+                } else {
+                    end_raw
+                };
 
                 if let (Some(start), Some(end)) = (&start, &end) {
-                    let op = if end_inclusive { BinaryOp::CmpLt } else { BinaryOp::CmpLte };
-                    match self.require_value_true_for_range(expr.span, &Value::Binary(op, start.clone(), end.clone())) {
+                    match self.require_value_true_for_range(expr.span, &Value::Binary(BinaryOp::CmpLt, start.clone(), end.clone())) {
                         Ok(()) => {}
                         Err(e) => return ScopedEntryDirect::Error(e),
                     }
