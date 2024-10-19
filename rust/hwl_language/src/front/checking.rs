@@ -30,6 +30,7 @@ impl CompileState<'_, '_> {
                     PortKind::Normal { domain, ty: _ } => ValueDomainKind::from_domain_kind(domain.clone()),
                 }
             }
+            // TODO careful about function arguments
             &Value::GenericParameter(_) => ValueDomainKind::Const,
             &Value::Never => ValueDomainKind::Const,
             &Value::Unit => ValueDomainKind::Const,
@@ -97,11 +98,24 @@ impl CompileState<'_, '_> {
                     Err(e) => ValueDomainKind::Error(e),
                 }
             }
+            // function can marge if both domains match
+            (ValueDomainKind::FunctionBody(left), ValueDomainKind::FunctionBody(right)) => {
+                if left == right {
+                    ValueDomainKind::FunctionBody(left.clone())
+                } else {
+                    let e = self.diags.report_simple("cannot merge different function body domains", span, "function body domains");
+                    ValueDomainKind::Error(e)
+                }
+            }
+            // failed merges
+            (ValueDomainKind::FunctionBody(_), _) | (_, ValueDomainKind::FunctionBody(_)) => {
+                ValueDomainKind::Error(self.diags.report_simple("cannot merge function domain with anything else", span, "sync domain"))
+            }
             (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) => {
-                ValueDomainKind::Error(self.diags.report_simple("cannot merge clock domain with anything", span, "clock domain"))
+                ValueDomainKind::Error(self.diags.report_simple("cannot merge clock domain with anything else", span, "clock domain"))
             }
             (ValueDomainKind::Async, _) | (_, ValueDomainKind::Async) => {
-                ValueDomainKind::Error(self.diags.report_simple("cannot merge async domain with anything", span, "async domain"))
+                ValueDomainKind::Error(self.diags.report_simple("cannot merge async domain with anything else", span, "async domain"))
             }
         }
     }
@@ -130,9 +144,11 @@ impl CompileState<'_, '_> {
             (ValueDomainKind::Const, ValueDomainKind::Const) => None,
             (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
             (ValueDomainKind::Const, ValueDomainKind::Sync(_)) => Some("sync to const"),
+            (ValueDomainKind::Const, ValueDomainKind::FunctionBody(_)) => Some("function body to const"),
             // const can be the source of everything
             (ValueDomainKind::Async, ValueDomainKind::Const) => None,
             (ValueDomainKind::Sync(_), ValueDomainKind::Const) => None,
+            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Const) => None,
             // async can be the target of everything
             (ValueDomainKind::Async, _) => None,
             // sync cannot be the target of async
@@ -158,6 +174,17 @@ impl CompileState<'_, '_> {
                     (true, true) => None,
                 }
             }
+            // function can only be used in matching function body itself
+            (ValueDomainKind::FunctionBody(target), ValueDomainKind::FunctionBody(source)) => {
+                if target == source {
+                    None
+                } else {
+                    Some("different function body")
+                }
+            }
+            (ValueDomainKind::Sync(_), ValueDomainKind::FunctionBody(_)) => Some("function body to sync"),
+            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Sync(_)) => Some("sync to function body"),
+            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Async) => Some("async to function body"),
         };
 
         let (target_level, source_level) = match user_controlled {

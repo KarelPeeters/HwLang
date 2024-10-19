@@ -1,17 +1,19 @@
 use crate::data::compiled::VariableInfo;
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::data::module_body::LowerStatement;
+use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
 use crate::front::values::Value;
+use crate::syntax::ast;
 use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, VariableDeclaration};
 
 impl CompileState<'_, '_> {
-    // TODO merge this with process_module_block_combinatorial and process_module_block_clocked, this is duplication
     pub fn visit_block(
         &mut self,
-        ctx: &ExpressionContext,
+        ctx: &mut ExpressionContext,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> () {
@@ -21,7 +23,7 @@ impl CompileState<'_, '_> {
         for statement in &block.statements {
             match &statement.inner {
                 BlockStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope, ctx, decl, Visibility::Private);
+                    self.process_and_declare_const(scope, decl, Visibility::Private);
                 }
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration { span, mutable, id, ty, init } = decl;
@@ -29,12 +31,24 @@ impl CompileState<'_, '_> {
                     let mutable = *mutable;
 
                     // evaluate
+                    // TODO allow inferring type if value is specified
+                    // TODO reorganize this entire thing, eg. check type before domain
                     let ty_eval = match ty {
                         Some(ty) => self.eval_expression_as_ty(scope, ty),
                         None => Type::Error(diags.report_todo(span, "variable without type")),
                     };
                     let init_eval = match init {
-                        Some(init) => self.eval_expression_as_value(ctx, scope, init),
+                        Some(init) => {
+                            let init_eval = self.eval_expression_as_value(ctx, scope, init);
+
+                            // domain check
+                            if let Some(domain) = ctx.domain_kind() {
+                                let init_domain = self.domain_of_value(init.span, &init_eval);
+                                let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(decl.span, &domain, init.span, &init_domain, DomainUserControlled::Source, "variable initializer must be assignable to context domain");
+                            }
+
+                            init_eval
+                        }
                         None => Value::Error(diags.report_todo(span, "variable without init")),
                     };
 
@@ -50,10 +64,83 @@ impl CompileState<'_, '_> {
                     self.compiled[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(assignment) => {
-                    diags.report_todo(assignment.span, "assignment in function body");
+                    // TODO domain check for read and target
+                    // TODO actual assignment
+                    // TODO record read and write
+                    let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
+
+                    match ctx {
+                        ExpressionContext::CombinatorialBlock(result_statements) => {
+                            if op.inner.is_some() {
+                                let err = self.diags.report_todo(statement.span, "combinatorial assignment with operator");
+                                result_statements.push(LowerStatement::Error(err));
+                            } else {
+                                let ctx = &mut ExpressionContext::CombinatorialBlock(result_statements);
+                                let target = self.eval_expression_as_value(ctx, scope, target);
+                                let value = self.eval_expression_as_value(ctx, scope, value);
+
+                                match (target, value) {
+                                    (Value::ModulePort(target), Value::ModulePort(value)) => {
+                                        let stmt = match self.check_assign_port_port(None, assignment, target, value) {
+                                            Ok(()) => LowerStatement::PortPortAssignment(target, value),
+                                            Err(e) => LowerStatement::Error(e),
+                                        };
+                                        result_statements.push(stmt);
+                                    }
+                                    (Value::Error(e), _) | (_, Value::Error(e)) => {
+                                        result_statements.push(LowerStatement::Error(e));
+                                    }
+                                    _ => {
+                                        let err = self.diags.report_todo(statement.span, "general combinatorial assignment");
+                                        result_statements.push(LowerStatement::Error(err));
+                                    }
+                                }
+                            }
+                        }
+                        ExpressionContext::ClockedBlock(sync, result_statements) => {
+                            let sync = sync.as_ref().map_inner(|d| *d);
+
+                            if op.inner.is_some() {
+                                let err = self.diags.report_todo(statement.span, "clocked assignment with operator");
+                                result_statements.push(LowerStatement::Error(err));
+                            } else {
+                                let ctx = &mut ExpressionContext::ClockedBlock(sync, result_statements);
+                                let target = self.eval_expression_as_value(ctx, scope, target);
+                                let value = self.eval_expression_as_value(ctx, scope, value);
+
+                                match (target, value) {
+                                    (Value::ModulePort(target), Value::ModulePort(value)) => {
+                                        let stmt = match self.check_assign_port_port(Some(sync), assignment, target, value) {
+                                            Ok(()) => LowerStatement::PortPortAssignment(target, value),
+                                            Err(e) => LowerStatement::Error(e),
+                                        };
+                                        result_statements.push(stmt);
+                                    }
+                                    (Value::Error(e), _) | (_, Value::Error(e)) => {
+                                        result_statements.push(LowerStatement::Error(e));
+                                    }
+                                    _ => {
+                                        let err = self.diags.report_todo(statement.span, "general clocked assignment");
+                                        result_statements.push(LowerStatement::Error(err));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            diags.report_todo(assignment.span, "assignment outside of clocked or combinatorial block");
+                        }
+                    }
                 }
                 BlockStatementKind::Expression(expression) => {
-                    let _ = self.eval_expression_as_value(ctx, scope, expression);
+                    match ctx {
+                        ExpressionContext::FunctionBody { .. } => {
+                            // TODO control flow reachability and return checking
+                            let _ = self.eval_expression_as_value(ctx, scope, expression);
+                        }
+                        _ => {
+                            diags.report_todo(statement.span, "expression statement outside of function body");
+                        }
+                    }
                 }
             }
         }

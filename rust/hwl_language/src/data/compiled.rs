@@ -336,6 +336,9 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let reset_str = self.value_to_readable_str(source, parsed, reset);
                 format!("sync({clock_str}, {reset_str})")
             }
+            &ValueDomainKind::FunctionBody(function) => {
+                format!("function_body({})", self.defining_id_to_readable_string(&self[function].defining_id))
+            }
         }
     }
 

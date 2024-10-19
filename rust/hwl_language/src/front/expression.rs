@@ -1,6 +1,6 @@
 use crate::data::compiled::{GenericParameter, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
@@ -18,7 +18,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    pub fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
+    pub fn eval_expression(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
         let diags = self.diags;
 
         match expr.inner {
@@ -105,7 +105,7 @@ impl CompileState<'_, '_> {
                     .map(|v| (v.span, self.eval_expression_as_value(ctx, scope, v)));
 
                 match ctx {
-                    &ExpressionContext::FunctionBody { ret_ty_span, ref ret_ty } => {
+                    &mut ExpressionContext::FunctionBody { func_item: _, ret_ty_span, ref ret_ty } => {
                         match (ret_value, ret_ty) {
                             (None, Type::Unit | Type::Error(_)) => {
                                 // accept
@@ -352,7 +352,7 @@ impl CompileState<'_, '_> {
         Ok((result, generic_args))
     }
 
-    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
+    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
         let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
@@ -366,8 +366,8 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        let ctx = &ExpressionContext::NotFunctionBody;
-        let entry = self.eval_expression(ctx, scope, expr);
+        let mut ctx = ExpressionContext::Type;
+        let entry = self.eval_expression(&mut ctx, scope, expr);
 
         match entry {
             // TODO unify these error strings somewhere
@@ -382,7 +382,7 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> Value {
+    pub fn eval_expression_as_value(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> Value {
         let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
@@ -400,28 +400,56 @@ impl CompileState<'_, '_> {
             DomainKind::Async =>
                 DomainKind::Async,
             DomainKind::Sync(sync_domain) =>
-                DomainKind::Sync(self.eval_sync_domain(scope, sync_domain)),
+                DomainKind::Sync(self.eval_sync_domain(scope, SyncDomain { clock: &sync_domain.clock, reset: &sync_domain.reset })),
         }
     }
 
-    pub fn eval_sync_domain(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> SyncDomain<Value> {
-        let ctx = &ExpressionContext::NotFunctionBody;
-        let clock = self.eval_expression_as_value(ctx, scope, &domain.clock);
-        let reset = self.eval_expression_as_value(ctx, scope, &domain.reset);
+    pub fn eval_sync_domain(&mut self, scope: Scope, sync: SyncDomain<&Expression>) -> SyncDomain<Value> {
+        let SyncDomain { clock, reset } = sync;
+        // TODO is this the right context?
+        let mut ctx = ExpressionContext::ModuleBody;
+        let clock_value_unchecked = self.eval_expression_as_value(&mut ctx, scope, clock);
+        let reset_value_unchecked = self.eval_expression_as_value(&mut ctx, scope, reset);
 
-        // TODO check that clock is a clock
-        // TODO check that reset is a boolean
-        // TODO check that reset is either async or sync to the same clock
+        // check that clock is a clock
+        let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
+        let clock_value = match &clock_domain {
+            ValueDomainKind::Clock => clock_value_unchecked,
+            &ValueDomainKind::Error(e) => Value::Error(e),
+            _ => {
+                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
+                let e = self.diags.report_simple(title, clock.span, "clock value");
+                Value::Error(e)
+            }
+        };
+
+        // check that reset is an async bool
+        // TODO allow sync reset
+        // TODO require that async reset still comes out of sync in phase with the clock
+        let reset_value_bool = match self.check_type_contains(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
+            Ok(()) => reset_value_unchecked,
+            Err(e) => Value::Error(e),
+        };
+        let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
+        let reset_value = match &reset_domain {
+            ValueDomainKind::Async => reset_value_bool,
+            &ValueDomainKind::Error(e) => Value::Error(e),
+            _ => {
+                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
+                let e = self.diags.report_simple(title, reset.span, "reset value");
+                Value::Error(e)
+            }
+        };
 
         SyncDomain {
-            clock,
-            reset,
+            clock: clock_value,
+            reset: reset_value,
         }
     }
 
     fn eval_builtin_call(
         &mut self,
-        ctx: &ExpressionContext,
+        ctx: &mut ExpressionContext,
         scope: Scope,
         expr_span: Span,
         args: &ast::Args,

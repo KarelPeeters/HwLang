@@ -1,6 +1,6 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
@@ -8,7 +8,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BlockStatementKind, ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, WireDeclaration};
+use crate::syntax::ast::{ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -30,20 +30,20 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
-        let ctx_module = &ExpressionContext::NotFunctionBody;
+        let mut ctx_module = ExpressionContext::ModuleBody;
 
         // first pass: populate scope with declarations
         for top_statement in statements {
             match &top_statement.inner {
                 ModuleStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope_body, ctx_module, decl, Visibility::Private);
+                    self.process_and_declare_const(scope_body, decl, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let reg = self.process_module_declaration_reg(module_item, scope_body, ctx_module, decl);
+                    let reg = self.process_module_declaration_reg(module_item, scope_body, &mut ctx_module, decl);
                     module_regs.push(reg);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let wire = self.process_module_declaration_wire(module_item, scope_body, ctx_module, decl);
+                    let wire = self.process_module_declaration_wire(module_item, scope_body, &mut ctx_module, decl);
                     module_wires.push(wire);
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
@@ -70,7 +70,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
                 // instances
                 ModuleStatementKind::Instance(instance) => {
-                    let block = self.process_module_instance(&ctx_module, scope_body, instance);
+                    let block = self.process_module_instance(&mut ctx_module, scope_body, instance);
                     module_statements.push(block);
                 }
             }
@@ -83,12 +83,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
+    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &mut ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
         let ty_span = ty.span;
         let init_span = init.span;
 
-        let sync = self.eval_sync_domain(scope_body, &sync.inner);
+        let sync = self.eval_sync_domain(scope_body, sync.inner.as_ref().map_inner(|v| &**v));
         let ty = self.eval_expression_as_ty(scope_body, ty);
         let init = self.eval_expression_as_value(ctx_module, scope_body, init);
 
@@ -122,7 +122,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         (reg, init)
     }
 
-    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
+    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &mut ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
         let WireDeclaration { span: _, id, sync, ty, value } = decl;
 
         let sync = self.eval_domain(scope_body, &sync.inner);
@@ -168,60 +168,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
         (wire, value)
     }
 
-    // TODO merge this with visit_block this is duplication
     #[must_use]
-    fn process_module_block_combinatorial(&mut self, scope_body: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
+    fn process_module_block_combinatorial(&mut self, scope_module: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
-        let ast::Block { span: _, statements } = block;
-
-        let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
-        let ctx_comb = &ExpressionContext::NotFunctionBody;
-        let ctx_sync = None;
 
         let mut result_statements = vec![];
-
-        for statement in statements {
-            match &statement.inner {
-                BlockStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope, ctx_comb, decl, Visibility::Private);
-                }
-                BlockStatementKind::VariableDeclaration(_) => {
-                    let err = self.diags.report_todo(statement.span, "combinatorial variable declaration");
-                    result_statements.push(LowerStatement::Error(err));
-                }
-                BlockStatementKind::Assignment(ref assignment) => {
-                    let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
-                    if op.inner.is_some() {
-                        let err = self.diags.report_todo(statement.span, "combinatorial assignment with operator");
-                        result_statements.push(LowerStatement::Error(err));
-                    } else {
-                        let target = self.eval_expression_as_value(ctx_comb, scope, target);
-                        let value = self.eval_expression_as_value(ctx_comb, scope, value);
-
-                        match (target, value) {
-                            (Value::ModulePort(target), Value::ModulePort(value)) => {
-                                let stmt = match self.check_assign_port_port(ctx_sync, assignment, target, value) {
-                                    Ok(()) => LowerStatement::PortPortAssignment(target, value),
-                                    Err(e) => LowerStatement::Error(e),
-                                };
-                                result_statements.push(stmt);
-                            }
-                            (Value::Error(e), _) | (_, Value::Error(e)) => {
-                                result_statements.push(LowerStatement::Error(e));
-                            }
-                            _ => {
-                                let err = self.diags.report_todo(statement.span, "general combinatorial assignment");
-                                result_statements.push(LowerStatement::Error(err));
-                            }
-                        }
-                    }
-                }
-                BlockStatementKind::Expression(_) => {
-                    let err = self.diags.report_todo(statement.span, "combinatorial expression");
-                    result_statements.push(LowerStatement::Error(err));
-                }
-            }
-        }
+        let mut ctx = ExpressionContext::CombinatorialBlock(&mut result_statements);
+        self.visit_block(&mut ctx, scope_module, block);
 
         ModuleBlockCombinatorial {
             span,
@@ -231,98 +184,17 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     // TODO merge this with visit_block this is duplication
     #[must_use]
-    fn process_module_block_clocked(&mut self, scope_body: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
+    fn process_module_block_clocked(&mut self, scope_module: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
         let &ClockedBlock {
-            span, span_keyword: _, ref clock, ref reset, ref block
+            span, span_keyword: _, span_domain, ref domain, ref block
         } = clocked_block;
-        let ast::Block { span: _, statements } = block;
-        let span_domain = clock.span.join(reset.span);
 
-        let scope = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
-        let ctx_clocked = &ExpressionContext::NotFunctionBody;
-
-        // TODO typecheck: clock must be a single-bit clock, reset must be a single-bit reset
-        let clock_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, clock);
-        let reset_value_unchecked = self.eval_expression_as_value(ctx_clocked, scope, reset);
-
-        // TODO move this domain checking to a separate function
-        // check that clock is a clock
-        let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
-        let clock_value = match &clock_domain {
-            ValueDomainKind::Clock => clock_value_unchecked,
-            &ValueDomainKind::Error(e) => Value::Error(e),
-            _ => {
-                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
-                let e = self.diags.report_simple(title, clock.span, "clock value");
-                Value::Error(e)
-            }
-        };
-
-        // check that reset is an async bool
-        let reset_value_bool = match self.check_type_contains(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
-            Ok(()) => reset_value_unchecked,
-            Err(e) => Value::Error(e),
-        };
-        let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
-        let reset_value = match &reset_domain {
-            ValueDomainKind::Async => reset_value_bool,
-            &ValueDomainKind::Error(e) => Value::Error(e),
-            _ => {
-                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
-                let e = self.diags.report_simple(title, reset.span, "reset value");
-                Value::Error(e)
-            }
-        };
-
-        let domain = SyncDomain { clock: clock_value, reset: reset_value };
-        let ctx_sync = Some(Spanned { span: span_domain, inner: &domain });
-
-        let scope_block = self.compiled.scopes.new_child(scope_body, block.span, Visibility::Private);
+        let domain = self.eval_sync_domain(scope_module, domain.as_ref().map_inner(|v| &**v));
+        let domain_spanned = Spanned { span: span_domain, inner: &domain };
 
         let mut result_statements = vec![];
-
-        for statement in statements {
-            match &statement.inner {
-                BlockStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope_block, ctx_clocked, decl, Visibility::Private);
-                }
-                BlockStatementKind::VariableDeclaration(_) => {
-                    let err = self.diags.report_todo(statement.span, "clocked variable declaration");
-                    result_statements.push(LowerStatement::Error(err));
-                }
-                BlockStatementKind::Assignment(assignment) => {
-                    let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
-                    if op.inner.is_some() {
-                        let err = self.diags.report_todo(statement.span, "clocked assignment with operator");
-                        result_statements.push(LowerStatement::Error(err));
-                    } else {
-                        let target = self.eval_expression_as_value(ctx_clocked, scope, target);
-                        let value = self.eval_expression_as_value(ctx_clocked, scope, value);
-
-                        match (target, value) {
-                            (Value::ModulePort(target), Value::ModulePort(value)) => {
-                                let stmt = match self.check_assign_port_port(ctx_sync, assignment, target, value) {
-                                    Ok(()) => LowerStatement::PortPortAssignment(target, value),
-                                    Err(e) => LowerStatement::Error(e),
-                                };
-                                result_statements.push(stmt);
-                            }
-                            (Value::Error(e), _) | (_, Value::Error(e)) => {
-                                result_statements.push(LowerStatement::Error(e));
-                            }
-                            _ => {
-                                let err = self.diags.report_todo(statement.span, "general clocked assignment");
-                                result_statements.push(LowerStatement::Error(err));
-                            }
-                        }
-                    }
-                }
-                BlockStatementKind::Expression(_) => {
-                    let err = self.diags.report_todo(statement.span, "expression inside clocked block");
-                    result_statements.push(LowerStatement::Error(err));
-                }
-            }
-        }
+        let mut ctx_clocked = ExpressionContext::ClockedBlock(domain_spanned, &mut result_statements);
+        self.visit_block(&mut ctx_clocked, scope_module, block);
 
         ModuleBlockClocked {
             span,
@@ -333,7 +205,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     #[must_use]
-    fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
+    fn process_module_instance(&mut self, ctx_module: &mut ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance {
@@ -506,7 +378,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expr_as_module_with_generics(
         &mut self,
         keyword_span: Span,
-        ctx_module: &ExpressionContext,
+        ctx_module: &mut ExpressionContext,
         scope: Scope,
         module_expr: &ast::Expression,
         generic_args: &Option<ast::Args<TypeOrValue>>,
@@ -580,7 +452,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     // TODO this will get significantly refactored, assignments between ports are just a singel special case
-    fn check_assign_port_port(&mut self, block_sync: Option<Spanned<&SyncDomain<Value>>>, assignment: &ast::Assignment, target: ModulePort, value: ModulePort) -> Result<(), ErrorGuaranteed> {
+    pub fn check_assign_port_port(&mut self, block_sync: Option<Spanned<&SyncDomain<Value>>>, assignment: &ast::Assignment, target: ModulePort, value: ModulePort) -> Result<(), ErrorGuaranteed> {
         let span = assignment.span;
         let &ModulePortInfo { ast: target_ast, direction: target_dir, kind: ref target_kind } = &self.compiled[target];
         let &ModulePortInfo { ast: value_ast, direction: value_dir, kind: ref value_kind } = &self.compiled[value];

@@ -12,9 +12,9 @@ impl CompileState<'_, '_> {
 
         // TODO check control flow (eg. require return on final block, warn on dead code)
         let ret_ty_span = ret_ty_ast.as_ref().map_or(func_id.span, |ty| ty.span);
-        let ctx_func = &ExpressionContext::FunctionBody { ret_ty_span, ret_ty };
+        let mut ctx_func = ExpressionContext::FunctionBody { func_item, ret_ty_span, ret_ty };
 
-        self.visit_block(ctx_func, scope_inner, body);
+        self.visit_block(&mut ctx_func, scope_inner, body);
 
         FunctionChecked {}
     }

@@ -1,8 +1,9 @@
 use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::data::module_body::LowerStatement;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
-use crate::syntax::ast::{DomainKind, PortKind, SyncDomain};
+use crate::syntax::ast::{DomainKind, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use indexmap::IndexMap;
 // TODO move all common stuff to the data module, since multiple stages depend on it
@@ -17,11 +18,29 @@ use indexmap::IndexMap;
 /// TODO maybe allow break to be used in clocked blocks too?
 /// TODO create a wrapper type for (ExpressionContext, Scope), they're very often used together
 #[derive(Debug)]
-pub enum ExpressionContext {
+pub enum ExpressionContext<'a> {
+    Type,
+    Const,
     /// Used in function body as part of normal statements or expressions.
-    FunctionBody { ret_ty_span: Span, ret_ty: Type },
-    /// Anything else, even including type definitions inside of function bodies.
-    NotFunctionBody,
+    // TODO just get the return type from the function item as-needed
+    FunctionBody { func_item: Item, ret_ty_span: Span, ret_ty: Type },
+    ModuleBody,
+    CombinatorialBlock(&'a mut Vec<LowerStatement>),
+    ClockedBlock(Spanned<&'a SyncDomain<Value>>, &'a mut Vec<LowerStatement>),
+}
+
+impl ExpressionContext<'_> {
+    // TODO think about and clarify what this means
+    pub fn domain_kind(&self) -> Option<ValueDomainKind> {
+        match self {
+            ExpressionContext::Type => Some(ValueDomainKind::Const),
+            ExpressionContext::Const => Some(ValueDomainKind::Const),
+            &ExpressionContext::FunctionBody { func_item, .. } => Some(ValueDomainKind::FunctionBody(func_item)),
+            ExpressionContext::ModuleBody => None,
+            ExpressionContext::CombinatorialBlock(_) => None,
+            ExpressionContext::ClockedBlock(domain, _) => Some(ValueDomainKind::Sync(domain.inner.clone())),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,13 +70,14 @@ impl<T, V> TypeOrValue<T, V> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ValueDomainKind {
+pub enum ValueDomainKind<V = Value> {
     Error(ErrorGuaranteed),
     Const,
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset
     Async,
-    Sync(SyncDomain<Value>),
+    Sync(SyncDomain<V>),
+    FunctionBody(Item),
 }
 
 impl ValueDomainKind {

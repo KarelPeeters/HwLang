@@ -187,6 +187,22 @@ pub struct SyncDomain<S> {
     pub reset: S,
 }
 
+impl<S> SyncDomain<S> {
+    pub fn as_ref(&self) -> SyncDomain<&S> {
+        SyncDomain {
+            clock: &self.clock,
+            reset: &self.reset,
+        }
+    }
+
+    pub fn map_inner<U>(self, mut f: impl FnMut(S) -> U) -> SyncDomain<U> {
+        SyncDomain {
+            clock: f(self.clock),
+            reset: f(self.reset),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PortDirection {
     Input,
@@ -280,8 +296,8 @@ pub struct CombinatorialBlock {
 pub struct ClockedBlock {
     pub span: Span,
     pub span_keyword: Span,
-    pub clock: Box<Expression>,
-    pub reset: Box<Expression>,
+    pub span_domain: Span,
+    pub domain: SyncDomain<Box<Expression>>,
     pub block: Block<BlockStatement>,
 }
 

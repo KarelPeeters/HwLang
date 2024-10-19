@@ -30,9 +30,6 @@ impl CompileState<'_, '_> {
             &Err(e) => return MaybeConstructor::Error(e),
         };
 
-        // always use a static context for types
-        let ctx = &ExpressionContext::NotFunctionBody;
-
         // actual resolution
         match *item_ast {
             // resolving import signatures doesn't make sense
@@ -121,6 +118,7 @@ impl CompileState<'_, '_> {
                                         domain: match &sync.inner {
                                             DomainKind::Async => DomainKind::Async,
                                             DomainKind::Sync(SyncDomain { clock, reset }) => {
+                                                let ctx = &mut ExpressionContext::Type;
                                                 let clock = s.eval_expression_as_value(ctx, scope_ports, clock);
                                                 let reset = s.eval_expression_as_value(ctx, scope_ports, reset);
                                                 DomainKind::Sync(SyncDomain { clock, reset })
@@ -155,7 +153,7 @@ impl CompileState<'_, '_> {
                 })
             }
             ast::Item::Const(ref cst) => {
-                let cst = self.process_const(file_scope, ctx, cst);
+                let cst = self.process_const(file_scope, cst);
                 MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
             },
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
@@ -252,11 +250,13 @@ impl CompileState<'_, '_> {
 
     // TODO delay body processing
     #[must_use]
-    pub fn process_const<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>) -> Constant {
+    pub fn process_const<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Constant {
         let &ConstDeclaration { span: _, vis: _, ref id, ref ty, ref value } = decl;
 
+        // TODO allow optional type, infer from value
         let ty_eval = self.eval_expression_as_ty(scope, ty);
-        let value_eval = self.eval_expression_as_value(ctx, scope, value);
+        let mut ctx = ExpressionContext::Const;
+        let value_eval = self.eval_expression_as_value(&mut ctx, scope, value);
 
         // check ty
         let value_eval = match self.check_type_contains(Some(ty.span), value.span, &ty_eval, &value_eval) {
@@ -284,8 +284,8 @@ impl CompileState<'_, '_> {
         cst
     }
 
-    pub fn process_and_declare_const<V>(&mut self, scope: Scope, ctx: &ExpressionContext, decl: &ConstDeclaration<V>, vis: Visibility) {
-        let cst = self.process_const(scope, ctx, decl);
+    pub fn process_and_declare_const<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>, vis: Visibility) {
+        let cst = self.process_const(scope, decl);
         let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst))));
         self.compiled[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, vis)
     }
