@@ -84,73 +84,69 @@ impl CompileState<'_, '_> {
                     let target_eval = self.eval_expression_as_value(ctx, scope, target);
                     let value_eval = self.eval_expression_as_value(ctx, scope, value);
 
-                    // operator assignments are not implemented yet
-                    if op.inner.is_some() {
-                        let e = diags.report_todo(assignment.span, "assignment with operator");
-                        result_statements.push(LowerStatement::Error(e));
-                        continue;
-                    }
+                    let mut any_err = Ok(());
+
+                    // check type
+                    let target_ty = self.type_of_value(target.span, &target_eval);
+                    any_err = any_err.and(self.check_type_contains(Some(target.span), value.span, &target_ty, &value_eval));
 
                     // check read_write
-                    let write_err = self.check_value_usable_as_direction(ctx, target.span, &target_eval, AccessDirection::Write);
-                    let read_err = self.check_value_usable_as_direction(ctx, value.span, &value_eval, AccessDirection::Read);
-                    match (write_err, read_err) {
-                        (Ok(()), Ok(())) => {}
-                        (Err(e), _) | (_, Err(e)) => {
-                            result_statements.push(LowerStatement::Error(e));
-                            continue;
-                        }
-                    }
+                    any_err = any_err.and(self.check_value_usable_as_direction(ctx, target.span, &target_eval, AccessDirection::Write));
+                    any_err = any_err.and(self.check_value_usable_as_direction(ctx, value.span, &value_eval, AccessDirection::Read));
 
                     // check domain
                     let target_domain = self.domain_of_value(target.span, &target_eval);
                     let value_domain = self.domain_of_value(value.span, &value_eval);
 
-                    let result = match ctx.domain() {
+                    match ctx.domain() {
                         ContextDomainKind::Passthrough => {
                             // target/value need to be compatible, without additional constraints
-                            self.check_domain_crossing(
+                            any_err = any_err.and(self.check_domain_crossing(
                                 target.span,
                                 &target_domain,
                                 value.span,
                                 &value_domain,
                                 DomainUserControlled::Both,
                                 "assignment target domain must be assignable from value domain",
-                            )
+                            ))
                         }
                         ContextDomainKind::Specific(domain) => {
                             // target/domain and domain/value both need to be compatible
-                            let r0 = self.check_domain_crossing(
+                            any_err = any_err.and(self.check_domain_crossing(
                                 target.span,
                                 &target_domain,
                                 ctx.span(),
                                 &domain,
                                 DomainUserControlled::Target,
                                 "assignment target domain must be assignable from context domain",
-                            );
-                            let r1 = self.check_domain_crossing(
+                            ));
+                            any_err = any_err.and(self.check_domain_crossing(
                                 ctx.span(),
                                 &domain,
                                 value.span,
                                 &value_domain,
                                 DomainUserControlled::Source,
                                 "assignment context domain must be assignable from value domain",
-                            );
-                            r0.and(r1)
+                            ));
                         }
                     };
-                    match result {
-                        Ok(()) => {}
-                        Err(e) => {
-                            result_statements.push(LowerStatement::Error(e));
-                            continue;
-                        }
+
+                    // operator assignments are not implemented yet
+                    if op.inner.is_some() {
+                        any_err = Err(diags.report_todo(assignment.span, "assignment with operator"));
                     }
 
-                    result_statements.push(LowerStatement::Assignment {
-                        target: Spanned { span: target.span, inner: target_eval },
-                        value: Spanned { span: value.span, inner: value_eval },
-                    });
+                    // result
+                    let statement = match any_err {
+                        Ok(()) => {
+                            LowerStatement::Assignment {
+                                target: Spanned { span: target.span, inner: target_eval },
+                                value: Spanned { span: value.span, inner: value_eval },
+                            }
+                        }
+                        Err(e) => LowerStatement::Error(e),
+                    };
+                    result_statements.push(statement);
                 }
                 BlockStatementKind::Expression(expression) => {
                     match ctx {
