@@ -54,8 +54,9 @@ pub enum Type {
     // basic
     Any,
     Unchecked,
-    Unit,
     // TODO make unit just a special case of tuple
+    Unit,
+    // TODO properly handle never type and value everywhere
     Never,
     Boolean,
     Clock,

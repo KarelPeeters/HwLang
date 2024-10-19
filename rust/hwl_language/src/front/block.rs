@@ -6,7 +6,7 @@ use crate::front::common::{ContextDomainKind, ExpressionContext, ScopedEntry, Sc
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
-use crate::front::values::Value;
+use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, PortDirection, Spanned, VariableDeclaration};
 use crate::syntax::pos::Span;
@@ -173,6 +173,35 @@ impl CompileState<'_, '_> {
     pub fn check_value_usable_as_direction(&self, ctx: &ExpressionContext, value_span: Span, value: &Value, dir: AccessDirection) -> Result<(), ErrorGuaranteed> {
         let diags = self.diags;
 
+        const READ_LABEL: &str = "reading here";
+        const WRITE_LABEL: &str = "writing here";
+
+        let if_write_simple_error = |kind: &str| {
+            match dir {
+                AccessDirection::Read => Ok(()),
+                AccessDirection::Write => {
+                    let e = diags.report_simple(
+                        format!("invalid write: {kind} is never writable"),
+                        value_span,
+                        WRITE_LABEL,
+                    );
+                    Err(e)
+                }
+            }
+        };
+        let if_write_simple_error_with_location = |kind: &str, def_span: Span| {
+            match dir {
+                AccessDirection::Read => Ok(()),
+                AccessDirection::Write => {
+                    let diag = Diagnostic::new(format!("invalid write: {kind} is never writable"))
+                        .add_error(value_span, WRITE_LABEL)
+                        .add_info(def_span, format!("{kind} declared here"))
+                        .finish();
+                    Err(diags.report(diag))
+                }
+            }
+        };
+
         match value {
             // propagate error
             &Value::Error(e) => Err(e),
@@ -183,9 +212,9 @@ impl CompileState<'_, '_> {
                     (AccessDirection::Read, PortDirection::Input) => Ok(()),
                     (AccessDirection::Write, PortDirection::Output) => Ok(()),
                     (AccessDirection::Read, PortDirection::Output) =>
-                        Err(diags.report_simple("invalid read: cannot read from output port", value_span, "reading here")),
+                        Err(diags.report_simple("invalid read: cannot read from output port", value_span, READ_LABEL)),
                     (AccessDirection::Write, PortDirection::Input) =>
-                        Err(diags.report_simple("invalid write: cannot write to input port", value_span, "writing here")),
+                        Err(diags.report_simple("invalid write: cannot write to input port", value_span, WRITE_LABEL)),
                 }
             }
             &Value::Wire(wire) => {
@@ -195,16 +224,16 @@ impl CompileState<'_, '_> {
                     (AccessDirection::Read, ExpressionContext::CombinatorialBlock(_) | ExpressionContext::ClockedBlock(_)) =>
                         Ok(()),
                     (AccessDirection::Read, _) =>
-                        Err(diags.report_simple("invalid read: wire can only be read inside combinatorial or clocked block", value_span, "reading here")),
+                        Err(diags.report_simple("invalid read: wire can only be read inside combinatorial or clocked block", value_span, READ_LABEL)),
                     (AccessDirection::Write, ExpressionContext::CombinatorialBlock(_) | ExpressionContext::ClockedBlock(_)) => {
                         if info.has_declaration_value {
-                            Err(diags.report_simple("invalid write: wire already has declaration value", value_span, "writing here"))
+                            Err(diags.report_simple("invalid write: wire already has declaration value", value_span, WRITE_LABEL))
                         } else {
                             Ok(())
                         }
                     }
                     (AccessDirection::Write, _) =>
-                        Err(diags.report_simple("invalid write: wire can only be written inside combinatorial or clocked block", value_span, "writing here")),
+                        Err(diags.report_simple("invalid write: wire can only be written inside combinatorial or clocked block", value_span, WRITE_LABEL)),
                 }
             }
             &Value::Register(_) => {
@@ -212,11 +241,11 @@ impl CompileState<'_, '_> {
                     (AccessDirection::Read, ExpressionContext::ClockedBlock(_) | ExpressionContext::CombinatorialBlock(_)) =>
                         Ok(()),
                     (AccessDirection::Read, _) =>
-                        Err(diags.report_simple("invalid read: register can only be read inside clocked or combinatorial block", value_span, "reading here")),
+                        Err(diags.report_simple("invalid read: register can only be read inside clocked or combinatorial block", value_span, READ_LABEL)),
                     (AccessDirection::Write, ExpressionContext::ClockedBlock(_)) =>
                         Ok(()),
                     (AccessDirection::Write, _) =>
-                        Err(diags.report_simple("invalid write: register can only be written inside clocked block", value_span, "writing here")),
+                        Err(diags.report_simple("invalid write: register can only be written inside clocked block", value_span, WRITE_LABEL)),
                 }
             }
             Value::Variable(var) => {
@@ -228,7 +257,7 @@ impl CompileState<'_, '_> {
                             Ok(())
                         } else {
                             let diag = Diagnostic::new("invalid write: variable is not mutable")
-                                .add_error(value_span, "writing here")
+                                .add_error(value_span, WRITE_LABEL)
                                 .add_info(info.defining_id.span(), "variable declared here")
                                 .finish();
                             Err(diags.report(diag))
@@ -238,20 +267,48 @@ impl CompileState<'_, '_> {
             }
 
             // only readable assignable
-            Value::Never | Value::Unit | Value::BoolConstant(_) | Value::IntConstant(_) | Value::StringConstant(_) |
-            Value::Range(_) | Value::Binary(_, _, _) | Value::UnaryNot(_) | Value::FunctionReturn(_) |
-            Value::Module(_) | Value::GenericParameter(_) | Value::Constant(_) => {
-                match dir {
-                    AccessDirection::Read => Ok(()),
-                    AccessDirection::Write => {
-                        let e = diags.report_simple(
-                            format!("invalid write: {}", self.compiled.value_to_readable_str(self.source, self.parsed, value)),
-                            value_span,
-                            "writing here",
-                        );
-                        Err(e)
-                    }
+            Value::Never => if_write_simple_error("_never_ value"),
+            Value::Unit => if_write_simple_error("unit value"),
+            Value::BoolConstant(_) => if_write_simple_error("boolean constant"),
+            Value::IntConstant(_) => if_write_simple_error("integer constant value"),
+            Value::StringConstant(_) => if_write_simple_error("string constant value"),
+            Value::Module(_) => if_write_simple_error("module value"),
+
+            // TODO function call args should be checked for read/write
+            // TODO re-implement all of this as a LRValue system, that checks for read/write
+            //   once it's converted to the underlying value
+            Value::FunctionReturn(_) => if_write_simple_error("function return value"),
+
+            &Value::GenericParameter(param) =>
+                if_write_simple_error_with_location("generic parameter", self.compiled[param].defining_id.span),
+            &Value::Constant(cst) =>
+                if_write_simple_error_with_location("constant", self.compiled[cst].defining_id.span()),
+
+            // recursively check sub-expressions for read-ability
+            Value::Range(info) => {
+                let RangeInfo { start, end } = info;
+
+                let mut r = Ok(());
+                if let Some(start) = start {
+                    r = r.and(self.check_value_usable_as_direction(ctx, value_span, start, AccessDirection::Read));
                 }
+                if let Some(end) = end {
+                    r = r.and(self.check_value_usable_as_direction(ctx, value_span, end, AccessDirection::Read));
+                }
+
+                r = r.and(if_write_simple_error("range expression"));
+                r
+            }
+            Value::Binary(_, left, right) => {
+                let mut r = self.check_value_usable_as_direction(ctx, value_span, left, AccessDirection::Read);
+                r = r.and(self.check_value_usable_as_direction(ctx, value_span, right, AccessDirection::Read));
+                r = r.and(if_write_simple_error("binary expression"));
+                r
+            }
+            Value::UnaryNot(x) => {
+                let mut r = self.check_value_usable_as_direction(ctx, value_span, x, AccessDirection::Read);
+                r = r.and(if_write_simple_error("unary not expression"));
+                r
             }
         }
     }
