@@ -34,6 +34,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let mut ctx_module = ExpressionContext::ModuleBody(body.span);
 
         // first pass: populate scope with declarations
+        // TODO fully implement graph-ness,
+        //   in the current implementation eg. types and initializes still can't refer to future regs and wires
         for top_statement in statements {
             match &top_statement.inner {
                 ModuleStatementKind::ConstDeclaration(decl) => {
