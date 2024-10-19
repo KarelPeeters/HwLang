@@ -8,7 +8,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, VariableDeclaration};
+use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, Spanned, VariableDeclaration};
 
 impl CompileState<'_, '_> {
     pub fn visit_block(
@@ -26,35 +26,37 @@ impl CompileState<'_, '_> {
                     self.process_and_declare_const(scope, decl, Visibility::Private);
                 }
                 BlockStatementKind::VariableDeclaration(decl) => {
-                    let VariableDeclaration { span, mutable, id, ty, init } = decl;
-                    let span = *span;
+                    let VariableDeclaration { span: _, mutable, id, ty, init } = decl;
                     let mutable = *mutable;
 
-                    // evaluate
-                    // TODO allow inferring type if value is specified
-                    // TODO reorganize this entire thing, eg. check type before domain
-                    let ty_eval = match ty {
-                        Some(ty) => self.eval_expression_as_ty(scope, ty),
-                        None => Type::Error(diags.report_todo(span, "variable without type")),
-                    };
-                    let init_eval = match init {
-                        Some(init) => {
-                            let init_eval = self.eval_expression_as_value(ctx, scope, init);
+                    let ty_eval = ty.as_ref().map(|ty| {
+                        let inner = self.eval_expression_as_ty(scope, ty);
+                        Spanned { span: ty.span, inner }
+                    });
+                    let init_unchecked = self.eval_expression_as_value(ctx, scope, init);
 
-                            // domain check
-                            if let Some(domain) = ctx.domain_kind() {
-                                let init_domain = self.domain_of_value(init.span, &init_eval);
-                                let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(decl.span, &domain, init.span, &init_domain, DomainUserControlled::Source, "variable initializer must be assignable to context domain");
+                    // check or infer type
+                    let (ty_eval, init_eval) = match ty_eval {
+                        None => (self.type_of_value(init.span, &init_unchecked), init_unchecked),
+                        Some(ty_eval) => {
+                            match self.check_type_contains(Some(ty_eval.span), init.span, &ty_eval.inner, &init_unchecked) {
+                                Ok(()) => (ty_eval.inner, init_unchecked),
+                                Err(e) => (Type::Error(e), Value::Error(e)),
                             }
-
-                            init_eval
                         }
-                        None => Value::Error(diags.report_todo(span, "variable without init")),
                     };
 
-                    // type check
-                    if let (Some(ty), Some(init)) = (ty, init) {
-                        let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ty.span), init.span, &ty_eval, &init_eval);
+                    // check domain
+                    if let Some(domain) = ctx.domain_kind() {
+                        let init_domain = self.domain_of_value(init.span, &init_eval);
+                        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+                            decl.span,
+                            &domain,
+                            init.span,
+                            &init_domain,
+                            DomainUserControlled::Source,
+                            "variable initializer must be assignable to context domain",
+                        );
                     }
 
                     // declare

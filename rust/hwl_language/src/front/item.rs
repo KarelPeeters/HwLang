@@ -248,20 +248,28 @@ impl CompileState<'_, '_> {
         }
     }
 
-    // TODO delay body processing
+    // TODO for const items, delay body processing if the type is specified
     #[must_use]
     pub fn process_const<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Constant {
         let &ConstDeclaration { span: _, vis: _, ref id, ref ty, ref value } = decl;
 
-        // TODO allow optional type, infer from value
-        let ty_eval = self.eval_expression_as_ty(scope, ty);
+        // eval type and value
+        let ty_eval = ty.as_ref().map(|ty| {
+            let inner = self.eval_expression_as_ty(scope, ty);
+            Spanned { span: ty.span, inner }
+        });
         let mut ctx = ExpressionContext::Const;
-        let value_eval = self.eval_expression_as_value(&mut ctx, scope, value);
+        let value_unchecked = self.eval_expression_as_value(&mut ctx, scope, value);
 
-        // check ty
-        let value_eval = match self.check_type_contains(Some(ty.span), value.span, &ty_eval, &value_eval) {
-            Ok(()) => value_eval,
-            Err(e) => Value::Error(e),
+        // check or infer type
+        let (ty_eval, value_eval) = match ty_eval {
+            None => (self.type_of_value(value.span, &value_unchecked), value_unchecked),
+            Some(ty_eval) => {
+                match self.check_type_contains(Some(ty_eval.span), value.span, &ty_eval.inner, &value_unchecked) {
+                    Ok(()) => (ty_eval.inner, value_unchecked),
+                    Err(e) => (Type::Error(e), Value::Error(e)),
+                }
+            }
         };
 
         // check domain
@@ -277,7 +285,7 @@ impl CompileState<'_, '_> {
         // declare constant
         let cst = self.compiled.constants.push(ConstantInfo {
             defining_id: id.clone(),
-            ty: ty_eval.clone(),
+            ty: ty_eval,
             value: value_eval,
         });
 

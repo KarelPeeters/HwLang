@@ -231,13 +231,13 @@ BlockStatementKind: BlockStatementKind = {
 }
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
-    <start:@L> <vis:V> "const" <id:MaybeId> ":" <ty:BoxExpr> "=" <value:BoxExpr> ";" <end:@R> => {
+    <start:@L> <vis:V> "const" <id:MaybeId> <ty:(":" <BoxExpr>)?> "=" <value:BoxExpr> ";" <end:@R> => {
         ConstDeclaration { vis, id, ty, value, span: loc.span(start, end) }
     },
 }
 
 VariableDeclaration: VariableDeclaration = {
-    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> <init: ("=" <BoxExpr>)?> ";" <end:@R> => {
+    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> "=" <init:BoxExpr> ";" <end:@R> => {
         VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) }
     },
 }

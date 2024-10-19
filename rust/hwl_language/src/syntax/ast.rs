@@ -264,7 +264,7 @@ pub struct ConstDeclaration<V> {
     pub span: Span,
     pub vis: V,
     pub id: MaybeIdentifier,
-    pub ty: Box<Expression>,
+    pub ty: Option<Box<Expression>>,
     pub value: Box<Expression>,
 }
 
@@ -274,7 +274,7 @@ pub struct VariableDeclaration {
     pub mutable: bool,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
-    pub init: Option<Box<Expression>>,
+    pub init: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
