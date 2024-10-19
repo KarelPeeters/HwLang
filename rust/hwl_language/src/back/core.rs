@@ -182,7 +182,8 @@ fn module_body_to_verilog(
         swriteln!(f, "{I}reg {ty_str}{name}; // reg {name_str:?} {sync_str}");
         signal_map.insert_first(Signal::Reg(reg), name);
     }
-    if regs.len() > 0 {
+
+    if regs.len() > 0 && wires.len() > 0 {
         swriteln!(f);
     }
 
@@ -205,7 +206,8 @@ fn module_body_to_verilog(
         swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {comment_info}");
         signal_map.insert_first(Signal::Wire(wire), name);
     }
-    if wires.len() > 0 {
+
+    if wires.len() > 0 && statements.len() > 0 {
         swriteln!(f);
     }
 
