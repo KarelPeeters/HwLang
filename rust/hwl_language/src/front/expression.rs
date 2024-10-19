@@ -171,7 +171,7 @@ impl CompileState<'_, '_> {
                 };
 
                 if let (Some(start), Some(end)) = (&start, &end) {
-                    match self.require_value_true_for_range(expr.span, &Value::Binary(BinaryOp::CmpLt, start.clone(), end.clone())) {
+                    match self.require_value_true_for_range(expr.span, &Value::Binary(BinaryOp::CmpLte, start.clone(), end.clone())) {
                         Ok(()) => {}
                         Err(e) => return ScopedEntryDirect::Error(e),
                     }

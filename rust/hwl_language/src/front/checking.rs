@@ -291,12 +291,15 @@ impl CompileState<'_, '_> {
                         let RangeInfo { start: right_start, end: right_end } = right_range;
                         let range = RangeInfo {
                             start: option_op(BinaryOp::Add, left_start, right_start),
-                            end: option_op(BinaryOp::Add, left_end, right_end),
+                            end: option_op(BinaryOp::Add, left_end, right_end).map(|end_off| {
+                                Box::new(Value::Binary(BinaryOp::Sub, end_off, Box::new(Value::IntConstant(BigInt::one()))))
+                            }),
                         };
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
                     }
                 }
             }
+            // this is too much duplication, maybe remove the Sub operator and replace it with negation?
             BinaryOp::Sub => {
                 let left_range = self.require_int_range_ty(origin, &left_ty);
                 let right_range = self.require_int_range_ty(origin, &right_ty);
@@ -307,11 +310,10 @@ impl CompileState<'_, '_> {
                         let RangeInfo { start: left_start, end: left_end } = left_range;
                         let RangeInfo { start: right_start, end: right_end } = right_range;
 
-                        let right_end_inclusive = right_end.as_ref()
-                            .map(|right_end| Box::new(Value::Binary(BinaryOp::Sub, right_end.clone(), Box::new(Value::IntConstant(BigInt::one())))));
-
                         let range = RangeInfo {
-                            start: option_op(BinaryOp::Sub, left_start, &right_end_inclusive),
+                            start: option_op(BinaryOp::Sub, left_start, &right_end).map(|start_off| {
+                                Box::new(Value::Binary(BinaryOp::Add, start_off, Box::new(Value::IntConstant(BigInt::one()))))
+                            }),
                             end: option_op(BinaryOp::Sub, left_end, right_start),
                         };
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
@@ -580,9 +582,9 @@ impl CompileState<'_, '_> {
                     let left_end_inclusive = value_as_int(left_range.end.as_ref()?)? - 1;
 
                     if allow_eq {
-                        Some(&left_end_inclusive <= right_start)
+                        Some(left_end_inclusive <= right_start)
                     } else {
-                        Some(&left_end_inclusive < right_start)
+                        Some(left_end_inclusive < right_start)
                     }
                 };
 
@@ -626,8 +628,8 @@ pub fn simplify_value(value: Value) -> Value {
 }
 
 // TODO return error if value is error?
-pub fn value_as_int(value: &Value) -> Option<&BigInt> {
-    match value {
+pub fn value_as_int(value: &Value) -> Option<BigInt> {
+    match simplify_value(value.clone()) {
         Value::IntConstant(value) => Some(value),
         _ => None,
     }
