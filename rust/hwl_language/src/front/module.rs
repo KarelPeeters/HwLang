@@ -172,13 +172,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn process_module_block_combinatorial(&mut self, scope_module: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
 
-        let mut result_statements = vec![];
-        let mut ctx = ExpressionContext::CombinatorialBlock(&mut result_statements);
-        self.visit_block(&mut ctx, scope_module, block);
+        let statements = self.visit_block(&mut ExpressionContext::CombinatorialBlock, scope_module, block);
 
         ModuleBlockCombinatorial {
             span,
-            statements: result_statements,
+            statements,
         }
     }
 
@@ -192,15 +190,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let domain = self.eval_sync_domain(scope_module, domain.as_ref().map_inner(|v| &**v));
         let domain_spanned = Spanned { span: span_domain, inner: &domain };
 
-        let mut result_statements = vec![];
-        let mut ctx_clocked = ExpressionContext::ClockedBlock(domain_spanned, &mut result_statements);
-        self.visit_block(&mut ctx_clocked, scope_module, block);
+        let ctx = ExpressionContext::ClockedBlock(domain_spanned);
+        let statements = self.visit_block(&ctx, scope_module, block);
 
         ModuleBlockClocked {
             span,
             domain,
             on_reset: vec![],
-            on_block: result_statements,
+            on_block: statements,
         }
     }
 

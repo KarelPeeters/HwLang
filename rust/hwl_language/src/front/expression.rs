@@ -19,7 +19,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    pub fn eval_expression(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
+    pub fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
         let diags = self.diags;
 
         match expr.inner {
@@ -96,7 +96,7 @@ impl CompileState<'_, '_> {
                 self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
 
                 // typecheck body
-                self.visit_block(ctx, scope_index, &body);
+                let _ = self.visit_block(ctx, scope_index, &body);
 
                 // for loops always return unit
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Unit))
@@ -106,7 +106,7 @@ impl CompileState<'_, '_> {
                     .map(|v| (v.span, self.eval_expression_as_value(ctx, scope, v)));
 
                 match ctx {
-                    &mut ExpressionContext::FunctionBody { func_item: _, ret_ty_span, ref ret_ty } => {
+                    &ExpressionContext::FunctionBody { func_item: _, ret_ty_span, ref ret_ty } => {
                         match (ret_value, ret_ty) {
                             (None, Type::Unit | Type::Error(_)) => {
                                 // accept
@@ -358,7 +358,7 @@ impl CompileState<'_, '_> {
         Ok((result, generic_args))
     }
 
-    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
+    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
         let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
@@ -388,7 +388,7 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_expression_as_value(&mut self, ctx: &mut ExpressionContext, scope: Scope, expr: &Expression) -> Value {
+    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> Value {
         let entry = self.eval_expression(ctx, scope, expr);
 
         match entry {
@@ -455,7 +455,7 @@ impl CompileState<'_, '_> {
 
     fn eval_builtin_call(
         &mut self,
-        ctx: &mut ExpressionContext,
+        ctx: &ExpressionContext,
         scope: Scope,
         expr_span: Span,
         args: &ast::Args,

@@ -14,8 +14,10 @@ impl CompileState<'_, '_> {
         let ret_ty_span = ret_ty_ast.as_ref().map_or(func_id.span, |ty| ty.span);
         let mut ctx_func = ExpressionContext::FunctionBody { func_item, ret_ty_span, ret_ty };
 
-        self.visit_block(&mut ctx_func, scope_inner, body);
+        let statements = self.visit_block(&mut ctx_func, scope_inner, body);
 
-        FunctionChecked {}
+        FunctionChecked {
+            statements
+        }
     }
 }

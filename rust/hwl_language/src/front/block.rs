@@ -11,14 +11,17 @@ use crate::syntax::ast;
 use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, Spanned, VariableDeclaration};
 
 impl CompileState<'_, '_> {
+    #[must_use]
     pub fn visit_block(
         &mut self,
-        ctx: &mut ExpressionContext,
+        ctx: &ExpressionContext,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
-    ) -> () {
+    ) -> Vec<LowerStatement> {
         let diags = self.diags;
         let scope = self.compiled.scopes.new_child(parent_scope, block.span, Visibility::Private);
+
+        let mut result_statements = vec![];
 
         for statement in &block.statements {
             match &statement.inner {
@@ -66,70 +69,41 @@ impl CompileState<'_, '_> {
                     self.compiled[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(assignment) => {
-                    // TODO domain check for read and target
-                    // TODO actual assignment
-                    // TODO record read and write
                     let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
 
-                    match ctx {
-                        ExpressionContext::CombinatorialBlock(result_statements) => {
-                            if op.inner.is_some() {
-                                let err = self.diags.report_todo(statement.span, "combinatorial assignment with operator");
-                                result_statements.push(LowerStatement::Error(err));
-                            } else {
-                                let ctx = &mut ExpressionContext::CombinatorialBlock(result_statements);
-                                let target = self.eval_expression_as_value(ctx, scope, target);
-                                let value = self.eval_expression_as_value(ctx, scope, value);
+                    let target = self.eval_expression_as_value(ctx, scope, target);
+                    let value = self.eval_expression_as_value(ctx, scope, value);
 
-                                match (target, value) {
-                                    (Value::ModulePort(target), Value::ModulePort(value)) => {
-                                        let stmt = match self.check_assign_port_port(None, assignment, target, value) {
-                                            Ok(()) => LowerStatement::PortPortAssignment(target, value),
-                                            Err(e) => LowerStatement::Error(e),
-                                        };
-                                        result_statements.push(stmt);
-                                    }
-                                    (Value::Error(e), _) | (_, Value::Error(e)) => {
-                                        result_statements.push(LowerStatement::Error(e));
-                                    }
-                                    _ => {
-                                        let err = self.diags.report_todo(statement.span, "general combinatorial assignment");
-                                        result_statements.push(LowerStatement::Error(err));
-                                    }
+                    if op.inner.is_some() {
+                        let e = diags.report_todo(assignment.span, "assignment with operator");
+                        result_statements.push(LowerStatement::Error(e));
+                        continue;
+                    }
+
+                    match (target, value) {
+                        (Value::ModulePort(target), Value::ModulePort(value)) => {
+                            let sync = match ctx {
+                                ExpressionContext::CombinatorialBlock => None,
+                                ExpressionContext::ClockedBlock(sync) => Some(sync.as_ref().map_inner(|d| *d)),
+                                _ => {
+                                    let e = diags.report_todo(assignment.span, "assignment outside of clocked or combinatorial block");
+                                    result_statements.push(LowerStatement::Error(e));
+                                    continue;
                                 }
-                            }
+                            };
+
+                            let stmt = match self.check_assign_port_port(sync, assignment, target, value) {
+                                Ok(()) => LowerStatement::PortPortAssignment(target, value),
+                                Err(e) => LowerStatement::Error(e),
+                            };
+                            result_statements.push(stmt);
                         }
-                        ExpressionContext::ClockedBlock(sync, result_statements) => {
-                            let sync = sync.as_ref().map_inner(|d| *d);
-
-                            if op.inner.is_some() {
-                                let err = self.diags.report_todo(statement.span, "clocked assignment with operator");
-                                result_statements.push(LowerStatement::Error(err));
-                            } else {
-                                let ctx = &mut ExpressionContext::ClockedBlock(sync, result_statements);
-                                let target = self.eval_expression_as_value(ctx, scope, target);
-                                let value = self.eval_expression_as_value(ctx, scope, value);
-
-                                match (target, value) {
-                                    (Value::ModulePort(target), Value::ModulePort(value)) => {
-                                        let stmt = match self.check_assign_port_port(Some(sync), assignment, target, value) {
-                                            Ok(()) => LowerStatement::PortPortAssignment(target, value),
-                                            Err(e) => LowerStatement::Error(e),
-                                        };
-                                        result_statements.push(stmt);
-                                    }
-                                    (Value::Error(e), _) | (_, Value::Error(e)) => {
-                                        result_statements.push(LowerStatement::Error(e));
-                                    }
-                                    _ => {
-                                        let err = self.diags.report_todo(statement.span, "general clocked assignment");
-                                        result_statements.push(LowerStatement::Error(err));
-                                    }
-                                }
-                            }
+                        (Value::Error(e), _) | (_, Value::Error(e)) => {
+                            result_statements.push(LowerStatement::Error(e));
                         }
                         _ => {
-                            diags.report_todo(assignment.span, "assignment outside of clocked or combinatorial block");
+                            let err = self.diags.report_todo(statement.span, "general assignment");
+                            result_statements.push(LowerStatement::Error(err));
                         }
                     }
                 }
@@ -146,5 +120,7 @@ impl CompileState<'_, '_> {
                 }
             }
         }
+
+        result_statements
     }
 }

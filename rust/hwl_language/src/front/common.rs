@@ -1,6 +1,5 @@
 use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::LowerStatement;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{DomainKind, PortKind, Spanned, SyncDomain};
@@ -25,8 +24,8 @@ pub enum ExpressionContext<'a> {
     // TODO just get the return type from the function item as-needed
     FunctionBody { func_item: Item, ret_ty_span: Span, ret_ty: Type },
     ModuleBody,
-    CombinatorialBlock(&'a mut Vec<LowerStatement>),
-    ClockedBlock(Spanned<&'a SyncDomain<Value>>, &'a mut Vec<LowerStatement>),
+    CombinatorialBlock,
+    ClockedBlock(Spanned<&'a SyncDomain<Value>>),
 }
 
 impl ExpressionContext<'_> {
@@ -37,8 +36,8 @@ impl ExpressionContext<'_> {
             ExpressionContext::Const => Some(ValueDomainKind::Const),
             &ExpressionContext::FunctionBody { func_item, .. } => Some(ValueDomainKind::FunctionBody(func_item)),
             ExpressionContext::ModuleBody => None,
-            ExpressionContext::CombinatorialBlock(_) => None,
-            ExpressionContext::ClockedBlock(domain, _) => Some(ValueDomainKind::Sync(domain.inner.clone())),
+            ExpressionContext::CombinatorialBlock => None,
+            ExpressionContext::ClockedBlock(domain) => Some(ValueDomainKind::Sync(domain.inner.clone())),
         }
     }
 }

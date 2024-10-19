@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::ModuleChecked;
+use crate::data::module_body::{LowerStatement, ModuleChecked};
 use crate::data::parsed::{ItemAstReference, ModulePortAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomainKind};
@@ -217,7 +217,6 @@ pub struct ConstantInfo {
     pub value: Value,
 }
 
-
 /// The result of item body checking.
 ///
 /// Typechecking can store any additional information beyond the AST here,
@@ -233,7 +232,8 @@ pub enum ItemChecked {
 
 #[derive(Debug)]
 pub struct FunctionChecked {
-    // TODO at least the types of all local variables
+    #[allow(dead_code)]
+    pub statements: Vec<LowerStatement>,
 }
 
 impl<S: CompiledStage> CompiledDatabase<S> {
