@@ -1,14 +1,21 @@
 use crate::data::compiled::VariableInfo;
-use crate::data::diagnostic::ErrorGuaranteed;
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::LowerStatement;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{ContextDomainKind, ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
 use crate::front::values::Value;
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, Spanned, VariableDeclaration};
+use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, PortDirection, Spanned, VariableDeclaration};
+use crate::syntax::pos::Span;
+
+#[derive(Debug, Copy, Clone)]
+pub enum AccessDirection {
+    Read,
+    Write,
+}
 
 impl CompileState<'_, '_> {
     #[must_use]
@@ -50,16 +57,19 @@ impl CompileState<'_, '_> {
                     };
 
                     // check domain
-                    if let Some(domain) = ctx.domain_kind() {
-                        let init_domain = self.domain_of_value(init.span, &init_eval);
-                        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
-                            decl.span,
-                            &domain,
-                            init.span,
-                            &init_domain,
-                            DomainUserControlled::Source,
-                            "variable initializer must be assignable to context domain",
-                        );
+                    match ctx.domain() {
+                        ContextDomainKind::Specific(domain) => {
+                            let init_domain = self.domain_of_value(init.span, &init_eval);
+                            let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
+                                decl.span,
+                                &domain,
+                                init.span,
+                                &init_domain,
+                                DomainUserControlled::Source,
+                                "variable initializer must be assignable to context domain",
+                            );
+                        }
+                        ContextDomainKind::Passthrough => {}
                     }
 
                     // declare
@@ -71,41 +81,76 @@ impl CompileState<'_, '_> {
                 BlockStatementKind::Assignment(assignment) => {
                     let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
 
-                    let target = self.eval_expression_as_value(ctx, scope, target);
-                    let value = self.eval_expression_as_value(ctx, scope, value);
+                    let target_eval = self.eval_expression_as_value(ctx, scope, target);
+                    let value_eval = self.eval_expression_as_value(ctx, scope, value);
 
+                    // operator assignments are not implemented yet
                     if op.inner.is_some() {
                         let e = diags.report_todo(assignment.span, "assignment with operator");
                         result_statements.push(LowerStatement::Error(e));
                         continue;
                     }
 
-                    match (target, value) {
-                        (Value::ModulePort(target), Value::ModulePort(value)) => {
-                            let sync = match ctx {
-                                ExpressionContext::CombinatorialBlock => None,
-                                ExpressionContext::ClockedBlock(sync) => Some(sync.as_ref().map_inner(|d| *d)),
-                                _ => {
-                                    let e = diags.report_todo(assignment.span, "assignment outside of clocked or combinatorial block");
-                                    result_statements.push(LowerStatement::Error(e));
-                                    continue;
-                                }
-                            };
-
-                            let stmt = match self.check_assign_port_port(sync, assignment, target, value) {
-                                Ok(()) => LowerStatement::PortPortAssignment(target, value),
-                                Err(e) => LowerStatement::Error(e),
-                            };
-                            result_statements.push(stmt);
-                        }
-                        (Value::Error(e), _) | (_, Value::Error(e)) => {
+                    // check read_write
+                    let write_err = self.check_value_usable_as_direction(ctx, target.span, &target_eval, AccessDirection::Write);
+                    let read_err = self.check_value_usable_as_direction(ctx, value.span, &value_eval, AccessDirection::Read);
+                    match (write_err, read_err) {
+                        (Ok(()), Ok(())) => {}
+                        (Err(e), _) | (_, Err(e)) => {
                             result_statements.push(LowerStatement::Error(e));
-                        }
-                        _ => {
-                            let err = self.diags.report_todo(statement.span, "general assignment");
-                            result_statements.push(LowerStatement::Error(err));
+                            continue;
                         }
                     }
+
+                    // check domain
+                    let target_domain = self.domain_of_value(target.span, &target_eval);
+                    let value_domain = self.domain_of_value(value.span, &value_eval);
+
+                    let result = match ctx.domain() {
+                        ContextDomainKind::Passthrough => {
+                            // target/value need to be compatible, without additional constraints
+                            self.check_domain_crossing(
+                                target.span,
+                                &target_domain,
+                                value.span,
+                                &value_domain,
+                                DomainUserControlled::Both,
+                                "assignment target domain must be assignable from value domain",
+                            )
+                        }
+                        ContextDomainKind::Specific(domain) => {
+                            // target/domain and domain/value both need to be compatible
+                            let r0 = self.check_domain_crossing(
+                                target.span,
+                                &target_domain,
+                                ctx.span(),
+                                &domain,
+                                DomainUserControlled::Target,
+                                "assignment target domain must be assignable from context domain",
+                            );
+                            let r1 = self.check_domain_crossing(
+                                ctx.span(),
+                                &domain,
+                                value.span,
+                                &value_domain,
+                                DomainUserControlled::Source,
+                                "assignment context domain must be assignable from value domain",
+                            );
+                            r0.and(r1)
+                        }
+                    };
+                    match result {
+                        Ok(()) => {}
+                        Err(e) => {
+                            result_statements.push(LowerStatement::Error(e));
+                            continue;
+                        }
+                    }
+
+                    result_statements.push(LowerStatement::Assignment {
+                        target: Spanned { span: target.span, inner: target_eval },
+                        value: Spanned { span: value.span, inner: value_eval },
+                    });
                 }
                 BlockStatementKind::Expression(expression) => {
                     match ctx {
@@ -122,5 +167,92 @@ impl CompileState<'_, '_> {
         }
 
         result_statements
+    }
+
+    // TODO this could be much faster with proper LRValue-style tracking
+    pub fn check_value_usable_as_direction(&self, ctx: &ExpressionContext, value_span: Span, value: &Value, dir: AccessDirection) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+
+        match value {
+            // propagate error
+            &Value::Error(e) => Err(e),
+
+            // maybe assignable, depending on the details and context
+            &Value::ModulePort(port) => {
+                match (dir, self.compiled[port].direction) {
+                    (AccessDirection::Read, PortDirection::Input) => Ok(()),
+                    (AccessDirection::Write, PortDirection::Output) => Ok(()),
+                    (AccessDirection::Read, PortDirection::Output) =>
+                        Err(diags.report_simple("invalid read: cannot read from output port", value_span, "reading here")),
+                    (AccessDirection::Write, PortDirection::Input) =>
+                        Err(diags.report_simple("invalid write: cannot write to input port", value_span, "writing here")),
+                }
+            }
+            &Value::Wire(wire) => {
+                let info = &self.compiled[wire];
+
+                match (dir, ctx) {
+                    (AccessDirection::Read, ExpressionContext::CombinatorialBlock(_) | ExpressionContext::ClockedBlock(_)) =>
+                        Ok(()),
+                    (AccessDirection::Read, _) =>
+                        Err(diags.report_simple("invalid read: wire can only be read inside combinatorial or clocked block", value_span, "reading here")),
+                    (AccessDirection::Write, ExpressionContext::CombinatorialBlock(_) | ExpressionContext::ClockedBlock(_)) => {
+                        if info.has_declaration_value {
+                            Err(diags.report_simple("invalid write: wire already has declaration value", value_span, "writing here"))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    (AccessDirection::Write, _) =>
+                        Err(diags.report_simple("invalid write: wire can only be written inside combinatorial or clocked block", value_span, "writing here")),
+                }
+            }
+            &Value::Register(_) => {
+                match (dir, ctx) {
+                    (AccessDirection::Read, ExpressionContext::ClockedBlock(_) | ExpressionContext::CombinatorialBlock(_)) =>
+                        Ok(()),
+                    (AccessDirection::Read, _) =>
+                        Err(diags.report_simple("invalid read: register can only be read inside clocked or combinatorial block", value_span, "reading here")),
+                    (AccessDirection::Write, ExpressionContext::ClockedBlock(_)) =>
+                        Ok(()),
+                    (AccessDirection::Write, _) =>
+                        Err(diags.report_simple("invalid write: register can only be written inside clocked block", value_span, "writing here")),
+                }
+            }
+            Value::Variable(var) => {
+                match dir {
+                    AccessDirection::Read => Ok(()),
+                    AccessDirection::Write => {
+                        let info = &self.compiled.variables[*var];
+                        if info.mutable {
+                            Ok(())
+                        } else {
+                            let diag = Diagnostic::new("invalid write: variable is not mutable")
+                                .add_error(value_span, "writing here")
+                                .add_info(info.defining_id.span(), "variable declared here")
+                                .finish();
+                            Err(diags.report(diag))
+                        }
+                    }
+                }
+            }
+
+            // only readable assignable
+            Value::Never | Value::Unit | Value::BoolConstant(_) | Value::IntConstant(_) | Value::StringConstant(_) |
+            Value::Range(_) | Value::Binary(_, _, _) | Value::UnaryNot(_) | Value::FunctionReturn(_) |
+            Value::Module(_) | Value::GenericParameter(_) | Value::Constant(_) => {
+                match dir {
+                    AccessDirection::Read => Ok(()),
+                    AccessDirection::Write => {
+                        let e = diags.report_simple(
+                            format!("invalid write: {}", self.compiled.value_to_readable_str(self.source, self.parsed, value)),
+                            value_span,
+                            "writing here",
+                        );
+                        Err(e)
+                    }
+                }
+            }
+        }
     }
 }

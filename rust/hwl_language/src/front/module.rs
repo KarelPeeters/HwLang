@@ -1,6 +1,7 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
@@ -8,7 +9,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
 use crate::front::values::{ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, SyncDomain, WireDeclaration};
+use crate::syntax::ast::{ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -30,7 +31,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
-        let mut ctx_module = ExpressionContext::ModuleBody;
+        let mut ctx_module = ExpressionContext::ModuleBody(body.span);
 
         // first pass: populate scope with declarations
         for top_statement in statements {
@@ -39,11 +40,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     self.process_and_declare_const(scope_body, decl, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let reg = self.process_module_declaration_reg(module_item, scope_body, &mut ctx_module, decl);
+                    let reg = self.process_module_declaration_reg(module_item, scope_body, &ctx_module, decl);
                     module_regs.push(reg);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let wire = self.process_module_declaration_wire(module_item, scope_body, &mut ctx_module, decl);
+                    let wire = self.process_module_declaration_wire(module_item, scope_body, &ctx_module, decl);
                     module_wires.push(wire);
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
@@ -83,12 +84,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &mut ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
+    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
         let ty_span = ty.span;
         let init_span = init.span;
 
-        let sync = self.eval_sync_domain(scope_body, sync.inner.as_ref().map_inner(|v| &**v));
+        let sync = sync.as_ref().map_inner(|sync| {
+            sync.as_ref().map_inner(|v| &**v)
+        });
+        let sync = self.eval_sync_domain(scope_body, sync);
         let ty = self.eval_expression_as_ty(scope_body, ty);
         let init = self.eval_expression_as_value(ctx_module, scope_body, init);
 
@@ -99,7 +103,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         };
 
         // check domain
-        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+        let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
             id.span(),
             &ValueDomainKind::Const,
             init_span,
@@ -122,10 +126,10 @@ impl<'d, 'a> CompileState<'d, 'a> {
         (reg, init)
     }
 
-    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &mut ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
+    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
         let WireDeclaration { span: _, id, sync, ty, value } = decl;
 
-        let sync = self.eval_domain(scope_body, &sync.inner);
+        let sync = self.eval_domain(scope_body, sync.as_ref());
         let ty = self.eval_expression_as_ty(scope_body, ty);
 
         let value = match value {
@@ -140,7 +144,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 };
 
                 // check domain
-                let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+                let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
                     id.span(),
                     &ValueDomainKind::from_domain_kind(sync.clone()),
                     value_span,
@@ -160,6 +164,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             defining_id: id.clone(),
             domain: sync,
             ty,
+            has_declaration_value: value.is_some(),
         });
 
         let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Wire(wire))));
@@ -172,7 +177,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn process_module_block_combinatorial(&mut self, scope_module: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
 
-        let statements = self.visit_block(&mut ExpressionContext::CombinatorialBlock, scope_module, block);
+        let ctx = ExpressionContext::CombinatorialBlock(span);
+        let statements = self.visit_block(&ctx, scope_module, block);
 
         ModuleBlockCombinatorial {
             span,
@@ -184,11 +190,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
     #[must_use]
     fn process_module_block_clocked(&mut self, scope_module: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
         let &ClockedBlock {
-            span, span_keyword: _, span_domain, ref domain, ref block
+            span, span_keyword: _, ref domain, ref block
         } = clocked_block;
 
-        let domain = self.eval_sync_domain(scope_module, domain.as_ref().map_inner(|v| &**v));
-        let domain_spanned = Spanned { span: span_domain, inner: &domain };
+        let domain_span = domain.span;
+        let domain = self.eval_sync_domain(scope_module, domain.as_ref().map_inner(|v| {
+            v.as_ref().map_inner(|v| &**v)
+        }));
+        let domain_spanned = Spanned { span: domain_span, inner: &domain };
 
         let ctx = ExpressionContext::ClockedBlock(domain_spanned);
         let statements = self.visit_block(&ctx, scope_module, block);
@@ -202,7 +211,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     #[must_use]
-    fn process_module_instance(&mut self, ctx_module: &mut ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
+    fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance {
@@ -238,7 +247,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         };
 
         // check port connections
-        let port_connections = match self.check_module_instance_ports(&module_with_generics.ports, &connections) {
+        let port_connections = match self.check_module_instance_ports(ctx_module, &module_with_generics.ports, &connections) {
             Ok(p) => p,
             Err(e) => return ModuleStatement::Err(e),
         };
@@ -253,7 +262,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     // TODO allow different declaration and use orderings, be careful about interactions
-    fn check_module_instance_ports(&mut self, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
+    fn check_module_instance_ports(&mut self, ctx_module: &ExpressionContext, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut any_err = Ok(());
@@ -316,9 +325,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 PortKind::Normal { domain: domain_port, ty: ty_port } => {
                     let domain_value = self.domain_of_value(connection_value_span, connection_value);
 
-                    let (e_domain, e_ty) = match port_dir {
+                    let (e_access, e_domain, e_ty) = match port_dir {
                         PortDirection::Input => {
-                            let e_domain = self.check_domain_assign(
+                            let e_access = self.check_value_usable_as_direction(
+                                ctx_module,
+                                connection_value_span,
+                                connection_value,
+                                AccessDirection::Read,
+                            );
+                            let e_domain = self.check_domain_crossing(
                                 port_ast.id.span,
                                 &ValueDomainKind::from_domain_kind(domain_port.clone()),
                                 connection_value_span,
@@ -332,10 +347,16 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 ty_port,
                                 connection_value,
                             );
-                            (e_domain, e_ty)
+                            (e_access, e_domain, e_ty)
                         }
                         PortDirection::Output => {
-                            let e_domain = self.check_domain_assign(
+                            let e_access = self.check_value_usable_as_direction(
+                                ctx_module,
+                                connection_value_span,
+                                connection_value,
+                                AccessDirection::Write,
+                            );
+                            let e_domain = self.check_domain_crossing(
                                 connection_value_span,
                                 &domain_value,
                                 port_ast.id.span,
@@ -353,13 +374,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 // TODO this is hacky, hopefully the next type system rewrite can fix this
                                 &Value::ModulePort(port),
                             );
-                            (e_domain, e_ty)
+                            (e_access, e_domain, e_ty)
                         }
                     };
 
-                    match (e_domain, e_ty) {
-                        (Ok(()), Ok(())) => connection_value.clone(),
-                        (Err(e), _) | (_, Err(e)) => Value::Error(e),
+                    match (e_access, e_domain, e_ty) {
+                        (Ok(()), Ok(()), Ok(())) => connection_value.clone(),
+                        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Value::Error(e),
                     }
                 }
             };
@@ -375,7 +396,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expr_as_module_with_generics(
         &mut self,
         keyword_span: Span,
-        ctx_module: &mut ExpressionContext,
+        ctx_module: &ExpressionContext,
         scope: Scope,
         module_expr: &ast::Expression,
         generic_args: &Option<ast::Args<TypeOrValue>>,
@@ -445,83 +466,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     .finish();
                 Err(diags.report(diag))
             }
-        }
-    }
-
-    // TODO this will get significantly refactored, assignments between ports are just a singel special case
-    pub fn check_assign_port_port(&mut self, block_sync: Option<Spanned<&SyncDomain<Value>>>, assignment: &ast::Assignment, target: ModulePort, value: ModulePort) -> Result<(), ErrorGuaranteed> {
-        let span = assignment.span;
-        let &ModulePortInfo { ast: target_ast, direction: target_dir, kind: ref target_kind } = &self.compiled[target];
-        let &ModulePortInfo { ast: value_ast, direction: value_dir, kind: ref value_kind } = &self.compiled[value];
-
-        // check item
-        if target_ast.item != value_ast.item {
-            return Err(self.diags.report_internal_error(span, "port assignment between different modules"));
-        }
-
-        // check direction
-        if target_dir != PortDirection::Output {
-            return Err(self.diags.report_internal_error(assignment.target.span, "port assignment to non-output"));
-        }
-        if value_dir != PortDirection::Input {
-            // TODO allow read-back from output port under certain conditions
-            //   (ie. if this is the same block that has already written to said output)
-            return Err(self.diags.report_internal_error(assignment.value.span, "port assignment from non-input"));
-        }
-
-        // TODO check context: we should be in a combinatorial block,
-        //   or a clocked block with the same clock domain
-
-        match (target_kind, value_kind) {
-            // TODO careful about delta cycles and the verilog equivalent!
-            (PortKind::Clock, PortKind::Clock) =>
-                Err(self.diags.report_todo(span, "clock assignment")),
-            (PortKind::Normal { domain: target_sync, ty: target_ty }, PortKind::Normal { domain: value_sync, ty: value_ty }) => {
-                match block_sync {
-                    None => {
-                        // async block, we just need source->target to be valid
-                        self.check_domain_assign(
-                            assignment.target.span,
-                            &ValueDomainKind::from_domain_kind(target_sync.clone()),
-                            assignment.value.span,
-                            &ValueDomainKind::from_domain_kind(value_sync.clone()),
-                            DomainUserControlled::Both,
-                            "in a combinatorial block, for each assignment, target and source must be in the same domain",
-                        )?;
-                    }
-                    Some(Spanned { span: block_sync_span, inner: block_sync }) => {
-                        // clocked block, we need source->block and block->target to be valid
-                        let block_sync = ValueDomainKind::Sync(block_sync.clone());
-
-                        let result_0 = self.check_domain_assign(
-                            assignment.target.span,
-                            &ValueDomainKind::from_domain_kind(target_sync.clone()),
-                            block_sync_span,
-                            &block_sync,
-                            DomainUserControlled::Target,
-                            "in a clocked block, each assignment target must be in the same domain as the block",
-                        );
-                        let result_1 = self.check_domain_assign(
-                            block_sync_span,
-                            &block_sync,
-                            assignment.value.span,
-                            &ValueDomainKind::from_domain_kind(value_sync.clone()),
-                            DomainUserControlled::Source,
-                            "in a clocked block, each source must be in the same domain as the block",
-                        );
-
-                        result_0?;
-                        result_1?;
-                    }
-                }
-
-                // TODO fix this once we support type-type checking
-                let _ = value_ty;
-                self.check_type_contains(None, assignment.value.span, &target_ty, &Value::ModulePort(value))?;
-
-                Ok(())
-            }
-            _ => Err(self.diags.report_simple("port assignment between different port kinds", span, "assignment")),
         }
     }
 }

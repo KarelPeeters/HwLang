@@ -296,8 +296,7 @@ pub struct CombinatorialBlock {
 pub struct ClockedBlock {
     pub span: Span,
     pub span_keyword: Span,
-    pub span_domain: Span,
-    pub domain: SyncDomain<Box<Expression>>,
+    pub domain: Spanned<SyncDomain<Box<Expression>>>,
     pub block: Block<BlockStatement>,
 }
 

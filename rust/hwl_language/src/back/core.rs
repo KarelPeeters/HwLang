@@ -10,7 +10,7 @@ use crate::front::scope::Visibility;
 use crate::front::types::{Constructor, GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, SyncDomain};
+use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
@@ -114,7 +114,7 @@ fn generate_module_source(
         _ => {
             diag.report_internal_error(item_ast.span, "trying to lower module with value that is not a module");
             return format!("// error module declaration of {module_name}");
-        },
+        }
     };
 
     // TODO build this in a single pass?
@@ -187,14 +187,15 @@ fn module_body_to_verilog(
     }
 
     for &(wire, ref value) in wires {
-        let WireInfo { defining_item: _, defining_id, domain, ty } = &compiled[wire];
+        let WireInfo { defining_item: _, defining_id, domain, ty, has_declaration_value: _ } = &compiled[wire];
 
         let name_str = compiled.defining_id_to_readable_string(defining_id);
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, map, module_span, ty));
         let comment_info = sync_ty_to_comment_str(source, parsed, compiled, domain, ty);
 
         let (keyword_str, assign_str) = if let Some(value) = value {
-            let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, defining_id.span(), value);
+            let value_spanned = Spanned { span: defining_id.span(), inner: value };
+            let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned);
             ("wire", format!(" = {}", value_str))
         } else {
             ("reg", "".to_string())
@@ -220,7 +221,7 @@ fn module_body_to_verilog(
                 // TODO add metadata pointing to source as comments
                 swriteln!(f, "{I}always @(*) begin");
                 for statement in statements {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(parsed, compiled, statement));
+                    swriteln!(f, "{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
                 }
                 swriteln!(f, "{I}end");
             }
@@ -256,11 +257,11 @@ fn module_body_to_verilog(
                 swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
                 swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
                 for statement in on_reset {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(parsed, compiled, statement));
+                    swriteln!(f, "{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
                 }
                 swriteln!(f, "{I}{I}end else begin");
                 for statement in on_block {
-                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(parsed, compiled, statement));
+                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
                 }
                 swriteln!(f, "{I}{I}end");
 
@@ -293,7 +294,8 @@ fn module_body_to_verilog(
                     swriteln!(f);
                     let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
                     for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
-                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_to_verilog(diag, parsed, compiled, &signal_map, connection.span, &connection.inner));
+                        let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref());
+                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_str);
                         // no trailing comma
                         if i != child_port_connections.vec.len() - 1 {
                             swrite!(f, ",");
@@ -313,12 +315,20 @@ fn module_body_to_verilog(
     result
 }
 
-fn statement_to_string(parsed: &ParsedDatabase, compiled: &CompiledDatabase, statement: &LowerStatement) -> String {
+fn statement_to_string(
+    diag: &Diagnostics,
+    parsed: &ParsedDatabase,
+    compiled: &CompiledDatabase,
+    signal_map: &IndexMap<Signal, SignalName>,
+    statement: &LowerStatement,
+) -> String {
     match statement {
-        &LowerStatement::PortPortAssignment(target, value) => {
-            let target_str = &parsed.module_port_ast(compiled[target].ast).id.string;
-            let value_str = &parsed.module_port_ast(compiled[value].ast).id.string;
-            format!("{target_str} <= {value_str};")
+        LowerStatement::Assignment { target, value } => {
+            // TODO create shadow variables for all assignments inside blocks, and only assign to those
+            //  then finally at the end of the block, non-blocking assign to everything
+            let target_str = value_to_verilog(diag, parsed, compiled, signal_map, target.as_ref());
+            let value_str = value_to_verilog(diag, parsed, compiled, signal_map, value.as_ref());
+            format!("{target_str} = {value_str};")
         }
         &LowerStatement::Error(_) => {
             "// error statement".to_string()
@@ -430,10 +440,9 @@ fn value_to_verilog(
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     signal_map: &IndexMap<Signal, SignalName>,
-    span: Span,
-    value: &Value,
+    value: Spanned<&Value>,
 ) -> String {
-    value_to_verilog_inner(diag, parsed, compiled, signal_map, span, value)
+    value_to_verilog_inner(diag, parsed, compiled, signal_map, value)
         .unwrap_or_else(|_| "/* error */".to_string())
 }
 
@@ -443,9 +452,9 @@ fn value_to_verilog_inner(
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     signal_map: &IndexMap<Signal, SignalName>,
-    span: Span,
-    value: &Value,
+    value: Spanned<&Value>,
 ) -> Result<String, ErrorGuaranteed> {
+    let Spanned { span, inner: value } = value;
     match value {
         &Value::Error(e) => Err(e),
         &Value::GenericParameter(_) =>
@@ -459,13 +468,13 @@ fn value_to_verilog_inner(
         Value::Binary(op, a, b) => {
             // TODO reduce the amount of parentheses
             let op = binary_op_to_verilog(diag, span, *op)?;
-            let a = value_to_verilog_inner(diag, parsed, compiled, signal_map, span, a)?;
-            let b = value_to_verilog_inner(diag, parsed, compiled, signal_map, span, b)?;
+            let a = value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: a })?;
+            let b = value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: b })?;
             Ok(format!("({} {} {})", a, op, b))
-        },
+        }
         Value::UnaryNot(x) => {
-            Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, signal_map, span, x)?))
-        },
+            Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: x })?))
+        }
 
         &Value::Wire(wire) => {
             match signal_map.get(&Signal::Wire(wire)) {
@@ -483,7 +492,7 @@ fn value_to_verilog_inner(
             Err(diag.report_todo(span, "value_to_verilog for variables")),
         // forward to the inner value
         &Value::Constant(c) =>
-            value_to_verilog_inner(diag, parsed, compiled, signal_map, span, &compiled[c].value),
+            value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: &compiled[c].value }),
 
         Value::Never | Value::Unit | Value::StringConstant(_) | Value::Range(_) | Value::FunctionReturn(_) | Value::Module(_) =>
             Err(diag.report_internal_error(span, format!("value '{value:?}' should not materialize"))),
@@ -601,7 +610,7 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
                 Some(value) => value_evaluate_int(diag, compiled, map, span, value),
                 None => Err(diag.report_internal_error(span, "unbound generic parameter")),
             }
-        },
+        }
         Value::ModulePort(_) => Err(diag.report_todo(span, "value_evaluate_int value ModulePort")),
         Value::Range(_) => Err(diag.report_todo(span, "value_evaluate_int value Range")),
         Value::FunctionReturn(_) => Err(diag.report_todo(span, "value_evaluate_int value Function")),

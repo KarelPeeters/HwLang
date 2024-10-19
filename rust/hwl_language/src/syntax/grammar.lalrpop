@@ -178,12 +178,10 @@ ModuleStatementKind: ModuleStatementKind = {
     },
     // clocked block
     <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R> => {
-        let span_domain = clock.span.join(reset.span);
         let inner = ClockedBlock {
-            domain: SyncDomain { clock, reset },
+            domain: Spanned { span: clock.span.join(reset.span), inner: SyncDomain { clock, reset } },
             block,
             span: loc.span(start, end),
-            span_domain,
             span_keyword: loc.span(start, end_keyword),
         };
         ModuleStatementKind::ClockedBlock(inner)

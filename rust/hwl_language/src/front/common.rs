@@ -18,29 +18,56 @@ use indexmap::IndexMap;
 /// TODO create a wrapper type for (ExpressionContext, Scope), they're very often used together
 #[derive(Debug)]
 pub enum ExpressionContext<'a> {
-    Type,
-    Const,
+    Type(Span),
+    Const(Span),
     /// Used in function body as part of normal statements or expressions.
     // TODO just get the return type from the function item as-needed
     FunctionBody { func_item: Item, ret_ty_span: Span, ret_ty: Type },
-    ModuleBody,
-    CombinatorialBlock,
+    /// Used for wire expressions or instance port connections.
+    ModuleBody(Span),
+    CombinatorialBlock(Span),
     ClockedBlock(Spanned<&'a SyncDomain<Value>>),
 }
 
+#[derive(Debug, Clone)]
+pub enum ContextDomainKind<V = ValueDomainKind> {
+    Specific(V),
+    Passthrough,
+}
+
 impl ExpressionContext<'_> {
-    // TODO think about and clarify what this means
-    pub fn domain_kind(&self) -> Option<ValueDomainKind> {
+    pub fn span(&self) -> Span {
         match self {
-            ExpressionContext::Type => Some(ValueDomainKind::Const),
-            ExpressionContext::Const => Some(ValueDomainKind::Const),
-            &ExpressionContext::FunctionBody { func_item, .. } => Some(ValueDomainKind::FunctionBody(func_item)),
-            ExpressionContext::ModuleBody => None,
-            ExpressionContext::CombinatorialBlock => None,
-            ExpressionContext::ClockedBlock(domain) => Some(ValueDomainKind::Sync(domain.inner.clone())),
+            &ExpressionContext::Type(span) => span,
+            &ExpressionContext::Const(span) => span,
+            &ExpressionContext::FunctionBody { ret_ty_span, .. } => ret_ty_span,
+            &ExpressionContext::ModuleBody(span) => span,
+            &ExpressionContext::CombinatorialBlock(span) => span,
+            ExpressionContext::ClockedBlock(spanned) => spanned.span,
+        }
+    }
+
+    pub fn domain(&self) -> ContextDomainKind {
+        match self {
+            ExpressionContext::Type(_) => ContextDomainKind::Specific(ValueDomainKind::Const),
+            ExpressionContext::Const(_) => ContextDomainKind::Specific(ValueDomainKind::Const),
+            &ExpressionContext::FunctionBody { func_item, .. } => ContextDomainKind::Specific(ValueDomainKind::FunctionBody(func_item)),
+            ExpressionContext::ModuleBody(_) => ContextDomainKind::Passthrough,
+            ExpressionContext::CombinatorialBlock(_) => ContextDomainKind::Passthrough,
+            ExpressionContext::ClockedBlock(domain) => ContextDomainKind::Specific(ValueDomainKind::Sync(domain.inner.clone())),
         }
     }
 }
+
+impl<V> ContextDomainKind<V> {
+    pub fn as_ref(&self) -> ContextDomainKind<&V> {
+        match self {
+            ContextDomainKind::Specific(domain) => ContextDomainKind::Specific(domain),
+            ContextDomainKind::Passthrough => ContextDomainKind::Passthrough,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {

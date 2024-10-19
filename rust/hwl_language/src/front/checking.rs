@@ -121,8 +121,8 @@ impl CompileState<'_, '_> {
     }
 
     /// Checks whether the source sync domain can be assigned to the target sync domain.
-    /// This is equivalent to checking whether source is more contained that target.
-    pub fn check_domain_assign(
+    /// This is equivalent to checking whether source is more constrained that target.
+    pub fn check_domain_crossing(
         &self,
         target_span: Span,
         target: &ValueDomainKind,
@@ -204,7 +204,6 @@ impl CompileState<'_, '_> {
             Ok(())
         }
     }
-
 
     pub fn type_of_value(&self, span: Span, value: &Value) -> Type {
         let diags = self.diags;

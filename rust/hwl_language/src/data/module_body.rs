@@ -1,8 +1,8 @@
-use crate::data::compiled::{Item, ModulePort, Register, Wire};
+use crate::data::compiled::{Item, Register, Wire};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::types::{GenericArguments, PortConnections};
 use crate::front::values::Value;
-use crate::syntax::ast::SyncDomain;
+use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 
 // TODO include body comments for eg. the values that values were resolved to
@@ -49,6 +49,6 @@ pub struct ModuleInstance {
 
 #[derive(Debug, Clone)]
 pub enum LowerStatement {
-    PortPortAssignment(ModulePort, ModulePort),
+    Assignment { target: Spanned<Value>, value: Spanned<Value> },
     Error(ErrorGuaranteed),
 }

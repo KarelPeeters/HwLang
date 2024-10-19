@@ -118,7 +118,7 @@ impl CompileState<'_, '_> {
                                         domain: match &sync.inner {
                                             DomainKind::Async => DomainKind::Async,
                                             DomainKind::Sync(SyncDomain { clock, reset }) => {
-                                                let ctx = &mut ExpressionContext::Type;
+                                                let ctx = &ExpressionContext::Type(kind.span);
                                                 let clock = s.eval_expression_as_value(ctx, scope_ports, clock);
                                                 let reset = s.eval_expression_as_value(ctx, scope_ports, reset);
                                                 DomainKind::Sync(SyncDomain { clock, reset })
@@ -155,7 +155,7 @@ impl CompileState<'_, '_> {
             ast::Item::Const(ref cst) => {
                 let cst = self.process_const(file_scope, cst);
                 MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
-            },
+            }
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
                 self.resolve_new_generic_def(item, file_scope, Some(params), |s, args, scope_inner| {
                     // no need to use args for anything, they are mostly used for nominal type uniqueness
@@ -258,8 +258,8 @@ impl CompileState<'_, '_> {
             let inner = self.eval_expression_as_ty(scope, ty);
             Spanned { span: ty.span, inner }
         });
-        let mut ctx = ExpressionContext::Const;
-        let value_unchecked = self.eval_expression_as_value(&mut ctx, scope, value);
+        let ctx = ExpressionContext::Const(decl.span);
+        let value_unchecked = self.eval_expression_as_value(&ctx, scope, value);
 
         // check or infer type
         let (ty_eval, value_eval) = match ty_eval {
@@ -273,7 +273,7 @@ impl CompileState<'_, '_> {
         };
 
         // check domain
-        let _: Result<(), ErrorGuaranteed> = self.check_domain_assign(
+        let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
             id.span(),
             &ValueDomainKind::Const,
             value.span,

@@ -198,6 +198,7 @@ pub struct WireInfo {
 
     pub domain: DomainKind<Value>,
     pub ty: Type,
+    pub has_declaration_value: bool,
 }
 
 #[derive(Debug)]

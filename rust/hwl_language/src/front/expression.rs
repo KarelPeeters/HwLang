@@ -372,8 +372,8 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        let mut ctx = ExpressionContext::Type;
-        let entry = self.eval_expression(&mut ctx, scope, expr);
+        let ctx = ExpressionContext::Type(expr.span);
+        let entry = self.eval_expression(&ctx, scope, expr);
 
         match entry {
             // TODO unify these error strings somewhere
@@ -401,21 +401,26 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> DomainKind<Value> {
-        match domain {
+    pub fn eval_domain(&mut self, scope: Scope, domain: Spanned<&DomainKind<Box<Expression>>>) -> DomainKind<Value> {
+        match domain.inner {
             DomainKind::Async =>
                 DomainKind::Async,
-            DomainKind::Sync(sync_domain) =>
-                DomainKind::Sync(self.eval_sync_domain(scope, SyncDomain { clock: &sync_domain.clock, reset: &sync_domain.reset })),
+            DomainKind::Sync(sync_domain) => {
+                let sync = SyncDomain { clock: &*sync_domain.clock, reset: &*sync_domain.reset };
+                let sync = Spanned { span: domain.span, inner: sync };
+                DomainKind::Sync(self.eval_sync_domain(scope, sync))
+            }
         }
     }
 
-    pub fn eval_sync_domain(&mut self, scope: Scope, sync: SyncDomain<&Expression>) -> SyncDomain<Value> {
+    pub fn eval_sync_domain(&mut self, scope: Scope, sync: Spanned<SyncDomain<&Expression>>) -> SyncDomain<Value> {
+        let Spanned { span, inner: sync } = sync;
         let SyncDomain { clock, reset } = sync;
+
         // TODO is this the right context?
-        let mut ctx = ExpressionContext::ModuleBody;
-        let clock_value_unchecked = self.eval_expression_as_value(&mut ctx, scope, clock);
-        let reset_value_unchecked = self.eval_expression_as_value(&mut ctx, scope, reset);
+        let ctx = ExpressionContext::ModuleBody(span);
+        let clock_value_unchecked = self.eval_expression_as_value(&ctx, scope, clock);
+        let reset_value_unchecked = self.eval_expression_as_value(&ctx, scope, reset);
 
         // check that clock is a clock
         let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
