@@ -1,11 +1,22 @@
-import std.types.[bool, bits, uint, int_range];
+import std.types.[bool, bits, uint, int_range, natural];
 
 pub module top ports(
     clk: in clock,
     rst: in async bool,
-    x: in sync(clk, rst) bits(4),
-    y: out sync(clk, rst) bits(4),
+
+    x: in sync(clk, rst) bool,
+    y: out sync(clk, rst) bool,
+    z: out sync(clk, rst) bool,
 ) body {
-    reg r: sync(clk, rst) int_range(0..8) = 0;
-    wire w: sync(clk, rst) int_range(0..8) = r;
+    reg r: sync(clk, rst) bool = false;
+
+    clocked(clk, rst) {
+        r = !r;
+        // TODO where should the reset value of ports like "y" be set?
+        y = r;
+    }
+
+//    clocked(clk, rst) {
+//        z = r;
+//    }
 }

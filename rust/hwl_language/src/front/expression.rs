@@ -2,6 +2,7 @@ use crate::data::compiled::{GenericParameter, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
+use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -19,7 +20,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
-    pub fn eval_expression(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> ScopedEntryDirect {
+    pub fn eval_expression(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> ScopedEntryDirect {
         let diags = self.diags;
 
         match expr.inner {
@@ -28,9 +29,9 @@ impl CompileState<'_, '_> {
             ExpressionKind::Any =>
                 ScopedEntryDirect::Immediate(TypeOrValue::Type(Type::Any)),
             ExpressionKind::Wrapped(ref inner) =>
-                self.eval_expression(ctx, scope, inner),
+                self.eval_expression(ctx, collector, inner),
             ExpressionKind::Id(ref id) => {
-                let entry = match self.compiled[scope].find(&self.compiled.scopes, diags, id, Visibility::Private) {
+                let entry = match self.compiled[ctx.scope].find(&self.compiled.scopes, diags, id, Visibility::Private) {
                     Err(e) => return ScopedEntryDirect::Error(e),
                     Ok(entry) => entry,
                 };
@@ -58,7 +59,7 @@ impl CompileState<'_, '_> {
                     diags.report_todo(index_ty.span, "for loop index type");
                 }
 
-                let iter = self.eval_expression_as_value(ctx, scope, iter);
+                let iter = self.eval_expression_as_value(ctx, collector, iter);
                 let iter = self.require_int_range_direct(iter_span, &iter);
 
                 let (start, end) = match &iter {
@@ -91,35 +92,39 @@ impl CompileState<'_, '_> {
                     mutable: false,
                 });
 
-                let scope_index = self.compiled.scopes.new_child(scope, body.span, Visibility::Private);
+                let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);
                 let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
                 self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
 
                 // typecheck body
-                let _ = self.visit_block(ctx, scope_index, &body);
+                let _ = self.visit_block(&ctx.with_scope(scope_index), collector, &body);
 
                 // for loops always return unit
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Unit))
             }
             ExpressionKind::Return(ref ret_value) => {
                 let ret_value = ret_value.as_ref()
-                    .map(|v| (v.span, self.eval_expression_as_value(ctx, scope, v)));
+                    .map(|v| (v.span, self.eval_expression_as_value(ctx, collector, v)));
 
-                match ctx {
-                    &ExpressionContext::FunctionBody { func_item: _, ret_ty_span, ref ret_ty } => {
-                        match (ret_value, ret_ty) {
+                match ctx.function_return_ty {
+                    Some(ret_ty) => {
+                        match (ret_value, ret_ty.inner) {
                             (None, Type::Unit | Type::Error(_)) => {
                                 // accept
                             }
                             (None, _) => {
-                                diags.report_simple("missing return value", expr.span, "return");
+                                let diag = Diagnostic::new("missing return value")
+                                    .add_info(ret_ty.span, "function return type defined here")
+                                    .add_error(expr.span, "missing return value here")
+                                    .finish();
+                                diags.report(diag);
                             }
-                            (Some((ret_value_span, ret_value)), expected_ret_ty) => {
-                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty_span), ret_value_span, expected_ret_ty, &ret_value);
+                            (Some((ret_value_span, ret_value)), ret_ty_inner) => {
+                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty.span), ret_value_span, ret_ty_inner, &ret_value);
                             }
                         }
                     }
-                    _ => {
+                    None => {
                         diags.report_simple("return outside function body", expr.span, "return");
                     }
                 };
@@ -158,7 +163,7 @@ impl CompileState<'_, '_> {
 
                 let mut map_point = |point: &Option<Box<Expression>>| {
                     point.as_ref()
-                        .map(|p| Box::new(self.eval_expression_as_value(ctx, scope, p)))
+                        .map(|p| Box::new(self.eval_expression_as_value(ctx, collector, p)))
                 };
 
                 let start = map_point(start);
@@ -186,18 +191,18 @@ impl CompileState<'_, '_> {
                         Value::Binary(
                             BinaryOp::Sub,
                             Box::new(Value::IntConstant(BigInt::ZERO)),
-                            Box::new(self.eval_expression_as_value(ctx, scope, inner)),
+                            Box::new(self.eval_expression_as_value(ctx, collector, inner)),
                         )
                     }
                     UnaryOp::Not =>
-                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, scope, inner))),
+                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, collector, inner))),
                 };
 
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
             }
             ExpressionKind::BinaryOp(op, ref left, ref right) => {
-                let left = self.eval_expression_as_value(ctx, scope, left);
-                let right = self.eval_expression_as_value(ctx, scope, right);
+                let left = self.eval_expression_as_value(ctx, collector, left);
+                let right = self.eval_expression_as_value(ctx, collector, right);
 
                 let result = Value::Binary(op, Box::new(left), Box::new(right));
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
@@ -211,8 +216,8 @@ impl CompileState<'_, '_> {
             ExpressionKind::DotIntIndex(_, _) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
-                let target_entry = self.eval_expression(ctx, scope, target);
-                let args_entry = args.map_inner(|e| self.eval_expression_as_ty_or_value(ctx, scope, e));
+                let target_entry = self.eval_expression(ctx, collector, target);
+                let args_entry = args.map_inner(|e| self.eval_expression_as_ty_or_value(ctx, collector, e));
 
                 match target_entry {
                     ScopedEntryDirect::Constructor(constr) => {
@@ -237,7 +242,7 @@ impl CompileState<'_, '_> {
                 }
             }
             ExpressionKind::Builtin(ref args) => {
-                match self.eval_builtin_call(ctx, scope, expr.span, args) {
+                match self.eval_builtin_call(ctx, collector, expr.span, args) {
                     Ok(result) => MaybeConstructor::Immediate(result),
                     Err(e) => MaybeConstructor::Error(e),
                 }
@@ -358,8 +363,8 @@ impl CompileState<'_, '_> {
         Ok((result, generic_args))
     }
 
-    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> TypeOrValue {
-        let entry = self.eval_expression(ctx, scope, expr);
+    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> TypeOrValue {
+        let entry = self.eval_expression(ctx, collector, expr);
 
         match entry {
             ScopedEntryDirect::Immediate(entry) => entry,
@@ -372,8 +377,8 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        let ctx = ExpressionContext::Type(expr.span);
-        let entry = self.eval_expression(&ctx, scope, expr);
+        let ctx = ExpressionContext::constant(expr.span, scope);
+        let entry = self.eval_expression(&ctx, &mut MaybeDriverCollector::None, expr);
 
         match entry {
             // TODO unify these error strings somewhere
@@ -388,8 +393,12 @@ impl CompileState<'_, '_> {
         }
     }
 
-    pub fn eval_expression_as_value(&mut self, ctx: &ExpressionContext, scope: Scope, expr: &Expression) -> Value {
-        let entry = self.eval_expression(ctx, scope, expr);
+    pub fn eval_expression_as_value(
+        &mut self,
+        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
+        expr: &Expression,
+    ) -> Value {
+        let entry = self.eval_expression(ctx, collector, expr);
 
         match entry {
             ScopedEntryDirect::Constructor(_) => {
@@ -414,13 +423,13 @@ impl CompileState<'_, '_> {
     }
 
     pub fn eval_sync_domain(&mut self, scope: Scope, sync: Spanned<SyncDomain<&Expression>>) -> SyncDomain<Value> {
-        let Spanned { span, inner: sync } = sync;
+        let Spanned { span: _, inner: sync } = sync;
         let SyncDomain { clock, reset } = sync;
 
-        // TODO is this the right context?
-        let ctx = ExpressionContext::ModuleBody(span);
-        let clock_value_unchecked = self.eval_expression_as_value(&ctx, scope, clock);
-        let reset_value_unchecked = self.eval_expression_as_value(&ctx, scope, reset);
+        let ctx = ExpressionContext::passthrough(scope);
+        let mut collector = MaybeDriverCollector::None;
+        let clock_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, clock);
+        let reset_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, reset);
 
         // check that clock is a clock
         let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
@@ -460,8 +469,7 @@ impl CompileState<'_, '_> {
 
     fn eval_builtin_call(
         &mut self,
-        ctx: &ExpressionContext,
-        scope: Scope,
+        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
         expr_span: Span,
         args: &ast::Args,
     ) -> Result<TypeOrValue, ErrorGuaranteed> {
@@ -474,7 +482,7 @@ impl CompileState<'_, '_> {
                 if let Some(name) = name {
                     diags.report_simple("named arguments are not allowed for __builtin calls", name.span, "named argument");
                 }
-                let inner = self.eval_expression_as_ty_or_value(ctx, scope, arg_expr);
+                let inner = self.eval_expression_as_ty_or_value(ctx, collector, arg_expr);
                 Spanned { span: arg.span, inner }
             })
             .collect_vec();

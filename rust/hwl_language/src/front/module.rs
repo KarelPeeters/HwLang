@@ -1,9 +1,9 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::module_body::{ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
+use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
@@ -14,40 +14,41 @@ use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Itertools};
+use itertools::{enumerate, zip_eq, Itertools};
 use std::cmp::min;
+use std::hash::Hash;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
         let ast::ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = module_ast;
-        let ast::Block { span: _, statements } = body;
+        let ast::Block { span: _, statements: module_statements } = body;
 
         // TODO do we event want to convert to some simpler IR here,
         //   or just leave the backend to walk the AST if it wants?
-        let mut module_statements = vec![];
+        let mut module_statements_lower = vec![];
         let mut module_regs = vec![];
         let mut module_wires = vec![];
 
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
         let scope_body = self.compiled.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
-        let mut ctx_module = ExpressionContext::ModuleBody(body.span);
+        let mut drivers = Drivers::default();
 
         // first pass: populate scope with declarations
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future regs and wires
-        for top_statement in statements {
-            match &top_statement.inner {
+        for module_statement in module_statements {
+            match &module_statement.inner {
                 ModuleStatementKind::ConstDeclaration(decl) => {
                     self.process_and_declare_const(scope_body, decl, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let reg = self.process_module_declaration_reg(module_item, scope_body, &ctx_module, decl);
-                    module_regs.push(reg);
+                    let (reg, init) = self.process_module_declaration_reg(module_item, scope_body, decl);
+                    module_regs.push((reg, init));
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let wire = self.process_module_declaration_wire(module_item, scope_body, &ctx_module, decl);
-                    module_wires.push(wire);
+                    let (wire, value) = self.process_module_declaration_wire(module_item, scope_body, decl);
+                    module_wires.push((wire, value));
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
                 ModuleStatementKind::ClockedBlock(_) => {}
@@ -56,37 +57,40 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
 
         // second pass: codegen for the actual blocks
-        for top_statement in statements {
-            match &top_statement.inner {
+        for (statement_index, module_statement) in enumerate(module_statements) {
+            match &module_statement.inner {
                 // declarations were already handled
                 ModuleStatementKind::ConstDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
                 ModuleStatementKind::WireDeclaration(_) => {}
                 // actual blocks
                 ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
-                    let block = self.process_module_block_combinatorial(scope_body, comb_block);
-                    module_statements.push(ModuleStatement::Combinatorial(block));
+                    let block = self.process_module_block_combinatorial(&mut drivers, scope_body, statement_index, comb_block);
+                    module_statements_lower.push(ModuleStatement::Combinatorial(block));
                 }
                 ModuleStatementKind::ClockedBlock(ref clocked_block) => {
-                    let block = self.process_module_block_clocked(scope_body, clocked_block);
-                    module_statements.push(ModuleStatement::Clocked(block));
+                    let block = self.process_module_block_clocked(&mut drivers, scope_body, statement_index, clocked_block);
+                    module_statements_lower.push(ModuleStatement::Clocked(block));
                 }
                 // instances
                 ModuleStatementKind::Instance(instance) => {
-                    let block = self.process_module_instance(&mut ctx_module, scope_body, instance);
-                    module_statements.push(block);
+                    let block = self.process_module_instance(&mut drivers, scope_body, statement_index, instance);
+                    module_statements_lower.push(block);
                 }
             }
         }
 
+        // check that output_ports/wires/registers are each written by exactly one driver
+        // TODO
+
         ModuleChecked {
-            statements: module_statements,
+            statements: module_statements_lower,
             regs: module_regs,
             wires: module_wires,
         }
     }
 
-    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &RegDeclaration) -> (Register, Value) {
+    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, decl: &RegDeclaration) -> (Register, Value) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
         let ty_span = ty.span;
         let init_span = init.span;
@@ -95,8 +99,14 @@ impl<'d, 'a> CompileState<'d, 'a> {
             sync.as_ref().map_inner(|v| &**v)
         });
         let sync = self.eval_sync_domain(scope_body, sync);
+
         let ty = self.eval_expression_as_ty(scope_body, ty);
-        let init = self.eval_expression_as_value(ctx_module, scope_body, init);
+
+        let init = self.eval_expression_as_value(
+            &ExpressionContext::constant(init_span, scope_body),
+            &mut MaybeDriverCollector::None,
+            init,
+        );
 
         // check ty
         let init = match self.check_type_contains(Some(ty_span), init_span, &ty, &init) {
@@ -128,7 +138,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
         (reg, init)
     }
 
-    fn process_module_declaration_wire(&mut self, module_item: Item, scope_body: Scope, ctx_module: &ExpressionContext, decl: &WireDeclaration) -> (Wire, Option<Value>) {
+    fn process_module_declaration_wire(
+        &mut self, module_item: Item,
+        scope_body: Scope,
+        decl: &WireDeclaration,
+    ) -> (Wire, Option<Value>) {
         let WireDeclaration { span: _, id, sync, ty, value } = decl;
 
         let sync = self.eval_domain(scope_body, sync.as_ref());
@@ -136,12 +150,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         let value = match value {
             Some(value) => {
-                let value_span = value.span;
-                let value = self.eval_expression_as_value(ctx_module, scope_body, value);
+                let value_unchecked = self.eval_expression_as_value(
+                    &ExpressionContext::passthrough(scope_body),
+                    &mut MaybeDriverCollector::None,
+                    value,
+                );
 
                 // check type
-                let value = match self.check_type_contains(Some(value_span), value_span, &ty, &value) {
-                    Ok(()) => value,
+                let value_eval = match self.check_type_contains(Some(value.span), value.span, &ty, &value_unchecked) {
+                    Ok(()) => value_unchecked,
                     Err(e) => Value::Error(e),
                 };
 
@@ -149,13 +166,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
                     id.span(),
                     &ValueDomainKind::from_domain_kind(sync.clone()),
-                    value_span,
-                    &self.domain_of_value(value_span, &value),
+                    value.span,
+                    &self.domain_of_value(value.span, &value_eval),
                     DomainUserControlled::Source,
                     "wire value must be assignable to the wire domain",
                 );
 
-                Some(value)
+                Some(value_eval)
             }
             None => None,
         };
@@ -176,11 +193,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     #[must_use]
-    fn process_module_block_combinatorial(&mut self, scope_module: Scope, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
+    fn process_module_block_combinatorial(&mut self, drivers: &mut Drivers, scope_body: Scope, statement_index: usize, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
 
-        let ctx = ExpressionContext::CombinatorialBlock(span);
-        let statements = self.visit_block(&ctx, scope_module, block);
+        let mut collector = DriverCollector {
+            driver: Driver::CombinatorialBlock(statement_index),
+            drivers,
+        };
+        let statements = self.visit_block(
+            &ExpressionContext::passthrough(scope_body),
+            &mut MaybeDriverCollector::Some(&mut collector),
+            block,
+        );
 
         ModuleBlockCombinatorial {
             span,
@@ -188,36 +212,60 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
     }
 
-    // TODO merge this with visit_block this is duplication
     #[must_use]
-    fn process_module_block_clocked(&mut self, scope_module: Scope, clocked_block: &ClockedBlock) -> ModuleBlockClocked {
+    fn process_module_block_clocked(
+        &mut self,
+        drivers: &mut Drivers,
+        scopy_body: Scope,
+        statement_index: usize,
+        clocked_block: &ClockedBlock,
+    ) -> ModuleBlockClocked {
         let &ClockedBlock {
             span, span_keyword: _, ref domain, ref block
         } = clocked_block;
 
         let domain_span = domain.span;
-        let domain = self.eval_sync_domain(scope_module, domain.as_ref().map_inner(|v| {
+
+        let sync_domain = self.eval_sync_domain(scopy_body, domain.as_ref().map_inner(|v| {
             v.as_ref().map_inner(|v| &**v)
         }));
-        let domain_spanned = Spanned { span: domain_span, inner: &domain };
+        let domain = Spanned { span: domain_span, inner: &ValueDomainKind::Sync(sync_domain.clone()) };
 
-        let ctx = ExpressionContext::ClockedBlock(domain_spanned);
-        let statements = self.visit_block(&ctx, scope_module, block);
+        let ctx = ExpressionContext {
+            scope: scopy_body,
+            domain: ContextDomain::Specific(domain),
+            function_return_ty: None,
+        };
+        let mut driver_collector = DriverCollector {
+            driver: Driver::ClockedBlock(statement_index),
+            drivers,
+        };
+        let statements = self.visit_block(
+            &ctx,
+            &mut MaybeDriverCollector::Some(&mut driver_collector),
+            block,
+        );
 
         ModuleBlockClocked {
             span,
-            domain,
-            on_reset: vec![],
-            on_block: statements,
+            domain: sync_domain,
+            statements_reset: vec![],
+            statements,
         }
     }
 
     #[must_use]
-    fn process_module_instance(&mut self, ctx_module: &ExpressionContext, scope_body: Scope, instance: &ast::ModuleInstance) -> ModuleStatement {
+    fn process_module_instance(
+        &mut self,
+        drivers: &mut Drivers,
+        scope_body: Scope,
+        statement_index: usize,
+        instance: &ast::ModuleInstance,
+    ) -> ModuleStatement {
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance {
-            span: _,
+            span: instance_span,
             span_keyword: keyword_span,
             ref name,
             ref module,
@@ -226,19 +274,36 @@ impl<'d, 'a> CompileState<'d, 'a> {
         } = instance;
 
         // always evaluate generic args
+        let ctx_generics = ExpressionContext::constant(instance_span, scope_body);
+        let mut collector_generics = MaybeDriverCollector::None;
         let generic_args = generic_args.as_ref().map(|generic_args| {
             generic_args.map_inner(|arg| {
-                self.eval_expression_as_ty_or_value(ctx_module, scope_body, arg)
+                self.eval_expression_as_ty_or_value(&ctx_generics, &mut collector_generics, arg)
             })
         });
 
         // find the module, fill in generics
-        let module_with_generics = self.eval_expr_as_module_with_generics(keyword_span, ctx_module, scope_body, module, &generic_args);
+        let module_with_generics = self.eval_expr_as_module_with_generics(
+            keyword_span,
+            &ctx_generics,
+            &mut collector_generics,
+            module,
+            &generic_args,
+        );
 
         // always evaluate ports, so they can emit errors even if the module or its generics are invalid
+        let ctx_connections = ExpressionContext::passthrough(scope_body);
+        let mut collector = DriverCollector {
+            driver: Driver::InstancePortConnection(statement_index),
+            drivers,
+        };
+        let mut collector_connections = MaybeDriverCollector::Some(&mut collector);
+
         let connections = port_connections.as_ref().map_inner(|port_connections| {
             port_connections.iter().map(|(id, expr)| {
-                (id.clone(), expr.as_ref().map_inner(|_| self.eval_expression_as_value(ctx_module, scope_body, expr)))
+                (id.clone(), expr.as_ref().map_inner(|_| {
+                    self.eval_expression_as_value(&ctx_connections, &mut collector_connections, expr)
+                }))
             }).collect_vec()
         });
 
@@ -249,7 +314,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
         };
 
         // check port connections
-        let port_connections = match self.check_module_instance_ports(ctx_module, &module_with_generics.ports, &connections) {
+        let port_connections = match self.check_module_instance_ports(
+            &ctx_connections,
+            &mut collector_connections,
+            &module_with_generics.ports,
+            &connections,
+        ) {
             Ok(p) => p,
             Err(e) => return ModuleStatement::Err(e),
         };
@@ -264,7 +334,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     // TODO allow different declaration and use orderings, be careful about interactions
-    fn check_module_instance_ports(&mut self, ctx_module: &ExpressionContext, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
+    fn check_module_instance_ports(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut any_err = Ok(());
@@ -330,7 +400,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let (e_access, e_domain, e_ty) = match port_dir {
                         PortDirection::Input => {
                             let e_access = self.check_value_usable_as_direction(
-                                ctx_module,
+                                ctx,
+                                collector,
                                 connection_value_span,
                                 connection_value,
                                 AccessDirection::Read,
@@ -353,7 +424,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
                         }
                         PortDirection::Output => {
                             let e_access = self.check_value_usable_as_direction(
-                                ctx_module,
+                                ctx,
+                                collector,
                                 connection_value_span,
                                 connection_value,
                                 AccessDirection::Write,
@@ -398,14 +470,18 @@ impl<'d, 'a> CompileState<'d, 'a> {
     fn eval_expr_as_module_with_generics(
         &mut self,
         keyword_span: Span,
-        ctx_module: &ExpressionContext,
-        scope: Scope,
+        ctx_generics: &ExpressionContext,
+        collector_generics: &mut MaybeDriverCollector,
         module_expr: &ast::Expression,
         generic_args: &Option<ast::Args<TypeOrValue>>,
     ) -> Result<(ModuleValueInfo, Option<GenericArguments>), ErrorGuaranteed> {
         let diags = self.diags;
 
-        let module_value = self.eval_expression(ctx_module, scope, module_expr);
+        let module_value = self.eval_expression(
+            ctx_generics,
+            collector_generics,
+            module_expr,
+        );
 
         let (constructor_params, module_inner) = match module_value {
             ScopedEntryDirect::Immediate(inner) => (Ok(None), inner),
@@ -469,5 +545,58 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 Err(diags.report(diag))
             }
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Driver {
+    InstancePortConnection(usize),
+    CombinatorialBlock(usize),
+    ClockedBlock(usize),
+}
+
+#[derive(Default, Debug)]
+struct Drivers {
+    port_drivers: IndexMap<ModulePort, IndexMap<Driver, Vec<Span>>>,
+    reg_drivers: IndexMap<Register, IndexMap<Driver, Vec<Span>>>,
+    wire_drivers: IndexMap<Wire, IndexMap<Driver, Vec<Span>>>,
+}
+
+pub enum MaybeDriverCollector<'m> {
+    Some(&'m mut DriverCollector<'m>),
+    None,
+}
+
+// TODO move the driver value into the context, where is is already almost known
+pub struct DriverCollector<'m> {
+    driver: Driver,
+    drivers: &'m mut Drivers,
+}
+
+impl<'m> MaybeDriverCollector<'m> {
+    fn report<K: Eq + Hash>(&mut self, diags: &Diagnostics, map: impl FnOnce(&mut Drivers) -> &mut IndexMap<K, IndexMap<Driver, Vec<Span>>>, key: K, span: Span) {
+        match self {
+            MaybeDriverCollector::Some(collector) => {
+                map(collector.drivers).entry(key).or_default()
+                    .entry(collector.driver).or_default()
+                    .push(span);
+            }
+            MaybeDriverCollector::None => {
+                let reason = "reporting driver in context where drivers are not being collected";
+                diags.report_internal_error(span, reason);
+            }
+        }
+    }
+
+    pub fn report_write_port(&mut self, diags: &Diagnostics, port: ModulePort, span: Span) {
+        self.report(diags, |d| &mut d.port_drivers, port, span);
+    }
+
+    pub fn report_write_reg(&mut self, diags: &Diagnostics, reg: Register, span: Span) {
+        self.report(diags, |d| &mut d.reg_drivers, reg, span);
+    }
+
+    pub fn report_write_wire(&mut self, diags: &Diagnostics, wire: Wire, span: Span) {
+        self.report(diags, |d| &mut d.wire_drivers, wire, span);
     }
 }

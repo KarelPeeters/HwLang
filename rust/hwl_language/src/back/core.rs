@@ -229,7 +229,7 @@ fn module_body_to_verilog(
             }
             ModuleStatement::Clocked(block) => {
                 let &ModuleBlockClocked {
-                    span, ref domain, ref on_reset, ref on_block
+                    span, ref domain, statements_reset: ref on_reset, statements: ref on_block
                 } = block;
                 let SyncDomain { clock, reset } = domain;
 

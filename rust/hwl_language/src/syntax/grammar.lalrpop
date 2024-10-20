@@ -163,6 +163,7 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
+    // TODO allow clocks as wires
     <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<DomainKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
         let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
         ModuleStatementKind::WireDeclaration(decl)

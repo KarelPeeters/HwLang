@@ -4,11 +4,12 @@ use crate::data::parsed::ModulePortAstReference;
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
+use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{ConstDeclaration, DomainKind, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField, SyncDomain};
+use crate::syntax::ast::{ConstDeclaration, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use itertools::enumerate;
@@ -115,15 +116,7 @@ impl CompileState<'_, '_> {
                                 PortKind::Clock => PortKind::Clock,
                                 PortKind::Normal { domain: sync, ty } => {
                                     PortKind::Normal {
-                                        domain: match &sync.inner {
-                                            DomainKind::Async => DomainKind::Async,
-                                            DomainKind::Sync(SyncDomain { clock, reset }) => {
-                                                let ctx = &ExpressionContext::Type(kind.span);
-                                                let clock = s.eval_expression_as_value(ctx, scope_ports, clock);
-                                                let reset = s.eval_expression_as_value(ctx, scope_ports, reset);
-                                                DomainKind::Sync(SyncDomain { clock, reset })
-                                            }
-                                        },
+                                        domain: s.eval_domain(scope_ports, sync.as_ref()),
                                         ty: s.eval_expression_as_ty(scope_ports, ty),
                                     }
                                 }
@@ -258,8 +251,11 @@ impl CompileState<'_, '_> {
             let inner = self.eval_expression_as_ty(scope, ty);
             Spanned { span: ty.span, inner }
         });
-        let ctx = ExpressionContext::Const(decl.span);
-        let value_unchecked = self.eval_expression_as_value(&ctx, scope, value);
+        let value_unchecked = self.eval_expression_as_value(
+            &ExpressionContext::constant(decl.span, scope),
+            &mut MaybeDriverCollector::None,
+            value,
+        );
 
         // check or infer type
         let (ty_eval, value_eval) = match ty_eval {

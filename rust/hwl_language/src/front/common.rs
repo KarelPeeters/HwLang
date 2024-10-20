@@ -1,5 +1,6 @@
 use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::front::scope::Scope;
 use crate::front::types::{MaybeConstructor, Type};
 use crate::front::values::Value;
 use crate::syntax::ast::{DomainKind, PortKind, Spanned, SyncDomain};
@@ -14,60 +15,55 @@ use indexmap::IndexMap;
 /// For example:
 /// * return is only allowed in functions
 /// * break/continue are only allowed in loops
-/// TODO maybe allow break to be used in clocked blocks too?
-/// TODO create a wrapper type for (ExpressionContext, Scope), they're very often used together
-#[derive(Debug)]
-pub enum ExpressionContext<'a> {
-    Type(Span),
-    Const(Span),
-    /// Used in function body as part of normal statements or expressions.
-    // TODO just get the return type from the function item as-needed
-    FunctionBody { func_item: Item, ret_ty_span: Span, ret_ty: Type },
-    /// Used for wire expressions or instance port connections.
-    ModuleBody(Span),
-    CombinatorialBlock(Span),
-    ClockedBlock(Spanned<&'a SyncDomain<Value>>),
+/// * clocked blocks place constraints on the domains expressions are allowed to be
+/// * hardware signals cannot be used as values in constants or types
+pub struct ExpressionContext<'a> {
+    pub scope: Scope,
+    pub domain: ContextDomain<Spanned<&'a ValueDomainKind>>,
+    /// Set when inside a function body.
+    pub function_return_ty: Option<Spanned<&'a Type>>,
 }
 
-#[derive(Debug, Clone)]
-pub enum ContextDomainKind<V = ValueDomainKind> {
+impl<'m> ExpressionContext<'m> {
+    pub fn constant(span: Span, scope: Scope) -> ExpressionContext<'static> {
+        ExpressionContext {
+            scope,
+            domain: ContextDomain::Specific(Spanned { span, inner: &ValueDomainKind::Const }),
+            function_return_ty: None,
+        }
+    }
+
+    pub fn passthrough(scope: Scope) -> ExpressionContext<'static> {
+        ExpressionContext {
+            scope,
+            domain: ContextDomain::Passthrough,
+            function_return_ty: None,
+        }
+    }
+
+    pub fn with_scope(&self, scope: Scope) -> ExpressionContext {
+        ExpressionContext {
+            scope,
+            domain: self.domain,
+            function_return_ty: self.function_return_ty,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ContextDomain<V = ValueDomainKind> {
     Specific(V),
     Passthrough,
 }
 
-impl ExpressionContext<'_> {
-    pub fn span(&self) -> Span {
+impl<V> ContextDomain<V> {
+    pub fn as_ref(&self) -> ContextDomain<&V> {
         match self {
-            &ExpressionContext::Type(span) => span,
-            &ExpressionContext::Const(span) => span,
-            &ExpressionContext::FunctionBody { ret_ty_span, .. } => ret_ty_span,
-            &ExpressionContext::ModuleBody(span) => span,
-            &ExpressionContext::CombinatorialBlock(span) => span,
-            ExpressionContext::ClockedBlock(spanned) => spanned.span,
-        }
-    }
-
-    pub fn domain(&self) -> ContextDomainKind {
-        match self {
-            ExpressionContext::Type(_) => ContextDomainKind::Specific(ValueDomainKind::Const),
-            ExpressionContext::Const(_) => ContextDomainKind::Specific(ValueDomainKind::Const),
-            &ExpressionContext::FunctionBody { func_item, .. } => ContextDomainKind::Specific(ValueDomainKind::FunctionBody(func_item)),
-            ExpressionContext::ModuleBody(_) => ContextDomainKind::Passthrough,
-            ExpressionContext::CombinatorialBlock(_) => ContextDomainKind::Passthrough,
-            ExpressionContext::ClockedBlock(domain) => ContextDomainKind::Specific(ValueDomainKind::Sync(domain.inner.clone())),
+            ContextDomain::Specific(domain) => ContextDomain::Specific(domain),
+            ContextDomain::Passthrough => ContextDomain::Passthrough,
         }
     }
 }
-
-impl<V> ContextDomainKind<V> {
-    pub fn as_ref(&self) -> ContextDomainKind<&V> {
-        match self {
-            ContextDomainKind::Specific(domain) => ContextDomainKind::Specific(domain),
-            ContextDomainKind::Passthrough => ContextDomainKind::Passthrough,
-        }
-    }
-}
-
 
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {

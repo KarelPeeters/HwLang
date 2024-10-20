@@ -33,10 +33,8 @@ pub struct ModuleBlockCombinatorial {
 pub struct ModuleBlockClocked {
     pub span: Span,
     pub domain: SyncDomain<Value>,
-
-    // TODO how to implement ports that are just registers?
-    pub on_reset: Vec<LowerStatement>, // TODO IR
-    pub on_block: Vec<LowerStatement>, // TODO IR
+    pub statements_reset: Vec<LowerStatement>,
+    pub statements: Vec<LowerStatement>,
 }
 
 #[derive(Debug, Clone)]
