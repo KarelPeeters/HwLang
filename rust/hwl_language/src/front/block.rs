@@ -211,17 +211,13 @@ impl CompileState<'_, '_> {
                 }
             }
             &Value::Wire(wire) => {
-                let info = &self.compiled[wire];
-
                 match dir {
                     AccessDirection::Read => Ok(()),
                     AccessDirection::Write => {
-                        if info.has_declaration_value {
-                            Err(diags.report_simple("invalid write: wire already has declaration value", value_span, WRITE_LABEL))
-                        } else {
-                            collector.report_write_wire(diags, wire, value_span);
-                            Ok(())
-                        }
+                        // wires already having an declaration value is reported as an error higher up,
+                        //   for consistency with ports, regs and non-initialized wires 
+                        collector.report_write_wire(diags, wire, value_span);
+                        Ok(())
                     }
                 }
             }

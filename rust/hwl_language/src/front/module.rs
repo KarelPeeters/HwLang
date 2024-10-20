@@ -34,6 +34,16 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         let mut drivers = Drivers::default();
 
+        // create entry for each output port
+        for &port in &self.compiled.module_info.get(&module_item).unwrap().ports {
+            match self.compiled[port].direction {
+                PortDirection::Input => {}
+                PortDirection::Output => {
+                    drivers.port_drivers.entry(port).or_default();
+                }
+            }
+        }
+
         // first pass: populate scope with declarations
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future regs and wires
@@ -44,10 +54,26 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let (reg, init) = self.process_module_declaration_reg(module_item, scope_body, decl);
+
+                    // create entry
+                    drivers.reg_drivers.entry(reg).or_default();
+
                     module_regs.push((reg, init));
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let (wire, value) = self.process_module_declaration_wire(module_item, scope_body, decl);
+
+                    // create entry
+                    drivers.wire_drivers.entry(wire).or_default();
+
+                    // insert driver if there is a value
+                    if value.is_some() {
+                        drivers.wire_drivers
+                            .entry(wire).or_default()
+                            .entry(Driver::WireDeclaration).or_default()
+                            .push(decl.id.span());
+                    }
+
                     module_wires.push((wire, value));
                 }
                 ModuleStatementKind::CombinatorialBlock(_) => {}
@@ -80,13 +106,64 @@ impl<'d, 'a> CompileState<'d, 'a> {
             }
         }
 
-        // check that output_ports/wires/registers are each written by exactly one driver
-        // TODO
+        // final check
+        self.check_all_outputs_exactly_one_driver(&drivers);
 
         ModuleChecked {
             statements: module_statements_lower,
             regs: module_regs,
             wires: module_wires,
+        }
+    }
+
+    fn check_all_outputs_exactly_one_driver(&mut self, drivers: &Drivers) {
+        let Drivers { port_drivers, reg_drivers, wire_drivers } = drivers;
+
+        self.check_all_outputs_exactly_one_driver_util(
+            port_drivers,
+            |port| self.parsed.module_port_ast(self.compiled[port].ast).id.span,
+            "output port",
+        );
+        self.check_all_outputs_exactly_one_driver_util(
+            reg_drivers,
+            |reg| self.compiled[reg].defining_id.span(),
+            "register",
+        );
+        self.check_all_outputs_exactly_one_driver_util(
+            wire_drivers,
+            |wire| self.compiled[wire].defining_id.span(),
+            "wire",
+        );
+    }
+
+    fn check_all_outputs_exactly_one_driver_util<K: Copy>(
+        &self,
+        drivers: &IndexMap<K, IndexMap<Driver, Vec<Span>>>,
+        declared: impl Fn(K) -> Span,
+        name: &str,
+    ) {
+        let diags = self.diags;
+
+        for (&target, drivers) in drivers {
+            let declared_span = declared(target);
+            match drivers.len() {
+                1 => {
+                    // good, exactly one driver
+                }
+                0 => {
+                    // no drivers
+                    diags.report_simple(format!("{name} has no drivers"), declared_span, format!("{name} declared here"));
+                }
+                _ => {
+                    // too many drivers
+                    let mut diag = Diagnostic::new(format!("{name} has multiple drivers"))
+                        .add_info(declared_span, format!("{name} declared here"));
+                    for (_, spans) in drivers {
+                        diag = diag.add_error(spans[0], "driven here");
+                    }
+                    diags.report(diag.finish());
+                }
+            }
         }
     }
 
@@ -550,6 +627,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Driver {
+    WireDeclaration,
     InstancePortConnection(usize),
     CombinatorialBlock(usize),
     ClockedBlock(usize),

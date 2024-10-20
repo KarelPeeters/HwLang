@@ -134,7 +134,7 @@ impl CompileState<'_, '_> {
                     }
 
                     // result
-                    let module_info = ModuleSignatureInfo { scope_ports };
+                    let module_info = ModuleSignatureInfo { scope_ports, ports: port_vec.clone() };
                     s.compiled.module_info.insert_first(item, module_info);
 
                     let module_ty_info = ModuleValueInfo {

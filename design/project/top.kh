@@ -10,6 +10,10 @@ pub module top ports(
 ) body {
     reg r: sync(clk, rst) bool = false;
 
+    combinatorial {
+        z = false;
+    }
+
     clocked(clk, rst) {
         r = !r;
         // TODO where should the reset value of ports like "y" be set?

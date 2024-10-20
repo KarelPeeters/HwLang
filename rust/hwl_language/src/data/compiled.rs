@@ -172,6 +172,7 @@ pub struct FunctionSignatureInfo {
 #[derive(Debug)]
 pub struct ModuleSignatureInfo {
     pub scope_ports: Scope,
+    pub ports: Vec<ModulePort>,
 }
 
 #[derive(Debug)]
