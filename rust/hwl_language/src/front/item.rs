@@ -1,4 +1,4 @@
-use crate::data::compiled::{Constant, ConstantInfo, FunctionSignatureInfo, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
+use crate::data::compiled::{Constant, ConstantInfo, FunctionSignatureInfo, GenericItemKind, GenericParameter, GenericTypeParameterInfo, GenericValueParameterInfo, Item, ItemChecked, ModulePortInfo, ModuleSignatureInfo};
 use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
 use crate::data::parsed::ModulePortAstReference;
 use crate::front::checking::DomainUserControlled;
@@ -40,12 +40,12 @@ impl CompileState<'_, '_> {
             }
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
-                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, _args, scope_inner| {
+                self.resolve_new_generic_def(item, GenericItemKind::Type, file_scope, params.as_ref(), |s, _args, scope_inner| {
                     TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
-                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, GenericItemKind::Struct, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // map fields
                     let mut fields_map = IndexMap::new();
                     for field in fields {
@@ -69,7 +69,7 @@ impl CompileState<'_, '_> {
                 })
             }
             ast::Item::Enum(ItemDefEnum { span, vis: _, id: _, ref params, ref variants }) => {
-                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, GenericItemKind::Enum, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // map variants
                     let mut variants_map = IndexMap::new();
                     for variant in variants {
@@ -96,7 +96,7 @@ impl CompileState<'_, '_> {
             }
             // value definitions
             ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
-                self.resolve_new_generic_def(item, file_scope, params.as_ref(), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, GenericItemKind::Module, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
@@ -150,7 +150,7 @@ impl CompileState<'_, '_> {
                 MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
             }
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
-                self.resolve_new_generic_def(item, file_scope, Some(params), |s, args, scope_inner| {
+                self.resolve_new_generic_def(item, GenericItemKind::Function, file_scope, Some(params), |s, args, scope_inner| {
                     // no need to use args for anything, they are mostly used for nominal type uniqueness
                     //   which does not apply to functions
                     let _ = args;
@@ -179,6 +179,7 @@ impl CompileState<'_, '_> {
     fn resolve_new_generic_def<T>(
         &mut self,
         item: Item,
+        item_kind: GenericItemKind,
         scope_outer: Scope,
         params: Option<&Spanned<Vec<ast::GenericParameter>>>,
         build: impl FnOnce(&mut Self, GenericArguments, Scope) -> T,
@@ -213,6 +214,7 @@ impl CompileState<'_, '_> {
                             let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
+                                defining_item_kind: item_kind,
                                 ty,
                                 ty_span: ty_expr.span,
                             });

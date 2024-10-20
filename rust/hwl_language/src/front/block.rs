@@ -248,9 +248,10 @@ impl CompileState<'_, '_> {
                 }
             }
 
-            // only readable assignable
+            // only readable
             Value::Never => if_write_simple_error("_never_ value"),
             Value::Unit => if_write_simple_error("unit value"),
+            Value::Undefined => if_write_simple_error("undefined value"),
             Value::BoolConstant(_) => if_write_simple_error("boolean constant"),
             Value::IntConstant(_) => if_write_simple_error("integer constant value"),
             Value::StringConstant(_) => if_write_simple_error("string constant value"),

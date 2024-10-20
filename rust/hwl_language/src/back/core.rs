@@ -197,7 +197,12 @@ fn module_body_to_verilog(
         let (keyword_str, assign_str) = if let Some(value) = value {
             let value_spanned = Spanned { span: defining_id.span(), inner: value };
             let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned);
-            ("wire", format!(" = {}", value_str))
+
+            let def_str = match value_str {
+                Ok(s) => format!(" = {}", s),
+                Err(VerilogValueUndefined) => " /* = undefined */".to_string(),
+            };
+            ("wire", def_str)
         } else {
             ("reg", "".to_string())
         };
@@ -296,7 +301,9 @@ fn module_body_to_verilog(
                     swriteln!(f);
                     let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
                     for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
-                        let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref());
+                        let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref())
+                            .unwrap_or_else(|_: VerilogValueUndefined| "/* undefined */".to_string());
+
                         swrite!(f, "{I}{I}.{}({})", port.id.string, value_str);
                         // no trailing comma
                         if i != child_port_connections.vec.len() - 1 {
@@ -328,11 +335,30 @@ fn statement_to_string(
         LowerStatement::Assignment { target, value } => {
             // TODO create shadow variables for all assignments inside blocks, and only assign to those
             //  then finally at the end of the block, non-blocking assign to everything
+            let mut commented = false;
+
             let target_str = value_to_verilog(diag, parsed, compiled, signal_map, target.as_ref());
+            let target_str = match &target_str {
+                Ok(s) => s.as_str(),
+                Err(VerilogValueUndefined) => {
+                    commented = true;
+                    "undefined"
+                }
+            };
             let value_str = value_to_verilog(diag, parsed, compiled, signal_map, value.as_ref());
-            format!("{target_str} = {value_str};")
+            let value_str = match &value_str {
+                Ok(s) => s.as_str(),
+                Err(VerilogValueUndefined) => {
+                    commented = true;
+                    "undefined"
+                }
+            };
+
+            let prefix = if commented { "// " } else { "" };
+            format!("{prefix}{target_str} = {value_str};")
         }
-        &LowerStatement::Error(_) => {
+        &LowerStatement::Error(e) => {
+            let _: ErrorGuaranteed = e;
             "// error statement".to_string()
         }
     }
@@ -443,9 +469,24 @@ fn value_to_verilog(
     compiled: &CompiledDatabase,
     signal_map: &IndexMap<Signal, SignalName>,
     value: Spanned<&Value>,
-) -> String {
-    value_to_verilog_inner(diag, parsed, compiled, signal_map, value)
-        .unwrap_or_else(|_| "/* error */".to_string())
+) -> Result<String, VerilogValueUndefined> {
+    match value_to_verilog_inner(diag, parsed, compiled, signal_map, value) {
+        Ok(value) => Ok(value),
+        Err(VerilogValueError::Diag(e)) => {
+            let _: ErrorGuaranteed = e;
+            Ok("/* error */".to_string())
+        },
+        Err(VerilogValueError::Undefined) => Err(VerilogValueUndefined),
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct VerilogValueUndefined;
+
+#[derive(Debug, Copy, Clone, derive_more::From)]
+enum VerilogValueError {
+    Diag(ErrorGuaranteed),
+    Undefined,
 }
 
 // TODO careful about scoping, are we sure we're never accidentally referring to the wrong value?
@@ -455,15 +496,16 @@ fn value_to_verilog_inner(
     compiled: &CompiledDatabase,
     signal_map: &IndexMap<Signal, SignalName>,
     value: Spanned<&Value>,
-) -> Result<String, ErrorGuaranteed> {
+) -> Result<String, VerilogValueError> {
     let Spanned { span, inner: value } = value;
     match value {
-        &Value::Error(e) => Err(e),
+        &Value::Error(e) => Err(e.into()),
         &Value::GenericParameter(_) =>
-            Err(diag.report_internal_error(span, "generic parameters should not materialize")),
+            Err(diag.report_internal_error(span, "generic parameters should not materialize").into()),
         &Value::ModulePort(port) =>
             Ok(parsed.module_port_ast(compiled[port].ast).id.string.clone()),
 
+        &Value::Undefined => Err(VerilogValueError::Undefined),
         &Value::BoolConstant(b) => Ok(if b { "1" } else { "0" }.to_string()),
         Value::IntConstant(i) => Ok(i.to_string()),
 
@@ -480,24 +522,24 @@ fn value_to_verilog_inner(
 
         &Value::Wire(wire) => {
             match signal_map.get(&Signal::Wire(wire)) {
-                None => Err(diag.report_internal_error(span, "wire not found in signal map")),
+                None => Err(diag.report_internal_error(span, "wire not found in signal map").into()),
                 Some(wire_name) => Ok(format!("{}", wire_name)),
             }
         }
         &Value::Register(reg) => {
             match signal_map.get(&Signal::Reg(reg)) {
-                None => Err(diag.report_internal_error(span, "register not found in signal map")),
+                None => Err(diag.report_internal_error(span, "register not found in signal map").into()),
                 Some(reg_name) => Ok(format!("{}", reg_name)),
             }
         }
         &Value::Variable(_) =>
-            Err(diag.report_todo(span, "value_to_verilog for variables")),
+            Err(diag.report_todo(span, "value_to_verilog for variables").into()),
         // forward to the inner value
         &Value::Constant(c) =>
             value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: &compiled[c].value }),
 
         Value::Never | Value::Unit | Value::StringConstant(_) | Value::Range(_) | Value::FunctionReturn(_) | Value::Module(_) =>
-            Err(diag.report_internal_error(span, format!("value '{value:?}' should not materialize"))),
+            Err(diag.report_internal_error(span, format!("value '{value:?}' should not materialize")).into()),
     }
 }
 
@@ -624,6 +666,7 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
         Value::Constant(c) =>
             value_evaluate_int(diag, compiled, map, span, &compiled[*c].value),
         Value::Never => Err(diag.report_todo(span, "value_evaluate_int value Never")),
+        Value::Undefined => Err(diag.report_todo(span, "value_evaluate_int value Undefined")),
     }
 }
 

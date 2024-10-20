@@ -201,12 +201,13 @@ impl GenericContainer for GenericValueParameter {
             // check if bounds of the parameter need to be replaced
             // (for now this doesn't do anything, but this is a compile-type check for added fields, eg. bounds)
             let ty_new = compiled[param].ty.clone().replace_generics(compiled, map);
-            let GenericValueParameterInfo { defining_item, defining_id, ty, ty_span } = &compiled[param];
+            let &GenericValueParameterInfo { defining_item, ref defining_id, defining_item_kind, ref ty, ty_span } = &compiled[param];
 
             if &ty_new != ty {
                 let param_new = compiled.generic_value_params.push(GenericValueParameterInfo {
-                    defining_item: *defining_item,
+                    defining_item,
                     defining_id: defining_id.clone(),
+                    defining_item_kind,
                     ty: ty_new,
                     ty_span: ty_span.clone(),
                 });

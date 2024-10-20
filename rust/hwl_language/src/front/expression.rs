@@ -498,6 +498,10 @@ impl CompileState<'_, '_> {
             let rest = &args[2..];
 
             match (first, second, rest) {
+                ("type", "unchecked", &[]) =>
+                    return Ok(TypeOrValue::Type(Type::Unchecked)),
+                ("value", "undefined", &[]) =>
+                    return Ok(TypeOrValue::Value(Value::Undefined)),
                 ("type", "bool", &[]) =>
                     return Ok(TypeOrValue::Type(Type::Boolean)),
                 ("type", "int", &[]) => {

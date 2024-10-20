@@ -1,3 +1,4 @@
+use crate::data::compiled::GenericItemKind;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::common::ValueDomainKind;
 use crate::front::driver::{CompileState, EvalTrueError};
@@ -30,10 +31,18 @@ impl CompileState<'_, '_> {
                     PortKind::Normal { domain, ty: _ } => ValueDomainKind::from_domain_kind(domain.clone()),
                 }
             }
-            // TODO careful about function arguments
-            &Value::GenericParameter(_) => ValueDomainKind::Const,
+            &Value::GenericParameter(param) => {
+                let param_info = &self.compiled[param];
+                match param_info.defining_item_kind {
+                    GenericItemKind::Type | GenericItemKind::Module | GenericItemKind::Struct | GenericItemKind::Enum =>
+                        ValueDomainKind::Const,
+                    GenericItemKind::Function =>
+                        ValueDomainKind::FunctionBody(param_info.defining_item),
+                }
+            },
             &Value::Never => ValueDomainKind::Const,
             &Value::Unit => ValueDomainKind::Const,
+            &Value::Undefined => ValueDomainKind::Const,
             &Value::BoolConstant(_) => ValueDomainKind::Const,
             &Value::IntConstant(_) => ValueDomainKind::Const,
             &Value::StringConstant(_) => ValueDomainKind::Const,
@@ -221,6 +230,7 @@ impl CompileState<'_, '_> {
             }
             Value::Never => Type::Never,
             Value::Unit => Type::Unit,
+            Value::Undefined => Type::Unchecked,
             Value::BoolConstant(_) => Type::Boolean,
             Value::IntConstant(value) => {
                 let range = RangeInfo {
@@ -462,9 +472,12 @@ impl CompileState<'_, '_> {
             // any contains everything
             (&Type::Any, _) => return Ok(()),
 
+            // unchecked and never cast into anything
+            (_, Type::Unchecked) => return Ok(()),
+            (_, Type::Never) => return Ok(()),
+
             // basic types that only contain themselves
             (Type::Unit, Type::Unit) => return Ok(()),
-            (Type::Never, Type::Never) => return Ok(()),
             // TODO differentiate between arbitrary open, half-open, ...
             (Type::Range, Type::Range) => return Ok(()),
             (Type::Boolean, Type::Boolean) => return Ok(()),

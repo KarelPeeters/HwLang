@@ -137,10 +137,20 @@ pub struct GenericTypeParameterInfo {
 pub struct GenericValueParameterInfo {
     pub defining_item: Item,
     pub defining_id: Identifier,
+    pub defining_item_kind: GenericItemKind,
 
     pub ty: Type,
     // TODO it's a bit weird that we're tracking the span here, this should just be part of Type
     pub ty_span: Span,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum GenericItemKind {
+    Type,
+    Struct,
+    Enum,
+    Module,
+    Function,
 }
 
 #[derive(Debug)]
@@ -258,6 +268,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             &Value::GenericParameter(p) => self[p].defining_id.string.clone(),
             &Value::ModulePort(p) => parsed.module_port_ast(self[p].ast).id.string.clone(),
             Value::Never => "never".to_string(),
+            Value::Undefined => "undefined".to_string(),
             Value::Unit => "()".to_string(),
             Value::BoolConstant(b) => format!("{}", b),
             Value::IntConstant(v) => {

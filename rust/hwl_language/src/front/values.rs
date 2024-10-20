@@ -23,6 +23,7 @@ pub enum Value {
     // basic
     Never,
     Unit,
+    Undefined,
     BoolConstant(bool),
     IntConstant(BigInt),
     StringConstant(String),
@@ -104,6 +105,7 @@ impl GenericContainer for Value {
 
             Value::Unit => Value::Unit,
             Value::Never => Value::Never,
+            Value::Undefined => Value::Undefined,
 
             Value::BoolConstant(b) => Value::BoolConstant(b),
             Value::IntConstant(ref info) => Value::IntConstant(info.clone()),

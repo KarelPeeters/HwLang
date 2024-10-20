@@ -1,6 +1,9 @@
 // TODO allow signature declarations for everything, even types!
 
 // Basic types
+pub type unchecked = __builtin("type", "unchecked");
+pub const undefined: unchecked = __builtin("value", "undefined");
+
 // TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");
 
