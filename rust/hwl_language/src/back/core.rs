@@ -170,7 +170,10 @@ fn module_body_to_verilog(
     let ModuleChecked { statements, regs, wires } = body;
     let mut signal_map = IndexMap::new();
 
+    let mut newline = NewlineGenerator::new();
+
     for &reg in regs {
+        newline.before_item(f);
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
 
@@ -183,11 +186,10 @@ fn module_body_to_verilog(
         signal_map.insert_first(Signal::Reg(reg), name);
     }
 
-    if regs.len() > 0 && wires.len() > 0 {
-        swriteln!(f);
-    }
+    newline.start_new_block();
 
     for &(wire, ref value) in wires {
+        newline.before_item(f);
         let WireInfo { defining_item: _, defining_id, domain, ty, has_declaration_value: _ } = &compiled[wire];
 
         let name_str = compiled.defining_id_to_readable_string(defining_id);
@@ -212,14 +214,9 @@ fn module_body_to_verilog(
         signal_map.insert_first(Signal::Wire(wire), name);
     }
 
-    if wires.len() > 0 && statements.len() > 0 {
-        swriteln!(f);
-    }
-
-    for (statement_index, statement) in enumerate(statements) {
-        if statement_index != 0 {
-            swriteln!(f);
-        }
+    for statement in statements {
+        newline.start_new_block();
+        newline.before_item(f);
 
         match statement {
             ModuleStatement::Combinatorial(block) => {
@@ -475,7 +472,7 @@ fn value_to_verilog(
         Err(VerilogValueError::Diag(e)) => {
             let _: ErrorGuaranteed = e;
             Ok("/* error */".to_string())
-        },
+        }
         Err(VerilogValueError::Undefined) => Err(VerilogValueUndefined),
     }
 }
@@ -790,6 +787,33 @@ fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: std::ops::R
             );
             VerilogType::Error(e)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NewlineGenerator {
+    any_prev: bool,
+    any_curr: bool,
+}
+
+impl NewlineGenerator {
+    pub fn new() -> Self {
+        Self {
+            any_prev: false,
+            any_curr: false,
+        }
+    }
+
+    pub fn start_new_block(&mut self) {
+        self.any_prev |= self.any_curr;
+        self.any_curr = false;
+    }
+
+    pub fn before_item(&mut self, f: &mut String) {
+        if self.any_prev && !self.any_curr {
+            swriteln!(f);
+        }
+        self.any_curr = true;
     }
 }
 
