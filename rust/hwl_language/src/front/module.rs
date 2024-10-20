@@ -1,6 +1,6 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::module_body::{ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
@@ -14,9 +14,10 @@ use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{enumerate, zip_eq, Itertools};
+use itertools::{zip_eq, Itertools};
 use std::cmp::min;
 use std::hash::Hash;
+use unwrap_match::unwrap_match;
 
 impl<'d, 'a> CompileState<'d, 'a> {
     pub fn check_module_body(&mut self, module_item: Item, module_ast: &ast::ItemDefModule) -> ModuleChecked {
@@ -26,7 +27,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // TODO do we event want to convert to some simpler IR here,
         //   or just leave the backend to walk the AST if it wants?
         let mut module_statements_lower = vec![];
-        let mut module_regs = vec![];
+        let mut module_regs = IndexMap::new();
         let mut module_wires = vec![];
 
         let scope_ports = self.compiled.module_info[&module_item].scope_ports;
@@ -39,7 +40,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             match self.compiled[port].direction {
                 PortDirection::Input => {}
                 PortDirection::Output => {
-                    drivers.port_drivers.entry(port).or_default();
+                    drivers.output_port_drivers.entry(port).or_default();
                 }
             }
         }
@@ -55,15 +56,15 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let (reg, init) = self.process_module_declaration_reg(module_item, scope_body, decl);
 
-                    // create entry
+                    // create entry, to ensure ordering
                     drivers.reg_drivers.entry(reg).or_default();
 
-                    module_regs.push((reg, init));
+                    module_regs.insert_first(reg, init);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let (wire, value) = self.process_module_declaration_wire(module_item, scope_body, decl);
 
-                    // create entry
+                    // create entry, to ensure ordering
                     drivers.wire_drivers.entry(wire).or_default();
 
                     // insert driver if there is a value
@@ -83,7 +84,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
         }
 
         // second pass: codegen for the actual blocks
-        for (statement_index, module_statement) in enumerate(module_statements) {
+        for module_statement in module_statements {
+            let lower_statement_index = module_statements_lower.len();
+
             match &module_statement.inner {
                 // declarations were already handled
                 ModuleStatementKind::ConstDeclaration(_) => {}
@@ -91,83 +94,112 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 ModuleStatementKind::WireDeclaration(_) => {}
                 // actual blocks
                 ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
-                    let block = self.process_module_block_combinatorial(&mut drivers, scope_body, statement_index, comb_block);
+                    let block = self.process_module_block_combinatorial(&mut drivers, scope_body, lower_statement_index, comb_block);
                     module_statements_lower.push(ModuleStatement::Combinatorial(block));
                 }
                 ModuleStatementKind::ClockedBlock(ref clocked_block) => {
-                    let block = self.process_module_block_clocked(&mut drivers, scope_body, statement_index, clocked_block);
+                    let block = self.process_module_block_clocked(&mut drivers, scope_body, lower_statement_index, clocked_block);
                     module_statements_lower.push(ModuleStatement::Clocked(block));
                 }
                 // instances
                 ModuleStatementKind::Instance(instance) => {
-                    let block = self.process_module_instance(&mut drivers, scope_body, statement_index, instance);
+                    let block = self.process_module_instance(&mut drivers, scope_body, lower_statement_index, instance);
                     module_statements_lower.push(block);
                 }
             }
         }
 
-        // final check
-        self.check_all_outputs_exactly_one_driver(&drivers);
+        self.check_driver_validness(&mut module_statements_lower, &module_regs, &drivers);
 
         ModuleChecked {
             statements: module_statements_lower,
-            regs: module_regs,
+            regs: module_regs.keys().copied().collect_vec(),
             wires: module_wires,
         }
     }
 
-    fn check_all_outputs_exactly_one_driver(&mut self, drivers: &Drivers) {
-        let Drivers { port_drivers, reg_drivers, wire_drivers } = drivers;
-
-        self.check_all_outputs_exactly_one_driver_util(
-            port_drivers,
-            |port| self.parsed.module_port_ast(self.compiled[port].ast).id.span,
-            "output port",
-        );
-        self.check_all_outputs_exactly_one_driver_util(
-            reg_drivers,
-            |reg| self.compiled[reg].defining_id.span(),
-            "register",
-        );
-        self.check_all_outputs_exactly_one_driver_util(
-            wire_drivers,
-            |wire| self.compiled[wire].defining_id.span(),
-            "wire",
-        );
-    }
-
-    fn check_all_outputs_exactly_one_driver_util<K: Copy>(
+    fn check_driver_validness(
         &self,
-        drivers: &IndexMap<K, IndexMap<Driver, Vec<Span>>>,
-        declared: impl Fn(K) -> Span,
-        name: &str,
+        module_statements_lower: &mut Vec<ModuleStatement>,
+        module_regs: &IndexMap<Register, Spanned<Value>>,
+        drivers: &Drivers,
     ) {
-        let diags = self.diags;
+        let Drivers { output_port_drivers, reg_drivers, wire_drivers } = drivers;
 
-        for (&target, drivers) in drivers {
-            let declared_span = declared(target);
-            match drivers.len() {
-                1 => {
-                    // good, exactly one driver
-                }
-                0 => {
-                    // no drivers
-                    diags.report_simple(format!("{name} has no drivers"), declared_span, format!("{name} declared here"));
-                }
-                _ => {
-                    // too many drivers
-                    let mut diag = Diagnostic::new(format!("{name} has multiple drivers"))
-                        .add_info(declared_span, format!("{name} declared here"));
-                    for (_, spans) in drivers {
-                        diag = diag.add_error(spans[0], "driven here");
+        // for ports and wires we can just check that there is exactly one driver
+        for (&port, drivers) in output_port_drivers {
+            let def_span = self.parsed.module_port_ast(self.compiled[port].ast).id.span;
+            let _ = self.check_exactly_one_driver("output port", def_span, drivers);
+        }
+        for (&wire, drivers) in wire_drivers {
+            let def_span = self.compiled[wire].defining_id.span();
+            let _ = self.check_exactly_one_driver("wire", def_span, drivers);
+        }
+
+        // registers need some extra checking:
+        for (&reg, drivers) in reg_drivers {
+            let def_span = self.compiled[reg].defining_id.span();
+
+            // check that register is only driven by clocked block
+            let mut any_err = Ok(());
+            for (driver, spans) in drivers {
+                match driver {
+                    Driver::ClockedBlock(_) => {}
+                    Driver::WireDeclaration | Driver::InstancePortConnection(_) | Driver::CombinatorialBlock(_) => {
+                        let mut diag = Diagnostic::new("register can only be driven by clocked block");
+                        for &span in spans {
+                            diag = diag.add_error(span, "driven incorrectly here");
+                        }
+                        any_err = Err(self.diags.report(diag.add_info(def_span, "register declared here").finish()));
                     }
-                    diags.report(diag.finish());
                 }
+            }
+
+            if any_err.is_err() {
+                continue;
+            }
+
+            // check that register has a single driver, and pull the reset value into the right block
+            match self.check_exactly_one_driver("register", def_span, drivers) {
+                Ok(driver) => {
+                    // we just checked that all drivers are clocked blocks
+                    let lower_statement_index = unwrap_match!(driver, Driver::ClockedBlock(i) => i);
+                    let block = unwrap_match!(&mut module_statements_lower[lower_statement_index], ModuleStatement::Clocked(block) => block);
+
+                    block.statements_reset.push(LowerStatement::Assignment {
+                        target: Spanned {
+                            span: self.compiled[reg].defining_id.span(),
+                            inner: Value::Register(reg),
+                        },
+                        value: module_regs.get(&reg).unwrap().clone(),
+                    });
+                }
+                Err(_) => {}
             }
         }
     }
 
-    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, decl: &RegDeclaration) -> (Register, Value) {
+    fn check_exactly_one_driver(&self, kind: &str, declared_span: Span, drivers: &IndexMap<Driver, Vec<Span>>) -> Result<Driver, ErrorGuaranteed> {
+        let diags = self.diags;
+        match drivers.len() {
+            // good, exactly one driver
+            1 => Ok(*drivers.keys().next().unwrap()),
+            // no drivers
+            0 => {
+                Err(diags.report_simple(format!("{kind} has no drivers"), declared_span, format!("{kind} declared here")))
+            }
+            // too many drivers
+            _ => {
+                let mut diag = Diagnostic::new(format!("{kind} has multiple drivers"));
+                for (_, spans) in drivers {
+                    diag = diag.add_error(spans[0], "driven here");
+                }
+                Err(diags.report(diag.add_info(declared_span, format!("{kind} declared here")).finish()))
+            }
+        }
+    }
+
+    fn process_module_declaration_reg(&mut self, module_item: Item, scope_body: Scope, decl: &RegDeclaration) -> (Register, Spanned<Value>) {
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
         let ty_span = ty.span;
         let init_span = init.span;
@@ -212,7 +244,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Register(reg))));
         self.compiled[scope_body].maybe_declare(&self.diags, id.as_ref(), entry, Visibility::Private);
 
-        (reg, init)
+        let init_spanned = Spanned { span: init_span, inner: init };
+        (reg, init_spanned)
     }
 
     fn process_module_declaration_wire(
@@ -433,8 +466,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
             if port_ast.id.string != connection_id.string {
                 let err = Diagnostic::new("port name mismatch")
-                    .add_info(port_ast.id.span, format!("expected {}, defined here", port_ast.id.string))
                     .add_error(connection_id.span, format!("got {}, connected here", connection_id.string))
+                    .add_info(port_ast.id.span, format!("expected {}, defined here", port_ast.id.string))
                     .footer(Level::Note, "different port and connection orderings are not yet supported")
                     .finish();
                 any_err = Err(diags.report(err));
@@ -635,7 +668,7 @@ pub enum Driver {
 
 #[derive(Default, Debug)]
 struct Drivers {
-    port_drivers: IndexMap<ModulePort, IndexMap<Driver, Vec<Span>>>,
+    output_port_drivers: IndexMap<ModulePort, IndexMap<Driver, Vec<Span>>>,
     reg_drivers: IndexMap<Register, IndexMap<Driver, Vec<Span>>>,
     wire_drivers: IndexMap<Wire, IndexMap<Driver, Vec<Span>>>,
 }
@@ -666,8 +699,8 @@ impl<'m> MaybeDriverCollector<'m> {
         }
     }
 
-    pub fn report_write_port(&mut self, diags: &Diagnostics, port: ModulePort, span: Span) {
-        self.report(diags, |d| &mut d.port_drivers, port, span);
+    pub fn report_write_output_port(&mut self, diags: &Diagnostics, port: ModulePort, span: Span) {
+        self.report(diags, |d| &mut d.output_port_drivers, port, span);
     }
 
     pub fn report_write_reg(&mut self, diags: &Diagnostics, reg: Register, span: Span) {

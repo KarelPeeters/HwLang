@@ -181,6 +181,9 @@ impl Diagnostic {
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
         let Self { title, snippets, footers, backtrace } = self;
 
+        // TODO sort to ensure that the first snippet is one with the highest level,
+        //   so it is always clickable
+
         // combine snippets that are close together
         let snippets_merged = if let Some(snippet_merge_max_distance) = settings.snippet_merge_max_distance {
             // TODO fix O(n^2) complexity

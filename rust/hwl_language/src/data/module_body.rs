@@ -9,7 +9,7 @@ use crate::syntax::pos::Span;
 #[derive(Debug, Clone)]
 pub struct ModuleChecked {
     pub statements: Vec<ModuleStatement>,
-    pub regs: Vec<(Register, Value)>,
+    pub regs: Vec<Register>,
     pub wires: Vec<(Wire, Option<Value>)>,
 }
 

@@ -170,7 +170,7 @@ fn module_body_to_verilog(
     let ModuleChecked { statements, regs, wires } = body;
     let mut signal_map = IndexMap::new();
 
-    for &(reg, ref _init) in regs {
+    for &reg in regs {
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
 
@@ -259,7 +259,7 @@ fn module_body_to_verilog(
                 swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
                 swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
                 for statement in on_reset {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
+                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
                 }
                 swriteln!(f, "{I}{I}end else begin");
                 for statement in on_block {

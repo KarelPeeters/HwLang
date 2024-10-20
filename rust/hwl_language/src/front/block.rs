@@ -201,7 +201,7 @@ impl CompileState<'_, '_> {
                 match (dir, self.compiled[port].direction) {
                     (AccessDirection::Read, PortDirection::Input) => Ok(()),
                     (AccessDirection::Write, PortDirection::Output) => {
-                        collector.report_write_port(diags, port, value_span);
+                        collector.report_write_output_port(diags, port, value_span);
                         Ok(())
                     }
                     (AccessDirection::Read, PortDirection::Output) =>
