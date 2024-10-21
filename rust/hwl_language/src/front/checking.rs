@@ -1,6 +1,6 @@
-use crate::data::compiled::GenericItemKind;
+use crate::data::compiled::{GenericItemKind, VariableDomain};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::front::common::ValueDomainKind;
+use crate::front::common::ValueDomain;
 use crate::front::driver::{CompileState, EvalTrueError};
 use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -20,32 +20,32 @@ pub enum DomainUserControlled {
 }
 
 impl CompileState<'_, '_> {
-    pub fn domain_of_value(&self, span: Span, value: &Value) -> ValueDomainKind {
+    pub fn domain_of_value(&self, span: Span, value: &Value) -> ValueDomain {
         let diags = self.diags;
 
         match value {
-            &Value::Error(e) => ValueDomainKind::Error(e),
+            &Value::Error(e) => ValueDomain::Error(e),
             &Value::ModulePort(port) => {
                 match &self.compiled[port].kind {
-                    PortKind::Clock => ValueDomainKind::Clock,
-                    PortKind::Normal { domain, ty: _ } => ValueDomainKind::from_domain_kind(domain.clone()),
+                    PortKind::Clock => ValueDomain::Clock,
+                    PortKind::Normal { domain, ty: _ } => ValueDomain::from_domain_kind(domain.clone()),
                 }
             }
             &Value::GenericParameter(param) => {
                 let param_info = &self.compiled[param];
                 match param_info.defining_item_kind {
                     GenericItemKind::Type | GenericItemKind::Module | GenericItemKind::Struct | GenericItemKind::Enum =>
-                        ValueDomainKind::Const,
+                        ValueDomain::CompileTime,
                     GenericItemKind::Function =>
-                        ValueDomainKind::FunctionBody(param_info.defining_item),
+                        ValueDomain::FunctionBody(param_info.defining_item),
                 }
             }
-            &Value::Never => ValueDomainKind::Const,
-            &Value::Unit => ValueDomainKind::Const,
-            &Value::Undefined => ValueDomainKind::Const,
-            &Value::BoolConstant(_) => ValueDomainKind::Const,
-            &Value::IntConstant(_) => ValueDomainKind::Const,
-            &Value::StringConstant(_) => ValueDomainKind::Const,
+            &Value::Never => ValueDomain::CompileTime,
+            &Value::Unit => ValueDomain::CompileTime,
+            &Value::Undefined => ValueDomain::CompileTime,
+            &Value::BoolConstant(_) => ValueDomain::CompileTime,
+            &Value::IntConstant(_) => ValueDomain::CompileTime,
+            &Value::StringConstant(_) => ValueDomain::CompileTime,
             Value::Range(info) => {
                 let RangeInfo { start, end } = info;
 
@@ -54,7 +54,7 @@ impl CompileState<'_, '_> {
 
                 match (start, end) {
                     (None, None) =>
-                        ValueDomainKind::Const,
+                        ValueDomain::CompileTime,
                     (Some(single), None) | (None, Some(single)) =>
                         single,
                     (Some(start), Some(end)) =>
@@ -67,64 +67,69 @@ impl CompileState<'_, '_> {
                 self.domain_of_value(span, inner),
             // TODO just join all argument domains
             &Value::FunctionReturn(_) =>
-                ValueDomainKind::Error(diags.report_todo(span, "domain of function return value")),
+                ValueDomain::Error(diags.report_todo(span, "domain of function return value")),
             &Value::Module(_) =>
-                ValueDomainKind::Error(diags.report_simple("cannot get domain of module value", span, "module")),
+                ValueDomain::Error(diags.report_simple("cannot get domain of module value", span, "module")),
             &Value::Wire(wire) =>
-                ValueDomainKind::from_domain_kind(self.compiled[wire].domain.clone()),
+                ValueDomain::from_domain_kind(self.compiled[wire].domain.clone()),
             &Value::Register(reg) =>
-                ValueDomainKind::Sync(self.compiled[reg].domain.clone()),
+                ValueDomain::Sync(self.compiled[reg].domain.clone()),
             // TODO this is a bit confusing, the origin of the variable matters!
-            &Value::Variable(_) =>
-                ValueDomainKind::Error(diags.report_todo(span, "domain of variable value")),
+            &Value::Variable(var) => {
+                match &self.compiled[var].domain {
+                    VariableDomain::Unknown =>
+                        ValueDomain::Error(diags.report_todo(span, "domain of nontrivial variables")),
+                    VariableDomain::Known(domain) => domain.clone(),
+                }
+            }
             &Value::Constant(_) =>
-                ValueDomainKind::Const,
+                ValueDomain::CompileTime,
         }
     }
 
     /// Merge two sync domains, as they would be if they were used as part of a single expression.
     /// Reports an error if this is not possible.
-    pub fn merge_domains(&self, span: Span, left: &ValueDomainKind, right: &ValueDomainKind) -> ValueDomainKind {
+    pub fn merge_domains(&self, span: Span, left: &ValueDomain, right: &ValueDomain) -> ValueDomain {
         match (left, right) {
             // propagate errors
-            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) => ValueDomainKind::Error(e),
+            (&ValueDomain::Error(e), _) | (_, &ValueDomain::Error(e)) => ValueDomain::Error(e),
             // const can merge with anything and become that other domain
-            (ValueDomainKind::Const, other) | (other, ValueDomainKind::Const) => other.clone(),
+            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other.clone(),
             // sync can merge if both domains match
-            (ValueDomainKind::Sync(left), ValueDomainKind::Sync(right)) => {
+            (ValueDomain::Sync(left), ValueDomain::Sync(right)) => {
                 match sync_domains_equal(left, right) {
-                    Ok(SyncDomainsEqual::Equal) => ValueDomainKind::Sync(left.clone()),
+                    Ok(SyncDomainsEqual::Equal) => ValueDomain::Sync(left.clone()),
                     Ok(SyncDomainsEqual::NotEqual(reason)) => {
                         let label = format!(
                             "{}: domains {} and {}",
                             reason,
-                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomainKind::Sync(left.clone())),
-                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomainKind::Sync(right.clone())),
+                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomain::Sync(left.clone())),
+                            self.compiled.sync_kind_to_readable_string(&self.source, &self.parsed, &ValueDomain::Sync(right.clone())),
                         );
                         let e = self.diags.report_simple("cannot merge different sync domains", span, label);
-                        ValueDomainKind::Error(e)
+                        ValueDomain::Error(e)
                     }
-                    Err(e) => ValueDomainKind::Error(e),
+                    Err(e) => ValueDomain::Error(e),
                 }
             }
             // function can marge if both domains match
-            (ValueDomainKind::FunctionBody(left), ValueDomainKind::FunctionBody(right)) => {
+            (ValueDomain::FunctionBody(left), ValueDomain::FunctionBody(right)) => {
                 if left == right {
-                    ValueDomainKind::FunctionBody(left.clone())
+                    ValueDomain::FunctionBody(left.clone())
                 } else {
                     let e = self.diags.report_simple("cannot merge different function body domains", span, "function body domains");
-                    ValueDomainKind::Error(e)
+                    ValueDomain::Error(e)
                 }
             }
             // failed merges
-            (ValueDomainKind::FunctionBody(_), _) | (_, ValueDomainKind::FunctionBody(_)) => {
-                ValueDomainKind::Error(self.diags.report_simple("cannot merge function domain with anything else", span, "sync domain"))
+            (ValueDomain::FunctionBody(_), _) | (_, ValueDomain::FunctionBody(_)) => {
+                ValueDomain::Error(self.diags.report_simple("cannot merge function domain with anything else", span, "sync domain"))
             }
-            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) => {
-                ValueDomainKind::Error(self.diags.report_simple("cannot merge clock domain with anything else", span, "clock domain"))
+            (ValueDomain::Clock, _) | (_, ValueDomain::Clock) => {
+                ValueDomain::Error(self.diags.report_simple("cannot merge clock domain with anything else", span, "clock domain"))
             }
-            (ValueDomainKind::Async, _) | (_, ValueDomainKind::Async) => {
-                ValueDomainKind::Error(self.diags.report_simple("cannot merge async domain with anything else", span, "async domain"))
+            (ValueDomain::Async, _) | (_, ValueDomain::Async) => {
+                ValueDomain::Error(self.diags.report_simple("cannot merge async domain with anything else", span, "async domain"))
             }
         }
     }
@@ -134,9 +139,9 @@ impl CompileState<'_, '_> {
     pub fn check_domain_crossing(
         &self,
         target_span: Span,
-        target: &ValueDomainKind,
+        target: &ValueDomain,
         source_span: Span,
-        source: &ValueDomainKind,
+        source: &ValueDomain,
         user_controlled: DomainUserControlled,
         hint: &str,
     ) -> Result<(), ErrorGuaranteed> {
@@ -144,26 +149,26 @@ impl CompileState<'_, '_> {
 
         let invalid_reason = match (target, source) {
             // propagate errors
-            (&ValueDomainKind::Error(e), _) | (_, &ValueDomainKind::Error(e)) =>
+            (&ValueDomain::Error(e), _) | (_, &ValueDomain::Error(e)) =>
                 return Err(e),
             // clock assignments are not yet implemented
-            (ValueDomainKind::Clock, _) | (_, ValueDomainKind::Clock) =>
+            (ValueDomain::Clock, _) | (_, ValueDomain::Clock) =>
                 return Err(self.diags.report_todo(target_span.join(source_span), "clock assignment")),
             // const target must have const source
-            (ValueDomainKind::Const, ValueDomainKind::Const) => None,
-            (ValueDomainKind::Const, ValueDomainKind::Async) => Some("async to const"),
-            (ValueDomainKind::Const, ValueDomainKind::Sync(_)) => Some("sync to const"),
-            (ValueDomainKind::Const, ValueDomainKind::FunctionBody(_)) => Some("function body to const"),
+            (ValueDomain::CompileTime, ValueDomain::CompileTime) => None,
+            (ValueDomain::CompileTime, ValueDomain::Async) => Some("async to const"),
+            (ValueDomain::CompileTime, ValueDomain::Sync(_)) => Some("sync to const"),
+            (ValueDomain::CompileTime, ValueDomain::FunctionBody(_)) => Some("function body to const"),
             // const can be the source of everything
-            (ValueDomainKind::Async, ValueDomainKind::Const) => None,
-            (ValueDomainKind::Sync(_), ValueDomainKind::Const) => None,
-            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Const) => None,
+            (ValueDomain::Async, ValueDomain::CompileTime) => None,
+            (ValueDomain::Sync(_), ValueDomain::CompileTime) => None,
+            (ValueDomain::FunctionBody(_), ValueDomain::CompileTime) => None,
             // async can be the target of everything
-            (ValueDomainKind::Async, _) => None,
+            (ValueDomain::Async, _) => None,
             // sync cannot be the target of async
-            (ValueDomainKind::Sync(_), ValueDomainKind::Async) => Some("async to sync"),
+            (ValueDomain::Sync(_), ValueDomain::Async) => Some("async to sync"),
             // sync pair is allowed if clock and reset match
-            (ValueDomainKind::Sync(target), ValueDomainKind::Sync(source)) => {
+            (ValueDomain::Sync(target), ValueDomain::Sync(source)) => {
                 let SyncDomain { clock: target_clock, reset: target_reset } = target;
                 let SyncDomain { clock: source_clock, reset: source_reset } = source;
 
@@ -184,16 +189,16 @@ impl CompileState<'_, '_> {
                 }
             }
             // function can only be used in matching function body itself
-            (ValueDomainKind::FunctionBody(target), ValueDomainKind::FunctionBody(source)) => {
+            (ValueDomain::FunctionBody(target), ValueDomain::FunctionBody(source)) => {
                 if target == source {
                     None
                 } else {
                     Some("different function body")
                 }
             }
-            (ValueDomainKind::Sync(_), ValueDomainKind::FunctionBody(_)) => Some("function body to sync"),
-            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Sync(_)) => Some("sync to function body"),
-            (ValueDomainKind::FunctionBody(_), ValueDomainKind::Async) => Some("async to function body"),
+            (ValueDomain::Sync(_), ValueDomain::FunctionBody(_)) => Some("function body to sync"),
+            (ValueDomain::FunctionBody(_), ValueDomain::Sync(_)) => Some("sync to function body"),
+            (ValueDomain::FunctionBody(_), ValueDomain::Async) => Some("async to function body"),
         };
 
         let (target_level, source_level) = match user_controlled {

@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 /// * hardware signals cannot be used as values in constants or types
 pub struct ExpressionContext<'a> {
     pub scope: Scope,
-    pub domain: ContextDomain<Spanned<&'a ValueDomainKind>>,
+    pub domain: ContextDomain<Spanned<&'a ValueDomain>>,
     /// Set when inside a function body.
     pub function_return_ty: Option<Spanned<&'a Type>>,
 }
@@ -28,7 +28,7 @@ impl<'m> ExpressionContext<'m> {
     pub fn constant(span: Span, scope: Scope) -> ExpressionContext<'static> {
         ExpressionContext {
             scope,
-            domain: ContextDomain::Specific(Spanned { span, inner: &ValueDomainKind::Const }),
+            domain: ContextDomain::Specific(Spanned { span, inner: &ValueDomain::CompileTime }),
             function_return_ty: None,
         }
     }
@@ -51,7 +51,7 @@ impl<'m> ExpressionContext<'m> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ContextDomain<V = ValueDomainKind> {
+pub enum ContextDomain<V = ValueDomain> {
     Specific(V),
     Passthrough,
 }
@@ -92,11 +92,11 @@ impl<T, V> TypeOrValue<T, V> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ValueDomainKind<V = Value> {
+pub enum ValueDomain<V = Value> {
     Error(ErrorGuaranteed),
     // TODO rename to compile-time, this is not necessarily constant
     //   (eg. in functions, certain variables might be constant) 
-    Const,
+    CompileTime,
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset
     Async,
@@ -104,11 +104,11 @@ pub enum ValueDomainKind<V = Value> {
     FunctionBody(Item),
 }
 
-impl ValueDomainKind {
+impl ValueDomain {
     pub fn from_domain_kind(domain: DomainKind<Value>) -> Self {
         match domain {
-            DomainKind::Async => ValueDomainKind::Async,
-            DomainKind::Sync(sync) => ValueDomainKind::Sync(SyncDomain {
+            DomainKind::Async => ValueDomain::Async,
+            DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
                 clock: sync.clock,
                 reset: sync.reset,
             }),

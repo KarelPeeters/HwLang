@@ -1,5 +1,5 @@
 use crate::data::compiled::{FunctionChecked, FunctionSignatureInfo, Item};
-use crate::front::common::{ContextDomain, ExpressionContext, ValueDomainKind};
+use crate::front::common::{ContextDomain, ExpressionContext, ValueDomain};
 use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::syntax::ast::{ItemDefFunction, Spanned};
@@ -12,7 +12,7 @@ impl CompileState<'_, '_> {
 
         let domain = Spanned {
             span: funct_ast.body.span,
-            inner: &ValueDomainKind::FunctionBody(func_item),
+            inner: &ValueDomain::FunctionBody(func_item),
         };
         let function_return_ty = Spanned {
             span: ret_ty_ast.as_ref().map_or(funct_ast.span, |t| t.span),

@@ -1,6 +1,6 @@
 use crate::data::compiled::GenericParameter;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
+use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
 use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
@@ -342,8 +342,8 @@ impl CompileState<'_, '_> {
         // check that clock is a clock
         let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
         let clock_value = match &clock_domain {
-            ValueDomainKind::Clock => clock_value_unchecked,
-            &ValueDomainKind::Error(e) => Value::Error(e),
+            ValueDomain::Clock => clock_value_unchecked,
+            &ValueDomain::Error(e) => Value::Error(e),
             _ => {
                 let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
                 let e = self.diags.report_simple(title, clock.span, "clock value");
@@ -360,8 +360,8 @@ impl CompileState<'_, '_> {
         };
         let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
         let reset_value = match &reset_domain {
-            ValueDomainKind::Async => reset_value_bool,
-            &ValueDomainKind::Error(e) => Value::Error(e),
+            ValueDomain::Async => reset_value_bool,
+            &ValueDomain::Error(e) => Value::Error(e),
             _ => {
                 let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
                 let e = self.diags.report_simple(title, reset.span, "reset value");

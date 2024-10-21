@@ -2,7 +2,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::module_body::{LowerBlock, ModuleChecked};
 use crate::data::parsed::{ItemAstReference, ModulePortAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomainKind};
+use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomain};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -212,6 +212,15 @@ pub struct WireInfo {
     pub has_declaration_value: bool,
 }
 
+// TODO variables that are assigned to multiple different domains need to get the merged domain,
+//   but that is not implemented yet. Currently only obvious domains (ie. clocked, function) are set.
+//   This mostly works fine, except for combinatorial blocks.
+#[derive(Debug, Clone)]
+pub enum VariableDomain {
+    Unknown,
+    Known(ValueDomain),
+}
+
 #[derive(Debug)]
 pub struct VariableInfo {
     pub defining_id: MaybeIdentifier,
@@ -219,6 +228,8 @@ pub struct VariableInfo {
     // TODO is it okay that this type does not get its generics replaced?
     pub ty: Type,
     pub mutable: bool,
+
+    pub domain: VariableDomain,
 }
 
 #[derive(Debug)]
@@ -338,18 +349,18 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     }
 
     // TODO these interfaces are getting really ugly, create combined database types
-    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, parsed: &ParsedDatabase, sync: &ValueDomainKind) -> String {
+    pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, parsed: &ParsedDatabase, sync: &ValueDomain) -> String {
         match sync {
-            ValueDomainKind::Error(_) => "error".to_string(),
-            ValueDomainKind::Const => "const".to_string(),
-            ValueDomainKind::Clock => "clock".to_string(),
-            ValueDomainKind::Async => "async".to_string(),
-            ValueDomainKind::Sync(SyncDomain { clock, reset }) => {
+            ValueDomain::Error(_) => "error".to_string(),
+            ValueDomain::CompileTime => "const".to_string(),
+            ValueDomain::Clock => "clock".to_string(),
+            ValueDomain::Async => "async".to_string(),
+            ValueDomain::Sync(SyncDomain { clock, reset }) => {
                 let clock_str = self.value_to_readable_str(source, parsed, clock);
                 let reset_str = self.value_to_readable_str(source, parsed, reset);
                 format!("sync({clock_str}, {reset_str})")
             }
-            &ValueDomainKind::FunctionBody(function) => {
+            &ValueDomain::FunctionBody(function) => {
                 format!("function_body({})", self.defining_id_to_readable_string(&self[function].defining_id))
             }
         }

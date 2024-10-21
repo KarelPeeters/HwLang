@@ -3,7 +3,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::module_body::{LowerBlock, LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
+use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
@@ -230,7 +230,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // check domain
         let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
             id.span(),
-            &ValueDomainKind::Const,
+            &ValueDomain::CompileTime,
             init_span,
             &self.domain_of_value(init_span, &init),
             DomainUserControlled::Source,
@@ -279,7 +279,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 // check domain
                 let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
                     id.span(),
-                    &ValueDomainKind::from_domain_kind(sync.clone()),
+                    &ValueDomain::from_domain_kind(sync.clone()),
                     value.span,
                     &self.domain_of_value(value.span, &value_eval),
                     DomainUserControlled::Source,
@@ -343,7 +343,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let sync_domain = self.eval_sync_domain(scopy_body, domain.as_ref().map_inner(|v| {
             v.as_ref().map_inner(|v| &**v)
         }));
-        let domain = Spanned { span: domain_span, inner: &ValueDomainKind::Sync(sync_domain.clone()) };
+        let domain = Spanned { span: domain_span, inner: &ValueDomain::Sync(sync_domain.clone()) };
 
         let ctx = ExpressionContext {
             scope: scopy_body,
@@ -522,7 +522,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             );
                             let e_domain = self.check_domain_crossing(
                                 port_ast.id.span,
-                                &ValueDomainKind::from_domain_kind(domain_port.clone()),
+                                &ValueDomain::from_domain_kind(domain_port.clone()),
                                 connection_value_span,
                                 &domain_value,
                                 DomainUserControlled::Source,
@@ -548,7 +548,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 connection_value_span,
                                 &domain_value,
                                 port_ast.id.span,
-                                &ValueDomainKind::from_domain_kind(domain_port.clone()),
+                                &ValueDomain::from_domain_kind(domain_port.clone()),
                                 DomainUserControlled::Target,
                                 "instance port connections must respect domains",
                             );

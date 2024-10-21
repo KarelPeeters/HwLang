@@ -1,4 +1,4 @@
-use crate::data::compiled::VariableInfo;
+use crate::data::compiled::{VariableDomain, VariableInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::module_body::{LowerBlock, LowerIfStatement, LowerStatement};
 use crate::front::checking::DomainUserControlled;
@@ -92,8 +92,18 @@ impl CompileState<'_, '_> {
                     ContextDomain::Passthrough => {}
                 }
 
+                let domain = match ctx.domain {
+                    ContextDomain::Specific(domain) => VariableDomain::Known(domain.inner.clone()),
+                    ContextDomain::Passthrough => VariableDomain::Unknown,
+                };
+
                 // declare
-                let info = VariableInfo { defining_id: id.clone(), ty: ty_eval.clone(), mutable };
+                let info = VariableInfo {
+                    defining_id: id.clone(),
+                    ty: ty_eval.clone(),
+                    mutable,
+                    domain,
+                };
                 let variable = self.compiled.variables.push(info);
                 let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(variable))));
                 self.compiled[ctx.scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
@@ -273,6 +283,7 @@ impl CompileState<'_, '_> {
                     }
                 };
 
+                // TODO require range to be compile-time
                 let index_range = Value::Range(RangeInfo {
                     start: Some(Box::new(start)),
                     end: Some(Box::new(end)),
@@ -281,6 +292,8 @@ impl CompileState<'_, '_> {
                     defining_id: index.clone(),
                     ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
                     mutable: false,
+                    // TODO once we require the range to be compile-time this can be constant too
+                    domain: VariableDomain::Unknown,
                 });
 
                 let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);

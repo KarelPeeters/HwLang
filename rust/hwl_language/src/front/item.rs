@@ -2,7 +2,7 @@ use crate::data::compiled::{Constant, ConstantInfo, FunctionSignatureInfo, Gener
 use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
 use crate::data::parsed::ModulePortAstReference;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue, ValueDomainKind};
+use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue, ValueDomain};
 use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
@@ -273,7 +273,7 @@ impl CompileState<'_, '_> {
         // check domain
         let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
             id.span(),
-            &ValueDomainKind::Const,
+            &ValueDomain::CompileTime,
             value.span,
             &self.domain_of_value(value.span, &value_eval),
             DomainUserControlled::Source,
