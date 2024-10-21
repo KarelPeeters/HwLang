@@ -231,8 +231,6 @@ BlockStatementKind: BlockStatementKind = {
     // control flow
     "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
         => BlockStatementKind::If(IfStatement { cond, then_block, else_if_pairs, else_block }),
-    "loop" <body:Block<BlockStatement>>
-        => BlockStatementKind::Loop(LoopStatement { body }),
     "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
     "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>

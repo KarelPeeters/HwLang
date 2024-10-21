@@ -9,7 +9,7 @@ use crate::front::scope::Visibility;
 use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, ElseIfPair, ForStatement, PortDirection, Spanned, VariableDeclaration};
+use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, ElseIfPair, ForStatement, PortDirection, Spanned, VariableDeclaration, WhileStatement};
 use crate::syntax::pos::Span;
 
 #[derive(Debug, Copy, Clone)]
@@ -22,290 +22,321 @@ impl CompileState<'_, '_> {
     #[must_use]
     pub fn visit_block(
         &mut self,
-        ctx: &ExpressionContext,
+        ctx_outer: &ExpressionContext,
         collector: &mut MaybeDriverCollector,
         block: &Block<BlockStatement>,
     ) -> LowerBlock {
-        let diags = self.diags;
-        let scope = self.compiled.scopes.new_child(ctx.scope, block.span, Visibility::Private);
+        let scope_inner = self.compiled.scopes.new_child(ctx_outer.scope, block.span, Visibility::Private);
+        let ctx_inner = &ctx_outer.with_scope(scope_inner);
 
         let mut lower_statements = vec![];
 
         for statement in &block.statements {
-            match &statement.inner {
-                BlockStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope, decl, Visibility::Private);
-                }
-                BlockStatementKind::VariableDeclaration(decl) => {
-                    let VariableDeclaration { span: _, mutable, id, ty, init } = decl;
-                    let mutable = *mutable;
+            let lower_statement = self.visit_statement(ctx_inner, collector, statement);
 
-                    let ty_eval = ty.as_ref().map(|ty| {
-                        let inner = self.eval_expression_as_ty(scope, ty);
-                        Spanned { span: ty.span, inner }
-                    });
-                    let init_unchecked = self.eval_expression_as_value(ctx, collector, init);
-
-                    // check or infer type
-                    let (ty_eval, init_eval) = match ty_eval {
-                        None => (self.type_of_value(init.span, &init_unchecked), init_unchecked),
-                        Some(ty_eval) => {
-                            match self.check_type_contains(Some(ty_eval.span), init.span, &ty_eval.inner, &init_unchecked) {
-                                Ok(()) => (ty_eval.inner, init_unchecked),
-                                Err(e) => (Type::Error(e), Value::Error(e)),
-                            }
-                        }
-                    };
-
-                    // check domain
-                    match ctx.domain {
-                        ContextDomain::Specific(domain) => {
-                            let init_domain = self.domain_of_value(init.span, &init_eval);
-                            let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
-                                decl.span,
-                                &domain.inner,
-                                init.span,
-                                &init_domain,
-                                DomainUserControlled::Source,
-                                "variable initializer must be assignable to context domain",
-                            );
-                        }
-                        ContextDomain::Passthrough => {}
-                    }
-
-                    // declare
-                    let info = VariableInfo { defining_id: id.clone(), ty: ty_eval.clone(), mutable };
-                    let variable = self.compiled.variables.push(info);
-                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(variable))));
-                    self.compiled[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
-                }
-                BlockStatementKind::Assignment(assignment) => {
-                    let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
-
-                    let target_eval = self.eval_expression_as_value(ctx, collector, target);
-                    let value_eval = self.eval_expression_as_value(ctx, collector, value);
-
-                    let mut any_err = Ok(());
-
-                    // check type
-                    let target_ty = self.type_of_value(target.span, &target_eval);
-                    any_err = any_err.and(self.check_type_contains(Some(target.span), value.span, &target_ty, &value_eval));
-
-                    // check read_write
-                    any_err = any_err.and(self.check_value_usable_as_direction(ctx, collector, target.span, &target_eval, AccessDirection::Write));
-                    any_err = any_err.and(self.check_value_usable_as_direction(ctx, collector, value.span, &value_eval, AccessDirection::Read));
-
-                    // check domain
-                    let target_domain = self.domain_of_value(target.span, &target_eval);
-                    let value_domain = self.domain_of_value(value.span, &value_eval);
-
-                    match ctx.domain {
-                        ContextDomain::Passthrough => {
-                            // target/value need to be compatible, without additional constraints
-                            any_err = any_err.and(self.check_domain_crossing(
-                                target.span,
-                                &target_domain,
-                                value.span,
-                                &value_domain,
-                                DomainUserControlled::Both,
-                                "assignment target domain must be assignable from value domain",
-                            ))
-                        }
-                        ContextDomain::Specific(domain) => {
-                            // target/domain and domain/value both need to be compatible
-                            any_err = any_err.and(self.check_domain_crossing(
-                                target.span,
-                                &target_domain,
-                                domain.span,
-                                domain.inner,
-                                DomainUserControlled::Target,
-                                "assignment target domain must be assignable from context domain",
-                            ));
-                            any_err = any_err.and(self.check_domain_crossing(
-                                domain.span,
-                                domain.inner,
-                                value.span,
-                                &value_domain,
-                                DomainUserControlled::Source,
-                                "assignment context domain must be assignable from value domain",
-                            ));
-                        }
-                    };
-
-                    // operator assignments are not implemented yet
-                    if op.inner.is_some() {
-                        any_err = Err(diags.report_todo(assignment.span, "assignment with operator"));
-                    }
-
-                    // result
-                    let statement = match any_err {
-                        Ok(()) => {
-                            LowerStatement::Assignment {
-                                target: Spanned { span: target.span, inner: target_eval },
-                                value: Spanned { span: value.span, inner: value_eval },
-                            }
-                        }
-                        Err(e) => LowerStatement::Error(e),
-                    };
-                    lower_statements.push(Spanned {
-                        span: assignment.span,
-                        inner: statement,
-                    });
-                }
-                BlockStatementKind::Expression(expression) => {
-                    // TODO store this as a statement
-                    let _value = self.eval_expression_as_value(ctx, collector, expression);
-                }
-                BlockStatementKind::Block(stmt) => {
-                    let _ = diags.report_todo(stmt.span, "block statement");
-                }
-                BlockStatementKind::If(ref stmt) => {
-                    let ast::IfStatement { cond, then_block, else_if_pairs, else_block } = stmt;
-
-                    // evaluate conditions and blocks
-                    let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                    let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
-
-                    let lower_then_block = self.visit_block(ctx, collector, then_block);
-                    let mut pairs = vec![];
-
-
-                    for pair in else_if_pairs {
-                        let ElseIfPair { span: _, cond, block } = pair;
-
-                        let pair_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                        let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &pair_cond_eval);
-
-                        let pair_block = self.visit_block(ctx, collector, block);
-
-                        pairs.push(Spanned { span: pair.span, inner: (Spanned { span: cond.span, inner: pair_cond_eval }, pair_block) });
-                    }
-
-                    let else_block = else_block.as_ref().map(|else_block| {
-                        self.visit_block(ctx, collector, else_block)
-                    });
-
-                    // construct statement, in reverse order
-                    let mut next_else = else_block;
-                    for pair in pairs.into_iter().rev() {
-                        let (c, b) = pair.inner;
-                        next_else = Some(LowerBlock {
-                            statements: vec![
-                                Spanned {
-                                    span: pair.span,
-                                    inner: LowerStatement::If(LowerIfStatement {
-                                        condition: c,
-                                        then_block: b,
-                                        else_block: next_else,
-                                    })
-                                }
-                            ]
-                        })
-                    }
-                    let lower_statement = LowerStatement::If(LowerIfStatement {
-                        condition: Spanned { span: cond.span, inner: cond_eval },
-                        then_block: lower_then_block,
-                        else_block: next_else,
-                    });
-                    lower_statements.push(Spanned { span: statement.span, inner: lower_statement });
-                }
-                BlockStatementKind::Loop(_) => {
-                    let _ = diags.report_todo(statement.span, "loop statement");
-                }
-
-                BlockStatementKind::While(_) => {
-                    let _ = diags.report_todo(statement.span, "while statement");
-                }
-
-                BlockStatementKind::For(ref expr_for) => {
-                    let ForStatement { index, index_ty, iter, body } = expr_for;
-
-                    // define index variable
-                    let iter_span = iter.span;
-                    if let Some(index_ty) = index_ty {
-                        diags.report_todo(index_ty.span, "for loop index type");
-                    }
-
-                    let iter = self.eval_expression_as_value(ctx, collector, iter);
-                    let iter = self.require_int_range_direct(iter_span, &iter);
-
-                    let (start, end) = match &iter {
-                        &Err(e) => (Value::Error(e), Value::Error(e)),
-                        Ok(info) => {
-                            // avoid duplicate error if both ends are missing
-                            let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
-
-                            let &RangeInfo { ref start, ref end } = info;
-                            let (start, end) = match (start, end) {
-                                (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
-                                (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
-                                (None, Some(end)) => (Value::Error(report_unbounded()), end.as_ref().clone()),
-                                (None, None) => {
-                                    let e = report_unbounded();
-                                    (Value::Error(e), Value::Error(e))
-                                }
-                            };
-                            (start, end)
-                        }
-                    };
-
-                    let index_range = Value::Range(RangeInfo {
-                        start: Some(Box::new(start)),
-                        end: Some(Box::new(end)),
-                    });
-                    let index_var = self.compiled.variables.push(VariableInfo {
-                        defining_id: index.clone(),
-                        ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
-                        mutable: false,
-                    });
-
-                    let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);
-                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
-                    self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
-
-                    // typecheck body
-                    let _ = self.visit_block(&ctx.with_scope(scope_index), collector, &body);
-                }
-                BlockStatementKind::Return(ref ret_value) => {
-                    let ret_value = ret_value.as_ref()
-                        .map(|v| (v.span, self.eval_expression_as_value(ctx, collector, v)));
-
-                    match ctx.function_return_ty {
-                        Some(ret_ty) => {
-                            match (ret_value, ret_ty.inner) {
-                                (None, Type::Unit | Type::Error(_)) => {
-                                    // accept
-                                }
-                                (None, _) => {
-                                    let diag = Diagnostic::new("missing return value")
-                                        .add_info(ret_ty.span, "function return type defined here")
-                                        .add_error(statement.span, "missing return value here")
-                                        .finish();
-                                    diags.report(diag);
-                                }
-                                (Some((ret_value_span, ret_value)), ret_ty_inner) => {
-                                    let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty.span), ret_value_span, ret_ty_inner, &ret_value);
-                                }
-                            }
-                        }
-                        None => {
-                            diags.report_simple("return outside function body", statement.span, "return");
-                        }
-                    };
-
-                    // TODO this branch dead for control flow purposes
-                }
-                BlockStatementKind::Break(_) => {
-                    let _ = diags.report_todo(statement.span, "break statement");
-                }
-                BlockStatementKind::Continue => {
-                    let _ = diags.report_todo(statement.span, "continue statement");
-                }
+            if let Some(lower_statement) = lower_statement {
+                lower_statements.push(Spanned {
+                    span: statement.span,
+                    inner: lower_statement,
+                });
             }
         }
 
         LowerBlock {
             statements: lower_statements,
+        }
+    }
+
+    fn visit_statement(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, statement: &BlockStatement) -> Option<LowerStatement> {
+        let diags = self.diags;
+
+        match &statement.inner {
+            BlockStatementKind::ConstDeclaration(decl) => {
+                self.process_and_declare_const(ctx.scope, decl, Visibility::Private);
+                None
+            }
+            BlockStatementKind::VariableDeclaration(decl) => {
+                let VariableDeclaration { span: _, mutable, id, ty, init } = decl;
+                let mutable = *mutable;
+
+                let ty_eval = ty.as_ref().map(|ty| {
+                    let inner = self.eval_expression_as_ty(ctx.scope, ty);
+                    Spanned { span: ty.span, inner }
+                });
+                let init_unchecked = self.eval_expression_as_value(ctx, collector, init);
+
+                // check or infer type
+                let (ty_eval, init_eval) = match ty_eval {
+                    None => (self.type_of_value(init.span, &init_unchecked), init_unchecked),
+                    Some(ty_eval) => {
+                        match self.check_type_contains(Some(ty_eval.span), init.span, &ty_eval.inner, &init_unchecked) {
+                            Ok(()) => (ty_eval.inner, init_unchecked),
+                            Err(e) => (Type::Error(e), Value::Error(e)),
+                        }
+                    }
+                };
+
+                // check domain
+                match ctx.domain {
+                    ContextDomain::Specific(domain) => {
+                        let init_domain = self.domain_of_value(init.span, &init_eval);
+                        let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
+                            decl.span,
+                            &domain.inner,
+                            init.span,
+                            &init_domain,
+                            DomainUserControlled::Source,
+                            "variable initializer must be assignable to context domain",
+                        );
+                    }
+                    ContextDomain::Passthrough => {}
+                }
+
+                // declare
+                let info = VariableInfo { defining_id: id.clone(), ty: ty_eval.clone(), mutable };
+                let variable = self.compiled.variables.push(info);
+                let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(variable))));
+                self.compiled[ctx.scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
+
+                None
+            }
+            BlockStatementKind::Assignment(assignment) => {
+                let &ast::Assignment { span: _, op, ref target, ref value } = assignment;
+
+                let target_eval = self.eval_expression_as_value(ctx, collector, target);
+                let value_eval = self.eval_expression_as_value(ctx, collector, value);
+
+                let mut any_err = Ok(());
+
+                // check type
+                let target_ty = self.type_of_value(target.span, &target_eval);
+                any_err = any_err.and(self.check_type_contains(Some(target.span), value.span, &target_ty, &value_eval));
+
+                // check read_write
+                any_err = any_err.and(self.check_value_usable_as_direction(ctx, collector, target.span, &target_eval, AccessDirection::Write));
+                any_err = any_err.and(self.check_value_usable_as_direction(ctx, collector, value.span, &value_eval, AccessDirection::Read));
+
+                // check domain
+                let target_domain = self.domain_of_value(target.span, &target_eval);
+                let value_domain = self.domain_of_value(value.span, &value_eval);
+
+                match ctx.domain {
+                    ContextDomain::Passthrough => {
+                        // target/value need to be compatible, without additional constraints
+                        any_err = any_err.and(self.check_domain_crossing(
+                            target.span,
+                            &target_domain,
+                            value.span,
+                            &value_domain,
+                            DomainUserControlled::Both,
+                            "assignment target domain must be assignable from value domain",
+                        ))
+                    }
+                    ContextDomain::Specific(domain) => {
+                        // target/domain and domain/value both need to be compatible
+                        any_err = any_err.and(self.check_domain_crossing(
+                            target.span,
+                            &target_domain,
+                            domain.span,
+                            domain.inner,
+                            DomainUserControlled::Target,
+                            "assignment target domain must be assignable from context domain",
+                        ));
+                        any_err = any_err.and(self.check_domain_crossing(
+                            domain.span,
+                            domain.inner,
+                            value.span,
+                            &value_domain,
+                            DomainUserControlled::Source,
+                            "assignment context domain must be assignable from value domain",
+                        ));
+                    }
+                };
+
+                // operator assignments are not implemented yet
+                if op.inner.is_some() {
+                    any_err = Err(diags.report_todo(assignment.span, "assignment with operator"));
+                }
+
+                // result
+                let lower_statement = match any_err {
+                    Ok(()) => {
+                        LowerStatement::Assignment {
+                            target: Spanned { span: target.span, inner: target_eval },
+                            value: Spanned { span: value.span, inner: value_eval },
+                        }
+                    }
+                    Err(e) => LowerStatement::Error(e),
+                };
+                Some(lower_statement)
+            }
+            BlockStatementKind::Expression(expression) => {
+                let value = self.eval_expression_as_value(ctx, collector, expression);
+                Some(LowerStatement::Expression(Spanned { span: expression.span, inner: value }))
+            }
+            BlockStatementKind::Block(stmt) => {
+                let block = self.visit_block(ctx, collector, stmt);
+                Some(LowerStatement::Block(block))
+            }
+            BlockStatementKind::If(ref stmt) => {
+                let ast::IfStatement { cond, then_block, else_if_pairs, else_block } = stmt;
+
+                // evaluate conditions and blocks
+                let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
+
+                let lower_then_block = self.visit_block(ctx, collector, then_block);
+                let mut pairs = vec![];
+
+                for pair in else_if_pairs {
+                    let ElseIfPair { span: _, cond, block } = pair;
+
+                    let pair_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                    let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &pair_cond_eval);
+
+                    let pair_block = self.visit_block(ctx, collector, block);
+
+                    pairs.push(Spanned { span: pair.span, inner: (Spanned { span: cond.span, inner: pair_cond_eval }, pair_block) });
+                }
+
+                let else_block = else_block.as_ref().map(|else_block| {
+                    self.visit_block(ctx, collector, else_block)
+                });
+
+                // construct statement, in reverse order
+                let mut next_else = else_block;
+                for pair in pairs.into_iter().rev() {
+                    let (c, b) = pair.inner;
+                    next_else = Some(LowerBlock {
+                        statements: vec![
+                            Spanned {
+                                span: pair.span,
+                                inner: LowerStatement::If(LowerIfStatement {
+                                    condition: c,
+                                    then_block: b,
+                                    else_block: next_else,
+                                })
+                            }
+                        ]
+                    })
+                }
+                let lower_statement = LowerStatement::If(LowerIfStatement {
+                    condition: Spanned { span: cond.span, inner: cond_eval },
+                    then_block: lower_then_block,
+                    else_block: next_else,
+                });
+                Some(lower_statement)
+            }
+            BlockStatementKind::While(statement_while) => {
+                let WhileStatement { cond, body } = statement_while;
+
+                let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
+
+                let lower_body = self.visit_block(ctx, collector, body);
+
+                let _ = cond_eval;
+                let _ = lower_body;
+                let lower_statement = LowerStatement::While;
+                Some(lower_statement)
+            }
+
+            BlockStatementKind::For(ref statement_for) => {
+                let ForStatement { index, index_ty, iter, body } = statement_for;
+
+                // define index variable
+                let iter_span = iter.span;
+                if let Some(index_ty) = index_ty {
+                    diags.report_todo(index_ty.span, "for loop index type");
+                }
+
+                let iter = self.eval_expression_as_value(ctx, collector, iter);
+                let iter = self.require_int_range_direct(iter_span, &iter);
+
+                let (start, end) = match &iter {
+                    &Err(e) => (Value::Error(e), Value::Error(e)),
+                    Ok(info) => {
+                        // avoid duplicate error if both ends are missing
+                        let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
+
+                        let &RangeInfo { ref start, ref end } = info;
+                        let (start, end) = match (start, end) {
+                            (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
+                            (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
+                            (None, Some(end)) => (Value::Error(report_unbounded()), end.as_ref().clone()),
+                            (None, None) => {
+                                let e = report_unbounded();
+                                (Value::Error(e), Value::Error(e))
+                            }
+                        };
+                        (start, end)
+                    }
+                };
+
+                let index_range = Value::Range(RangeInfo {
+                    start: Some(Box::new(start)),
+                    end: Some(Box::new(end)),
+                });
+                let index_var = self.compiled.variables.push(VariableInfo {
+                    defining_id: index.clone(),
+                    ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
+                    mutable: false,
+                });
+
+                let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);
+                let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
+                self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
+
+                // typecheck body
+                let body = self.visit_block(&ctx.with_scope(scope_index), collector, &body);
+
+                let _ = index_range;
+                let _ = body;
+                let lower_statement = LowerStatement::For;
+                Some(lower_statement)
+            }
+            BlockStatementKind::Return(ref ret_value) => {
+                let ret_value = ret_value.as_ref()
+                    .map(|v| Spanned { span: v.span, inner: self.eval_expression_as_value(ctx, collector, v) });
+
+                let lower_statement = match ctx.function_return_ty {
+                    Some(ret_ty) => {
+                        match (ret_value, ret_ty.inner) {
+                            (None, Type::Unit | Type::Error(_)) => {
+                                // accept
+                                LowerStatement::Return(None)
+                            }
+                            (None, _) => {
+                                let diag = Diagnostic::new("missing return value")
+                                    .add_info(ret_ty.span, "function return type defined here")
+                                    .add_error(statement.span, "missing return value here")
+                                    .finish();
+                                let e = diags.report(diag);
+                                LowerStatement::Return(Some(Value::Error(e)))
+                            }
+                            (Some(ret_value), ret_ty_inner) => {
+                                match self.check_type_contains(Some(ret_ty.span), ret_value.span, ret_ty_inner, &ret_value.inner) {
+                                    Ok(()) => LowerStatement::Return(Some(ret_value.inner)),
+                                    Err(e) => LowerStatement::Return(Some(Value::Error(e))),
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        let e = diags.report_simple("return outside function body", statement.span, "return");
+                        LowerStatement::Error(e)
+                    }
+                };
+                Some(lower_statement)
+            }
+            BlockStatementKind::Break(_) => {
+                let e = diags.report_todo(statement.span, "break statement");
+                Some(LowerStatement::Error(e))
+            }
+            BlockStatementKind::Continue => {
+                let e = diags.report_todo(statement.span, "continue statement");
+                Some(LowerStatement::Error(e))
+            }
         }
     }
 

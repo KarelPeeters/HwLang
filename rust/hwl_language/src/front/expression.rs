@@ -20,6 +20,7 @@ impl CompileState<'_, '_> {
     // TODO this should support separate signature and value queries too
     //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
     //    careful, think about how this interacts with the future type inference system
+    // TODO return a spanned value here
     pub fn eval_expression(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> ScopedEntryDirect {
         let diags = self.diags;
 

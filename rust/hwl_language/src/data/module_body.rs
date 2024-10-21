@@ -44,10 +44,18 @@ pub struct LowerBlock {
 #[derive(Debug, Clone)]
 pub enum LowerStatement {
     Error(ErrorGuaranteed),
+
+    Block(LowerBlock),
+    Expression(Spanned<Value>),
+
     Assignment { target: Spanned<Value>, value: Spanned<Value> },
+
+    // TODO we don't support any expressions with side effects (yet), does this make sense?
     If(LowerIfStatement),
     //TODO
     For,
+    While,
+    Return(Option<Value>),
 }
 
 #[derive(Debug, Clone)]

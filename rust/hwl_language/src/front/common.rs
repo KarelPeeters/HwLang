@@ -94,6 +94,8 @@ impl<T, V> TypeOrValue<T, V> {
 #[derive(Debug, Clone)]
 pub enum ValueDomainKind<V = Value> {
     Error(ErrorGuaranteed),
+    // TODO rename to compile-time, this is not necessarily constant
+    //   (eg. in functions, certain variables might be constant) 
     Const,
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset

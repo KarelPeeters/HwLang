@@ -364,6 +364,22 @@ fn statement_to_verilog(
     indent: Indent,
 ) {
     match statement.inner {
+        LowerStatement::Block(block) => {
+            swriteln!(f, "{indent}begin");
+            block_to_verilog(diag, parsed, compiled, signal_map, block, f, indent.nest());
+            swriteln!(f, "{indent}end");
+        }
+        LowerStatement::Expression(value) => {
+            let value_str = value_to_verilog(diag, parsed, compiled, signal_map, value.as_ref());
+            let value_str = match &value_str {
+                Ok(s) => s.as_str(),
+                Err(VerilogValueUndefined) => {
+                    swriteln!(f, "{indent}// undefined");
+                    return;
+                }
+            };
+            swriteln!(f, "{indent}{value_str};");
+        }
         LowerStatement::Assignment { target, value } => {
             // TODO create shadow variables for all assignments inside blocks, and only assign to those
             //  then finally at the end of the block, non-blocking assign to everything
@@ -417,9 +433,17 @@ fn statement_to_verilog(
                 }
             }
         }
-        LowerStatement::For {} => {
-            diag.report_todo(statement.span, "lower for loop");
+        LowerStatement::For => {
+            diag.report_internal_error(statement.span, "lower for loop");
             swriteln!(f, "{indent}// TODO lower for loop");
+        }
+        LowerStatement::While => {
+            diag.report_todo(statement.span, "while loops should never materialize");
+            swriteln!(f, "{indent}// error while loop");
+        }
+        LowerStatement::Return(_) => {
+            diag.report_internal_error(statement.span, "return should never materialize");
+            swriteln!(f, "{indent}// error return");
         }
         &LowerStatement::Error(e) => {
             let _: ErrorGuaranteed = e;
