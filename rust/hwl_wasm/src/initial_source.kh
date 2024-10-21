@@ -47,7 +47,7 @@ pub module top ports(
     );
 }
 
-function foo(T: type, x: T): T {
+function foo(T: type, x: T) -> T {
     //return 0; //type err
     return x;
 }
