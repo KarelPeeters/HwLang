@@ -785,3 +785,19 @@ Also think about how the module instantiator can specify the reset polarity and 
     * Useful to mess with hierarchies for synthesis workarounds
 
 Do both levels!
+
+# Control flow checking
+
+Some checks that need to be done:
+
+* in combinatorial blocks, reading values before writing them is not allowed
+* generate errors on combinatorial loops, through ports, combinatorial blocks, assignments, ...
+* all basic blocks in function need to eventually end in a return
+* non-registers can't be read before they are written in clocked blocks
+* if and while conditions need effect the type system for the blocks they dominate (and _don't_ dominate for the
+  negative of the if condition)
+  * Careful: once data is written to a variable, scratch any knowledge about that variable
+    derived from earlier conditions. We might need to do something SSA-like for this!
+
+In general an SSA-like representation with basic blocks, control flow, dominance, immutable data, ...
+might a great match for all of this control flow and data checking.
