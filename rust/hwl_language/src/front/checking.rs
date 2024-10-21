@@ -39,7 +39,7 @@ impl CompileState<'_, '_> {
                     GenericItemKind::Function =>
                         ValueDomainKind::FunctionBody(param_info.defining_item),
                 }
-            },
+            }
             &Value::Never => ValueDomainKind::Const,
             &Value::Unit => ValueDomainKind::Const,
             &Value::Undefined => ValueDomainKind::Const,
@@ -340,6 +340,44 @@ impl CompileState<'_, '_> {
                     }
                 }
             }
+            BinaryOp::CmpLt | BinaryOp::CmpLte | BinaryOp::CmpGt | BinaryOp::CmpGte => {
+                // TODO emit warning if the resulting boolean is always true or always false
+                let _ = self.require_int_range_ty(origin, &left_ty);
+                let _ = self.require_int_range_ty(origin, &right_ty);
+                Type::Boolean
+            }
+            BinaryOp::CmpEq | BinaryOp::CmpNeq => {
+                // TODO emit warning if the resulting boolean is always true or always false
+
+                let ty_left = self.type_of_value(origin, left);
+                let ty_right = self.type_of_value(origin, right);
+
+                match (&ty_left, &ty_right) {
+                    (Type::Boolean, Type::Boolean) => {},
+                    (Type::Integer(_), Type::Integer(_)) => {},
+                    (Type::Bits(n_left), Type::Bits(n_right)) => {
+                        // sizes must match
+                        match (n_left, n_right) {
+                            (None, None) => {},
+                            (Some(n_left), Some(n_right)) => {
+                                let _ = self.try_eval_bool_true(origin, &Value::Binary(BinaryOp::CmpEq, n_left.clone(), n_right.clone()));
+                            }
+                            (None, Some(_)) | (Some(_), None) => {
+                                let title = "type mismatch: cannot compare bits of when one has a finite size and the other does not";
+                                self.diags.report_simple(title, origin, "for this expression");
+                            }
+                        }
+                    }
+                    _ => {
+                        let left_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_left);
+                        let right_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_right);
+                        let title = format!("type mismatch: cannot compare types {} and {}", left_str, right_str);
+                        self.diags.report_simple(title, origin, "for this expression");
+                    }
+                }
+
+                Type::Boolean
+            }
             _ => Type::Error(self.diags.report_todo(origin, format!("type of binary operator `{:?}`", op.symbol()))),
         }
     }
@@ -432,18 +470,18 @@ impl CompileState<'_, '_> {
         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
     }
 
-    // TODO if range ends are themselves params with ranges, assume the worst case
-    //   although that misses things like (n < n+1)
-    fn require_int_range_ty<'a>(&self, span: Span, ty: &'a Type) -> Result<&'a RangeInfo<Box<Value>>, ErrorGuaranteed> {
-        let diags = self.diags;
-
+    fn require_int_ty<'a>(&self, span: Span, ty: &'a Type) -> Result<&'a Value, ErrorGuaranteed> {
         match ty {
             &Type::Error(e) => Err(e),
-            Type::Integer(IntegerTypeInfo { range }) => self.require_int_range_direct(span, range.as_ref()),
-            _ => {
-                let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, ty);
-                Err(diags.report_simple(format!("expected integer type, got {}", ty_str), span, "for this expression"))
-            }
+            Type::Integer(IntegerTypeInfo { range }) => Ok(range),
+            _ => Err(self.diags.report_simple("expected integer type", span, "for this expression")),
+        }
+    }
+
+    fn require_int_range_ty<'a>(&self, span: Span, ty: &'a Type) -> Result<&'a RangeInfo<Box<Value>>, ErrorGuaranteed> {
+        match self.require_int_ty(span, ty) {
+            Ok(range) => self.require_int_range_direct(span, range),
+            Err(e) => Err(e),
         }
     }
 
@@ -574,6 +612,8 @@ impl CompileState<'_, '_> {
         result
     }
 
+    // TODO if range ends are themselves params with ranges, assume the worst case
+    //   although that misses things like (n < n+1)
     pub fn try_eval_bool_inner(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
         // TODO this is wrong, we should be returning None a lot more, eg. if the ranges of the operands are not tight
         match *value {
