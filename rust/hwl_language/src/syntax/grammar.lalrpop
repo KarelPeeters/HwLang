@@ -227,6 +227,21 @@ BlockStatementKind: BlockStatementKind = {
     <start:@L> <inner:BoxExpr> ";" <end:@R> => {
         BlockStatementKind::Expression(inner)
     },
+    // block
+    <Block<BlockStatement>> => BlockStatementKind::Block(<>),
+    // control flow
+    "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
+        => BlockStatementKind::If(IfStatement { cond, then_block, else_if_pairs, else_block }),
+    "loop" <body:Block<BlockStatement>>
+        => BlockStatementKind::Loop(LoopStatement { body }),
+    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block<BlockStatement>>
+        => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
+    "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
+        => BlockStatementKind::While(WhileStatement { cond, body }),
+    // control flow terminators
+    "return" <value:BoxExpr?> ";" => BlockStatementKind::Return(value),
+    "break" <value:BoxExpr?> ";" => BlockStatementKind::Break(value),
+    "continue" ";" => BlockStatementKind::Continue,
 }
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
@@ -285,15 +300,8 @@ SyncDomain: SyncDomain<Box<Expression>> = {
 }
 
 // expressions
-Expr: Expression = Spanned<ExprLevelReturn>;
+Expr: Expression = Spanned<ExprLevelRange>;
 BoxExpr: Box<Expression> = Box<Expr>;
-
-ExprLevelReturn: ExpressionKind = {
-    "return" <value:BoxExpr?> => ExpressionKind::Return(value),
-    "break" <value:BoxExpr?> => ExpressionKind::Break(value),
-    "continue" => ExpressionKind::Continue,
-    ExprLevelRange,
-}
 
 ExprLevelRange: ExpressionKind = {
     // assoc none
@@ -430,8 +438,6 @@ StructLiteralField: StructLiteralField = {
 ExprLevelAtomic: ExpressionKind = {
     // parentheses
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
-    // block
-    <block:Block<BlockStatement>> => ExpressionKind::Block(block),
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),
@@ -452,24 +458,6 @@ ExprLevelAtomic: ExpressionKind = {
     },
     // any
     "any" => ExpressionKind::Any,
-
-    // control flow
-    ExprControlFlow,
-}
-
-ExprControlFlow: ExpressionKind = {
-    // if
-    "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
-        => ExpressionKind::If(IfExpression { cond, then_block, else_if_pairs, else_block }),
-    // loop
-    "loop" <body:Block<BlockStatement>>
-        => ExpressionKind::Loop(LoopExpression { body }),
-    // for
-    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block<BlockStatement>>
-        => ExpressionKind::For(ForExpression { index, index_ty, iter, body }),
-    // while
-    "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
-        => ExpressionKind::While(WhileExpression { cond, body }),
 }
 
 //Path: Path = {

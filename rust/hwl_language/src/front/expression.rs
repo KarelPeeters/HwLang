@@ -1,4 +1,4 @@
-use crate::data::compiled::{GenericParameter, VariableInfo};
+use crate::data::compiled::GenericParameter;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
 use crate::front::driver::CompileState;
@@ -7,7 +7,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, ForExpression, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -42,99 +42,6 @@ impl CompileState<'_, '_> {
             }
             ExpressionKind::TypeFunc(_, _) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "type func expression")),
-            ExpressionKind::Block(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "block expression")),
-            ExpressionKind::If(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "if expression")),
-            ExpressionKind::Loop(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "loop expression")),
-            ExpressionKind::While(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "while expression")),
-            ExpressionKind::For(ref expr_for) => {
-                let ForExpression { index, index_ty, iter, body } = expr_for;
-
-                // define index variable
-                let iter_span = iter.span;
-                if let Some(index_ty) = index_ty {
-                    diags.report_todo(index_ty.span, "for loop index type");
-                }
-
-                let iter = self.eval_expression_as_value(ctx, collector, iter);
-                let iter = self.require_int_range_direct(iter_span, &iter);
-
-                let (start, end) = match &iter {
-                    &Err(e) => (Value::Error(e), Value::Error(e)),
-                    Ok(info) => {
-                        // avoid duplicate error if both ends are missing
-                        let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
-
-                        let &RangeInfo { ref start, ref end } = info;
-                        let (start, end) = match (start, end) {
-                            (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
-                            (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
-                            (None, Some(end)) => (Value::Error(report_unbounded()), end.as_ref().clone()),
-                            (None, None) => {
-                                let e = report_unbounded();
-                                (Value::Error(e), Value::Error(e))
-                            }
-                        };
-                        (start, end)
-                    }
-                };
-
-                let index_range = Value::Range(RangeInfo {
-                    start: Some(Box::new(start)),
-                    end: Some(Box::new(end)),
-                });
-                let index_var = self.compiled.variables.push(VariableInfo {
-                    defining_id: index.clone(),
-                    ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
-                    mutable: false,
-                });
-
-                let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);
-                let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
-                self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
-
-                // typecheck body
-                let _ = self.visit_block(&ctx.with_scope(scope_index), collector, &body);
-
-                // for loops always return unit
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Unit))
-            }
-            ExpressionKind::Return(ref ret_value) => {
-                let ret_value = ret_value.as_ref()
-                    .map(|v| (v.span, self.eval_expression_as_value(ctx, collector, v)));
-
-                match ctx.function_return_ty {
-                    Some(ret_ty) => {
-                        match (ret_value, ret_ty.inner) {
-                            (None, Type::Unit | Type::Error(_)) => {
-                                // accept
-                            }
-                            (None, _) => {
-                                let diag = Diagnostic::new("missing return value")
-                                    .add_info(ret_ty.span, "function return type defined here")
-                                    .add_error(expr.span, "missing return value here")
-                                    .finish();
-                                diags.report(diag);
-                            }
-                            (Some((ret_value_span, ret_value)), ret_ty_inner) => {
-                                let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty.span), ret_value_span, ret_ty_inner, &ret_value);
-                            }
-                        }
-                    }
-                    None => {
-                        diags.report_simple("return outside function body", expr.span, "return");
-                    }
-                };
-
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Never))
-            }
-            ExpressionKind::Break(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "break expression")),
-            ExpressionKind::Continue =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "continue expression")),
             ExpressionKind::IntPattern(ref pattern) => {
                 match pattern {
                     IntPattern::Hex(_) =>

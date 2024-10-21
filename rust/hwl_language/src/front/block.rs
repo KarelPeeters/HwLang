@@ -6,10 +6,10 @@ use crate::front::common::{ContextDomain, ExpressionContext, ScopedEntry, Scoped
 use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::Visibility;
-use crate::front::types::Type;
+use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, PortDirection, Spanned, VariableDeclaration};
+use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, ElseIfPair, ForStatement, PortDirection, Spanned, VariableDeclaration};
 use crate::syntax::pos::Span;
 
 #[derive(Debug, Copy, Clone)]
@@ -153,6 +153,122 @@ impl CompileState<'_, '_> {
                     // TODO store this as a statement
                     let _value = self.eval_expression_as_value(ctx, collector, expression);
                 }
+                BlockStatementKind::Block(stmt) => {
+                    let _ = diags.report_todo(stmt.span, "block statement");
+                }
+                BlockStatementKind::If(ref stmt) => {
+                    let ast::IfStatement { cond, then_block, else_if_pairs, else_block } = stmt;
+
+                    let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                    let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
+
+                    let _ = self.visit_block(ctx, collector, then_block);
+
+                    for pair in else_if_pairs {
+                        let ElseIfPair { span: _, cond, block } = pair;
+
+                        let else_if_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                        let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &else_if_cond_eval);
+
+                        let _ = self.visit_block(ctx, collector, block);
+                    }
+
+                    if let Some(else_block) = else_block {
+                        let _ = self.visit_block(ctx, collector, else_block);
+                    }
+                }
+                BlockStatementKind::Loop(_) => {
+                    let _ = diags.report_todo(statement.span, "loop statement");
+                }
+
+                BlockStatementKind::While(_) => {
+                    let _ = diags.report_todo(statement.span, "while statement");
+                }
+
+                BlockStatementKind::For(ref expr_for) => {
+                    let ForStatement { index, index_ty, iter, body } = expr_for;
+
+                    // define index variable
+                    let iter_span = iter.span;
+                    if let Some(index_ty) = index_ty {
+                        diags.report_todo(index_ty.span, "for loop index type");
+                    }
+
+                    let iter = self.eval_expression_as_value(ctx, collector, iter);
+                    let iter = self.require_int_range_direct(iter_span, &iter);
+
+                    let (start, end) = match &iter {
+                        &Err(e) => (Value::Error(e), Value::Error(e)),
+                        Ok(info) => {
+                            // avoid duplicate error if both ends are missing
+                            let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
+
+                            let &RangeInfo { ref start, ref end } = info;
+                            let (start, end) = match (start, end) {
+                                (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
+                                (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
+                                (None, Some(end)) => (Value::Error(report_unbounded()), end.as_ref().clone()),
+                                (None, None) => {
+                                    let e = report_unbounded();
+                                    (Value::Error(e), Value::Error(e))
+                                }
+                            };
+                            (start, end)
+                        }
+                    };
+
+                    let index_range = Value::Range(RangeInfo {
+                        start: Some(Box::new(start)),
+                        end: Some(Box::new(end)),
+                    });
+                    let index_var = self.compiled.variables.push(VariableInfo {
+                        defining_id: index.clone(),
+                        ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
+                        mutable: false,
+                    });
+
+                    let scope_index = self.compiled.scopes.new_child(ctx.scope, body.span, Visibility::Private);
+                    let entry = ScopedEntry::Direct(ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::Variable(index_var))));
+                    self.compiled[scope_index].maybe_declare(diags, index.as_ref(), entry, Visibility::Private);
+
+                    // typecheck body
+                    let _ = self.visit_block(&ctx.with_scope(scope_index), collector, &body);
+                }
+                BlockStatementKind::Return(ref ret_value) => {
+                    let ret_value = ret_value.as_ref()
+                        .map(|v| (v.span, self.eval_expression_as_value(ctx, collector, v)));
+
+                    match ctx.function_return_ty {
+                        Some(ret_ty) => {
+                            match (ret_value, ret_ty.inner) {
+                                (None, Type::Unit | Type::Error(_)) => {
+                                    // accept
+                                }
+                                (None, _) => {
+                                    let diag = Diagnostic::new("missing return value")
+                                        .add_info(ret_ty.span, "function return type defined here")
+                                        .add_error(statement.span, "missing return value here")
+                                        .finish();
+                                    diags.report(diag);
+                                }
+                                (Some((ret_value_span, ret_value)), ret_ty_inner) => {
+                                    let _: Result<(), ErrorGuaranteed> = self.check_type_contains(Some(ret_ty.span), ret_value_span, ret_ty_inner, &ret_value);
+                                }
+                            }
+                        }
+                        None => {
+                            diags.report_simple("return outside function body", statement.span, "return");
+                        }
+                    };
+
+                    // TODO this branch dead for control flow purposes
+                }
+                BlockStatementKind::Break(_) => {
+                    let _ = diags.report_todo(statement.span, "break statement");
+                }
+                BlockStatementKind::Continue => {
+                    let _ = diags.report_todo(statement.span, "continue statement");
+                }
             }
         }
 
@@ -215,7 +331,7 @@ impl CompileState<'_, '_> {
                     AccessDirection::Read => Ok(()),
                     AccessDirection::Write => {
                         // wires already having an declaration value is reported as an error higher up,
-                        //   for consistency with ports, regs and non-initialized wires 
+                        //   for consistency with ports, regs and non-initialized wires
                         collector.report_write_wire(diags, wire, value_span);
                         Ok(())
                     }

@@ -220,14 +220,18 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
+    // declarations
     ConstDeclaration(ConstDeclaration<()>),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
+
+    // blocks
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
-    // TODO if, for
-    // TODO function/type/module(?) definitions
+
+    // TODO control flow (if, for), probably not while/break/continue
+    // TODO allow function/type/module(?) definitions in blocks
 }
 
 #[derive(Debug, Clone)]
@@ -236,7 +240,53 @@ pub enum BlockStatementKind {
     VariableDeclaration(VariableDeclaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
-    // TODO function/type definitions
+
+    // control flow
+    Block(Block<BlockStatement>),
+    If(IfStatement),
+    Loop(LoopStatement),
+    While(WhileStatement),
+    For(ForStatement),
+    // control flow terminators
+    Return(Option<Box<Expression>>),
+    Break(Option<Box<Expression>>),
+    Continue,
+
+    // TODO allow function/type definitions in blocks
+}
+
+#[derive(Debug, Clone)]
+pub struct IfStatement {
+    pub cond: Box<Expression>,
+    pub then_block: Block<BlockStatement>,
+    pub else_if_pairs: Vec<ElseIfPair>,
+    pub else_block: Option<Block<BlockStatement>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElseIfPair {
+    pub span: Span,
+    pub cond: Box<Expression>,
+    pub block: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoopStatement {
+    pub body: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhileStatement {
+    pub cond: Box<Expression>,
+    pub body: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForStatement {
+    pub index: MaybeIdentifier,
+    pub index_ty: Option<Box<Expression>>,
+    pub iter: Box<Expression>,
+    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
@@ -326,17 +376,6 @@ pub enum ExpressionKind {
     // Function type signature
     TypeFunc(Vec<Expression>, Box<Expression>),
 
-    // Control flow
-    Block(Block<BlockStatement>),
-    If(IfExpression),
-    Loop(LoopExpression),
-    While(WhileExpression),
-    For(ForExpression),
-
-    Return(Option<Box<Expression>>),
-    Break(Option<Box<Expression>>),
-    Continue,
-
     // Literals
     IntPattern(IntPattern),
     BoolLiteral(bool),
@@ -407,40 +446,6 @@ pub struct RangeLiteral {
     pub end_inclusive: bool,
     pub start: Option<Box<Expression>>,
     pub end: Option<Box<Expression>>
-}
-
-#[derive(Debug, Clone)]
-pub struct IfExpression {
-    pub cond: Box<Expression>,
-    pub then_block: Block<BlockStatement>,
-    pub else_if_pairs: Vec<ElseIfPair>,
-    pub else_block: Option<Block<BlockStatement>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ElseIfPair {
-    pub span: Span,
-    pub cond: Box<Expression>,
-    pub block: Block<BlockStatement>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LoopExpression {
-    pub body: Block<BlockStatement>,
-}
-
-#[derive(Debug, Clone)]
-pub struct WhileExpression {
-    pub cond: Box<Expression>,
-    pub body: Block<BlockStatement>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ForExpression {
-    pub index: MaybeIdentifier,
-    pub index_ty: Option<Box<Expression>>,
-    pub iter: Box<Expression>,
-    pub body: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
