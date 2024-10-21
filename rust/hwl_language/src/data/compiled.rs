@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::{LowerStatement, ModuleChecked};
+use crate::data::module_body::{LowerBlock, ModuleChecked};
 use crate::data::parsed::{ItemAstReference, ModulePortAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomainKind};
@@ -245,7 +245,7 @@ pub enum ItemChecked {
 #[derive(Debug)]
 pub struct FunctionChecked {
     #[allow(dead_code)]
-    pub statements: Vec<LowerStatement>,
+    pub block: LowerBlock,
 }
 
 impl<S: CompiledStage> CompiledDatabase<S> {

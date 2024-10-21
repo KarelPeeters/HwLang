@@ -2,7 +2,7 @@ use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
 use crate::data::compiled::{CompiledDatabase, GenericParameter, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{LowerBlock, LowerIfStatement, LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, GenericMap, ScopedEntry, TypeOrValue};
@@ -148,6 +148,30 @@ enum Signal {
 #[derive(Debug, Copy, Clone)]
 struct SignalName(usize);
 
+#[derive(Debug, Copy, Clone)]
+struct Indent {
+    depth: usize,
+}
+
+impl Indent {
+    pub fn new(depth: usize) -> Indent {
+        Indent { depth }
+    }
+
+    pub fn nest(self) -> Indent {
+        Indent { depth: self.depth + 1 }
+    }
+}
+
+impl Display for Indent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for _ in 0..self.depth {
+            write!(f, "{I}")?;
+        }
+        Ok(())
+    }
+}
+
 impl Display for SignalName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "module_signal_{}", self.0)
@@ -220,18 +244,16 @@ fn module_body_to_verilog(
 
         match statement {
             ModuleStatement::Combinatorial(block) => {
-                let ModuleBlockCombinatorial { span: _, statements } = block;
+                let ModuleBlockCombinatorial { span: _, block } = block;
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
                 swriteln!(f, "{I}always @(*) begin");
-                for statement in statements {
-                    swriteln!(f, "{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
-                }
+                block_to_verilog(diag, parsed, compiled, &signal_map, block, f, Indent::new(2));
                 swriteln!(f, "{I}end");
             }
             ModuleStatement::Clocked(block) => {
                 let &ModuleBlockClocked {
-                    span, ref domain, statements_reset: ref on_reset, statements: ref on_block
+                    span, ref domain, ref on_reset, ref on_clock
                 } = block;
                 let SyncDomain { clock, reset } = domain;
 
@@ -260,13 +282,9 @@ fn module_body_to_verilog(
 
                 swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
                 swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
-                for statement in on_reset {
-                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
-                }
+                block_to_verilog(diag, parsed, compiled, &signal_map, on_reset, f, Indent::new(3));
                 swriteln!(f, "{I}{I}end else begin");
-                for statement in on_block {
-                    swriteln!(f, "{I}{I}{I}{}", statement_to_string(diag, parsed, compiled, &signal_map, statement));
-                }
+                block_to_verilog(diag, parsed, compiled, &signal_map, on_clock, f, Indent::new(3));
                 swriteln!(f, "{I}{I}end");
 
                 swriteln!(f, "{I}end");
@@ -321,14 +339,31 @@ fn module_body_to_verilog(
     result
 }
 
-fn statement_to_string(
+fn block_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
     compiled: &CompiledDatabase,
     signal_map: &IndexMap<Signal, SignalName>,
-    statement: &LowerStatement,
-) -> String {
-    match statement {
+    block: &LowerBlock,
+    f: &mut String,
+    indent: Indent,
+) {
+    let LowerBlock { statements } = block;
+    for statement in statements {
+        statement_to_verilog(diag, parsed, compiled, signal_map, statement.as_ref(), f, indent);
+    }
+}
+
+fn statement_to_verilog(
+    diag: &Diagnostics,
+    parsed: &ParsedDatabase,
+    compiled: &CompiledDatabase,
+    signal_map: &IndexMap<Signal, SignalName>,
+    statement: Spanned<&LowerStatement>,
+    f: &mut String,
+    indent: Indent,
+) {
+    match statement.inner {
         LowerStatement::Assignment { target, value } => {
             // TODO create shadow variables for all assignments inside blocks, and only assign to those
             //  then finally at the end of the block, non-blocking assign to everything
@@ -352,11 +387,43 @@ fn statement_to_string(
             };
 
             let prefix = if commented { "// " } else { "" };
-            format!("{prefix}{target_str} = {value_str};")
+            swriteln!(f, "{indent}{prefix}{target_str} = {value_str};");
+        }
+        LowerStatement::If(statement) => {
+            // TODO if the condition is constant, only emit the relevant branch
+            let LowerIfStatement { condition, then_block, else_block } = statement;
+
+            let condition_str = value_to_verilog(diag, parsed, compiled, signal_map, condition.as_ref());
+            let condition_str = match &condition_str {
+                Ok(s) => s.as_str(),
+                Err(VerilogValueUndefined) => {
+                    swriteln!(f, "{indent}// if(undefined)");
+                    return;
+                },
+            };
+
+            // TODO if the else branch is just a single if statement again, don't keep indenting
+            swriteln!(f, "{indent}if ({condition_str}) begin");
+            block_to_verilog(diag, parsed, compiled, signal_map, then_block, f, indent.nest());
+
+            match else_block {
+                Some(else_block) => {
+                    swriteln!(f, "{indent}end else begin");
+                    block_to_verilog(diag, parsed, compiled, signal_map, else_block, f, indent.nest());
+                    swriteln!(f, "{indent}end");
+                }
+                None => {
+                    swriteln!(f, "{indent}end");
+                }
+            }
+        }
+        LowerStatement::For {} => {
+            diag.report_todo(statement.span, "lower for loop");
+            swriteln!(f, "{indent}// TODO lower for loop");
         }
         &LowerStatement::Error(e) => {
             let _: ErrorGuaranteed = e;
-            "// error statement".to_string()
+            swriteln!(f, "{indent}// error statement");
         }
     }
 }

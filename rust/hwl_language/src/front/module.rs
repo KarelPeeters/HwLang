@@ -1,6 +1,6 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::module_body::{LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{LowerBlock, LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
 use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomainKind};
@@ -166,12 +166,16 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     let lower_statement_index = unwrap_match!(driver, Driver::ClockedBlock(i) => i);
                     let block = unwrap_match!(&mut module_statements_lower[lower_statement_index], ModuleStatement::Clocked(block) => block);
 
-                    block.statements_reset.push(LowerStatement::Assignment {
+                    let stmt = LowerStatement::Assignment {
                         target: Spanned {
                             span: self.compiled[reg].defining_id.span(),
                             inner: Value::Register(reg),
                         },
                         value: module_regs.get(&reg).unwrap().clone(),
+                    };
+                    block.on_reset.statements.push(Spanned {
+                        span: def_span,
+                        inner: stmt,
                     });
                 }
                 Err(_) => {}
@@ -310,7 +314,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             driver: Driver::CombinatorialBlock(statement_index),
             drivers,
         };
-        let statements = self.visit_block(
+        let lower_block = self.visit_block(
             &ExpressionContext::passthrough(scope_body),
             &mut MaybeDriverCollector::Some(&mut collector),
             block,
@@ -318,7 +322,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         ModuleBlockCombinatorial {
             span,
-            statements,
+            block: lower_block,
         }
     }
 
@@ -350,7 +354,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             driver: Driver::ClockedBlock(statement_index),
             drivers,
         };
-        let statements = self.visit_block(
+        let lower_block = self.visit_block(
             &ctx,
             &mut MaybeDriverCollector::Some(&mut driver_collector),
             block,
@@ -359,8 +363,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
         ModuleBlockClocked {
             span,
             domain: sync_domain,
-            statements_reset: vec![],
-            statements,
+            on_reset: LowerBlock { statements: vec![] },
+            on_clock: lower_block,
         }
     }
 

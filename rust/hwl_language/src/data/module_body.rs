@@ -24,17 +24,37 @@ pub enum ModuleStatement {
 #[derive(Debug, Clone)]
 pub struct ModuleBlockCombinatorial {
     pub span: Span,
-
     // TODO include necessary temporary variables and other metadata
-    pub statements: Vec<LowerStatement>,
+    pub block: LowerBlock,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleBlockClocked {
     pub span: Span,
     pub domain: SyncDomain<Value>,
-    pub statements_reset: Vec<LowerStatement>,
-    pub statements: Vec<LowerStatement>,
+    pub on_reset: LowerBlock,
+    pub on_clock: LowerBlock,
+}
+
+#[derive(Debug, Clone)]
+pub struct LowerBlock {
+    pub statements: Vec<Spanned<LowerStatement>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LowerStatement {
+    Error(ErrorGuaranteed),
+    Assignment { target: Spanned<Value>, value: Spanned<Value> },
+    If(LowerIfStatement),
+    //TODO
+    For,
+}
+
+#[derive(Debug, Clone)]
+pub struct LowerIfStatement {
+    pub condition: Spanned<Value>,
+    pub then_block: LowerBlock,
+    pub else_block: Option<LowerBlock>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +63,4 @@ pub struct ModuleInstance {
     pub name: Option<String>,
     pub generic_arguments: Option<GenericArguments>,
     pub port_connections: PortConnections,
-}
-
-#[derive(Debug, Clone)]
-pub enum LowerStatement {
-    Assignment { target: Spanned<Value>, value: Spanned<Value> },
-    Error(ErrorGuaranteed),
 }

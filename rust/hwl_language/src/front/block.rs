@@ -1,6 +1,6 @@
 use crate::data::compiled::VariableInfo;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
-use crate::data::module_body::LowerStatement;
+use crate::data::module_body::{LowerBlock, LowerIfStatement, LowerStatement};
 use crate::front::checking::DomainUserControlled;
 use crate::front::common::{ContextDomain, ExpressionContext, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
@@ -25,11 +25,11 @@ impl CompileState<'_, '_> {
         ctx: &ExpressionContext,
         collector: &mut MaybeDriverCollector,
         block: &Block<BlockStatement>,
-    ) -> Vec<LowerStatement> {
+    ) -> LowerBlock {
         let diags = self.diags;
         let scope = self.compiled.scopes.new_child(ctx.scope, block.span, Visibility::Private);
 
-        let mut result_statements = vec![];
+        let mut lower_statements = vec![];
 
         for statement in &block.statements {
             match &statement.inner {
@@ -147,7 +147,10 @@ impl CompileState<'_, '_> {
                         }
                         Err(e) => LowerStatement::Error(e),
                     };
-                    result_statements.push(statement);
+                    lower_statements.push(Spanned {
+                        span: assignment.span,
+                        inner: statement,
+                    });
                 }
                 BlockStatementKind::Expression(expression) => {
                     // TODO store this as a statement
@@ -159,23 +162,52 @@ impl CompileState<'_, '_> {
                 BlockStatementKind::If(ref stmt) => {
                     let ast::IfStatement { cond, then_block, else_if_pairs, else_block } = stmt;
 
+                    // evaluate conditions and blocks
                     let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
                     let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
 
-                    let _ = self.visit_block(ctx, collector, then_block);
+                    let lower_then_block = self.visit_block(ctx, collector, then_block);
+                    let mut pairs = vec![];
+
 
                     for pair in else_if_pairs {
                         let ElseIfPair { span: _, cond, block } = pair;
 
-                        let else_if_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                        let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &else_if_cond_eval);
+                        let pair_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
+                        let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &pair_cond_eval);
 
-                        let _ = self.visit_block(ctx, collector, block);
+                        let pair_block = self.visit_block(ctx, collector, block);
+
+                        pairs.push(Spanned { span: pair.span, inner: (Spanned { span: cond.span, inner: pair_cond_eval }, pair_block) });
                     }
 
-                    if let Some(else_block) = else_block {
-                        let _ = self.visit_block(ctx, collector, else_block);
+                    let else_block = else_block.as_ref().map(|else_block| {
+                        self.visit_block(ctx, collector, else_block)
+                    });
+
+                    // construct statement, in reverse order
+                    let mut next_else = else_block;
+                    for pair in pairs.into_iter().rev() {
+                        let (c, b) = pair.inner;
+                        next_else = Some(LowerBlock {
+                            statements: vec![
+                                Spanned {
+                                    span: pair.span,
+                                    inner: LowerStatement::If(LowerIfStatement {
+                                        condition: c,
+                                        then_block: b,
+                                        else_block: next_else,
+                                    })
+                                }
+                            ]
+                        })
                     }
+                    let lower_statement = LowerStatement::If(LowerIfStatement {
+                        condition: Spanned { span: cond.span, inner: cond_eval },
+                        then_block: lower_then_block,
+                        else_block: next_else,
+                    });
+                    lower_statements.push(Spanned { span: statement.span, inner: lower_statement });
                 }
                 BlockStatementKind::Loop(_) => {
                     let _ = diags.report_todo(statement.span, "loop statement");
@@ -272,7 +304,9 @@ impl CompileState<'_, '_> {
             }
         }
 
-        result_statements
+        LowerBlock {
+            statements: lower_statements,
+        }
     }
 
     // TODO this could be much faster with proper LRValue-style tracking

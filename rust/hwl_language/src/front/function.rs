@@ -25,10 +25,10 @@ impl CompileState<'_, '_> {
         };
 
         // TODO check control flow (eg. require return on final block, warn on dead code)
-        let statements = self.visit_block(&ctx_func, &mut MaybeDriverCollector::None, body);
+        let lower_block = self.visit_block(&ctx_func, &mut MaybeDriverCollector::None, body);
 
         FunctionChecked {
-            statements
+            block: lower_block,
         }
     }
 }
