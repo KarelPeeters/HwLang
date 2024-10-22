@@ -495,6 +495,7 @@ pub enum BinaryOp {
     BitXor,
     BoolAnd,
     BoolOr,
+    BoolXor,
 
     Shl,
     Shr,
@@ -633,6 +634,7 @@ impl BinaryOp {
             BinaryOp::BitXor => "^",
             BinaryOp::BoolAnd => "&&",
             BinaryOp::BoolOr => "||",
+            BinaryOp::BoolXor => "^^",
             BinaryOp::Shl => "<<",
             BinaryOp::Shr => ">>",
             BinaryOp::CmpEq => "==",

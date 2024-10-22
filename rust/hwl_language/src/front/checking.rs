@@ -246,8 +246,9 @@ impl CompileState<'_, '_> {
             }
             Value::StringConstant(_) => Type::String,
             Value::Range(_) => Type::Range,
-            &Value::Binary(op, ref left, ref right) =>
-                self.type_of_binary(span, op, &left, &right),
+            &Value::Binary(op, ref left, ref right) => {
+                self.type_of_binary(span, op, &left, &right).unwrap_or_else(Type::Error)
+            }
             Value::UnaryNot(inner) => {
                 let inner = self.type_of_value(span, inner);
                 match inner {
@@ -280,7 +281,7 @@ impl CompileState<'_, '_> {
         result
     }
 
-    fn type_of_binary(&self, origin: Span, op: BinaryOp, left: &Value, right: &Value) -> Type {
+    fn type_of_binary(&self, origin: Span, op: BinaryOp, left: &Value, right: &Value) -> Result<Type, ErrorGuaranteed> {
         let left_ty = self.type_of_value(origin, left);
         let right_ty = self.type_of_value(origin, right);
 
@@ -294,112 +295,190 @@ impl CompileState<'_, '_> {
             }
         }
 
-        match op {
+        let result = match op {
             BinaryOp::Add => {
                 let left_range = self.require_int_range_ty(origin, &left_ty);
                 let right_range = self.require_int_range_ty(origin, &right_ty);
 
-                match (left_range, right_range) {
-                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
-                    (Ok(left_range), Ok(right_range)) => {
-                        let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
-                        let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
-                        let range = RangeInfo {
-                            start_inc: option_op(BinaryOp::Add, left_start, right_start),
-                            end_inc: option_op(BinaryOp::Add, left_end, right_end),
-                        };
-                        Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
-                    }
-                }
+                let left_range = left_range?;
+                let right_range = right_range?;
+
+                let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
+                let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
+                let range = RangeInfo {
+                    start_inc: option_op(BinaryOp::Add, left_start, right_start),
+                    end_inc: option_op(BinaryOp::Add, left_end, right_end),
+                };
+                Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
             }
             // this is too much duplication, maybe remove the Sub operator and replace it with negation?
             BinaryOp::Sub => {
                 let left_range = self.require_int_range_ty(origin, &left_ty);
                 let right_range = self.require_int_range_ty(origin, &right_ty);
 
-                match (left_range, right_range) {
-                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
-                    (Ok(left_range), Ok(right_range)) => {
-                        let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
-                        let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
+                let left_range = left_range?;
+                let right_range = right_range?;
 
-                        let range = RangeInfo {
-                            start_inc: option_op(BinaryOp::Sub, left_start, &right_end),
-                            end_inc: option_op(BinaryOp::Sub, left_end, &right_start),
-                        };
-                        Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
-                    }
-                }
+                let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
+                let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
+
+                let range = RangeInfo {
+                    start_inc: option_op(BinaryOp::Sub, left_start, &right_end),
+                    end_inc: option_op(BinaryOp::Sub, left_end, &right_start),
+                };
+                Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
             }
             BinaryOp::Pow => {
                 let base_range = self.require_int_range_ty(origin, &left_ty);
                 let exp_range = self.require_int_range_ty(origin, &right_ty);
-                match (base_range, exp_range) {
-                    (Err(e), _) | (_, Err(e)) => Type::Error(e),
-                    (Ok(base_range), Ok(exp_range)) => {
-                        self.type_of_binary_power(origin, base_range, exp_range)
-                    }
-                }
+
+                let base_range = base_range?;
+                let exp_range = exp_range?;
+
+                self.type_of_binary_power(origin, base_range, exp_range)
             }
             BinaryOp::CmpLt | BinaryOp::CmpLte | BinaryOp::CmpGt | BinaryOp::CmpGte => {
                 // TODO emit warning if the resulting boolean is always true or always false
-                let _ = self.require_int_range_ty(origin, &left_ty);
-                let _ = self.require_int_range_ty(origin, &right_ty);
+                let left_result = self.require_int_range_ty(origin, &left_ty);
+                let right_result = self.require_int_range_ty(origin, &right_ty);
+
+                left_result?;
+                right_result?;
+
                 Type::Boolean
             }
             BinaryOp::CmpEq | BinaryOp::CmpNeq => {
                 // TODO emit warning if the resulting boolean is always true or always false
-
-                let ty_left = self.type_of_value(origin, left);
-                let ty_right = self.type_of_value(origin, right);
-
-                match (&ty_left, &ty_right) {
-                    (Type::Boolean, Type::Boolean) => {},
-                    (Type::Integer(_), Type::Integer(_)) => {},
+                match (&left_ty, &right_ty) {
+                    (Type::Boolean, Type::Boolean) => {}
+                    (Type::Integer(_), Type::Integer(_)) => {}
                     (Type::Bits(n_left), Type::Bits(n_right)) => {
                         // sizes must match
                         match (n_left, n_right) {
-                            (None, None) => {},
+                            (None, None) => {}
                             (Some(n_left), Some(n_right)) => {
-                                let _ = self.try_eval_bool_true(origin, &Value::Binary(BinaryOp::CmpEq, n_left.clone(), n_right.clone()));
+                                let _ = self.require_value_true_for_type_check(None, origin, &Value::Binary(BinaryOp::CmpEq, n_left.clone(), n_right.clone()));
                             }
                             (None, Some(_)) | (Some(_), None) => {
-                                let title = "type mismatch: cannot compare bits of when one has a finite size and the other does not";
-                                self.diags.report_simple(title, origin, "for this expression");
+                                let title = "type mismatch: cannot compare bits when one has a finite size and the other does not";
+                                return Err(self.diags.report_simple(title, origin, "for this expression"));
                             }
                         }
                     }
                     _ => {
-                        let left_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_left);
-                        let right_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_right);
+                        let left_str = self.compiled.type_to_readable_str(self.source, self.parsed, &left_ty);
+                        let right_str = self.compiled.type_to_readable_str(self.source, self.parsed, &right_ty);
                         let title = format!("type mismatch: cannot compare types {} and {}", left_str, right_str);
-                        self.diags.report_simple(title, origin, "for this expression");
+                        return Err(self.diags.report_simple(title, origin, "for this expression"));
                     }
                 }
 
                 Type::Boolean
-            },
-            // TODO implement proper type checking and result type range determination
-            //   ideally prove the determined ranges with Z3 (offline, not during compilation)
-            // TODO careful with signs
-            BinaryOp::Mul |
+            }
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                // check that operands are "bits" with the same size
+                match (&left_ty, &right_ty) {
+                    (Type::Bits(left_size), Type::Bits(right_size)) => {
+                        match (left_size, right_size) {
+                            (None, None) => Type::Bits(None),
+                            (Some(left_size), Some(right_size)) => {
+                                match self.require_value_true_for_type_check(None, origin, &Value::Binary(BinaryOp::CmpEq, left_size.clone(), right_size.clone())) {
+                                    Ok(()) => Type::Bits(Some(left_size.clone())),
+                                    Err(e) => Type::Error(e),
+                                }
+                            }
+                            _ => {
+                                let title = "type mismatch: cannot combine bits when one has a finite size and the other does not";
+                                Type::Error(self.diags.report_simple(title, origin, "for this expression"))
+                            }
+                        }
+                    }
+                    _ => {
+                        let title = "type mismatch: operands must be bits type for bit operator";
+                        Type::Error(self.diags.report_simple(title, origin, "in this expression"))
+                    }
+                }
+            }
+            BinaryOp::BoolAnd | BinaryOp::BoolOr | BinaryOp::BoolXor => {
+                let check_bool_ty = |ty: Type| -> Result<(), ErrorGuaranteed>{
+                    match ty {
+                        Type::Boolean => Ok(()),
+                        _ => {
+                            let title = "type mismatch: expected boolean type for boolean operator";
+                            Err(self.diags.report_simple(title, origin, "for this expression"))
+                        }
+                    }
+                };
+
+                let left_result = check_bool_ty(left_ty);
+                let right_result = check_bool_ty(right_ty);
+
+                left_result?;
+                right_result?;
+                Type::Boolean
+            }
+            BinaryOp::Mul => {
+                let left_range = self.require_int_range_ty(origin, &left_ty);
+                let right_range = self.require_int_range_ty(origin, &right_ty);
+
+                let left_range = left_range?;
+                let right_range = right_range?;
+
+                let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
+                let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
+
+                let is_non_negative = |value: &Option<Box<Value>>| -> Result<bool, ErrorGuaranteed> {
+                    match value {
+                        Some(value) => {
+                            let cond = Value::Binary(BinaryOp::CmpLte, Box::new(Value::IntConstant(BigInt::ZERO)), value.clone());
+                            Ok(self.try_eval_bool(origin, &cond)?.unwrap_or(false))
+                        }
+                        None => Ok(false),
+                    }
+                };
+
+                let range = if is_non_negative(left_start)? && is_non_negative(right_start)? {
+                    // if both are positive, the range is simple
+                    RangeInfo {
+                        start_inc: option_op(BinaryOp::Mul, left_start, right_start),
+                        end_inc: option_op(BinaryOp::Mul, left_end, right_end),
+                    }
+                } else {
+                    // TODO this can be improved a lot:
+                    // * if either of them does not cross zero the result range is knowable
+                    // * worst case, just fallback to emitting (min(..., ...)..(max(..., ...))
+                    RangeInfo::UNBOUNDED
+                };
+
+                Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+            }
+            BinaryOp::In => {
+                // TODO emit warning if the result is always true or false
+                let left_result = self.require_int_ty(origin, &left_ty);
+                let right_result = match right_ty {
+                    Type::Range => Ok(()),
+                    _ => {
+                        let title = "type mismatch: expected range type for right operand of 'in' operator";
+                        Err(self.diags.report_simple(title, origin, "for this expression"))
+                    }
+                };
+
+                left_result?;
+                right_result?;
+
+                Type::Boolean
+            }
+
             // TODO careful with signs and zero
-            BinaryOp::Div |
-            BinaryOp::Mod |
-            // TODO check that operands are "bits"
-            BinaryOp::BitAnd |
-            BinaryOp::BitOr |
-            BinaryOp::BitXor |
-            // TODO check that operands are boolean
-            BinaryOp::BoolAnd |
-            BinaryOp::BoolOr |
+            BinaryOp::Div | BinaryOp::Mod =>
+                Type::Error(self.diags.report_todo(origin, "type of division and modulo")),
             // TODO we even want to keep these, or just use division/multiplication and powers?
             //   maybe these apply to bits, not integers?
-            BinaryOp::Shl |
-            BinaryOp::Shr |
-            // TODO in operator has operands (int, range) and returns bool
-            BinaryOp::In => Type::Error(self.diags.report_todo(origin, format!("type of binary operator `{}`", op.symbol()))),
-        }
+            BinaryOp::Shl | BinaryOp::Shr =>
+                Type::Error(self.diags.report_todo(origin, "type of shift operators")),
+        };
+
+        Ok(result)
     }
 
     fn type_of_binary_power(&self, origin: Span, base_range: &RangeInfo<Box<Value>>, exp_range: &RangeInfo<Box<Value>>) -> Type {
@@ -545,6 +624,7 @@ impl CompileState<'_, '_> {
                 let range_ty = self.require_int_range_direct(span_ty.unwrap_or(span_value), range_ty)?;
                 let RangeInfo { start_inc, end_inc } = range_ty;
 
+                // TODO this might report weird error messages, double-check this
                 // check that the value fits in the required range
                 if let Some(start_inc) = start_inc {
                     let cond = Value::Binary(BinaryOp::CmpLte, start_inc.clone(), Box::new(value.clone()));
@@ -650,20 +730,23 @@ impl CompileState<'_, '_> {
                     eprintln!("  {:?}", right_range);
                 }
 
-                let compare_lt = |allow_eq: bool| {
+                // TODO this is probably short-circuiting incorrectly,
+                //   eg. for `<=`, if the range has no start then the condition is known false
+                let compare_int = |f: fn(BigInt, BigInt) -> bool| -> Option<bool> {
                     let right_start = value_as_int(right_range.start_inc.as_ref()?)?;
                     let left_end = value_as_int(left_range.end_inc.as_ref()?)?;
-
-                    if allow_eq {
-                        Some(left_end <= right_start)
-                    } else {
-                        Some(left_end < right_start)
-                    }
+                    Some(f(left_end, right_start))
                 };
 
                 match binary_op {
-                    BinaryOp::CmpLt => return Ok(compare_lt(false)),
-                    BinaryOp::CmpLte => return Ok(compare_lt(true)),
+                    // all of the difference comparators can be smarter, check for missing bounds in the right direction
+                    BinaryOp::CmpLt => return Ok(compare_int(|l, r| l < r)),
+                    BinaryOp::CmpLte => return Ok(compare_int(|l, r| l <= r)),
+                    BinaryOp::CmpGt => return Ok(compare_int(|l, r| l > r)),
+                    BinaryOp::CmpGte => return Ok(compare_int(|l, r| l >= r)),
+                    BinaryOp::CmpEq => return Ok(compare_int(|l, r| l == r)),
+                    // this can be smarter, check for non-overlapping ranges
+                    BinaryOp::CmpNeq => return Ok(compare_int(|l, r| l != r)),
                     _ => {}
                 }
             }

@@ -646,6 +646,7 @@ fn binary_op_to_verilog(diag: &Diagnostics, span: Span, op: BinaryOp) -> Result<
         BinaryOp::BitXor => Ok("^"),
         BinaryOp::BoolAnd => Ok("&&"),
         BinaryOp::BoolOr => Ok("||"),
+        BinaryOp::BoolXor => Ok("^"),
         BinaryOp::Shl => Ok("<<"),
         BinaryOp::Shr => Ok(">>"),
         BinaryOp::CmpEq => Ok("=="),
@@ -654,7 +655,7 @@ fn binary_op_to_verilog(diag: &Diagnostics, span: Span, op: BinaryOp) -> Result<
         BinaryOp::CmpLte => Ok("<="),
         BinaryOp::CmpGt => Ok(">"),
         BinaryOp::CmpGte => Ok(">="),
-        BinaryOp::In => Err(diag.report_todo(span, "binary op 'in'")),
+        BinaryOp::In => Err(diag.report_todo(span, "lower binary op 'in'")),
     }
 }
 

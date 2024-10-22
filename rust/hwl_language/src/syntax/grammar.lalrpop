@@ -72,6 +72,7 @@ extern {
         "..=" => TokenType::DotsEq,
         "&&" => TokenType::AmperAmper,
         "||" => TokenType::PipePipe,
+        "^^" => TokenType::CircumflexCircumflex,
         "==" => TokenType::EqEq,
         "!=" => TokenType::Neq,
         ">=" => TokenType::Gte,
@@ -79,8 +80,8 @@ extern {
         "<=" => TokenType::Lte,
         "<" => TokenType::Lt,
         "&" => TokenType::Amper,
-        "^" => TokenType::Circumflex,
         "|" => TokenType::Pipe,
+        "^" => TokenType::Circumflex,
         "<<" => TokenType::LtLt,
         ">>" => TokenType::GtGt,
         "+" => TokenType::Plus,
@@ -231,7 +232,7 @@ BlockStatementKind: BlockStatementKind = {
     // control flow
     "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
         => BlockStatementKind::If(IfStatement { cond, then_block, else_if_pairs, else_block }),
-    "for" "(" <index:MaybeId> <index_ty: (":" <BoxExpr>)?> "in" <iter:BoxExpr> ")" <body:Block<BlockStatement>>
+    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
     "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { cond, body }),
@@ -297,8 +298,16 @@ SyncDomain: SyncDomain<Box<Expression>> = {
 }
 
 // expressions
-Expr: Expression = Spanned<ExprLevelRange>;
+Expr: Expression = Spanned<ExprLevelIn>;
 BoxExpr: Box<Expression> = Box<Expr>;
+
+ExprLevelIn: ExpressionKind = {
+    <value:Spanned<ExprLevelRange>> "in" <range:Spanned<ExprLevelRange>>
+        => build_binary_op(BinaryOp::In, value, range),
+    ExprLevelRange,
+}
+
+ExprLevelNoIn: Expression = Spanned<ExprLevelRange>;
 
 ExprLevelRange: ExpressionKind = {
     // assoc none
@@ -313,6 +322,7 @@ ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
     <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
     <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
+    <left:Spanned<ExprLevelLogicalXor>> "^^" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalAnd: ExpressionKind = {
@@ -321,6 +331,10 @@ ExprLevelLogicalAnd: ExpressionKind = {
 }
 ExprLevelLogicalOr: ExpressionKind = {
     <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
+    ExprLevelEqual,
+}
+ExprLevelLogicalXor: ExpressionKind = {
+    <left:Spanned<ExprLevelLogicalXor>> "^^" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 
@@ -336,10 +350,22 @@ ExprLevelEqual: ExpressionKind = {
 }
 
 ExprLevelBitWise: ExpressionKind = {
-    // assoc left
-    <left:Spanned<ExprLevelBitWise>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
-    <left:Spanned<ExprLevelBitWise>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
-    <left:Spanned<ExprLevelBitWise>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
+    // assoc left, no mixing
+    <left:Spanned<ExprLevelBitAnd>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
+    <left:Spanned<ExprLevelBitOr>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
+    <left:Spanned<ExprLevelBitXor>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
+    ExprLevelShift,
+}
+ExprLevelBitAnd: ExpressionKind = {
+    <left:Spanned<ExprLevelBitAnd>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
+    ExprLevelShift,
+}
+ExprLevelBitOr: ExpressionKind = {
+    <left:Spanned<ExprLevelBitOr>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
+    ExprLevelShift,
+}
+ExprLevelBitXor: ExpressionKind = {
+    <left:Spanned<ExprLevelBitXor>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
     ExprLevelShift,
 }
 
