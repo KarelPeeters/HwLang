@@ -1,9 +1,11 @@
-use crate::data::compiled::{Item, Register, Wire};
+use crate::data::compiled::{Item, ModulePort, Register, Wire};
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::front::module::Driver;
 use crate::front::types::{GenericArguments, PortConnections};
 use crate::front::values::Value;
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use indexmap::IndexMap;
 
 // TODO include body comments for eg. the values that values were resolved to
 #[derive(Debug, Clone)]
@@ -11,6 +13,7 @@ pub struct ModuleChecked {
     pub statements: Vec<ModuleStatement>,
     pub regs: Vec<Register>,
     pub wires: Vec<(Wire, Option<Value>)>,
+    pub output_port_driver: IndexMap<ModulePort, Driver>,
 }
 
 #[derive(Debug, Clone)]

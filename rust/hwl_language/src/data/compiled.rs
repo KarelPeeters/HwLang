@@ -192,6 +192,15 @@ pub struct ModulePortInfo {
     pub kind: PortKind<DomainKind<Value>, Type>,
 }
 
+impl PortKind<DomainKind<Value>, Type> {
+    pub fn ty(&self) -> Type {
+        match self {
+            PortKind::Clock => Type::Clock,
+            PortKind::Normal { domain: _, ty } => ty.clone(),
+        }
+    }
+}
+
 // TODO should the init value be here or in the module?
 #[derive(Debug)]
 pub struct RegisterInfo {

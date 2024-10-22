@@ -6,6 +6,7 @@ use crate::data::module_body::{LowerBlock, LowerIfStatement, LowerStatement, Mod
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, GenericMap, ScopedEntry, TypeOrValue};
+use crate::front::module::Driver;
 use crate::front::scope::Visibility;
 use crate::front::types::{Constructor, GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
@@ -118,6 +119,9 @@ fn generate_module_source(
         }
     };
 
+    // TODO remove this clone once generics are implemented to avoid substitution
+    let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body).clone();
+
     // TODO build this in a single pass?
     let mut port_string = String::new();
     for (port_index, &port) in enumerate(&module_info.ports) {
@@ -126,13 +130,13 @@ fn generate_module_source(
         }
         let comma_str = if port_index == module_info.ports.len() - 1 { "" } else { "," };
 
+        let driver = body.output_port_driver.get(&port).copied();
+
         port_string.push_str(I);
-        port_string.push_str(&port_to_verilog(diag, source, parsed, compiled, &generic_map, port, comma_str));
+        port_string.push_str(&port_to_verilog(diag, source, parsed, compiled, &generic_map, port, driver, comma_str));
         port_string.push_str("\n");
     }
 
-    // TODO remove this clone once generics are implemented to avoid substitution
-    let body = unwrap_match!(&item_info.body, ItemChecked::Module(body) => body).clone();
     let body_str = module_body_to_verilog(diag, source, parsed, compiled, todo, &generic_map, item_ast.span, &body);
     let module_id_str = &item_ast.id.string;
 
@@ -192,7 +196,7 @@ fn module_body_to_verilog(
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleChecked { statements, regs, wires } = body;
+    let ModuleChecked { statements, regs, wires, output_port_driver: _ } = body;
     let mut signal_map = IndexMap::new();
 
     let mut newline = NewlineGenerator::new();
@@ -460,6 +464,7 @@ fn port_to_verilog(
     compiled: &CompiledDatabase,
     map: &GenericMap,
     port: ModulePort,
+    driver: Option<Driver>,
     comma_str: &str,
 ) -> String {
     let &ModulePortInfo {
@@ -474,6 +479,11 @@ fn port_to_verilog(
         PortDirection::Output => "output",
     };
 
+    let driver_str = match driver {
+        None | Some(Driver::WireDeclaration | Driver::InstancePortConnection(_)) => "wire",
+        Some(Driver::CombinatorialBlock(_) | Driver::ClockedBlock(_)) => "reg",
+    };
+
     let (ty_str, comment) = match kind {
         PortKind::Clock => ("".to_owned(), "clock".to_owned()),
         PortKind::Normal { domain: sync, ty } => {
@@ -485,7 +495,7 @@ fn port_to_verilog(
 
     let name_str = &defining_id.string;
 
-    format!("{dir_str} wire {ty_str}{name_str}{comma_str} // {comment}")
+    format!("{dir_str} {driver_str} {ty_str}{name_str}{comma_str} // {comment}")
 }
 
 fn sync_ty_to_comment_str(source: &SourceDatabase, parsed: &ParsedDatabase, compiled: &CompiledDatabase, sync: &DomainKind<Value>, ty: &Type) -> String {

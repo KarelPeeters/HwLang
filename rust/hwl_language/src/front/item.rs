@@ -101,6 +101,8 @@ impl CompileState<'_, '_> {
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
 
                     // map ports
+                    // TODO at this point we can already check that all ports have finite size,
+                    //   or more generally, that their types are representable in hardware
                     let mut port_vec = vec![];
 
                     for (port_index, port) in enumerate(&ports.inner) {

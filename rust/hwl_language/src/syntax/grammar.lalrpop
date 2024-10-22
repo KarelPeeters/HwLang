@@ -168,6 +168,11 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
         ModuleStatementKind::WireDeclaration(decl)
     },
+    // marker
+    <start:@L> "reg" "out" <id:Id> "=" <init:BoxExpr> ";" <end:@R> => {
+        let decl = RegOutPortMarker { span: loc.span(start, end), id, init };
+        ModuleStatementKind::RegOutPortMarker(decl)
+    },
     // combinatorial block
     <start:@L> "combinatorial" <end_keyword:@R> <block:Block<BlockStatement>> <end:@R> => {
         let inner = CombinatorialBlock {

@@ -225,6 +225,9 @@ pub enum ModuleStatementKind {
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
 
+    // marker
+    RegOutPortMarker(RegOutPortMarker),
+
     // blocks
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
@@ -281,6 +284,13 @@ pub struct ForStatement {
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,
     pub body: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegOutPortMarker {
+    pub span: Span,
+    pub id: Identifier,
+    pub init: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
