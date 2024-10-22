@@ -47,18 +47,18 @@ impl CompileState<'_, '_> {
             &Value::IntConstant(_) => ValueDomain::CompileTime,
             &Value::StringConstant(_) => ValueDomain::CompileTime,
             Value::Range(info) => {
-                let RangeInfo { start, end } = info;
+                let RangeInfo { start_inc: start_inclusive, end_inc: end_inclusive } = info;
 
-                let start = start.as_ref().map(|v| self.domain_of_value(span, v));
-                let end = end.as_ref().map(|v| self.domain_of_value(span, v));
+                let start_inclusive = start_inclusive.as_ref().map(|v| self.domain_of_value(span, v));
+                let end_inclusive = end_inclusive.as_ref().map(|v| self.domain_of_value(span, v));
 
-                match (start, end) {
+                match (start_inclusive, end_inclusive) {
                     (None, None) =>
                         ValueDomain::CompileTime,
                     (Some(single), None) | (None, Some(single)) =>
                         single,
-                    (Some(start), Some(end)) =>
-                        self.merge_domains(span, &start, &end),
+                    (Some(start_inclusive), Some(end_inclusive)) =>
+                        self.merge_domains(span, &start_inclusive, &end_inclusive),
                 }
             }
             Value::Binary(_, left, right) =>
@@ -239,8 +239,8 @@ impl CompileState<'_, '_> {
             Value::BoolConstant(_) => Type::Boolean,
             Value::IntConstant(value) => {
                 let range = RangeInfo {
-                    start: Some(Box::new(Value::IntConstant(value.clone()))),
-                    end: Some(Box::new(Value::IntConstant(value + 1u32))),
+                    start_inc: Some(Box::new(Value::IntConstant(value.clone()))),
+                    end_inc: Some(Box::new(Value::IntConstant(value.clone()))),
                 };
                 Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
             }
@@ -302,13 +302,11 @@ impl CompileState<'_, '_> {
                 match (left_range, right_range) {
                     (Err(e), _) | (_, Err(e)) => Type::Error(e),
                     (Ok(left_range), Ok(right_range)) => {
-                        let RangeInfo { start: left_start, end: left_end } = left_range;
-                        let RangeInfo { start: right_start, end: right_end } = right_range;
+                        let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
+                        let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
                         let range = RangeInfo {
-                            start: option_op(BinaryOp::Add, left_start, right_start),
-                            end: option_op(BinaryOp::Add, left_end, right_end).map(|end_off| {
-                                Box::new(Value::Binary(BinaryOp::Sub, end_off, Box::new(Value::IntConstant(BigInt::one()))))
-                            }),
+                            start_inc: option_op(BinaryOp::Add, left_start, right_start),
+                            end_inc: option_op(BinaryOp::Add, left_end, right_end),
                         };
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
                     }
@@ -322,14 +320,12 @@ impl CompileState<'_, '_> {
                 match (left_range, right_range) {
                     (Err(e), _) | (_, Err(e)) => Type::Error(e),
                     (Ok(left_range), Ok(right_range)) => {
-                        let RangeInfo { start: left_start, end: left_end } = left_range;
-                        let RangeInfo { start: right_start, end: right_end } = right_range;
+                        let RangeInfo { start_inc: left_start, end_inc: left_end } = left_range;
+                        let RangeInfo { start_inc: right_start, end_inc: right_end } = right_range;
 
                         let range = RangeInfo {
-                            start: option_op(BinaryOp::Sub, left_start, &right_end).map(|start_off| {
-                                Box::new(Value::Binary(BinaryOp::Add, start_off, Box::new(Value::IntConstant(BigInt::one()))))
-                            }),
-                            end: option_op(BinaryOp::Sub, left_end, right_start),
+                            start_inc: option_op(BinaryOp::Sub, left_start, &right_end),
+                            end_inc: option_op(BinaryOp::Sub, left_end, &right_start),
                         };
                         Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
                     }
@@ -382,16 +378,35 @@ impl CompileState<'_, '_> {
                 }
 
                 Type::Boolean
-            }
-            _ => Type::Error(self.diags.report_todo(origin, format!("type of binary operator `{:?}`", op.symbol()))),
+            },
+            // TODO implement proper type checking and result type range determination
+            //   ideally prove the determined ranges with Z3 (offline, not during compilation)
+            // TODO careful with signs
+            BinaryOp::Mul |
+            // TODO careful with signs and zero
+            BinaryOp::Div |
+            BinaryOp::Mod |
+            // TODO check that operands are "bits"
+            BinaryOp::BitAnd |
+            BinaryOp::BitOr |
+            BinaryOp::BitXor |
+            // TODO check that operands are boolean
+            BinaryOp::BoolAnd |
+            BinaryOp::BoolOr |
+            // TODO we even want to keep these, or just use division/multiplication and powers?
+            //   maybe these apply to bits, not integers?
+            BinaryOp::Shl |
+            BinaryOp::Shr |
+            // TODO in operator has operands (int, range) and returns bool
+            BinaryOp::In => Type::Error(self.diags.report_todo(origin, format!("type of binary operator `{}`", op.symbol()))),
         }
     }
 
     fn type_of_binary_power(&self, origin: Span, base_range: &RangeInfo<Box<Value>>, exp_range: &RangeInfo<Box<Value>>) -> Type {
         let diags = self.diags;
 
-        let RangeInfo { start: base_start, end: _ } = base_range;
-        let RangeInfo { start: exp_start, end: _ } = exp_range;
+        let RangeInfo { start_inc: base_start, end_inc: _ } = base_range;
+        let RangeInfo { start_inc: exp_start, end_inc: _ } = exp_range;
 
         // check that exponent is non-negative
         let exp_start = match exp_start {
@@ -466,9 +481,9 @@ impl CompileState<'_, '_> {
         // * if exp is odd, result is the same sign as base
         let range = if known_base_positive {
             // (>0) ** (>=0) = (>0)
-            RangeInfo { start: Some(BigInt::one()), end: None }
+            RangeInfo { start_inc: Some(BigInt::one()), end_inc: None }
         } else {
-            RangeInfo { start: None, end: None }
+            RangeInfo { start_inc: None, end_inc: None }
         };
 
         let range = range.map_inner(|x| Box::new(Value::IntConstant(x)));
@@ -528,18 +543,18 @@ impl CompileState<'_, '_> {
             // integer range check
             (Type::Integer(IntegerTypeInfo { range: range_ty }), Type::Integer(_)) => {
                 let range_ty = self.require_int_range_direct(span_ty.unwrap_or(span_value), range_ty)?;
-
-                let RangeInfo { start: start_ty, end: end_ty } = range_ty;
+                let RangeInfo { start_inc, end_inc } = range_ty;
 
                 // check that the value fits in the required range
-                if let Some(start_ty) = start_ty {
-                    let cond = Value::Binary(BinaryOp::CmpLte, start_ty.clone(), Box::new(value.clone()));
+                if let Some(start_inc) = start_inc {
+                    let cond = Value::Binary(BinaryOp::CmpLte, start_inc.clone(), Box::new(value.clone()));
                     self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
                 }
-                if let Some(end_ty) = end_ty {
-                    let cond = Value::Binary(BinaryOp::CmpLt, Box::new(value.clone()), end_ty.clone());
+                if let Some(end_inc) = end_inc {
+                    let cond = Value::Binary(BinaryOp::CmpLte, Box::new(value.clone()), end_inc.clone());
                     self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
                 }
+
                 return Ok(());
             }
 
@@ -636,13 +651,13 @@ impl CompileState<'_, '_> {
                 }
 
                 let compare_lt = |allow_eq: bool| {
-                    let right_start = value_as_int(right_range.start.as_ref()?)?;
-                    let left_end_inclusive = value_as_int(left_range.end.as_ref()?)? - 1;
+                    let right_start = value_as_int(right_range.start_inc.as_ref()?)?;
+                    let left_end = value_as_int(left_range.end_inc.as_ref()?)?;
 
                     if allow_eq {
-                        Some(left_end_inclusive <= right_start)
+                        Some(left_end <= right_start)
                     } else {
-                        Some(left_end_inclusive < right_start)
+                        Some(left_end < right_start)
                     }
                 };
 

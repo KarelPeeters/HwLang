@@ -21,6 +21,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed as _, ToPrimitive};
 use std::cmp::max;
 use std::fmt::{Display, Formatter, Write};
+use std::ops::RangeInclusive;
 use unwrap_match::unwrap_match;
 
 // TODO make backend configurable between verilog and VHDL?
@@ -415,7 +416,7 @@ fn statement_to_verilog(
                 Err(VerilogValueUndefined) => {
                     swriteln!(f, "{indent}// if(undefined)");
                     return;
-                },
+                }
             };
 
             // TODO if the else branch is just a single if statement again, don't keep indenting
@@ -758,13 +759,13 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
     }
 }
 
-fn value_evaluate_int_range(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, value: &Value) -> Result<std::ops::Range<BigInt>, ErrorGuaranteed> {
+fn value_evaluate_int_range(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, value: &Value) -> Result<RangeInclusive<BigInt>, ErrorGuaranteed> {
     match value {
         &Value::Error(e) => Err(e),
         Value::Range(info) => {
-            let &RangeInfo { ref start, ref end } = info;
+            let &RangeInfo { ref start_inc, ref end_inc } = info;
 
-            let (start, end) = match (start, end) {
+            let (start, end) = match (start_inc, end_inc) {
                 (Some(start), Some(end)) => (start, end),
                 _ => throw!(diag.report_internal_error(span, "unbound integers should not materialize")),
             };
@@ -772,7 +773,7 @@ fn value_evaluate_int_range(diag: &Diagnostics, compiled: &CompiledDatabase, map
             let start = value_evaluate_int(diag, compiled, map, span, start.as_ref())?;
             let end = value_evaluate_int(diag, compiled, map, span, end.as_ref())?;
 
-            Ok(start..end)
+            Ok(start..=end)
         }
         _ => Err(diag.report_todo(span, format!("evaluate range of non-range value {value:?}"))),
     }
@@ -843,29 +844,27 @@ fn find_top_module(
 // TODO move this to some common place, we will need it all over the place
 // TODO do we want to save bits for small ranges that are far away from 0? is this common or worth it?
 // Pick signedness and the smallest width such that the entire range can be represented.
-fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: std::ops::Range<BigInt>) -> VerilogType {
-    assert!(range.start < range.end, "Range needs to contain at least one value, got {range:?}");
+fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: RangeInclusive<BigInt>) -> VerilogType {
+    assert!(!range.is_empty(), "Range needs to contain at least one value, got {range:?}");
+    let (start, end) = range.into_inner();
 
-    let min_value = range.start;
-    let max_value = range.end - 1u32;
-
-    let (signed, bits) = if min_value < BigInt::ZERO {
+    let (signed, bits) = if start < BigInt::ZERO {
         // signed
         // prevent max value underflow
-        let max_value = if max_value.is_negative() {
+        let max_value = if end.is_negative() {
             BigInt::ZERO
         } else {
-            max_value
+            end
         };
         let max_bits = max(
-            1 + (min_value + 1u32).bits(),
+            1 + (start + 1u32).bits(),
             1 + max_value.bits(),
         );
 
         (Signed::Signed, max_bits)
     } else {
         // unsigned
-        (Signed::Unsigned, max_value.bits())
+        (Signed::Unsigned, end.bits())
     };
 
     match bits.to_u32() {
@@ -921,7 +920,8 @@ mod test {
         let span = Span::empty_at(Pos { file: FileId::SINGLE, byte: 0 });
 
         let expected = VerilogType::MultiBit(signed, width.into());
-        let result = verilog_type_for_int_range(&diag, span, range.start.into()..range.end.into());
+        let range_inc = range.start.into()..=(range.end - 1).into();
+        let result = verilog_type_for_int_range(&diag, span, range_inc);
         println!("range {:?} => {:?}", range, result);
         assert_eq!(
             expected,

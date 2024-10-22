@@ -67,30 +67,37 @@ impl CompileState<'_, '_> {
             ExpressionKind::StructLiteral(_) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "struct literal expression")),
             ExpressionKind::RangeLiteral(ref range) => {
-                let &RangeLiteral { end_inclusive, ref start, ref end } = range;
+                let &RangeLiteral { end_inclusive, ref start, end: ref end_raw } = range;
 
                 let mut map_point = |point: &Option<Box<Expression>>| {
                     point.as_ref()
                         .map(|p| Box::new(self.eval_expression_as_value(ctx, collector, p)))
                 };
 
-                let start = map_point(start);
-                let end_raw = map_point(end);
+                let start_inc = map_point(start);
+                let end_raw = map_point(end_raw);
 
-                let end = if end_inclusive {
-                    end_raw.map(|e| Box::new(Value::Binary(BinaryOp::Add, e, Box::new(Value::IntConstant(BigInt::one())))))
-                } else {
-                    end_raw
-                };
-
-                if let (Some(start), Some(end)) = (&start, &end) {
-                    match self.require_value_true_for_range(expr.span, &Value::Binary(BinaryOp::CmpLte, start.clone(), end.clone())) {
+                // check range valid (before incrementing end to get more intuitive error messages)
+                if let (Some(start), Some(end)) = (&start_inc, &end_raw) {
+                    let cond_op = if end_inclusive {
+                        BinaryOp::CmpLte
+                    } else {
+                        BinaryOp::CmpLt
+                    };
+                    match self.require_value_true_for_range(expr.span, &Value::Binary(cond_op, start.clone(), end.clone())) {
                         Ok(()) => {}
                         Err(e) => return ScopedEntryDirect::Error(e),
                     }
                 }
 
-                let value = Value::Range(RangeInfo { start, end });
+                // convert to inclusive range
+                let end_inc = if end_inclusive {
+                    end_raw
+                } else {
+                    end_raw.map(|e| Box::new(Value::Binary(BinaryOp::Sub, e, Box::new(Value::IntConstant(BigInt::one())))))
+                };
+
+                let value = Value::Range(RangeInfo { start_inc, end_inc });
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
             }
             ExpressionKind::UnaryOp(op, ref inner) => {

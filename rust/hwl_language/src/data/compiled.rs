@@ -263,12 +263,12 @@ impl<S: CompiledStage> CompiledDatabase<S> {
     // TODO make sure generic variables are properly disambiguated
     // TODO insert this into value_to_readable_str, no point keeping this one separate
     pub fn range_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, range: &RangeInfo<Box<Value>>) -> String {
-        let RangeInfo { ref start, ref end } = *range;
+        let RangeInfo { ref start_inc, ref end_inc } = *range;
 
-        let start = start.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
-        let end = end.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
+        let start = start_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
+        let end = end_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
 
-        format!("({}..{})", start, end)
+        format!("({}..={})", start, end)
     }
 
     // TODO integrate generic parameters properly in the diagnostic, by pointing to them

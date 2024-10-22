@@ -269,8 +269,8 @@ impl CompileState<'_, '_> {
                         // avoid duplicate error if both ends are missing
                         let report_unbounded = || diags.report_simple("for loop over unbounded range", iter_span, "range");
 
-                        let &RangeInfo { ref start, ref end } = info;
-                        let (start, end) = match (start, end) {
+                        let &RangeInfo { ref start_inc, ref end_inc } = info;
+                        let (start, end) = match (start_inc, end_inc) {
                             (Some(start), Some(end)) => (start.as_ref().clone(), end.as_ref().clone()),
                             (Some(start), None) => (start.as_ref().clone(), Value::Error(report_unbounded())),
                             (None, Some(end)) => (Value::Error(report_unbounded()), end.as_ref().clone()),
@@ -285,14 +285,14 @@ impl CompileState<'_, '_> {
 
                 // TODO require range to be compile-time
                 let index_range = Value::Range(RangeInfo {
-                    start: Some(Box::new(start)),
-                    end: Some(Box::new(end)),
+                    start_inc: Some(Box::new(start)),
+                    end_inc: Some(Box::new(end)),
                 });
                 let index_var = self.compiled.variables.push(VariableInfo {
                     defining_id: index.clone(),
                     ty: Type::Integer(IntegerTypeInfo { range: Box::new(index_range) }),
                     mutable: false,
-                    // TODO once we require the range to be compile-time this can be constant too
+                    // TODO once we require the range to be compile-time this can be compile-time too
                     domain: VariableDomain::Unknown,
                 });
 
@@ -463,13 +463,13 @@ impl CompileState<'_, '_> {
 
             // recursively check sub-expressions for read-ability
             Value::Range(info) => {
-                let RangeInfo { start, end } = info;
+                let RangeInfo { start_inc, end_inc } = info;
 
                 let mut r = Ok(());
-                if let Some(start) = start {
+                if let Some(start) = start_inc {
                     r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, start, AccessDirection::Read));
                 }
-                if let Some(end) = end {
+                if let Some(end) = end_inc {
                     r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, end, AccessDirection::Read));
                 }
 

@@ -49,10 +49,12 @@ pub enum Value {
     Constant(Constant),
 }
 
+/// Both start and end are inclusive.
+/// This is convenient for arithmetic range calculations.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RangeInfo<V> {
-    pub start: Option<V>,
-    pub end: Option<V>,
+    pub start_inc: Option<V>,
+    pub end_inc: Option<V>,
 }
 
 // TODO double check which fields should be used for eq and hash
@@ -71,14 +73,14 @@ pub struct ModuleValueInfo {
 
 impl<V> RangeInfo<V> {
     pub const UNBOUNDED: RangeInfo<V> = RangeInfo {
-        start: None,
-        end: None,
+        start_inc: None,
+        end_inc: None,
     };
 
     pub fn map_inner<U>(self, mut f: impl FnMut(V) -> U) -> RangeInfo<U> {
         RangeInfo {
-            start: self.start.map(&mut f),
-            end: self.end.map(&mut f),
+            start_inc: self.start_inc.map(&mut f),
+            end_inc: self.end_inc.map(&mut f),
         }
     }
 }
@@ -111,9 +113,9 @@ impl GenericContainer for Value {
             Value::IntConstant(ref info) => Value::IntConstant(info.clone()),
             Value::StringConstant(ref info) => Value::StringConstant(info.clone()),
             Value::Range(ref info) => Value::Range(RangeInfo {
-                start: info.start.as_ref()
+                start_inc: info.start_inc.as_ref()
                     .map(|v| Box::new(v.replace_generics(compiled, map))),
-                end: info.end.as_ref()
+                end_inc: info.end_inc.as_ref()
                     .map(|v| Box::new(v.replace_generics(compiled, map))),
             }),
             Value::Binary(op, ref left, ref right) => {
