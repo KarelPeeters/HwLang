@@ -1,6 +1,6 @@
 import {EditorState} from "@codemirror/state"
 import {EditorView, highlightActiveLineGutter, keymap, lineNumbers} from "@codemirror/view"
-import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands"
+import {defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineKeepIndent} from "@codemirror/commands"
 import {
     bracketMatching,
     defaultHighlightStyle,
@@ -15,10 +15,11 @@ import {
 import {Input, NodeSet, NodeType, Parser, PartialParse, Tree} from "@lezer/common"
 import {styleTags, tags} from "@lezer/highlight"
 import * as hwl_wasm from "hwl_wasm";
-import {verilog} from "@codemirror/legacy-modes/mode/verilog";
+import {verilog as mode_verilog} from "@codemirror/legacy-modes/mode/verilog";
 
 import AnsiToHtmlClass from "ansi-to-html";
 import Cookies from "js-cookie";
+import pako from "pako";
 
 function build_node_types() {
     const node_types_string = hwl_wasm.codemirror_node_types();
@@ -85,6 +86,8 @@ let language = new Language(null, new HwlParser(), [], "HWLang");
 const element_editor_output = document.getElementById("div-editor-output");
 const element_editor_input = document.getElementById("div-editor-input");
 const element_messages = document.getElementById("div-messages");
+const element_share_link = document.getElementById("a-share") as HTMLAnchorElement;
+const element_clear_button = document.getElementById("svg-clear");
 
 const ansi_to_html = new AnsiToHtmlClass();
 
@@ -98,7 +101,6 @@ function escapeHtml(raw: string): string {
 }
 
 function diagnostics_ansi_to_html(ansi: string): string {
-    // TODO escape inner html
     let result = "";
     for (let line of ansi.split("\n")) {
         if (line.length == 0) {
@@ -116,6 +118,13 @@ const COOKIE_SOURCE = "source";
 function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     // store code in cookie
     Cookies.set(COOKIE_SOURCE, source);
+
+    // store code in share link, as the parameter "source", compressed and base64 encoded
+    // https://developer.mozilla.org/en-US/docs/Glossary/Base64#the_unicode_problem
+    const url = new URL(window.location.href);
+    url.searchParams.set("source", "cb64-" + btoa(String.fromCharCode.apply(null, pako.deflate(source))));
+    console.log("share link", url.toString());
+    element_share_link.href = url.toString()
 
     // run the compiler
     let diagnostics_ansi, lowered_verilog;
@@ -146,9 +155,10 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
 }
 
 let common_extensions = [
+    keymap.of([{key: "Enter", run: insertNewlineKeepIndent}]),
+    keymap.of([indentWithTab]),
     keymap.of(defaultKeymap),
     keymap.of(historyKeymap),
-    keymap.of([indentWithTab]),
     history(),
 
     lineNumbers(),
@@ -163,7 +173,7 @@ let editor_state_verilog = EditorState.create({
     doc: EMPTY_DOC,
     extensions: common_extensions.concat([
         EditorState.readOnly.of(true),
-        StreamLanguage.define(verilog)
+        StreamLanguage.define(mode_verilog)
     ]),
 })
 let editor_view_verilog = new EditorView({
@@ -178,13 +188,25 @@ let updateListenerExtension = EditorView.updateListener.of((update) => {
     }
 })
 
-let initial_doc = Cookies.get(COOKIE_SOURCE);
-if (initial_doc == undefined || initial_doc == "") {
-    initial_doc = hwl_wasm.initial_source();
+const wasm_initial_source = hwl_wasm.initial_source();
+let initial_source = wasm_initial_source;
+{
+    let cookie_doc = Cookies.get(COOKIE_SOURCE);
+    // get source from cookie
+    if (cookie_doc != undefined) {
+        initial_source = cookie_doc;
+    }
+
+    // get source from current URL
+    const url = new URL(window.location.href);
+    const source = url.searchParams.get("source");
+    if (source != null && source.startsWith("cb64-")) {
+        initial_source = pako.inflate(Uint8Array.from(atob(source.slice(5)), c => c.charCodeAt(0)), {to: "string"});
+    }
 }
 
 let editor_state_hdl = EditorState.create({
-    doc: initial_doc,
+    doc: initial_source,
     extensions: common_extensions.concat([
         highlightActiveLineGutter(),
         new LanguageSupport(language),
@@ -195,6 +217,17 @@ let editor_view_hdl = new EditorView({
     state: editor_state_hdl,
     parent: element_editor_input,
 })
+
+// add clear event handler
+element_clear_button.addEventListener("click", () => {
+    editor_view_hdl.dispatch({
+        changes: {
+            from: 0,
+            to: editor_view_hdl.state.doc.length,
+            insert: wasm_initial_source,
+        }
+    })
+});
 
 // initial update
 onDocumentChanged(editor_view_hdl.state.doc.toString(), editor_view_verilog)
