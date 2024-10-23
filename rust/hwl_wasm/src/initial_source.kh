@@ -1,6 +1,6 @@
 import std.types.[
     bool, bits, int_range, int, uint, natural,
-    int_bits, uint_bits, Array
+    int_bits, uint_bits, Array, undefined
 ];
 
 type my_array(T: type, N: uint) = Array(T, N);
@@ -25,30 +25,29 @@ pub module top ports(
     in_uint_bits: in async uint_bits(3),
 ) body {
     const test_pos: int = 8;
-    //const test_neg: uint = test_pos; //type err
+
+    reg pass: sync(clk_a, !rst_a) bool = false;
+    reg out out_a = undefined;
+    clocked(clk_a, !rst_a) {
+        if (pass) {
+            out_a = in_a;
+        }
+        pass = !pass;
+    }
 
     combinatorial {
-        out_a = in_a;
-        //out_b = in_a; //sync err
         out_async = in_async;
     }
 
-    clocked(clk_a, !rst_a) {
-        out_a = in_a;
-        //out_b = in_b; //sync err
-    }
-
     instance child generics(N=4) ports(
-        .clk(clk_a),
-        .rst(!rst_a),
-        .x(in_a),
-        // .x(in_b), //sync err
-        .y(out_a),
+        .clk(clk_b),
+        .rst(!rst_b),
+        .x(in_b),
+        .y(out_b),
     );
 }
 
 function foo(T: type, x: T) -> T {
-    //return 0; //type err
     return x;
 }
 
