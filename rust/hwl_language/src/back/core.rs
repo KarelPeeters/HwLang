@@ -317,7 +317,9 @@ fn module_body_to_verilog(
                     swrite!(f, "{I}{child_module_name} (");
                 }
 
-                if !child_port_connections.vec.is_empty() {
+                if child_port_connections.vec.is_empty() {
+                    swriteln!(f, ");");
+                } else {
                     swriteln!(f);
                     let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
                     for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
@@ -331,8 +333,8 @@ fn module_body_to_verilog(
                         }
                         swriteln!(f);
                     }
+                    swriteln!(f, "{I});");
                 }
-                swriteln!(f, "{I});");
             }
             &ModuleStatement::Err(e) => {
                 let _: ErrorGuaranteed = e;
