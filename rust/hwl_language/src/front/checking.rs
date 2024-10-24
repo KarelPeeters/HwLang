@@ -151,9 +151,8 @@ impl CompileState<'_, '_> {
             // propagate errors
             (&ValueDomain::Error(e), _) | (_, &ValueDomain::Error(e)) =>
                 return Err(e),
-            // clock assignments are not yet implemented
-            (ValueDomain::Clock, _) | (_, ValueDomain::Clock) =>
-                return Err(self.diags.report_todo(target_span.join(source_span), "clock assignment")),
+            // TODO think about a fix for delta cycles caused by clock assignments
+            (ValueDomain::Clock, _) | (_, ValueDomain::Clock) => None,
             // const target must have const source
             (ValueDomain::CompileTime, ValueDomain::CompileTime) => None,
             (ValueDomain::CompileTime, ValueDomain::Async) => Some("async to const"),

@@ -383,7 +383,7 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
     pub generic_args: Option<Args>,
-    pub port_connections: Spanned<Vec<(Identifier, Expression)>>,
+    pub port_connections: Spanned<Vec<(Identifier, Spanned<Option<Expression>>)>>,
 }
 
 pub type Expression = Spanned<ExpressionKind>;

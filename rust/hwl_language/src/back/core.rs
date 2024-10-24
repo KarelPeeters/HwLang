@@ -326,7 +326,7 @@ fn module_body_to_verilog(
                     for (i, (&port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
                         let port_id = parsed.module_port_ast(compiled[port].ast).id();
                         let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref())
-                            .unwrap_or_else(|_: VerilogValueUndefined| "/* undefined */".to_string());
+                            .unwrap_or_else(|_: VerilogValueUndefined| "".to_string());
                         swrite!(f, "{I}{I}.{}({})", port_id.string, value_str);
 
                         // no trailing comma

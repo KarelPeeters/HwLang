@@ -580,8 +580,8 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         let connections = port_connections.as_ref().map_inner(|port_connections| {
             port_connections.iter().map(|(id, expr)| {
-                (id.clone(), expr.as_ref().map_inner(|_| {
-                    self.eval_expression_as_value(&ctx_connections, &mut collector_connections, expr)
+                (id.clone(), expr.as_ref().map_inner(|e| {
+                    e.as_ref().map(|expr| self.eval_expression_as_value(&ctx_connections, &mut collector_connections, expr))
                 }))
             }).collect_vec()
         });
@@ -613,7 +613,13 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     // TODO allow different declaration and use orderings, be careful about interactions
-    fn check_module_instance_ports(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, ports: &[ModulePort], connections: &Spanned<Vec<(Identifier, Spanned<Value>)>>) -> Result<PortConnections, ErrorGuaranteed> {
+    fn check_module_instance_ports(
+        &mut self,
+        ctx: &ExpressionContext,
+        collector: &mut MaybeDriverCollector,
+        ports: &[ModulePort],
+        connections: &Spanned<Vec<(Identifier, Spanned<Option<Value>>)>>,
+    ) -> Result<PortConnections, ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut any_err = Ok(());
@@ -665,78 +671,85 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 kind: ref port_kind
             } = &self.compiled[replaced];
 
-            // TODO centrally, at the end of every module: read/write checking for all regs,wires,ports
-            //   specifically here: register reads and writes
-            let port_replacement = match port_kind {
-                PortKind::Clock => {
-                    match self.check_type_contains(None, connection_value_span, &Type::Clock, connection_value) {
-                        Ok(()) => connection_value.clone(),
-                        Err(e) => Value::Error(e),
+            // TODO do previous port replacements on domain and/or type?
+            let (domain_port, ty_port) = match port_kind {
+                PortKind::Clock => (ValueDomain::Clock, &Type::Clock),
+                PortKind::Normal { domain, ty } => (ValueDomain::from_domain_kind(domain.clone()), ty),
+            };
+
+            let mut any_err = Ok(());
+
+            match port_dir {
+                PortDirection::Input => {
+                    if let Some(connection_value) = connection_value {
+                        let domain_value = self.domain_of_value(connection_value_span, connection_value);
+
+                        any_err = any_err.and(self.check_value_usable_as_direction(
+                            ctx,
+                            collector,
+                            connection_value_span,
+                            connection_value,
+                            AccessDirection::Read,
+                        ));
+                        any_err = any_err.and(self.check_domain_crossing(
+                            connection_id.span,
+                            &domain_port,
+                            connection_value_span,
+                            &domain_value,
+                            DomainUserControlled::Source,
+                            "instance port connections must respect domains",
+                        ));
+                        any_err = any_err.and(self.check_type_contains(
+                            Some(port_ast.ty_span()),
+                            connection_value_span,
+                            ty_port,
+                            connection_value,
+                        ));
+                    } else {
+                        any_err = Err(diags.report(
+                            Diagnostic::new("input port must be connected")
+                                .add_error(connection_value_span, "port not connected here")
+                                .add_info(port_id.span, "port declared here")
+                                .finish()
+                        ))
                     }
                 }
-                PortKind::Normal { domain: domain_port, ty: ty_port } => {
-                    let domain_value = self.domain_of_value(connection_value_span, connection_value);
+                PortDirection::Output => {
+                    if let Some(connection_value) = connection_value {
+                        let domain_value = self.domain_of_value(connection_value_span, connection_value);
 
-                    let (e_access, e_domain, e_ty) = match port_dir {
-                        PortDirection::Input => {
-                            let e_access = self.check_value_usable_as_direction(
-                                ctx,
-                                collector,
-                                connection_value_span,
-                                connection_value,
-                                AccessDirection::Read,
-                            );
-                            let e_domain = self.check_domain_crossing(
-                                port_id.span,
-                                &ValueDomain::from_domain_kind(domain_port.clone()),
-                                connection_value_span,
-                                &domain_value,
-                                DomainUserControlled::Source,
-                                "instance port connections must respect domains",
-                            );
-                            let e_ty = self.check_type_contains(
-                                Some(port_ast.ty_span()),
-                                connection_value_span,
-                                ty_port,
-                                connection_value,
-                            );
-                            (e_access, e_domain, e_ty)
-                        }
-                        PortDirection::Output => {
-                            let e_access = self.check_value_usable_as_direction(
-                                ctx,
-                                collector,
-                                connection_value_span,
-                                connection_value,
-                                AccessDirection::Write,
-                            );
-                            let e_domain = self.check_domain_crossing(
-                                connection_value_span,
-                                &domain_value,
-                                port_id.span,
-                                &ValueDomain::from_domain_kind(domain_port.clone()),
-                                DomainUserControlled::Target,
-                                "instance port connections must respect domains",
-                            );
-                            // TODO for port connections, should we assert that the types match exactly?
-                            //   or should we disable the implicit expansion for all assignments,
-                            //   and force exact type equalities?
-                            let e_ty = self.check_type_contains(
-                                Some(connection_value_span),
-                                port_id.span,
-                                &self.type_of_value(connection_value_span, &connection_value),
-                                // TODO this is hacky, hopefully the next type system rewrite can fix this
-                                &Value::ModulePort(port),
-                            );
-                            (e_access, e_domain, e_ty)
-                        }
-                    };
-
-                    match (e_access, e_domain, e_ty) {
-                        (Ok(()), Ok(()), Ok(())) => connection_value.clone(),
-                        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Value::Error(e),
+                        any_err = any_err.and(self.check_value_usable_as_direction(
+                            ctx,
+                            collector,
+                            connection_value_span,
+                            connection_value,
+                            AccessDirection::Write,
+                        ));
+                        any_err = any_err.and(self.check_domain_crossing(
+                            connection_value_span,
+                            &domain_value,
+                            port_id.span,
+                            &domain_port,
+                            DomainUserControlled::Target,
+                            "instance port connections must respect domains",
+                        ));
+                        any_err = any_err.and(self.check_type_contains(
+                            Some(connection_value_span),
+                            port_id.span,
+                            &self.type_of_value(connection_value_span, &connection_value),
+                            // TODO this is hacky, hopefully the next type system rewrite can fix this
+                            &Value::ModulePort(port),
+                        ));
                     }
                 }
+            };
+
+            let port_replacement = match any_err {
+                Ok(()) => match connection_value {
+                    Some(connection_value) => connection_value.clone(),
+                    None => Value::Undefined,
+                },
+                Err(e) => Value::Error(e),
             };
 
             // add port to replacement
@@ -744,7 +757,9 @@ impl<'d, 'a> CompileState<'d, 'a> {
             ordered_connections.push(Spanned { span: connection_value_span, inner: port_replacement });
         }
 
-        any_err.map(|()| PortConnections { vec: ordered_connections })
+        any_err.map(|()| PortConnections {
+            vec: ordered_connections
+        })
     }
 
     fn eval_expr_as_module_with_generics(

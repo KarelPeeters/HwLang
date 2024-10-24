@@ -220,8 +220,8 @@ ModuleStatementKind: ModuleStatementKind = {
 
 // TODO better port syntax, maybe including directionality?
 //   now it's different from both generics and struct literals
-InstancePortConnection: (Identifier, Expression) = {
-    "." <id:Id> "(" <value:Expr> ")" => (id, value),
+InstancePortConnection: (Identifier, Spanned<Option<Expression>>) = {
+    "." <id:Id> "(" <value:Spanned<Expr?>> ")" => (id, value),
 }
 
 BlockStatementKind: BlockStatementKind = {
