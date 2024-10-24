@@ -9,7 +9,7 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
-use crate::util::data::{IndexMapExt, VecExt};
+use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
@@ -132,44 +132,45 @@ impl CompileState<'_, '_> {
 
                 match base {
                     TypeOrValue::Type(base) => {
-                        match args.inner.len() {
-                            0 => ScopedEntryDirect::Error(diags.report_simple(
+                        if args.inner.is_empty() {
+                            ScopedEntryDirect::Error(diags.report_simple(
                                 "array type definition requires at least one dimension",
                                 args.span,
                                 "array index",
-                            )),
-                            1 => {
-                                let ast::Arg { span: _, name, value: (value_span, value_raw) } = args.inner.single().unwrap();
+                            ))
+                        } else {
+                            // array dimensions are the other way around, the innermost type is the final dimension
+                            let result_ty = args.inner.into_iter().rev().fold(base, |ty_acc, arg| {
+                                let ast::Arg { span: _, name, value: (value_span, value_raw) } = arg;
+
+                                let positive_range = RangeInfo {
+                                    start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
+                                    end_inc: None,
+                                };
+                                let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
+
+                                let value_checked = match self.check_type_contains(None, value_span, &positive_ty, &value_raw) {
+                                    Ok(()) => value_raw,
+                                    Err(e) => Value::Error(e),
+                                };
+
                                 if let Some(name) = name {
-                                    ScopedEntryDirect::Error(diags.report_simple(
+                                    Type::Error(diags.report_simple(
                                         "named dimensions are not allowed for array type definition",
                                         name.span,
                                         "named dimension",
                                     ))
                                 } else {
-                                    let positive_range = RangeInfo {
-                                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                                        end_inc: None,
-                                    };
-                                    let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
-
-                                    let value_checked = match self.check_type_contains(None, value_span, &positive_ty, &value_raw) {
-                                        Ok(()) => value_raw,
-                                        Err(e) => Value::Error(e),
-                                    };
-
-                                    let ty = Type::Array(Box::new(base), Box::new(value_checked));
-                                    ScopedEntryDirect::Immediate(TypeOrValue::Type(ty))
+                                    Type::Array(Box::new(ty_acc), Box::new(value_checked))
                                 }
-                            }
-                            _ => {
-                                ScopedEntryDirect::Error(diags.report_todo(expr.span, "multi-dimensional arrays"))
-                            }
+                            });
+
+                            ScopedEntryDirect::Immediate(TypeOrValue::Type(result_ty))
                         }
-                    },
+                    }
                     TypeOrValue::Value(_) => {
                         ScopedEntryDirect::Error(diags.report_todo(expr.span, "array index expression"))
-                    },
+                    }
                     TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
                 }
             }

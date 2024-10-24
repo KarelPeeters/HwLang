@@ -433,8 +433,10 @@ ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
     "__builtin" "(" <args:Args> ")" =>
         ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "(" <args:Args> ")" =>
+    <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
         ExpressionKind::Call(target, args),
+    // intentionally ban sequential array indices, the inner/outer order would be too confusing
+    // TODO investigate exactly how C or maybe Java handles this
     <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:Args> "]" =>
         ExpressionKind::ArrayIndex(target, args),
     ExprLevelDotIndex<AtomicInner>,
