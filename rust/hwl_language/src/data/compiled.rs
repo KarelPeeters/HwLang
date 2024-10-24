@@ -286,7 +286,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
         match value {
             Value::Error(_) => "error".to_string(),
             &Value::GenericParameter(p) => self[p].defining_id.string.clone(),
-            &Value::ModulePort(p) => parsed.module_port_ast(self[p].ast).id.string.clone(),
+            &Value::ModulePort(p) => parsed.module_port_ast(self[p].ast).id().string.clone(),
             Value::Never => "never".to_string(),
             Value::Undefined => "undefined".to_string(),
             Value::Unit => "()".to_string(),

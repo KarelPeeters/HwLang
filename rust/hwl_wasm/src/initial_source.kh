@@ -12,17 +12,23 @@ pub module top ports(
     rst_a: in async bool,
     rst_b: in async bool,
 
-    in_a: in sync(clk_a, !rst_a) vector,
-    in_b: in sync(clk_b, !rst_b) vector,
-    out_a: out sync(clk_a, !rst_a) vector,
-    out_b: out sync(clk_b, !rst_b) vector,
+    sync(clk_a, !rst_a) {
+        in_a: in vector,
+        out_a: out vector,
+    },
+    sync(clk_b, !rst_b) {
+        in_b: in vector,
+        out_b: out vector,
+    },
 
-    in_async: in async vector,
-    out_async: out async vector,
+    async {
+        in_async: in vector,
+        out_async: out vector,
 
-    in_int_range: in async int_range(-3..27),
-    in_int_bits: in async int_bits(3),
-    in_uint_bits: in async uint_bits(3),
+        in_int_range: in int_range(-3..27),
+        in_int_bits: in int_bits(3),
+        in_uint_bits: in uint_bits(3),
+    }
 ) body {
     const test_pos: int = 8;
 

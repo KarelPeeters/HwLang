@@ -119,8 +119,16 @@ Item: Item = {
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<GenericParameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "module" <id:Id> <params:("generics" <Parameters<GenericParameter>>)?> "ports" <ports:Parameters<ModulePort>> "body" <body:Block<ModuleStatement>> <end:@R>
-        => Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) }),
+
+    <start:@L> <vis:Vis> "module" <id:Id>
+    <params:("generics" <Parameters<GenericParameter>>)?>
+    <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
+    "body" <body:Block<ModuleStatement>> <end:@R>
+    => {
+        let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
+        Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) })
+    },
+
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     <start:@L> <vis:Vis> "function" <id:Id> <params:Parameters<GenericParameter>> <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
@@ -278,9 +286,19 @@ GenericParameterKind: GenericParameterKind = {
     <ty:Expr> => GenericParameterKind::Value(ty),
 }
 
-ModulePort: ModulePort = {
+// TODO get rid of the need for a comma after a block
+ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
+
+ModulePortItem: ModulePortItem = {
     <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<PortKind>> <end:@R>
-        => ModulePort { id, direction, kind, span: loc.span(start, end) },
+            => ModulePortItem::Single(ModulePortSingle { id, direction, kind, span: loc.span(start, end) }),
+    <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
+        => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
+}
+
+ModulePortInBlock: ModulePortInBlock = {
+    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <ty:BoxExpr> <end:@R>
+        => ModulePortInBlock { id, direction, ty, span: loc.span(start, end) },
 }
 
 PortKind: PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {

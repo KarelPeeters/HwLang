@@ -121,7 +121,7 @@ pub struct ItemDefModule {
     pub vis: Visibility,
     pub id: Identifier,
     pub params: Option<Spanned<Vec<GenericParameter>>>,
-    pub ports: Spanned<Vec<ModulePort>>,
+    pub ports: Spanned<Vec<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
 }
 
@@ -160,12 +160,34 @@ pub enum GenericParameterKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModulePort {
+pub enum ModulePortItem {
+    Single(ModulePortSingle),
+    Block(ModulePortBlock),
+}
+
+#[derive(Debug, Clone)]
+pub struct ModulePortSingle {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
     pub kind: Spanned<PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
 }
+
+#[derive(Debug, Clone)]
+pub struct ModulePortBlock {
+    pub span: Span,
+    pub domain: Spanned<DomainKind<Box<Expression>>>,
+    pub ports: Vec<ModulePortInBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModulePortInBlock {
+    pub span: Span,
+    pub id: Identifier,
+    pub direction: Spanned<PortDirection>,
+    pub ty: Box<Expression>,
+}
+
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PortKind<S, T> {

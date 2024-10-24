@@ -138,7 +138,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let mut output_port_driver_clean = IndexMap::new();
 
         for (&port, drivers) in output_port_drivers {
-            let reg_def_id = &self.parsed.module_port_ast(self.compiled[port].ast).id;
+            let reg_def_id = self.parsed.module_port_ast(self.compiled[port].ast).id();
 
             let reg_output_port = output_port_regs.get(&port);
 
@@ -310,7 +310,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         let port = self.compiled.module_info[&module_item].ports
             .iter()
             .find(|&&port| {
-                self.parsed.module_port_ast(self.compiled[port].ast).id.string == id.string
+                self.parsed.module_port_ast(self.compiled[port].ast).id().string == id.string
             });
 
         match port {
@@ -326,7 +326,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let port_ast = self.parsed.module_port_ast(port_info.ast);
 
                 // check init value
-                let port_ty_spanned = Spanned { span: port_ast.kind.span, inner: &port_info.kind.ty() };
+                let port_ty_spanned = Spanned { span: port_ast.ty_span(), inner: &port_info.kind.ty() };
                 let init_eval = self.check_reg_init_value(id.span, port_ty_spanned, Spanned { span: init.span, inner: init_eval });
 
                 let port_info = &self.compiled[port];
@@ -337,7 +337,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                     PortDirection::Input => {
                         diags.report(Diagnostic::new("only output ports can be marked as registers")
                             .add_error(id.span, "marker applying to input port here")
-                            .add_info(port_ast.direction.span, "port direction set to output here")
+                            .add_info(port_ast.direction().span, "port direction set to output here")
                             .finish()
                         );
                     }
@@ -632,11 +632,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         for (&port, (connection_id, connection)) in zip_eq(&ports[..min_len], &connections.inner[..min_len]) {
             let port_ast = self.parsed.module_port_ast(self.compiled[port].ast);
+            let port_id = port_ast.id();
 
-            if port_ast.id.string != connection_id.string {
+            if port_id.string != connection_id.string {
                 let err = Diagnostic::new("port name mismatch")
                     .add_error(connection_id.span, format!("got {}, connected here", connection_id.string))
-                    .add_info(port_ast.id.span, format!("expected {}, defined here", port_ast.id.string))
+                    .add_info(port_id.span, format!("expected {}, defined here", port_id.string))
                     .footer(Level::Note, "different port and connection orderings are not yet supported")
                     .finish();
                 any_err = Err(diags.report(err));
@@ -686,7 +687,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 AccessDirection::Read,
                             );
                             let e_domain = self.check_domain_crossing(
-                                port_ast.id.span,
+                                port_id.span,
                                 &ValueDomain::from_domain_kind(domain_port.clone()),
                                 connection_value_span,
                                 &domain_value,
@@ -694,7 +695,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                                 "instance port connections must respect domains",
                             );
                             let e_ty = self.check_type_contains(
-                                Some(port_ast.kind.span),
+                                Some(port_ast.ty_span()),
                                 connection_value_span,
                                 ty_port,
                                 connection_value,
@@ -712,7 +713,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             let e_domain = self.check_domain_crossing(
                                 connection_value_span,
                                 &domain_value,
-                                port_ast.id.span,
+                                port_id.span,
                                 &ValueDomain::from_domain_kind(domain_port.clone()),
                                 DomainUserControlled::Target,
                                 "instance port connections must respect domains",
@@ -722,7 +723,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             //   and force exact type equalities?
                             let e_ty = self.check_type_contains(
                                 Some(connection_value_span),
-                                port_ast.kind.span,
+                                port_id.span,
                                 &self.type_of_value(connection_value_span, &connection_value),
                                 // TODO this is hacky, hopefully the next type system rewrite can fix this
                                 &Value::ModulePort(port),

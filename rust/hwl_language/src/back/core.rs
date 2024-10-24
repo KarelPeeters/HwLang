@@ -267,10 +267,10 @@ fn module_body_to_verilog(
                         Value::Error(_) =>
                             return ("0 /* error */", "posedge", ""),
                         &Value::ModulePort(port) =>
-                            return (&parsed.module_port_ast(compiled[port].ast).id.string, "posedge", ""),
+                            return (&parsed.module_port_ast(compiled[port].ast).id().string, "posedge", ""),
                         Value::UnaryNot(inner) => {
                             if let &Value::ModulePort(port) = &**inner {
-                                return (&parsed.module_port_ast(compiled[port].ast).id.string, "negedge", "!");
+                                return (&parsed.module_port_ast(compiled[port].ast).id().string, "negedge", "!");
                             }
                             // fallthrough
                         }
@@ -321,12 +321,14 @@ fn module_body_to_verilog(
                     swriteln!(f, ");");
                 } else {
                     swriteln!(f);
-                    let module_ports = &parsed.module_ast(compiled[child].ast_ref).ports.inner;
-                    for (i, (port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
+
+                    let module_ports = &compiled.module_info.get(&child).as_ref().unwrap().ports;
+                    for (i, (&port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
+                        let port_id = parsed.module_port_ast(compiled[port].ast).id();
                         let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref())
                             .unwrap_or_else(|_: VerilogValueUndefined| "/* undefined */".to_string());
+                        swrite!(f, "{I}{I}.{}({})", port_id.string, value_str);
 
-                        swrite!(f, "{I}{I}.{}({})", port.id.string, value_str);
                         // no trailing comma
                         if i != child_port_connections.vec.len() - 1 {
                             swrite!(f, ",");
@@ -474,7 +476,7 @@ fn port_to_verilog(
         direction,
         ref kind
     } = &compiled[port];
-    let defining_id = &parsed.module_port_ast(ast).id;
+    let defining_id = &parsed.module_port_ast(ast).id();
 
     let dir_str = match direction {
         PortDirection::Input => "input",
@@ -604,7 +606,7 @@ fn value_to_verilog_inner(
         &Value::GenericParameter(_) =>
             Err(diag.report_internal_error(span, "generic parameters should not materialize").into()),
         &Value::ModulePort(port) =>
-            Ok(parsed.module_port_ast(compiled[port].ast).id.string.clone()),
+            Ok(parsed.module_port_ast(compiled[port].ast).id().string.clone()),
 
         &Value::Undefined => Err(VerilogValueError::Undefined),
         &Value::BoolConstant(b) => Ok(if b { "1" } else { "0" }.to_string()),

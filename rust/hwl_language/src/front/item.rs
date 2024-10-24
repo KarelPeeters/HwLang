@@ -9,7 +9,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
 use crate::front::values::{FunctionReturnValue, ModuleValueInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{ConstDeclaration, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, PortKind, Spanned, StructField};
+use crate::syntax::ast::{ConstDeclaration, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortKind, Spanned, StructField};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use itertools::enumerate;
@@ -105,34 +105,69 @@ impl CompileState<'_, '_> {
                     //   or more generally, that their types are representable in hardware
                     let mut port_vec = vec![];
 
-                    for (port_index, port) in enumerate(&ports.inner) {
-                        let ast::ModulePort { span: _, id: port_id, direction, kind, } = port;
+                    for (port_item_index, ports_item) in enumerate(&ports.inner) {
+                        match ports_item {
+                            ModulePortItem::Single(port) => {
+                                let ModulePortSingle { span: _, id: port_id, direction, kind } = port;
 
-                        let module_port_info = ModulePortInfo {
-                            ast: ModulePortAstReference {
-                                item: item_ast_reference,
-                                index: port_index,
-                            },
-                            direction: direction.inner,
-                            kind: match &kind.inner {
-                                PortKind::Clock => PortKind::Clock,
-                                PortKind::Normal { domain: sync, ty } => {
-                                    PortKind::Normal {
-                                        domain: s.eval_domain(scope_ports, sync.as_ref()),
-                                        ty: s.eval_expression_as_ty(scope_ports, ty),
-                                    }
+                                let module_port_info = ModulePortInfo {
+                                    ast: ModulePortAstReference {
+                                        item: item_ast_reference,
+                                        port_item_index,
+                                        port_in_block_index: None,
+                                    },
+                                    direction: direction.inner,
+                                    kind: match &kind.inner {
+                                        PortKind::Clock => PortKind::Clock,
+                                        PortKind::Normal { domain: sync, ty } => {
+                                            PortKind::Normal {
+                                                domain: s.eval_domain(scope_ports, sync.as_ref()),
+                                                ty: s.eval_expression_as_ty(scope_ports, ty),
+                                            }
+                                        }
+                                    },
+                                };
+                                let module_port = s.compiled.module_ports.push(module_port_info);
+                                port_vec.push(module_port);
+
+                                s.compiled.scopes[scope_ports].declare(
+                                    s.diags,
+                                    &port_id,
+                                    ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
+                                    Visibility::Private,
+                                );
+                            }
+                            ModulePortItem::Block(block) => {
+                                let ModulePortBlock { span: _, domain, ports } = block;
+                                let domain = s.eval_domain(scope_ports, domain.as_ref());
+
+                                for (port_in_block_index, port) in enumerate(ports) {
+                                    let ModulePortInBlock { span: _, id: port_id, direction, ty } = port;
+
+                                    let module_port_info = ModulePortInfo {
+                                        ast: ModulePortAstReference {
+                                            item: item_ast_reference,
+                                            port_item_index,
+                                            port_in_block_index: Some(port_in_block_index),
+                                        },
+                                        direction: direction.inner,
+                                        kind: PortKind::Normal {
+                                            domain: domain.clone(),
+                                            ty: s.eval_expression_as_ty(scope_ports, ty),
+                                        },
+                                    };
+                                    let module_port = s.compiled.module_ports.push(module_port_info);
+                                    port_vec.push(module_port);
+
+                                    s.compiled.scopes[scope_ports].declare(
+                                        s.diags,
+                                        &port_id,
+                                        ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
+                                        Visibility::Private,
+                                    );
                                 }
-                            },
-                        };
-                        let module_port = s.compiled.module_ports.push(module_port_info);
-                        port_vec.push(module_port);
-
-                        s.compiled.scopes[scope_ports].declare(
-                            s.diags,
-                            &port_id,
-                            ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
-                            Visibility::Private,
-                        );
+                            }
+                        }
                     }
 
                     // result
