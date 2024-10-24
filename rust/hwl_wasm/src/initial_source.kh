@@ -1,10 +1,7 @@
 import std.types.[
-    bool, bits, int_range, int, uint, natural,
-    int_bits, uint_bits, Array, undefined
+    bool, int_range, int, uint, natural,
+    int_bits, uint_bits, undefined
 ];
-
-type my_array(T: type, N: uint) = Array(T, N);
-type vector = bits(4);
 
 pub module top ports(
     clk_a: in clock,
@@ -13,17 +10,17 @@ pub module top ports(
     rst_b: in async bool,
 
     sync(clk_a, !rst_a) {
-        in_a: in vector,
-        out_a: out vector,
+        in_a: in bool[4],
+        out_a: out bool[4],
     },
     sync(clk_b, !rst_b) {
-        in_b: in vector,
-        out_b: out vector,
+        in_b: in bool[4],
+        out_b: out bool[4],
     },
 
     async {
-        in_async: in vector,
-        out_async: out vector,
+        in_async: in bool[4],
+        out_async: out bool[4],
 
         in_int_range: in int_range(-3..27),
         in_int_bits: in int_bits(3),
@@ -53,17 +50,19 @@ pub module top ports(
     );
 }
 
-function foo(T: type, x: T) -> T {
-    return x;
-}
-
 module child generics(N: uint) ports(
     clk: in clock,
     rst: in async bool,
-    x: in sync(clk, rst) bits(N),
-    y: out sync(clk, rst) bits(N),
+    x: in sync(clk, rst) bool[N],
+    y: out sync(clk, rst) bool[N],
 ) body {
     combinatorial {
         y = x;
     }
+}
+
+type type_alias = bool[8, 4];
+
+function foo(T: type, x: T) -> T {
+    return x;
 }

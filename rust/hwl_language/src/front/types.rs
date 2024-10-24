@@ -60,6 +60,7 @@ pub enum Type {
     Never,
     Boolean,
     Clock,
+    // TODO remove this (or at least the limited one), this has been replaced by arrays
     Bits(Option<Box<Value>>),
     String,
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?

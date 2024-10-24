@@ -14,7 +14,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
+use crate::util::{result_pair, ResultExt};
 use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
@@ -551,6 +551,16 @@ pub enum VerilogType {
     Error(ErrorGuaranteed),
 }
 
+impl VerilogType {
+    fn width(self) -> Result<u32, ErrorGuaranteed> {
+        match self {
+            VerilogType::SingleBit => Ok(1),
+            VerilogType::MultiBit(_, w) => Ok(w),
+            VerilogType::Error(e) => Err(e),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Signed {
     Unsigned,
@@ -698,9 +708,20 @@ fn type_to_verilog(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Generi
                 }
             }
         }
-        // TODO convert all of these to bit representations
-        Type::Array(_, _) =>
-            VerilogType::Error(diag.report_todo(span, "lower type 'array'")),
+        Type::Array(inner, n) => {
+            let w = type_to_verilog(diag, compiled, map, span, inner).width();
+            let n = value_evaluate_int(diag, compiled, map, span, n);
+
+            match result_pair(w, n) {
+                Ok((w, n)) => {
+                    match diag_big_int_to_u32(diag, span, &(w * n), "total array bit width too large") {
+                        Ok(total) => VerilogType::MultiBit(Signed::Unsigned, total),
+                        Err(e) => VerilogType::Error(e),
+                    }
+                }
+                Err(e) => VerilogType::Error(e),
+            }
+        }
         Type::Integer(info) => {
             let IntegerTypeInfo { range } = info;
             let range = match value_evaluate_int_range(diag, compiled, map, span, range) {
@@ -709,6 +730,7 @@ fn type_to_verilog(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Generi
             };
             verilog_type_for_int_range(diag, span, range)
         }
+        // TODO convert all of these to their bit representations, or split them up into multiple ports?
         Type::Tuple(_) =>
             VerilogType::Error(diag.report_todo(span, "lower type 'tuple'")),
         Type::Struct(_) =>
@@ -739,12 +761,8 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
                 BinaryOp::BitOr => Ok(left | right),
                 BinaryOp::BitXor => Ok(left ^ right),
                 BinaryOp::Pow => {
-                    match right.to_u32() {
-                        Some(right) =>
-                            Ok(left.pow(right)),
-                        None =>
-                            Err(diag.report_simple(format!("power exponent too large: {}", right), span, "used here")),
-                    }
+                    diag_big_int_to_u32(diag, span, &right, "power exponent too large")
+                        .map(|right| left.pow(right))
                 }
                 _ => Err(diag.report_todo(span, format!("value_evaluate_int binary value {value:?}")))
             }
@@ -882,16 +900,9 @@ fn verilog_type_for_int_range(diag: &Diagnostics, span: Span, range: RangeInclus
         (Signed::Unsigned, end.bits())
     };
 
-    match bits.to_u32() {
-        Some(bits) => VerilogType::MultiBit(signed, bits),
-        None => {
-            let e = diag.report_simple(
-                format!("integer range needs more bits ({bits}) than are possible in verilog"),
-                span,
-                "used here",
-            );
-            VerilogType::Error(e)
-        }
+    match diag_u64_to_u32(diag, span, bits, "integer range too large") {
+        Ok(bits) => VerilogType::MultiBit(signed, bits),
+        Err(e) => VerilogType::Error(e)
     }
 }
 
@@ -1002,4 +1013,24 @@ mod test {
             }
         }
     }
+}
+
+fn diag_u64_to_u32(diag: &Diagnostics, span: Span, value: u64, message: &str) -> Result<u32, ErrorGuaranteed> {
+    value.try_into().map_err(|_| {
+        diag.report_simple(
+            format!("{message}: overflow when converting {value} to u32"),
+            span,
+            "used here",
+        )
+    })
+}
+
+fn diag_big_int_to_u32(diag: &Diagnostics, span: Span, value: &BigInt, message: &str) -> Result<u32, ErrorGuaranteed> {
+    value.try_into().map_err(|_| {
+        diag.report_simple(
+            format!("{message}: overflow when converting {value} to u32"),
+            span,
+            "used here",
+        )
+    })
 }
