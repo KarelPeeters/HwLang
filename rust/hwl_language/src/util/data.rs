@@ -21,3 +21,17 @@ where
         self.sort_by(|k0, v0, k1, v1| f(k0, v0).cmp(&f(k1, v1)));
     }
 }
+
+pub trait VecExt<T> {
+    fn single(self) -> Option<T>;
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn single(self) -> Option<T> {
+        if self.len() == 1 {
+            Some(self.into_iter().next().unwrap())
+        } else {
+            None
+        }
+    }
+}

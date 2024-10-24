@@ -1,14 +1,15 @@
-import std.types.[bool, bits, uint, int_range, natural, unchecked, undefined];
+import std.types.[bool, uint, int_range, natural, unchecked, undefined];
 
 pub module top ports(
     clk: in clock,
     rst: in async bool,
 
     c: in sync(clk, !rst) bool,
-    a: in sync(clk, !rst) bits(8),
-    b: in sync(clk, !rst) bits(8),
-    y: out sync(clk, !rst) bits(8),
+    a: in sync(clk, !rst) bool[8],
+    b: in sync(clk, !rst) bool[8],
+    y: out sync(clk, !rst) bool[8],
 ) body {
+    reg out y = undefined;
     clocked(clk, !rst) {
         if (c) {
             y = b;

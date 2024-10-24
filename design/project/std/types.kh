@@ -54,15 +54,12 @@ pub type uint_bits(n: uint) = int_range(0 .. 2**n);
 
 // Containers
 //pub type List(T: type) = __builtin("type", "List", T);
- // TODO "uint, *uint" or "+uint"? (for multidim arrays)
-pub type Array(T: type, len: uint) = __builtin("type", "Array", T, len);
 
 // TODO should this just be an alias for an array of booleans?
-//  we mostly want this for xor/and/or/... operators, maybe we can also just allow those on boolean arrays?
-// TODO get this working again
-pub type bits_inf = __builtin("type", "bits_inf");
-pub type bits(n: uint) = __builtin("type", "bits", n);
-// pub type bits(n: Option(uint)) = __builtin("type", "bits", n);
+// TODO do we want an infinite-width bits type, mostly for bitwise operators?
+//   (ideally we don't define bitwise operators on uint)
+//   maybe we can allow infinite-width arrays?
+ pub type bits_inf = __builtin("type", "bits_inf");
 
 // Operators
 // TODO move operators to different file

@@ -9,7 +9,7 @@ use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{IndexMapExt, VecExt};
 use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
@@ -124,8 +124,55 @@ impl CompileState<'_, '_> {
             }
             ExpressionKind::TernarySelect(_, _, _) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "ternary select expression")),
-            ExpressionKind::ArrayIndex(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "array index expression")),
+            ExpressionKind::ArrayIndex(ref base, ref args) => {
+                let base = self.eval_expression_as_ty_or_value(ctx, collector, base);
+                let args = args.map_inner(|arg| {
+                    (arg.span, self.eval_expression_as_value(ctx, collector, arg))
+                });
+
+                match base {
+                    TypeOrValue::Type(base) => {
+                        match args.inner.len() {
+                            0 => ScopedEntryDirect::Error(diags.report_simple(
+                                "array type definition requires at least one dimension",
+                                args.span,
+                                "array index",
+                            )),
+                            1 => {
+                                let ast::Arg { span: _, name, value: (value_span, value_raw) } = args.inner.single().unwrap();
+                                if let Some(name) = name {
+                                    ScopedEntryDirect::Error(diags.report_simple(
+                                        "named dimensions are not allowed for array type definition",
+                                        name.span,
+                                        "named dimension",
+                                    ))
+                                } else {
+                                    let positive_range = RangeInfo {
+                                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
+                                        end_inc: None,
+                                    };
+                                    let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
+
+                                    let value_checked = match self.check_type_contains(None, value_span, &positive_ty, &value_raw) {
+                                        Ok(()) => value_raw,
+                                        Err(e) => Value::Error(e),
+                                    };
+
+                                    let ty = Type::Array(Box::new(base), Box::new(value_checked));
+                                    ScopedEntryDirect::Immediate(TypeOrValue::Type(ty))
+                                }
+                            }
+                            _ => {
+                                ScopedEntryDirect::Error(diags.report_todo(expr.span, "multi-dimensional arrays"))
+                            }
+                        }
+                    },
+                    TypeOrValue::Value(_) => {
+                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "array index expression"))
+                    },
+                    TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
+                }
+            }
             ExpressionKind::DotIdIndex(_, _) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot id index expression")),
             ExpressionKind::DotIntIndex(_, _) =>
@@ -195,7 +242,7 @@ impl CompileState<'_, '_> {
         let mut ordered_args = vec![];
 
         for (&param, arg) in zip_eq(&parameters.vec[..min_len], args.inner.into_iter().take(min_len)) {
-            let ast::Arg { span: arg_span, name: arg_name, expr: arg_value, } = arg;
+            let ast::Arg { span: arg_span, name: arg_name, value: arg_value, } = arg;
 
             // check positional allowed or name match
             match arg_name {
@@ -393,7 +440,7 @@ impl CompileState<'_, '_> {
         let args_span = args.span;
         let args = args.inner.iter()
             .map(|arg| {
-                let ast::Arg { span: _, name, expr: arg_expr } = arg;
+                let ast::Arg { span: _, name, value: arg_expr } = arg;
                 if let Some(name) = name {
                     diags.report_simple("named arguments are not allowed for __builtin calls", name.span, "named argument");
                 }
@@ -424,7 +471,7 @@ impl CompileState<'_, '_> {
                     return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
                 }
                 ("type", "int_range", [range]) => {
-                    // TODO typecheck (range must be integer)
+                    // TODO typecheck (range must be integer)? or should we just trust stdlib?
                     let range = Box::new(range.inner.clone().unwrap_value(diags, range.span));
                     let ty_info = IntegerTypeInfo { range };
                     return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
@@ -433,17 +480,6 @@ impl CompileState<'_, '_> {
                     return Ok(TypeOrValue::Type(Type::Range)),
                 ("type", "bits_inf", &[]) =>
                     return Ok(TypeOrValue::Type(Type::Bits(None))),
-                ("type", "bits", [bits]) => {
-                    // TODO typecheck (bits must be non-negative integer)
-                    let bits = bits.inner.clone().unwrap_value(diags, bits.span);
-                    return Ok(TypeOrValue::Type(Type::Bits(Some(Box::new(bits)))));
-                }
-                ("type", "Array", [ty, len]) => {
-                    // TODO typecheck: len must be uint
-                    let ty = ty.inner.clone().unwrap_ty(diags, ty.span);
-                    let len = len.inner.clone().unwrap_value(diags, len.span);
-                    return Ok(TypeOrValue::Type(Type::Array(Box::new(ty), Box::new(len))));
-                }
                 ("function", "print", [value]) => {
                     let _: Value = value.inner.clone().unwrap_value(diags, value.span);
                     return Ok(TypeOrValue::Value(Value::Unit));

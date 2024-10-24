@@ -438,7 +438,7 @@ pub struct Args<T = Expression> {
 pub struct Arg<T = Expression> {
     pub span: Span,
     pub name: Option<Identifier>,
-    pub expr: T,
+    pub value: T,
 }
 
 impl<T> Args<T> {
@@ -448,7 +448,7 @@ impl<T> Args<T> {
             inner: self.inner.iter().map(|arg| Arg {
                 span: arg.span,
                 name: arg.name.clone(),
-                expr: f(&arg.expr),
+                value: f(&arg.value),
             }).collect(),
         }
     }

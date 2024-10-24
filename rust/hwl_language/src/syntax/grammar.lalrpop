@@ -446,8 +446,8 @@ Args: Args = {
 }
 
 Arg: Arg = {
-    <start:@L> <name:(<Id> "=")?> <expr:Expr> <end:@L> =>
-        Arg { name, expr, span: loc.span(start, end) },
+    <start:@L> <name:(<Id> "=")?> <value:Expr> <end:@L> =>
+        Arg { name, value, span: loc.span(start, end) },
 }
 
 ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
