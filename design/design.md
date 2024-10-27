@@ -801,3 +801,24 @@ Some checks that need to be done:
 
 In general an SSA-like representation with basic blocks, control flow, dominance, immutable data, ...
 might a great match for all of this control flow and data checking.
+
+# Expression/Value Refactor
+
+* refactor eval_expression to do the type checking before converting to values? this would mean that the rest of the
+  compiler can reply on values always being correct
+* for expressions where type checking has been delayed until codegen time, add a special Value::Unchecked
+  * then back/lower/codegen can easily tell which expressions it still needs to typecheck
+* still check domains inside of unchecked, just skip the types
+  * eval_expression should have a param check_types(bool) that disables any internal type checking
+* TODO also think about how this interacts with assignments, can those be marked as unchecked? or is it enough to mark
+  either side as unchecked?
+
+# LSP "go to definition" and "find usages"
+
+* Go to definition: for each lookup that happens, track the source and result range
+* FInd usages: For each ID definition, track all lookups that end up resolving to it
+
+Both can probably be sped up:
+
+* only store starts instead of ranges, the end can be computed by re-tokenizing
+* find usages: do what rust-analyzer does instead, do a grep and then only visit those items
