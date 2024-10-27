@@ -251,6 +251,7 @@ impl CompileState<'_, '_> {
             Value::UnaryNot(inner) => {
                 let inner = self.type_of_value(span, inner);
                 match inner {
+                    Type::Error(e) => Type::Error(e),
                     // valid types
                     Type::Boolean | Type::Bits(_) => inner,
                     // other types are not allowed
