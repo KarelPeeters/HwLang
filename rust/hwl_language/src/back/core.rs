@@ -789,8 +789,6 @@ fn value_to_verilog_inner(
         &Value::Error(e) => Err(e.into()),
         &Value::GenericParameter(_) =>
             Err(diag.report_internal_error(span, "generic parameters should not materialize").into()),
-        &Value::ModulePort(port) =>
-            Ok(parsed.module_port_ast(compiled[port].ast).id().string.clone()),
 
         &Value::Undefined => Err(VerilogValueError::Undefined),
         &Value::BoolConstant(b) => Ok(if b { "1" } else { "0" }.to_string()),
@@ -807,18 +805,25 @@ fn value_to_verilog_inner(
             Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: x })?))
         }
 
+        &Value::ModulePort(port) => {
+            match signal_map.get(&Signal::Port(port)) {
+                None => Ok(parsed.module_port_ast(compiled[port].ast).id().string.clone()),
+                Some(name) => Ok(format!("{}", name)),
+            }
+        }
         &Value::Wire(wire) => {
             match signal_map.get(&Signal::Wire(wire)) {
                 None => Err(diag.report_internal_error(span, "wire not found in signal map").into()),
-                Some(wire_name) => Ok(format!("{}", wire_name)),
+                Some(name) => Ok(format!("{}", name)),
             }
         }
         &Value::Register(reg) => {
             match signal_map.get(&Signal::Reg(reg)) {
                 None => Err(diag.report_internal_error(span, "register not found in signal map").into()),
-                Some(reg_name) => Ok(format!("{}", reg_name)),
+                Some(name) => Ok(format!("{}", name)),
             }
         }
+
         &Value::Variable(_) =>
             Err(diag.report_todo(span, "value_to_verilog for variables").into()),
         // forward to the inner value
