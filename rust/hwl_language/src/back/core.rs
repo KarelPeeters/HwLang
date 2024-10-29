@@ -11,7 +11,7 @@ use crate::front::scope::Visibility;
 use crate::front::types::{Constructor, GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, DomainKind, PortDirection, PortKind, Spanned, SyncDomain};
+use crate::syntax::ast::{BinaryOp, DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::{result_pair, ResultExt};
@@ -148,10 +148,63 @@ fn generate_module_source(
 enum Signal {
     Reg(Register),
     Wire(Wire),
+    Port(ModulePort),
+}
+
+impl Signal {
+    fn to_value(self) -> Value {
+        match self {
+            Signal::Reg(reg) => Value::Register(reg),
+            Signal::Wire(wire) => Value::Wire(wire),
+            Signal::Port(port) => Value::ModulePort(port),
+        }
+    }
+
+    fn ty(self, compiled: &CompiledDatabase) -> &Type {
+        match self {
+            Signal::Reg(reg) => &compiled[reg].ty,
+            Signal::Wire(wire) => &compiled[wire].ty,
+            Signal::Port(port) => &compiled[port].kind.ty(),
+        }
+    }
+
+    fn defining_id<'d>(self, parsed: &'d ParsedDatabase, compiled: &'d CompiledDatabase) -> MaybeIdentifier<&'d Identifier> {
+        match self {
+            Signal::Reg(reg) => compiled[reg].defining_id.as_ref(),
+            Signal::Wire(wire) => compiled[wire].defining_id.as_ref(),
+            Signal::Port(port) => MaybeIdentifier::Identifier(parsed.module_port_ast(compiled[port].ast).id()),
+        }
+    }
+}
+
+// TODO rework this, try to use the original name or some reasonable derivative
+#[derive(Debug, Copy, Clone)]
+struct SignalName {
+    kind: SignalNameKind,
+    index: usize,
 }
 
 #[derive(Debug, Copy, Clone)]
-struct SignalName(usize);
+
+enum SignalNameKind {
+    ModuleReg,
+    ModuleWire,
+    LocalVar,
+}
+
+impl Display for SignalName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let &SignalName { kind, index } = self;
+
+        let prefix = match kind {
+            SignalNameKind::ModuleReg => "module_reg",
+            SignalNameKind::ModuleWire => "module_wire",
+            SignalNameKind::LocalVar => "local_var",
+        };
+
+        write!(f, "{prefix}_{index}")
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 struct Indent {
@@ -177,19 +230,13 @@ impl Display for Indent {
     }
 }
 
-impl Display for SignalName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "module_signal_{}", self.0)
-    }
-}
-
 fn module_body_to_verilog(
     diag: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     compiled: &mut CompiledDatabase,
     todo: &mut BackModuleList,
-    map: &GenericMap,
+    generic_map: &GenericMap,
     module_span: Span,
     body: &ModuleChecked,
 ) -> String {
@@ -206,11 +253,11 @@ fn module_body_to_verilog(
         // TODO use id in the name?
         let RegisterInfo { defining_item: _, defining_id, domain: sync, ty } = &compiled[reg];
 
-        let name_str = compiled.defining_id_to_readable_string(defining_id);
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, map, module_span, ty));
+        let name_str = compiled.defining_id_to_readable_string(defining_id.as_ref());
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, generic_map, module_span, ty));
         let sync_str = sync_ty_to_comment_str(source, parsed, compiled, &DomainKind::Sync(sync.clone()), ty);
 
-        let name = SignalName(signal_map.len());
+        let name = SignalName { kind: SignalNameKind::ModuleReg, index: signal_map.len() };
         swriteln!(f, "{I}reg {ty_str}{name}; // reg {name_str:?} {sync_str}");
         signal_map.insert_first(Signal::Reg(reg), name);
     }
@@ -221,8 +268,8 @@ fn module_body_to_verilog(
         newline.before_item(f);
         let WireInfo { defining_item: _, defining_id, domain, ty, has_declaration_value: _ } = &compiled[wire];
 
-        let name_str = compiled.defining_id_to_readable_string(defining_id);
-        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, map, module_span, ty));
+        let name_str = compiled.defining_id_to_readable_string(defining_id.as_ref());
+        let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, generic_map, module_span, ty));
         let comment_info = sync_ty_to_comment_str(source, parsed, compiled, domain, ty);
 
         let (keyword_str, assign_str) = if let Some(value) = value {
@@ -238,7 +285,7 @@ fn module_body_to_verilog(
             ("reg", "".to_string())
         };
 
-        let name = SignalName(signal_map.len());
+        let name = SignalName { kind: SignalNameKind::ModuleWire, index: signal_map.len() };
         swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {comment_info}");
         signal_map.insert_first(Signal::Wire(wire), name);
     }
@@ -257,42 +304,7 @@ fn module_body_to_verilog(
                 swriteln!(f, "{I}end");
             }
             ModuleStatement::Clocked(block) => {
-                let &ModuleBlockClocked {
-                    span, ref domain, ref on_reset, ref on_clock
-                } = block;
-                let SyncDomain { clock, reset } = domain;
-
-                let sensitivity_value_to_string = |value: &Value| -> (&str, &str, &str) {
-                    match value {
-                        Value::Error(_) =>
-                            return ("0 /* error */", "posedge", ""),
-                        &Value::ModulePort(port) =>
-                            return (&parsed.module_port_ast(compiled[port].ast).id().string, "posedge", ""),
-                        Value::UnaryNot(inner) => {
-                            if let &Value::ModulePort(port) = &**inner {
-                                return (&parsed.module_port_ast(compiled[port].ast).id().string, "negedge", "!");
-                            }
-                            // fallthrough
-                        }
-                        // fallthrough
-                        _ => {}
-                    }
-
-                    diag.report_todo(span, "general sensitivity");
-                    ("0 /* error */", "posedge", "")
-                };
-
-                let (clock_str, clock_edge, _) = sensitivity_value_to_string(clock);
-                let (reset_str, reset_edge, reset_prefix) = sensitivity_value_to_string(reset);
-
-                swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
-                swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
-                block_to_verilog(diag, parsed, compiled, &signal_map, on_reset, f, Indent::new(3));
-                swriteln!(f, "{I}{I}end else begin");
-                block_to_verilog(diag, parsed, compiled, &signal_map, on_clock, f, Indent::new(3));
-                swriteln!(f, "{I}{I}end");
-
-                swriteln!(f, "{I}end");
+                clocked_block_to_verilog(diag, parsed, compiled, generic_map, &signal_map, f, block);
             }
             ModuleStatement::Instance(instance) => {
                 let &ModuleInstance {
@@ -305,7 +317,7 @@ fn module_body_to_verilog(
                 let child_generic_arguments = child_generic_arguments_raw.as_ref().map(|args| {
                     GenericArguments {
                         vec: args.vec.iter().map(|arg| {
-                            arg.replace_generics(compiled, map)
+                            arg.replace_generics(compiled, generic_map)
                         }).collect(),
                     }
                 });
@@ -346,6 +358,168 @@ fn module_body_to_verilog(
     }
 
     result
+}
+
+fn clocked_block_to_verilog(
+    diag: &Diagnostics,
+    parsed: &ParsedDatabase,
+    compiled: &CompiledDatabase,
+    generic_map: &GenericMap,
+    signal_map: &IndexMap<Signal, SignalName>,
+    f: &mut String,
+    block: &ModuleBlockClocked,
+) {
+    let &ModuleBlockClocked {
+        span, ref domain, ref on_reset, ref on_clock
+    } = block;
+
+    // figure out sensitivity list
+    let SyncDomain { clock, reset } = domain;
+
+    let sensitivity_value_to_string = |value: &Value| -> (&str, &str, &str) {
+        match value {
+            Value::Error(_) =>
+                return ("0 /* error */", "posedge", ""),
+            &Value::ModulePort(port) =>
+                return (&parsed.module_port_ast(compiled[port].ast).id().string, "posedge", ""),
+            Value::UnaryNot(inner) => {
+                if let &Value::ModulePort(port) = &**inner {
+                    return (&parsed.module_port_ast(compiled[port].ast).id().string, "negedge", "!");
+                }
+                // fallthrough
+            }
+            // fallthrough
+            _ => {}
+        }
+
+        diag.report_todo(span, "general sensitivity");
+        ("0 /* error */", "posedge", "")
+    };
+
+    let (clock_str, clock_edge, _) = sensitivity_value_to_string(clock);
+    let (reset_str, reset_edge, reset_prefix) = sensitivity_value_to_string(reset);
+
+    // collect written regs and ports for shadowing
+    let mut inner_signal_map = IndexMap::new();
+    collect_clocked_block_written_externals(diag, on_clock, &mut |s| {
+        let next_index = inner_signal_map.len();
+        inner_signal_map.entry(s).or_insert_with(|| {
+            SignalName { kind: SignalNameKind::LocalVar, index: next_index }
+        });
+    });
+
+    // combine signal maps
+    // inner map overrides outer map, reads/writes should have to the inner shadow variables
+    let mut combined_signal_map = signal_map.clone();
+    for (&k, &v) in &inner_signal_map {
+        combined_signal_map.insert(k, v);
+    }
+
+    // block signature
+    let mut newline = NewlineGenerator::new();
+    swriteln!(f, "{I}always @({clock_edge} {clock_str} or {reset_edge} {reset_str}) begin");
+
+    // define local variables
+    for (&k, &v) in &inner_signal_map {
+        newline.before_item(f);
+
+        let ty = k.ty(compiled);
+        let defining_id = k.defining_id(parsed, compiled);
+
+        let ty_str = verilog_ty_to_str(diag, defining_id.span(), type_to_verilog(diag, compiled, generic_map, defining_id.span(), ty));
+        let name_str = compiled.defining_id_to_readable_string(defining_id);
+
+        swriteln!(f, "{I}{I}reg {}{}; // local copy of \"{}\" ", ty_str, v, name_str);
+    }
+
+    newline.start_new_block();
+    newline.before_item(f);
+
+    // reset block
+    swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
+    block_to_verilog(diag, parsed, compiled, &signal_map, on_reset, f, Indent::new(3));
+    swriteln!(f, "{I}{I}end else begin");
+
+    // copy signals to local variables
+    for (&k, &v) in &inner_signal_map {
+        newline.before_item(f);
+
+        let value_spanned = Spanned { span: k.defining_id(parsed, compiled).span(), inner: &k.to_value() };
+        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned).unwrap();
+
+        swriteln!(f, "{I}{I}{I}{} = {};", v, signal_outer_verilog);
+    }
+
+    // clock block
+    newline.start_new_block();
+    if on_clock.statements.len() > 0 {
+        newline.before_item(f);
+    }
+    block_to_verilog(diag, parsed, compiled, &combined_signal_map, on_clock, f, Indent::new(3));
+
+    // copy local variables back to signals
+    newline.start_new_block();
+    for (&k, &v) in &inner_signal_map {
+        newline.before_item(f);
+
+        let value_spanned = Spanned { span: k.defining_id(parsed, compiled).span(), inner: &k.to_value() };
+        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned).unwrap();
+
+        // use blocking assignments here
+        swriteln!(f, "{I}{I}{I}{} <= {};", signal_outer_verilog, v);
+    }
+
+    // end
+    swriteln!(f, "{I}{I}end");
+    swriteln!(f, "{I}end");
+}
+
+fn collect_clocked_block_written_externals(diag: &Diagnostics, block: &LowerBlock, report: &mut impl FnMut(Signal)) {
+    let LowerBlock { statements } = block;
+
+    for stmt in statements {
+        match &stmt.inner {
+            LowerStatement::Error(_) => {}
+            LowerStatement::Block(block) => collect_clocked_block_written_externals(diag, block, report),
+            // for now expressions can't contain statements, no no assignments either
+            LowerStatement::Expression(_) => {}
+            LowerStatement::Assignment { target, value: _ } => {
+                match &target.inner {
+                    // collect registers and ports
+                    &Value::ModulePort(port) => report(Signal::Port(port)),
+                    &Value::Register(reg) => report(Signal::Reg(reg)),
+                    // variables are already local and don't need to be tracked
+                    Value::Variable(_) => {}
+                    // ignore errors
+                    Value::Error(_) => {}
+
+                    // wires shouldn't be write targets in clocked blocks, if they are it's an error anyway
+                    // TODO properly mark this as an error target, instead of connecting the wire through
+                    Value::Wire(_) => {}
+                    // invalid assignment targets
+                    Value::GenericParameter(_) |
+                    Value::Never | Value::Unit | Value::Undefined |
+                    Value::BoolConstant(_) | Value::IntConstant(_) | Value::StringConstant(_) |
+                    Value::Range(_) | Value::Binary(_, _, _) | Value::UnaryNot(_) |
+                    Value::FunctionReturn(_) | Value::Module(_) |
+                    Value::Constant(_) => {
+                        diag.report_internal_error(stmt.span, format!("assignment in clocked block to invalid target {:?}", target.inner));
+                    }
+                }
+            }
+            LowerStatement::If(stmt) => {
+                let LowerIfStatement { condition: _, then_block, else_block } = stmt;
+                collect_clocked_block_written_externals(diag, then_block, report);
+                if let Some(else_block) = else_block {
+                    collect_clocked_block_written_externals(diag, else_block, report);
+                }
+            }
+            // TODO
+            LowerStatement::For => {}
+            LowerStatement::While => {}
+            LowerStatement::Return(_) => {}
+        }
+    }
 }
 
 fn block_to_verilog(

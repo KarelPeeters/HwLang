@@ -609,6 +609,22 @@ impl MaybeIdentifier {
     }
 }
 
+impl<'a> MaybeIdentifier<&'a Identifier> {
+    pub fn span(&self) -> Span {
+        match self {
+            &MaybeIdentifier::Dummy(span) => span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+
+    pub fn string(&self) -> Option<&'a str> {
+        match self {
+            MaybeIdentifier::Dummy(_span) => None,
+            MaybeIdentifier::Identifier(id) => Some(&id.string),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ItemCommonInfo {
     pub span_full: Span,

@@ -193,10 +193,10 @@ pub struct ModulePortInfo {
 }
 
 impl PortKind<DomainKind<Value>, Type> {
-    pub fn ty(&self) -> Type {
+    pub fn ty(&self) -> &Type {
         match self {
-            PortKind::Clock => Type::Clock,
-            PortKind::Normal { domain: _, ty } => ty.clone(),
+            PortKind::Clock => &Type::Clock,
+            PortKind::Normal { domain: _, ty } => ty,
         }
     }
 }
@@ -312,17 +312,17 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             }
             // TODO how to display function return values? we don't know the function call args here any more!
             Value::FunctionReturn(ret) =>
-                format!("function_return({})", self.defining_id_to_readable_string(&self[ret.item].defining_id)),
+                format!("function_return({})", self.defining_id_to_readable_string(self[ret.item].defining_id.as_ref())),
             Value::Module(module) =>
-                format!("module({})", self.defining_id_to_readable_string(&self[module.nominal_type_unique.item].defining_id)),
+                format!("module({})", self.defining_id_to_readable_string(self[module.nominal_type_unique.item].defining_id.as_ref())),
             &Value::Wire(wire) =>
-                self.defining_id_to_readable_string(&self[wire].defining_id).to_string(),
+                self.defining_id_to_readable_string(self[wire].defining_id.as_ref()).to_string(),
             &Value::Register(reg) =>
-                self.defining_id_to_readable_string(&self[reg].defining_id).to_string(),
+                self.defining_id_to_readable_string(self[reg].defining_id.as_ref()).to_string(),
             &Value::Variable(var) =>
-                self.defining_id_to_readable_string(&self[var].defining_id).to_string(),
+                self.defining_id_to_readable_string(self[var].defining_id.as_ref()).to_string(),
             &Value::Constant(c) =>
-                self.defining_id_to_readable_string(&self[c].defining_id).to_string(),
+                self.defining_id_to_readable_string(self[c].defining_id.as_ref()).to_string(),
         }
     }
 
@@ -370,12 +370,12 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 format!("sync({clock_str}, {reset_str})")
             }
             &ValueDomain::FunctionBody(function) => {
-                format!("function_body({})", self.defining_id_to_readable_string(&self[function].defining_id))
+                format!("function_body({})", self.defining_id_to_readable_string(self[function].defining_id.as_ref()))
             }
         }
     }
 
-    pub fn defining_id_to_readable_string<'a>(&self, id: &'a MaybeIdentifier) -> &'a str {
+    pub fn defining_id_to_readable_string<'a>(&self, id: MaybeIdentifier<&'a Identifier>) -> &'a str {
         id.string().unwrap_or("_")
     }
 }

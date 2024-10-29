@@ -326,7 +326,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 let port_ast = self.parsed.module_port_ast(port_info.ast);
 
                 // check init value
-                let port_ty_spanned = Spanned { span: port_ast.ty_span(), inner: &port_info.kind.ty() };
+                let port_ty_spanned = Spanned { span: port_ast.ty_span(), inner: &port_info.kind.ty().clone() };
                 let init_eval = self.check_reg_init_value(id.span, port_ty_spanned, Spanned { span: init.span, inner: init_eval });
 
                 let port_info = &self.compiled[port];
