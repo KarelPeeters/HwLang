@@ -282,6 +282,8 @@ impl CompileState<'_, '_> {
     }
 
     fn type_of_binary(&self, origin: Span, op: BinaryOp, left: &Value, right: &Value) -> Result<Type, ErrorGuaranteed> {
+        let diags = self.diags;
+
         let left_ty = self.type_of_value(origin, left);
         let right_ty = self.type_of_value(origin, right);
 
@@ -452,6 +454,36 @@ impl CompileState<'_, '_> {
 
                 Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
             }
+            BinaryOp::Mod => {
+                let left_range = self.require_int_range_ty(origin, &left_ty);
+                let right_range = self.require_int_range_ty(origin, &right_ty);
+
+                let left_range = left_range?;
+                let right_range = right_range?;
+
+                let RangeInfo { start_inc: _, end_inc: _ } = left_range;
+                let RangeInfo { start_inc: right_start, end_inc: _ } = right_range;
+
+                // TODO allow non-positive module operations
+                let right_start = right_start
+                    .as_ref()
+                    .ok_or_else(|| diags.report_todo(origin, "modulo with non-positive right hand side"))?;
+                let cond = Value::Binary(BinaryOp::CmpLt, Box::new(Value::IntConstant(BigInt::ZERO)), right_start.clone());
+                match self.try_eval_bool_true(origin, &cond) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        let _: EvalTrueError = e;
+                        diags.report_todo(origin, "modulo with non-positive right hand side");
+                    }
+                }
+
+                // TODO we can do better than this, eg. if left is smaller than right we can keep the left range
+                let range = RangeInfo {
+                    start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
+                    end_inc: Some(Box::new(Value::Binary(BinaryOp::Sub, Box::new(right.clone()), Box::new(Value::IntConstant(BigInt::one()))))),
+                };
+                Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(range)) })
+            }
             BinaryOp::In => {
                 // TODO emit warning if the result is always true or false
                 let left_result = self.require_int_ty(origin, &left_ty);
@@ -470,8 +502,8 @@ impl CompileState<'_, '_> {
             }
 
             // TODO careful with signs and zero
-            BinaryOp::Div | BinaryOp::Mod =>
-                Type::Error(self.diags.report_todo(origin, "type of division and modulo")),
+            BinaryOp::Div =>
+                Type::Error(self.diags.report_todo(origin, "type of division")),
             // TODO we even want to keep these, or just use division/multiplication and powers?
             //   maybe these apply to bits, not integers?
             BinaryOp::Shl | BinaryOp::Shr =>
