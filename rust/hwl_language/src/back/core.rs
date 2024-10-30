@@ -268,13 +268,13 @@ fn module_body_to_verilog(
         newline.before_item(f);
         let WireInfo { defining_item: _, defining_id, domain, ty, has_declaration_value: _ } = &compiled[wire];
 
-        let name_str = compiled.defining_id_to_readable_string(defining_id.as_ref());
+        let name_str = compiled.defining_id_to_readable_string(defining_id.as_ref()).to_owned();
         let ty_str = verilog_ty_to_str(diag, module_span, type_to_verilog(diag, compiled, generic_map, module_span, ty));
         let comment_info = sync_ty_to_comment_str(source, parsed, compiled, domain, ty);
 
         let (keyword_str, assign_str) = if let Some(value) = value {
             let value_spanned = Spanned { span: defining_id.span(), inner: value };
-            let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned);
+            let value_str = value_to_verilog(diag, parsed, compiled, generic_map, &signal_map, value_spanned);
 
             let def_str = match value_str {
                 Ok(s) => format!(" = {}", s),
@@ -286,6 +286,7 @@ fn module_body_to_verilog(
         };
 
         let name = SignalName { kind: SignalNameKind::ModuleWire, index: signal_map.len() };
+
         swriteln!(f, "{I}{keyword_str} {ty_str}{name}{assign_str}; // wire {name_str:?} {comment_info}");
         signal_map.insert_first(Signal::Wire(wire), name);
     }
@@ -300,7 +301,7 @@ fn module_body_to_verilog(
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
                 swriteln!(f, "{I}always @(*) begin");
-                block_to_verilog(diag, parsed, compiled, &signal_map, block, f, Indent::new(2));
+                block_to_verilog(diag, parsed, compiled, generic_map, &signal_map, block, f, Indent::new(2));
                 swriteln!(f, "{I}end");
             }
             ModuleStatement::Clocked(block) => {
@@ -335,9 +336,18 @@ fn module_body_to_verilog(
                     swriteln!(f);
 
                     let module_ports = &compiled.module_info.get(&child).as_ref().unwrap().ports;
-                    for (i, (&port, connection)) in enumerate(zip_eq(module_ports, &child_port_connections.vec)) {
+                    assert_eq!(module_ports.len(), child_port_connections.vec.len());
+
+                    // manual for loop for lifetime reasons
+                    // TODO clean this up once compiled does no longer need to be mutable
+                    for i in 0..module_ports.len() {
+                        let module_ports = &compiled.module_info.get(&child).as_ref().unwrap().ports;
+
+                        let port = module_ports[i];
+                        let connection = &child_port_connections.vec[i];
+
                         let port_id = parsed.module_port_ast(compiled[port].ast).id();
-                        let value_str = value_to_verilog(diag, parsed, compiled, &signal_map, connection.as_ref())
+                        let value_str = value_to_verilog(diag, parsed, compiled, generic_map, &signal_map, connection.as_ref())
                             .unwrap_or_else(|_: VerilogValueUndefined| "".to_string());
                         swrite!(f, "{I}{I}.{}({})", port_id.string, value_str);
 
@@ -363,7 +373,7 @@ fn module_body_to_verilog(
 fn clocked_block_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
     generic_map: &GenericMap,
     signal_map: &IndexMap<Signal, SignalName>,
     f: &mut String,
@@ -437,7 +447,7 @@ fn clocked_block_to_verilog(
 
     // reset block
     swriteln!(f, "{I}{I}if ({reset_prefix}{reset_str}) begin");
-    block_to_verilog(diag, parsed, compiled, &signal_map, on_reset, f, Indent::new(3));
+    block_to_verilog(diag, parsed, compiled, generic_map, &signal_map, on_reset, f, Indent::new(3));
     swriteln!(f, "{I}{I}end else begin");
 
     // copy signals to local variables
@@ -445,7 +455,7 @@ fn clocked_block_to_verilog(
         newline.before_item(f);
 
         let value_spanned = Spanned { span: k.defining_id(parsed, compiled).span(), inner: &k.to_value() };
-        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned).unwrap();
+        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, generic_map, &signal_map, value_spanned).unwrap();
 
         swriteln!(f, "{I}{I}{I}{} = {};", v, signal_outer_verilog);
     }
@@ -455,7 +465,7 @@ fn clocked_block_to_verilog(
     if on_clock.statements.len() > 0 {
         newline.before_item(f);
     }
-    block_to_verilog(diag, parsed, compiled, &combined_signal_map, on_clock, f, Indent::new(3));
+    block_to_verilog(diag, parsed, compiled, generic_map, &combined_signal_map, on_clock, f, Indent::new(3));
 
     // copy local variables back to signals
     newline.start_new_block();
@@ -463,7 +473,7 @@ fn clocked_block_to_verilog(
         newline.before_item(f);
 
         let value_spanned = Spanned { span: k.defining_id(parsed, compiled).span(), inner: &k.to_value() };
-        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, &signal_map, value_spanned).unwrap();
+        let signal_outer_verilog = value_to_verilog(diag, parsed, compiled, generic_map, &signal_map, value_spanned).unwrap();
 
         // use blocking assignments here
         swriteln!(f, "{I}{I}{I}{} <= {};", signal_outer_verilog, v);
@@ -525,7 +535,8 @@ fn collect_clocked_block_written_externals(diag: &Diagnostics, block: &LowerBloc
 fn block_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
+    generic_map: &GenericMap,
     signal_map: &IndexMap<Signal, SignalName>,
     block: &LowerBlock,
     f: &mut String,
@@ -533,14 +544,15 @@ fn block_to_verilog(
 ) {
     let LowerBlock { statements } = block;
     for statement in statements {
-        statement_to_verilog(diag, parsed, compiled, signal_map, statement.as_ref(), f, indent);
+        statement_to_verilog(diag, parsed, compiled, generic_map, signal_map, statement.as_ref(), f, indent);
     }
 }
 
 fn statement_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
+    generic_map: &GenericMap,
     signal_map: &IndexMap<Signal, SignalName>,
     statement: Spanned<&LowerStatement>,
     f: &mut String,
@@ -549,11 +561,11 @@ fn statement_to_verilog(
     match statement.inner {
         LowerStatement::Block(block) => {
             swriteln!(f, "{indent}begin");
-            block_to_verilog(diag, parsed, compiled, signal_map, block, f, indent.nest());
+            block_to_verilog(diag, parsed, compiled, generic_map, signal_map, block, f, indent.nest());
             swriteln!(f, "{indent}end");
         }
         LowerStatement::Expression(value) => {
-            let value_str = value_to_verilog(diag, parsed, compiled, signal_map, value.as_ref());
+            let value_str = value_to_verilog(diag, parsed, compiled, generic_map, signal_map, value.as_ref());
             let value_str = match &value_str {
                 Ok(s) => s.as_str(),
                 Err(VerilogValueUndefined) => {
@@ -568,7 +580,7 @@ fn statement_to_verilog(
             //  then finally at the end of the block, non-blocking assign to everything
             let mut commented = false;
 
-            let target_str = value_to_verilog(diag, parsed, compiled, signal_map, target.as_ref());
+            let target_str = value_to_verilog(diag, parsed, compiled, generic_map, signal_map, target.as_ref());
             let target_str = match &target_str {
                 Ok(s) => s.as_str(),
                 Err(VerilogValueUndefined) => {
@@ -576,7 +588,7 @@ fn statement_to_verilog(
                     "undefined"
                 }
             };
-            let value_str = value_to_verilog(diag, parsed, compiled, signal_map, value.as_ref());
+            let value_str = value_to_verilog(diag, parsed, compiled, generic_map, signal_map, value.as_ref());
             let value_str = match &value_str {
                 Ok(s) => s.as_str(),
                 Err(VerilogValueUndefined) => {
@@ -592,7 +604,7 @@ fn statement_to_verilog(
             // TODO if the condition is constant, only emit the relevant branch
             let LowerIfStatement { condition, then_block, else_block } = statement;
 
-            let condition_str = value_to_verilog(diag, parsed, compiled, signal_map, condition.as_ref());
+            let condition_str = value_to_verilog(diag, parsed, compiled, generic_map, signal_map, condition.as_ref());
             let condition_str = match &condition_str {
                 Ok(s) => s.as_str(),
                 Err(VerilogValueUndefined) => {
@@ -603,12 +615,12 @@ fn statement_to_verilog(
 
             // TODO if the else branch is just a single if statement again, don't keep indenting
             swriteln!(f, "{indent}if ({condition_str}) begin");
-            block_to_verilog(diag, parsed, compiled, signal_map, then_block, f, indent.nest());
+            block_to_verilog(diag, parsed, compiled, generic_map, signal_map, then_block, f, indent.nest());
 
             match else_block {
                 Some(else_block) => {
                     swriteln!(f, "{indent}end else begin");
-                    block_to_verilog(diag, parsed, compiled, signal_map, else_block, f, indent.nest());
+                    block_to_verilog(diag, parsed, compiled, generic_map, signal_map, else_block, f, indent.nest());
                     swriteln!(f, "{indent}end");
                 }
                 None => {
@@ -753,11 +765,14 @@ impl Signed {
 fn value_to_verilog(
     diag: &Diagnostics,
     parsed: &ParsedDatabase,
-    compiled: &CompiledDatabase,
+    compiled: &mut CompiledDatabase,
+    generic_map: &GenericMap,
     signal_map: &IndexMap<Signal, SignalName>,
     value: Spanned<&Value>,
 ) -> Result<String, VerilogValueUndefined> {
-    match value_to_verilog_inner(diag, parsed, compiled, signal_map, value) {
+    let value_replaced = value.map_inner(|value| value.replace_generics(compiled, generic_map));
+
+    match value_to_verilog_inner(diag, parsed, compiled, signal_map, value_replaced.as_ref()) {
         Ok(value) => Ok(value),
         Err(VerilogValueError::Diag(e)) => {
             let _: ErrorGuaranteed = e;
