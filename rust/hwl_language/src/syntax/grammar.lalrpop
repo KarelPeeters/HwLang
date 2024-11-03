@@ -462,12 +462,19 @@ ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
 }
 
 ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
-    // initializers
-    //  tuples
+    // tuple literal
     "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(values),
-    //  array
-    "[" <elements:Separated<Expr, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
+    // array literal
+    "[" <elements:Separated<ArrayLiteralElement, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
     AtomicInner,
+}
+
+ArrayLiteralElement: ArrayLiteralElement<Expression> = {
+    // TODO allow multiple stars to flatten multi-dimensional arrays?
+    <spread:Spanned<"*">?> <value:Expr> => ArrayLiteralElement {
+        spread: spread.map(|spanned| spanned.span),
+        value
+    },
 }
 
 ExprLevelStructInit: ExpressionKind = {

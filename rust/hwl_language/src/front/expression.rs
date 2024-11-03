@@ -1,5 +1,6 @@
 use crate::data::compiled::GenericParameter;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::checking::TypeMismatch;
 use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
 use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
@@ -7,7 +8,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use annotate_snippets::Level;
@@ -60,8 +61,72 @@ impl CompileState<'_, '_> {
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::BoolConstant(b))),
             ExpressionKind::StringLiteral(ref s) =>
                 ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::StringConstant(s.clone()))),
-            ExpressionKind::ArrayLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "array literal expression")),
+            ExpressionKind::ArrayLiteral(ref elements) => {
+                let mut inner_ty = None;
+                let mut total_len = Value::IntConstant(BigInt::ZERO);
+                let mut operands = vec![];
+
+                for &ArrayLiteralElement { spread, ref value } in elements {
+                    let value_eval = self.eval_expression_as_value(ctx, collector, value);
+                    let value_ty = self.type_of_value(value.span, &value_eval);
+
+                    let (element_ty, element_len) = match spread {
+                        None => (value_ty, Value::IntConstant(BigInt::one())),
+                        Some(spread_span) => {
+                            match value_ty {
+                                Type::Error(e) => (Type::Error(e), Value::Error(e)),
+                                Type::Array(inner, len) => (*inner, *len),
+                                _ => {
+                                    let diag = Diagnostic::new("spread operator requires array type")
+                                        .add_error(spread_span, "for this spread operator")
+                                        .add_info(value.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
+                                        .finish();
+                                    let e = diags.report(diag);
+                                    (Type::Error(e), Value::Error(e))
+                                }
+                            }
+                        }
+                    };
+
+                    // get the inner type from the first element, and check that all elements have the same type
+                    let inner_ty_next = match (inner_ty, element_ty) {
+                        (None, element_ty) => element_ty,
+                        (Some(Type::Error(e)), _) | (Some(_), Type::Error(e)) => Type::Error(e),
+                        (Some(inner_ty), element_ty) => {
+                            match self.require_type_match(None, &inner_ty, value.span, &element_ty, false) {
+                                Ok(Ok(())) => element_ty,
+                                Ok(Err(e)) => Type::Error(e),
+                                Err(e) => {
+                                    let _: TypeMismatch = e;
+                                    let diag = Diagnostic::new("array literal element type mismatch")
+                                        .add_error(value.span, format!("this element has type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &element_ty)))
+                                        .add_info(expr.span, format!("preceding elements have type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &inner_ty)))
+                                        .finish();
+                                    Type::Error(diags.report(diag))
+                                },
+                            }
+                        },
+                    };
+                    inner_ty = Some(inner_ty_next);
+
+                    total_len = match (total_len, element_len) {
+                        (Value::Error(e), _) | (_, Value::Error(e)) => Value::Error(e),
+                        (total_len, element_len) => Value::Binary(BinaryOp::Add, Box::new(total_len), Box::new(element_len)),
+                    };
+
+                    operands.push(ArrayLiteralElement { spread, value: value_eval });
+                }
+
+                let result_ty = match inner_ty {
+                    // TODO we need at least _some_ forward type inference to implement this
+                    None => Type::Error(diags.report_todo(expr.span, "array literal expression")),
+                    Some(inner_ty) => inner_ty,
+                };
+
+                let result_ty = Type::Array(Box::new(result_ty), Box::new(total_len));
+                let result_value = Value::ArrayLiteral { result_ty: Box::new(result_ty), operands };
+                ScopedEntryDirect::Immediate(TypeOrValue::Value(result_value))
+            }
             ExpressionKind::TupleLiteral(_) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "tuple literal expression")),
             ExpressionKind::StructLiteral(_) =>
@@ -276,6 +341,12 @@ impl CompileState<'_, '_> {
                         end_inc: Some(Box::new(Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))))),
                     }))
                 });
+                let valid_range_type = Type::Integer(IntegerTypeInfo {
+                    range: Box::new(Value::Range(RangeInfo {
+                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
+                        end_inc: Some(len.clone()),
+                    }))
+                });
 
                 match self.type_of_value(index.span, &index.inner) {
                     Type::Error(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
@@ -292,7 +363,7 @@ impl CompileState<'_, '_> {
                                 let start_inc_checked = match start_inc {
                                     None => Value::IntConstant(BigInt::ZERO),
                                     Some(start_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_index_type, &start_inc) {
+                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &start_inc) {
                                             Ok(()) => (**start_inc).clone(),
                                             Err(e) => Value::Error(e),
                                         }
@@ -301,7 +372,7 @@ impl CompileState<'_, '_> {
                                 let end_inc_checked = match end_inc {
                                     None => Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))),
                                     Some(end_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_index_type, &end_inc) {
+                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &end_inc) {
                                             Ok(()) => (**end_inc).clone(),
                                             Err(e) => Value::Error(e),
                                         }

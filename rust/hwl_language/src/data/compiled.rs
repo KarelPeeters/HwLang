@@ -5,8 +5,8 @@ use crate::data::source::SourceDatabase;
 use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomain};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{RangeInfo, Value};
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
+use crate::front::values::{ArrayAccessIndex, RangeInfo, Value};
+use crate::syntax::ast::{ArrayLiteralElement, DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use crate::{new_index_type, swrite};
@@ -310,7 +310,31 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let inner = self.value_to_readable_str(source, parsed, inner);
                 format!("(!{})", inner)
             }
-            Value::ArrayAccess { .. } => "array_access".to_string(),
+            Value::ArrayAccess { result_ty: _, base, indices } => {
+                let base = self.value_to_readable_str(source, parsed, base);
+                let indices = indices.iter().map(|v| {
+                    match v {
+                        ArrayAccessIndex::Error(_) => "error".to_string(),
+                        ArrayAccessIndex::Single(v) => self.value_to_readable_str(source, parsed, v),
+                        ArrayAccessIndex::Range(range) => {
+                            let range = RangeInfo {
+                                start_inc: Some(range.start_inc.clone()),
+                                end_inc: Some(range.end_inc.clone()),
+                            };
+                            self.range_to_readable_str(source, parsed, &range)
+                        },
+                    }
+                }).collect::<Vec<_>>().join(", ");
+                format!("{}[{}]", base, indices)
+            },
+            Value::ArrayLiteral { result_ty: _, operands: operands_mixed } => {
+                let operands = operands_mixed.iter().map(|ArrayLiteralElement { spread, value }| {
+                    let value_str = self.value_to_readable_str(source, parsed, value);
+                    let spread_str = spread.map_or("", |_| "*");
+                    format!("{spread_str}{value_str}")
+                }).collect::<Vec<_>>().join(", ");
+                format!("[{}]", operands)
+            }
             // TODO how to display function return values? we don't know the function call args here any more!
             Value::FunctionReturn(ret) =>
                 format!("function_return({})", self.defining_id_to_readable_string(self[ret.item].defining_id.as_ref())),

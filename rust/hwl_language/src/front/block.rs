@@ -505,6 +505,14 @@ impl CompileState<'_, '_> {
                 }
                 r
             }
+            Value::ArrayLiteral { result_ty: _, operands } => {
+                let mut r = Ok(());
+                for operand in operands {
+                    r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, &operand.value, AccessDirection::Read));
+                }
+                r = r.and(if_write_simple_error("array literal"));
+                r
+            }
         }
     }
 }

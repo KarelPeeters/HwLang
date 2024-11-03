@@ -83,6 +83,12 @@ impl CompileState<'_, '_> {
                     self.merge_domains(span, &acc, &index_domain)
                 })
             }
+            Value::ArrayLiteral { result_ty: _, operands: ref operands_mixed } => {
+                operands_mixed.iter().fold(ValueDomain::CompileTime, |acc, value| {
+                    self.merge_domains(span, &acc, &self.domain_of_value(span, &value.value))
+                })
+            }
+
             // TODO just join all argument domains
             &Value::FunctionReturn(_) =>
                 ValueDomain::Error(diags.report_todo(span, "domain of function return value")),
@@ -281,6 +287,7 @@ impl CompileState<'_, '_> {
                 }
             }
             Value::ArrayAccess { result_ty, base: _, indices: _ } => (**result_ty).clone(),
+            Value::ArrayLiteral { ref result_ty, operands: _ } => (**result_ty).clone(),
             Value::FunctionReturn(func) => func.ret_ty.clone(),
             Value::Module(_) => Type::Error(diags.report_todo(span, "type of module")),
             &Value::Wire(wire) => self.compiled[wire].ty.clone(),
@@ -664,7 +671,7 @@ impl CompileState<'_, '_> {
                     .add_info_maybe(span_ty, "type defined here")
                     .finish();
                 Err(self.diags.report(err))
-            },
+            }
         }
     }
 
@@ -684,7 +691,7 @@ impl CompileState<'_, '_> {
                 } else {
                     Err(TypeMismatch)
                 }
-            },
+            }
 
             // unchecked and never cast into anything
             (_, Type::Unchecked) => Ok(Ok(())),
@@ -721,7 +728,7 @@ impl CompileState<'_, '_> {
 
                 if allow_subtype {
                     match (target_start_inc, source_start_inc) {
-                        (None, None | Some(_)) => {},
+                        (None, None | Some(_)) => {}
                         (Some(target_start_inc), Some(source_start_inc)) => {
                             let cond = Value::Binary(BinaryOp::CmpLte, target_start_inc.clone(), source_start_inc.clone());
                             try_inner!(self.require_value_true_for_type_check(target_span, source_span, &cond));
@@ -730,7 +737,7 @@ impl CompileState<'_, '_> {
                     }
 
                     match (target_end_inc, source_end_inc) {
-                        (None, None | Some(_)) => {},
+                        (None, None | Some(_)) => {}
                         (Some(target_end_inc), Some(source_end_inc)) => {
                             let cond = Value::Binary(BinaryOp::CmpGte, target_end_inc.clone(), source_end_inc.clone());
                             try_inner!(self.require_value_true_for_type_check(target_span, source_span, &cond));

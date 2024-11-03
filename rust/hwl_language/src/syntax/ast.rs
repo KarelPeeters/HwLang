@@ -408,7 +408,7 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayLiteral(Vec<Expression>),
+    ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
     RangeLiteral(RangeLiteral),
@@ -452,6 +452,12 @@ impl<T> Args<T> {
             }).collect(),
         }
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ArrayLiteralElement<V> {
+    pub spread: Option<Span>,
+    pub value: V,
 }
 
 #[derive(Debug, Clone)]

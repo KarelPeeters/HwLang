@@ -2,7 +2,7 @@ use crate::data::compiled::{CompiledDatabase, CompiledStage, Constant, GenericVa
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::common::{GenericContainer, GenericMap};
 use crate::front::types::{NominalTypeUnique, Type};
-use crate::syntax::ast::BinaryOp;
+use crate::syntax::ast::{ArrayLiteralElement, BinaryOp};
 use itertools::Itertools;
 use num_bigint::BigInt;
 
@@ -36,6 +36,10 @@ pub enum Value {
         result_ty: Box<Type>,
         base: Box<Value>,
         indices: Vec<ArrayAccessIndex<Box<Value>>>,
+    },
+    ArrayLiteral {
+        result_ty: Box<Type>,
+        operands: Vec<ArrayLiteralElement<Value>>,
     },
 
     // structures
@@ -145,6 +149,17 @@ impl GenericContainer for Value {
                     result_ty: Box::new(result_ty.replace_generics(compiled, map)),
                     base: Box::new(base.replace_generics(compiled, map)),
                     indices: indices.iter().map(|v| v.replace_generics(compiled, map)).collect_vec(),
+                }
+            }
+            Value::ArrayLiteral { ref result_ty, operands: ref operands_mixed } => {
+                Value::ArrayLiteral {
+                    result_ty: Box::new(result_ty.replace_generics(compiled, map)),
+                    operands: operands_mixed.iter().map(|v| {
+                        ArrayLiteralElement {
+                            spread: v.spread,
+                            value: v.value.replace_generics(compiled, map),
+                        }
+                    }).collect_vec(),
                 }
             }
 

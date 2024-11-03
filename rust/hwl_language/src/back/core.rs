@@ -520,6 +520,9 @@ fn collect_clocked_block_written_externals_for_value(diag: &Diagnostics, target_
 
         Value::ArrayAccess { result_ty: _, base, indices: _ } =>
             collect_clocked_block_written_externals_for_value(diag, target_span, base, report),
+        Value::ArrayLiteral { result_ty: _, operands: _ } => {
+            diag.report_internal_error(target_span, "array literal as assignment target clocked block");
+        }
 
         // ignore errors
         Value::Error(_) => {}
@@ -830,6 +833,9 @@ fn value_to_verilog_inner(
         Value::ArrayAccess { result_ty: _, base: _, indices: _ } => {
             Err(VerilogValueError::Diag(diag.report_todo(span, "lower array access")))
         }
+        Value::ArrayLiteral { result_ty: _, operands: _ } => {
+            Err(VerilogValueError::Diag(diag.report_todo(span, "lower array literal")))
+        }
 
         &Value::ModulePort(port) => {
             match signal_map.get(&Signal::Port(port)) {
@@ -977,6 +983,7 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
         Value::Unit => Err(diag.report_todo(span, "value_evaluate_int value Unit")),
         Value::UnaryNot(_) => Err(diag.report_todo(span, "value_evaluate_int value UnaryNot")),
         Value::ArrayAccess { .. } => Err(diag.report_todo(span, "value_evaluate_int value ArrayAccess")),
+        Value::ArrayLiteral { .. } => Err(diag.report_todo(span, "value_evaluate_int value ArrayLiteral")),
         Value::GenericParameter(param) => {
             match map.generic_value.get(param) {
                 Some(value) => value_evaluate_int(diag, compiled, map, span, value),
