@@ -6,8 +6,8 @@ use crate::front::types::{IntegerTypeInfo, Type};
 use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
-use crate::try_inner;
 use crate::util::option_pair;
+use crate::{try_inner, try_opt_result};
 use annotate_snippets::Level;
 use num_bigint::BigInt;
 use num_traits::One;
@@ -795,6 +795,12 @@ impl CompileState<'_, '_> {
     // TODO check lt, lte, gt, gte, ... all together elegantly
     // TODO return true for vacuous truths, eg. comparisons between empty ranges?
     pub fn try_eval_bool(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
+        if self.log_type_check {
+            eprintln!(
+                "try_eval_bool({})",
+                self.compiled.value_to_readable_str(self.source, self.parsed, value),
+            );
+        }
         let result = self.try_eval_bool_inner(origin, value);
         if self.log_type_check {
             eprintln!(
@@ -809,40 +815,76 @@ impl CompileState<'_, '_> {
     // TODO if range ends are themselves params with ranges, assume the worst case
     //   although that misses things like (n < n+1)
     pub fn try_eval_bool_inner(&self, origin: Span, value: &Value) -> Result<Option<bool>, ErrorGuaranteed> {
+        if self.log_type_check {
+            eprintln!(
+                "try_eval_bool_inner({})",
+                self.compiled.value_to_readable_str(self.source, self.parsed, value),
+            );
+        }
+
         // TODO this is wrong, we should be returning None a lot more, eg. if the ranges of the operands are not tight
         match *value {
             Value::Error(e) => return Err(e),
-            Value::Binary(binary_op, ref left, ref right) => {
-                let left_ty = self.type_of_value(origin, left);
-                let left_range = self.require_int_range_ty(origin, &left_ty)?;
-                let right_ty = self.type_of_value(origin, right);
-                let right_range = self.require_int_range_ty(origin, &right_ty)?;
+            Value::Binary(binary_op, ref left_raw, ref right_raw) => {
+                let (comparison, left, right) = match binary_op {
+                    BinaryOp::CmpEq => {
+                        // special case: symbolic equality check
+                        // TODO handle error correctly here
+                        if simplify_value((**left_raw).clone()) == simplify_value((**right_raw).clone()) {
+                            return Ok(Some(true));
+                        }
+                        (ReducedComparison::Eq, left_raw, right_raw)
+                    }
+                    BinaryOp::CmpNeq => (ReducedComparison::Neq, left_raw, right_raw),
+                    BinaryOp::CmpLt => (ReducedComparison::Lt, left_raw, right_raw),
+                    BinaryOp::CmpLte => (ReducedComparison::Lte, left_raw, right_raw),
+                    BinaryOp::CmpGt => (ReducedComparison::Lt, right_raw, left_raw),
+                    BinaryOp::CmpGte => (ReducedComparison::Lte, right_raw, left_raw),
+                    _ => return Ok(None),
+                };
 
+                let left_ty = self.type_of_value(origin, left);
+                let right_ty = self.type_of_value(origin, right);
+                if self.log_type_check {
+                    eprintln!("comparing values with op {:?}", binary_op);
+                    eprintln!("  {:?}", left_ty);
+                    eprintln!("  {:?}", right_ty);
+                }
+                let left_range = self.require_int_range_ty(origin, &left_ty)?;
+                let right_range = self.require_int_range_ty(origin, &right_ty)?;
                 if self.log_type_check {
                     eprintln!("comparing ranges with op {:?}", binary_op);
                     eprintln!("  {:?}", left_range);
                     eprintln!("  {:?}", right_range);
                 }
 
-                // TODO this is probably short-circuiting incorrectly,
-                //   eg. for `<=`, if the range has no start then the condition is known false
-                let compare_int = |f: fn(BigInt, BigInt) -> bool| -> Option<bool> {
-                    let right_start = value_as_int(right_range.start_inc.as_ref()?)?;
-                    let left_end = value_as_int(left_range.end_inc.as_ref()?)?;
-                    Some(f(left_end, right_start))
+                return match comparison {
+                    // TODO eq and neq (based on ranges)
+                    ReducedComparison::Eq => Ok(None),
+                    ReducedComparison::Neq => Ok(None),
+                    ReducedComparison::Lt => {
+                        let left_end = match left_range.end_inc.as_ref() {
+                            None => return Ok(Some(false)),
+                            Some(left_end) => try_opt_result!(value_as_int(left_end)),
+                        };
+                        let right_start = match right_range.start_inc.as_ref() {
+                            None => return Ok(Some(false)),
+                            Some(right_start) => try_opt_result!(value_as_int(right_start)),
+                        };
+                        Ok(Some(left_end < right_start))
+                    }
+                    ReducedComparison::Lte => {
+                        let left_end = match left_range.end_inc.as_ref() {
+                            None => return Ok(Some(false)),
+                            Some(left_end) => try_opt_result!(value_as_int(left_end)),
+                        };
+                        let right_start = match right_range.start_inc.as_ref() {
+                            None => return Ok(Some(false)),
+                            Some(right_start) => try_opt_result!(value_as_int(right_start)),
+                        };
+                        Ok(Some(left_end <= right_start))
+                    }
                 };
-
-                match binary_op {
-                    // all of the difference comparators can be smarter, check for missing bounds in the right direction
-                    BinaryOp::CmpLt => return Ok(compare_int(|l, r| l < r)),
-                    BinaryOp::CmpLte => return Ok(compare_int(|l, r| l <= r)),
-                    BinaryOp::CmpGt => return Ok(compare_int(|l, r| l > r)),
-                    BinaryOp::CmpGte => return Ok(compare_int(|l, r| l >= r)),
-                    BinaryOp::CmpEq => return Ok(compare_int(|l, r| l == r)),
-                    // this can be smarter, check for non-overlapping ranges
-                    BinaryOp::CmpNeq => return Ok(compare_int(|l, r| l != r)),
-                    _ => {}
-                }
             }
             // TODO support more values
             _ => {}
@@ -910,4 +952,12 @@ pub fn sync_domains_equal(left: &SyncDomain<Value>, right: &SyncDomain<Value>) -
         (true, false) => Ok(SyncDomainsEqual::NotEqual("different reset")),
         (true, true) => Ok(SyncDomainsEqual::Equal),
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum ReducedComparison {
+    Eq,
+    Neq,
+    Lt,
+    Lte,
 }
