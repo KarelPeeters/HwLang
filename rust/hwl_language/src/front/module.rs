@@ -399,7 +399,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn check_reg_init_value(&mut self, id_span: Span, ty: Spanned<&Type>, init: Spanned<Value>) -> Value {
         // check ty
-        let init_eval = match self.check_type_contains(Some(ty.span), init.span, &ty.inner, &init.inner) {
+        let init_eval = match self.require_type_contains_value(Some(ty.span), init.span, &ty.inner, &init.inner) {
             Ok(()) => init.inner,
             Err(e) => Value::Error(e),
         };
@@ -436,7 +436,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 );
 
                 // check type
-                let value_eval = match self.check_type_contains(Some(value.span), value.span, &ty, &value_unchecked) {
+                let value_eval = match self.require_type_contains_value(Some(value.span), value.span, &ty, &value_unchecked) {
                     Ok(()) => value_unchecked,
                     Err(e) => Value::Error(e),
                 };
@@ -699,7 +699,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             DomainUserControlled::Source,
                             "instance port connections must respect domains",
                         ));
-                        any_err = any_err.and(self.check_type_contains(
+                        any_err = any_err.and(self.require_type_contains_value(
                             Some(port_ast.ty_span()),
                             connection_value_span,
                             ty_port,
@@ -733,7 +733,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             DomainUserControlled::Target,
                             "instance port connections must respect domains",
                         ));
-                        any_err = any_err.and(self.check_type_contains(
+                        any_err = any_err.and(self.require_type_contains_value(
                             Some(connection_value_span),
                             port_id.span,
                             &self.type_of_value(connection_value_span, &connection_value),

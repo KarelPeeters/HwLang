@@ -3,9 +3,10 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::common::ValueDomain;
 use crate::front::driver::{CompileState, EvalTrueError};
 use crate::front::types::{IntegerTypeInfo, Type};
-use crate::front::values::{RangeInfo, Value};
+use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
 use crate::syntax::ast::{BinaryOp, PortKind, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::try_inner;
 use crate::util::option_pair;
 use annotate_snippets::Level;
 use num_bigint::BigInt;
@@ -18,6 +19,9 @@ pub enum DomainUserControlled {
     Source,
     Both,
 }
+
+#[derive(Debug, Copy, Clone)]
+pub struct TypeMismatch;
 
 impl CompileState<'_, '_> {
     pub fn domain_of_value(&self, span: Span, value: &Value) -> ValueDomain {
@@ -65,6 +69,20 @@ impl CompileState<'_, '_> {
                 self.merge_domains(span, &self.domain_of_value(span, left), &self.domain_of_value(span, right)),
             Value::UnaryNot(inner) =>
                 self.domain_of_value(span, inner),
+
+            Value::ArrayAccess { result_ty: _, base, indices } => {
+                indices.iter().fold(self.domain_of_value(span, base), |acc, index| {
+                    let index_domain = match index {
+                        &ArrayAccessIndex::Error(e) =>
+                            ValueDomain::Error(e),
+                        ArrayAccessIndex::Single(index) =>
+                            self.domain_of_value(span, index),
+                        ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) =>
+                            self.merge_domains(span, &self.domain_of_value(span, start_inc), &self.domain_of_value(span, end_inc)),
+                    };
+                    self.merge_domains(span, &acc, &index_domain)
+                })
+            }
             // TODO just join all argument domains
             &Value::FunctionReturn(_) =>
                 ValueDomain::Error(diags.report_todo(span, "domain of function return value")),
@@ -262,6 +280,7 @@ impl CompileState<'_, '_> {
                     }
                 }
             }
+            Value::ArrayAccess { result_ty, base: _, indices: _ } => (**result_ty).clone(),
             Value::FunctionReturn(func) => func.ret_ty.clone(),
             Value::Module(_) => Type::Error(diags.report_todo(span, "type of module")),
             &Value::Wire(wire) => self.compiled[wire].ty.clone(),
@@ -627,63 +646,106 @@ impl CompileState<'_, '_> {
     // TODO double-check that all of these type-checking functions do their error handling correctly
     //   and don't short-circuit unnecessarily, preventing multiple errors
     // TODO move error formatting out of this function, it depends too much on the context and spans are not always available
-    pub fn check_type_contains(&self, span_ty: Option<Span>, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
+    pub fn require_type_contains_value(&self, span_ty: Option<Span>, span_value: Span, ty: &Type, value: &Value) -> Result<(), ErrorGuaranteed> {
         let ty_value = self.type_of_value(span_value, value);
 
-        match (ty, &ty_value) {
+        match self.require_type_match(span_ty, ty, span_value, &ty_value, true) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => {
+                let _: TypeMismatch = e;
+                let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, ty);
+                let value_str = self.compiled.value_to_readable_str(self.source, self.parsed, value);
+                let value_ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_value);
+
+                let title = format!("type mismatch: value `{}` with type `{}` does not fit in type `{}`", value_str, value_ty_str, ty_str);
+                let err = Diagnostic::new(title)
+                    .add_error(span_value, "value used here")
+                    .add_info_maybe(span_ty, "type defined here")
+                    .finish();
+                Err(self.diags.report(err))
+            },
+        }
+    }
+
+    pub fn require_type_match(&self, target_span: Option<Span>, target_ty: &Type, source_span: Span, source_ty: &Type, allow_subtype: bool) -> Result<Result<(), ErrorGuaranteed>, TypeMismatch> {
+        match (target_ty, source_ty) {
             // propagate errors, we can't just silently ignore them:
             //   downstream compiler code might actually depend on the type matching
-            (&Type::Error(e), _) | (_, &Type::Error(e)) => return Err(e),
+            (&Type::Error(e), _) | (_, &Type::Error(e)) => Ok(Err(e)),
 
             // equal types are always fine
-            _ if ty == &ty_value => return Ok(()),
+            _ if target_ty == source_ty => Ok(Ok(())),
 
             // any contains everything
-            (&Type::Any, _) => return Ok(()),
+            (&Type::Any, _other) => {
+                if allow_subtype {
+                    Ok(Ok(()))
+                } else {
+                    Err(TypeMismatch)
+                }
+            },
 
             // unchecked and never cast into anything
-            (_, Type::Unchecked) => return Ok(()),
-            (_, Type::Never) => return Ok(()),
+            (_, Type::Unchecked) => Ok(Ok(())),
+            (_, Type::Never) => Ok(Ok(())),
 
             // basic types that only contain themselves
-            (Type::Unit, Type::Unit) => return Ok(()),
+            (Type::Unit, Type::Unit) => Ok(Ok(())),
             // TODO differentiate between arbitrary open, half-open, ...
-            (Type::Range, Type::Range) => return Ok(()),
-            (Type::Boolean, Type::Boolean) => return Ok(()),
+            (Type::Range, Type::Range) => Ok(Ok(())),
+            (Type::Boolean, Type::Boolean) => Ok(Ok(())),
 
-            // integer range check
-            (Type::Integer(IntegerTypeInfo { range: range_ty }), Type::Integer(_)) => {
-                let range_ty = self.require_int_range_direct(span_ty.unwrap_or(span_value), range_ty)?;
-                let RangeInfo { start_inc, end_inc } = range_ty;
+            // array type matches if inner type is the same (not just a subtype) and the lengths are the same
+            (Type::Array(inner_left, len_left), Type::Array(inner_right, len_right)) => {
+                // array types are invariant, so the inner types must match exactly
+                try_inner!(self.require_type_match(None, inner_left, source_span, inner_right, false)?);
 
-                // TODO this might report weird error messages, double-check this
-                // check that the value fits in the required range
-                if let Some(start_inc) = start_inc {
-                    let cond = Value::Binary(BinaryOp::CmpLte, start_inc.clone(), Box::new(value.clone()));
-                    self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
-                }
-                if let Some(end_inc) = end_inc {
-                    let cond = Value::Binary(BinaryOp::CmpLte, Box::new(value.clone()), end_inc.clone());
-                    self.require_value_true_for_type_check(span_ty, span_value, &cond)?;
-                }
+                // lengths must match
+                let cond = Value::Binary(BinaryOp::CmpEq, len_left.clone(), len_right.clone());
+                try_inner!(self.require_value_true_for_type_check(target_span, source_span, &cond));
 
-                return Ok(());
+                Ok(Ok(()))
             }
 
-            // fallthrough into error
-            _ => {}
-        };
+            // integer range check
+            (
+                Type::Integer(IntegerTypeInfo { range: target_range }),
+                Type::Integer(IntegerTypeInfo { range: source_range })
+            ) => {
+                // check that the value fits in the required range
+                let RangeInfo { start_inc: target_start_inc, end_inc: target_end_inc } =
+                    try_inner!(self.require_int_range_direct(target_span.unwrap_or(source_span), target_range));
+                let RangeInfo { start_inc: source_start_inc, end_inc: source_end_inc } =
+                    try_inner!(self.require_int_range_direct(source_span, source_range));
 
-        let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, ty);
-        let value_str = self.compiled.value_to_readable_str(self.source, self.parsed, value);
-        let value_ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &ty_value);
+                if allow_subtype {
+                    match (target_start_inc, source_start_inc) {
+                        (None, None | Some(_)) => {},
+                        (Some(target_start_inc), Some(source_start_inc)) => {
+                            let cond = Value::Binary(BinaryOp::CmpLte, target_start_inc.clone(), source_start_inc.clone());
+                            try_inner!(self.require_value_true_for_type_check(target_span, source_span, &cond));
+                        }
+                        (Some(_), None) => return Err(TypeMismatch),
+                    }
 
-        let title = format!("type mismatch: value {} with type {} does not match type {}", value_str, value_ty_str, ty_str);
-        let err = Diagnostic::new(title)
-            .add_error(span_value, "value used here")
-            .add_info_maybe(span_ty, "type defined here")
-            .finish();
-        Err(self.diags.report(err))
+                    match (target_end_inc, source_end_inc) {
+                        (None, None | Some(_)) => {},
+                        (Some(target_end_inc), Some(source_end_inc)) => {
+                            let cond = Value::Binary(BinaryOp::CmpGte, target_end_inc.clone(), source_end_inc.clone());
+                            try_inner!(self.require_value_true_for_type_check(target_span, source_span, &cond));
+                        }
+                        (Some(_), None) => return Err(TypeMismatch),
+                    }
+                } else {
+                    return Err(TypeMismatch);
+                }
+
+                Ok(Ok(()))
+            }
+
+            _ => Err(TypeMismatch)
+        }
     }
 
     pub fn require_value_true_for_range(&self, span_range: Span, value: &Value) -> Result<(), ErrorGuaranteed> {

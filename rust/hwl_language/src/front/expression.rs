@@ -5,7 +5,7 @@ use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{RangeInfo, Value};
+use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
@@ -125,13 +125,17 @@ impl CompileState<'_, '_> {
             ExpressionKind::TernarySelect(_, _, _) =>
                 ScopedEntryDirect::Error(diags.report_todo(expr.span, "ternary select expression")),
             ExpressionKind::ArrayIndex(ref base, ref args) => {
+                let base_span = base.span;
                 let base = self.eval_expression_as_ty_or_value(ctx, collector, base);
+
                 let args = args.map_inner(|arg| {
-                    (arg.span, self.eval_expression_as_value(ctx, collector, arg))
+                    Spanned { span: arg.span, inner: self.eval_expression_as_value(ctx, collector, arg) }
                 });
+                let args_len = args.inner.len();
 
                 match base {
-                    TypeOrValue::Type(base) => {
+                    TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
+                    TypeOrValue::Type(base_ty) => {
                         if args.inner.is_empty() {
                             ScopedEntryDirect::Error(diags.report_simple(
                                 "array type definition requires at least one dimension",
@@ -140,8 +144,8 @@ impl CompileState<'_, '_> {
                             ))
                         } else {
                             // array dimensions are the other way around, the innermost type is the final dimension
-                            let result_ty = args.inner.into_iter().rev().fold(base, |ty_acc, arg| {
-                                let ast::Arg { span: _, name, value: (value_span, value_raw) } = arg;
+                            let result_ty = args.inner.into_iter().rev().fold(base_ty, |ty_acc, arg| {
+                                let ast::Arg { span: _, name, value } = arg;
 
                                 let positive_range = RangeInfo {
                                     start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
@@ -149,17 +153,13 @@ impl CompileState<'_, '_> {
                                 };
                                 let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
 
-                                let value_checked = match self.check_type_contains(None, value_span, &positive_ty, &value_raw) {
-                                    Ok(()) => value_raw,
+                                let value_checked = match self.require_type_contains_value(None, value.span, &positive_ty, &value.inner) {
+                                    Ok(()) => value.inner,
                                     Err(e) => Value::Error(e),
                                 };
 
                                 if let Some(name) = name {
-                                    Type::Error(diags.report_simple(
-                                        "named dimensions are not allowed for array type definition",
-                                        name.span,
-                                        "named dimension",
-                                    ))
+                                    Type::Error(diags.report_todo(name.span, "named array dimensions"))
                                 } else {
                                     Type::Array(Box::new(ty_acc), Box::new(value_checked))
                                 }
@@ -168,10 +168,43 @@ impl CompileState<'_, '_> {
                             ScopedEntryDirect::Immediate(TypeOrValue::Type(result_ty))
                         }
                     }
-                    TypeOrValue::Value(_) => {
-                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "array index expression"))
+                    TypeOrValue::Value(base) => {
+                        let base_ty = self.type_of_value(expr.span, &base);
+
+                        // check indices and get inner type
+                        let mut indices = vec![];
+                        let mut curr_ty = base_ty.clone();
+
+                        for (arg_i, arg) in args.inner.into_iter().enumerate() {
+                            let (next_ty, index) = self.eval_array_index(expr.span, base_span, curr_ty, args.span, args_len, arg_i, arg);
+                            curr_ty = next_ty;
+                            indices.push(index);
+                        };
+                        let inner_ty = curr_ty;
+
+                        // build result type
+                        let result_ty = indices.iter().rev().fold(inner_ty, |acc, index| {
+                            match index {
+                                &ArrayAccessIndex::Error(e) => Type::Error(e),
+                                ArrayAccessIndex::Single(_) => acc,
+                                ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) => {
+                                    let length = Value::Binary(
+                                        BinaryOp::Add,
+                                        Box::new(Value::Binary(BinaryOp::Sub, end_inc.clone(), start_inc.clone())),
+                                        Box::new(Value::IntConstant(BigInt::one())),
+                                    );
+                                    Type::Array(Box::new(acc), Box::new(length))
+                                }
+                            }
+                        });
+
+                        // result
+                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::ArrayAccess {
+                            result_ty: Box::new(result_ty),
+                            base: Box::new(base),
+                            indices,
+                        }))
                     }
-                    TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
                 }
             }
             ExpressionKind::DotIdIndex(_, _) =>
@@ -209,6 +242,107 @@ impl CompileState<'_, '_> {
                     Ok(result) => MaybeConstructor::Immediate(result),
                     Err(e) => MaybeConstructor::Error(e),
                 }
+            }
+        }
+    }
+
+    fn eval_array_index(
+        &mut self,
+        expr_span: Span,
+        base_span: Span,
+        base_ty: Type,
+        args_span: Span,
+        args_len: usize,
+        arg_i: usize,
+        arg: ast::Arg<Spanned<Value>>,
+    ) -> (Type, ArrayAccessIndex<Box<Value>>) {
+        let diags = self.diags;
+
+        let ast::Arg { span: _, name, value: index } = arg;
+
+        if let Some(name) = name {
+            let e = diags.report_todo(name.span, "named array dimensions");
+            return (Type::Error(e), ArrayAccessIndex::Error(e));
+        }
+
+        match base_ty {
+            Type::Error(e) => {
+                (Type::Error(e), ArrayAccessIndex::Error(e))
+            }
+            Type::Array(inner, len) => {
+                let valid_index_type = Type::Integer(IntegerTypeInfo {
+                    range: Box::new(Value::Range(RangeInfo {
+                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
+                        end_inc: Some(Box::new(Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))))),
+                    }))
+                });
+
+                match self.type_of_value(index.span, &index.inner) {
+                    Type::Error(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
+                    Type::Integer(_) => {
+                        match self.require_type_contains_value(None, index.span, &valid_index_type, &index.inner) {
+                            Ok(()) => (*inner, ArrayAccessIndex::Single(Box::new(index.inner))),
+                            Err(e) => (*inner, ArrayAccessIndex::Error(e)),
+                        }
+                    }
+                    Type::Range => {
+                        match self.require_int_range_direct(index.span, &index.inner) {
+                            Err(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
+                            Ok(RangeInfo { start_inc, end_inc }) => {
+                                let start_inc_checked = match start_inc {
+                                    None => Value::IntConstant(BigInt::ZERO),
+                                    Some(start_inc) => {
+                                        match self.require_type_contains_value(None, index.span, &valid_index_type, &start_inc) {
+                                            Ok(()) => (**start_inc).clone(),
+                                            Err(e) => Value::Error(e),
+                                        }
+                                    }
+                                };
+                                let end_inc_checked = match end_inc {
+                                    None => Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))),
+                                    Some(end_inc) => {
+                                        match self.require_type_contains_value(None, index.span, &valid_index_type, &end_inc) {
+                                            Ok(()) => (**end_inc).clone(),
+                                            Err(e) => Value::Error(e),
+                                        }
+                                    }
+                                };
+
+                                let index = ArrayAccessIndex::Range(BoundedRangeInfo {
+                                    start_inc: Box::new(start_inc_checked),
+                                    end_inc: Box::new(end_inc_checked),
+                                });
+
+                                (*inner, index)
+                            }
+                        }
+                    }
+                    value_ty => {
+                        let diag = Diagnostic::new("type mismatch: expected integer or range type for array index")
+                            .add_error(expr_span, "for this array indexing operation")
+                            .add_info(index.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
+                            .finish();
+                        let e = diags.report(diag);
+                        (Type::Error(e), ArrayAccessIndex::Error(e))
+                    }
+                }
+            }
+            _ => {
+                let diag = if arg_i == 0 {
+                    Diagnostic::new("type mismatch: expected array type for array indexing operator")
+                        .add_error(expr_span, "for this array indexing operation")
+                        .add_info(base_span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &base_ty)))
+                        .finish()
+                } else {
+                    Diagnostic::new(format!("type mismatch: expected array type with at least {} dimensions", args_len))
+                        .add_error(expr_span, "for this array indexing operation")
+                        .add_info(base_span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &base_ty)))
+                        .add_info(args_span, format!("got {} indices", args_len))
+                        .finish()
+                };
+
+                let e = diags.report(diag);
+                (Type::Error(e), ArrayAccessIndex::Error(e))
             }
         }
     }
@@ -299,7 +433,7 @@ impl CompileState<'_, '_> {
                     let ty_replaced = param_info.ty.clone()
                         .replace_generics(&mut self.compiled, &map);
 
-                    match self.check_type_contains(Some(ty_span), arg_span, &ty_replaced, &arg_value) {
+                    match self.require_type_contains_value(Some(ty_span), arg_span, &ty_replaced, &arg_value) {
                         Ok(()) => {}
                         Err(e) => any_err = Some(e),
                     }
@@ -409,7 +543,7 @@ impl CompileState<'_, '_> {
         // check that reset is an async bool
         // TODO allow sync reset
         // TODO require that async reset still comes out of sync in phase with the clock
-        let reset_value_bool = match self.check_type_contains(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
+        let reset_value_bool = match self.require_type_contains_value(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
             Ok(()) => reset_value_unchecked,
             Err(e) => Value::Error(e),
         };

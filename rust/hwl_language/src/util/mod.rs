@@ -61,21 +61,24 @@ pub fn result_pair<A, B, E>(left: Result<A, E>, right: Result<B, E>) -> Result<(
 /// Variant of write! that only works for strings, and doesn't return a spurious error.
 #[macro_export]
 macro_rules! swrite {
-    ($dst:expr, $($arg:tt)*) => {
+    ($dst:expr, $($arg:tt)*) => {{
+        use std::fmt::Write;
         let dst: &mut String = $dst;
         write!(dst, $($arg)*).unwrap();
-    };
+    }};
 }
 
 /// Variant of writeln! that only works for strings, and doesn't return a spurious error.
 #[macro_export]
 macro_rules! swriteln {
-    ($dst:expr $(,)?) => {
+    ($dst:expr $(,)?) => {{
+        use std::fmt::Write;
         let dst: &mut String = $dst;
         writeln!(dst).unwrap();
-    };
-    ($dst:expr, $($arg:tt)*) => {
+    }};
+    ($dst:expr, $($arg:tt)*) => {{
+        use std::fmt::Write;
         let dst: &mut String = $dst;
         writeln!(dst, $($arg)*).unwrap();
-    };
+    }};
 }

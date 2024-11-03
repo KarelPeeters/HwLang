@@ -1,56 +1,56 @@
-import std.types.[bool, uint, int_range, natural, unchecked, undefined];
-
-pub module spi_master generics(
-    packet_length: natural,
-) ports(
-    clk: in clock,
-    rst: in async bool,
-
-    sync(clk, rst) {
-        // data handshake
-        data: in bool[packet_length],
-        data_valid: in bool,
-        data_ready: out bool,
-
-        // spi output
-        sclk: out bool,
-        mosi: out bool,
-        cs: out bool,
-    }
-) body {
-    reg out data_ready = false;
-    reg out mosi = false;
-    reg out cs = false;
-
-    reg sclk_internal: sync(clk, rst) bool = false;
-    reg bits_left: sync(clk, rst) int_range(0..=packet_length) = 0;
-    reg reg_data: sync(clk, rst) bool[packet_length] = undefined;
-
-    clocked(clk, rst) {
-        cs = false;
-
-        // continue previous transaction
-        if (bits_left > 0) {
-            cs = true;
-            sclk_internal = !sclk_internal;
-
-            if (sclk_internal) {
-                mosi = reg_data[0];
-                reg_data = [reg_data[1..], false];
-            } else {
-                bits_left = bits_left - 1;
-            }
-        }
-
-        // start new transaction
-        data_ready = bits_left == 0;
-        if (data_ready && data_valid) {
-            bits_left = packet_length;
-            reg_data = data;
-        }
-    }
-
-    combinatorial {
-        sclk = sclk_internal;
-    }
-}
+//import std.types.[bool, uint, int_range, natural, unchecked, undefined];
+//
+//pub module spi_master generics(
+//    packet_length: natural,
+//) ports(
+//    clk: in clock,
+//    rst: in async bool,
+//
+//    sync(clk, rst) {
+//        // data handshake
+//        data: in bool[packet_length],
+//        data_valid: in bool,
+//        data_ready: out bool,
+//
+//        // spi output
+//        sclk: out bool,
+//        mosi: out bool,
+//        cs: out bool,
+//    }
+//) body {
+//    reg out data_ready = false;
+//    reg out mosi = false;
+//    reg out cs = false;
+//
+//    reg sclk_internal: sync(clk, rst) bool = false;
+//    reg bits_left: sync(clk, rst) int_range(0..=packet_length) = 0;
+//    reg reg_data: sync(clk, rst) bool[packet_length] = undefined;
+//
+//    clocked(clk, rst) {
+//        cs = false;
+//
+//        // continue previous transaction
+//        if (bits_left > 0) {
+//            cs = true;
+//            sclk_internal = !sclk_internal;
+//
+//            if (sclk_internal) {
+//                mosi = reg_data[0];
+//                reg_data = [reg_data[1..], false];
+//            } else {
+//                bits_left = bits_left - 1;
+//            }
+//        }
+//
+//        // start new transaction
+//        data_ready = bits_left == 0;
+//        if (data_ready && data_valid) {
+//            bits_left = packet_length;
+//            reg_data = data;
+//        }
+//    }
+//
+//    combinatorial {
+//        sclk = sclk_internal;
+//    }
+//}

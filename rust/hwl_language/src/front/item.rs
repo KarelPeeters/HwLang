@@ -300,7 +300,7 @@ impl CompileState<'_, '_> {
         let (ty_eval, value_eval) = match ty_eval {
             None => (self.type_of_value(value.span, &value_unchecked), value_unchecked),
             Some(ty_eval) => {
-                match self.check_type_contains(Some(ty_eval.span), value.span, &ty_eval.inner, &value_unchecked) {
+                match self.require_type_contains_value(Some(ty_eval.span), value.span, &ty_eval.inner, &value_unchecked) {
                     Ok(()) => (ty_eval.inner, value_unchecked),
                     Err(e) => (Type::Error(e), Value::Error(e)),
                 }

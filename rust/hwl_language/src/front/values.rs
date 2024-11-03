@@ -32,6 +32,11 @@ pub enum Value {
     // TODO this BinaryOp should probably be separate from the ast one
     Binary(BinaryOp, Box<Value>, Box<Value>),
     UnaryNot(Box<Value>),
+    ArrayAccess {
+        result_ty: Box<Type>,
+        base: Box<Value>,
+        indices: Vec<ArrayAccessIndex<Box<Value>>>,
+    },
 
     // structures
     // TODO functions are represented very strangely, double-check if this makes sense
@@ -49,12 +54,25 @@ pub enum Value {
     Constant(Constant),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum ArrayAccessIndex<V> {
+    Error(ErrorGuaranteed),
+    Single(V),
+    Range(BoundedRangeInfo<V>),
+}
+
 /// Both start and end are inclusive.
 /// This is convenient for arithmetic range calculations.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RangeInfo<V> {
     pub start_inc: Option<V>,
     pub end_inc: Option<V>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct BoundedRangeInfo<V> {
+    pub start_inc: V,
+    pub end_inc: V,
 }
 
 // TODO double check which fields should be used for eq and hash
@@ -112,12 +130,7 @@ impl GenericContainer for Value {
             Value::BoolConstant(b) => Value::BoolConstant(b),
             Value::IntConstant(ref info) => Value::IntConstant(info.clone()),
             Value::StringConstant(ref info) => Value::StringConstant(info.clone()),
-            Value::Range(ref info) => Value::Range(RangeInfo {
-                start_inc: info.start_inc.as_ref()
-                    .map(|v| Box::new(v.replace_generics(compiled, map))),
-                end_inc: info.end_inc.as_ref()
-                    .map(|v| Box::new(v.replace_generics(compiled, map))),
-            }),
+            Value::Range(ref info) => Value::Range(info.replace_generics(compiled, map)),
             Value::Binary(op, ref left, ref right) => {
                 Value::Binary(
                     op,
@@ -127,6 +140,13 @@ impl GenericContainer for Value {
             }
             Value::UnaryNot(ref inner) =>
                 Value::UnaryNot(Box::new(inner.replace_generics(compiled, map))),
+            Value::ArrayAccess { ref result_ty, ref base, ref indices } => {
+                Value::ArrayAccess {
+                    result_ty: Box::new(result_ty.replace_generics(compiled, map)),
+                    base: Box::new(base.replace_generics(compiled, map)),
+                    indices: indices.iter().map(|v| v.replace_generics(compiled, map)).collect_vec(),
+                }
+            }
 
             Value::FunctionReturn(ref func) => {
                 Value::FunctionReturn(FunctionReturnValue {
@@ -143,6 +163,40 @@ impl GenericContainer for Value {
             Value::Register(r) => Value::Register(r),
             Value::Variable(v) => Value::Variable(v),
             Value::Constant(c) => Value::Constant(c),
+        }
+    }
+}
+
+impl GenericContainer for ArrayAccessIndex<Box<Value>> {
+    type Result = ArrayAccessIndex<Box<Value>>;
+
+    fn replace_generics<S: CompiledStage>(&self, compiled: &mut CompiledDatabase<S>, map: &GenericMap) -> Self::Result {
+        match self {
+            ArrayAccessIndex::Error(e) => ArrayAccessIndex::Error(e.clone()),
+            ArrayAccessIndex::Single(v) => ArrayAccessIndex::Single(Box::new(v.replace_generics(compiled, map))),
+            ArrayAccessIndex::Range(r) => ArrayAccessIndex::Range(r.replace_generics(compiled, map)),
+        }
+    }
+}
+
+impl GenericContainer for RangeInfo<Box<Value>> {
+    type Result = RangeInfo<Box<Value>>;
+
+    fn replace_generics<S: CompiledStage>(&self, compiled: &mut CompiledDatabase<S>, map: &GenericMap) -> Self::Result {
+        RangeInfo {
+            start_inc: self.start_inc.as_ref().map(|v| Box::new(v.replace_generics(compiled, map))),
+            end_inc: self.end_inc.as_ref().map(|v| Box::new(v.replace_generics(compiled, map))),
+        }
+    }
+}
+
+impl GenericContainer for BoundedRangeInfo<Box<Value>> {
+    type Result = BoundedRangeInfo<Box<Value>>;
+
+    fn replace_generics<S: CompiledStage>(&self, compiled: &mut CompiledDatabase<S>, map: &GenericMap) -> Self::Result {
+        BoundedRangeInfo {
+            start_inc: Box::new(self.start_inc.replace_generics(compiled, map)),
+            end_inc: Box::new(self.end_inc.replace_generics(compiled, map)),
         }
     }
 }

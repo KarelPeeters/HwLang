@@ -21,7 +21,7 @@ use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
 use num_traits::{Signed as _, ToPrimitive};
 use std::cmp::max;
-use std::fmt::{Display, Formatter, Write};
+use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 use unwrap_match::unwrap_match;
 
@@ -493,30 +493,8 @@ fn collect_clocked_block_written_externals(diag: &Diagnostics, block: &LowerBloc
             LowerStatement::Block(block) => collect_clocked_block_written_externals(diag, block, report),
             // for now expressions can't contain statements, no no assignments either
             LowerStatement::Expression(_) => {}
-            LowerStatement::Assignment { target, value: _ } => {
-                match &target.inner {
-                    // collect registers and ports
-                    &Value::ModulePort(port) => report(Signal::Port(port)),
-                    &Value::Register(reg) => report(Signal::Reg(reg)),
-                    // variables are already local and don't need to be tracked
-                    Value::Variable(_) => {}
-                    // ignore errors
-                    Value::Error(_) => {}
-
-                    // wires shouldn't be write targets in clocked blocks, if they are it's an error anyway
-                    // TODO properly mark this as an error target, instead of connecting the wire through
-                    Value::Wire(_) => {}
-                    // invalid assignment targets
-                    Value::GenericParameter(_) |
-                    Value::Never | Value::Unit | Value::Undefined |
-                    Value::BoolConstant(_) | Value::IntConstant(_) | Value::StringConstant(_) |
-                    Value::Range(_) | Value::Binary(_, _, _) | Value::UnaryNot(_) |
-                    Value::FunctionReturn(_) | Value::Module(_) |
-                    Value::Constant(_) => {
-                        diag.report_internal_error(stmt.span, format!("assignment in clocked block to invalid target {:?}", target.inner));
-                    }
-                }
-            }
+            LowerStatement::Assignment { target, value: _ } =>
+                collect_clocked_block_written_externals_for_value(diag, target.span, &target.inner, report),
             LowerStatement::If(stmt) => {
                 let LowerIfStatement { condition: _, then_block, else_block } = stmt;
                 collect_clocked_block_written_externals(diag, then_block, report);
@@ -528,6 +506,36 @@ fn collect_clocked_block_written_externals(diag: &Diagnostics, block: &LowerBloc
             LowerStatement::For => {}
             LowerStatement::While => {}
             LowerStatement::Return(_) => {}
+        }
+    }
+}
+
+fn collect_clocked_block_written_externals_for_value(diag: &Diagnostics, target_span: Span, value: &Value, report: &mut impl FnMut(Signal)) {
+    match value {
+        // collect registers and ports
+        &Value::ModulePort(port) => report(Signal::Port(port)),
+        &Value::Register(reg) => report(Signal::Reg(reg)),
+        // variables are already local and don't need to be tracked
+        Value::Variable(_) => {}
+
+        Value::ArrayAccess { result_ty: _, base, indices: _ } =>
+            collect_clocked_block_written_externals_for_value(diag, target_span, base, report),
+
+        // ignore errors
+        Value::Error(_) => {}
+
+        // wires shouldn't be write targets in clocked blocks, if they are it's an error anyway
+        // TODO properly mark this as an error target, instead of connecting the wire through
+        Value::Wire(_) => {}
+        // invalid assignment targets
+        Value::GenericParameter(_) |
+        Value::Never | Value::Unit | Value::Undefined |
+        Value::BoolConstant(_) | Value::IntConstant(_) | Value::StringConstant(_) |
+        Value::Range(_) | Value::Binary(_, _, _) | Value::UnaryNot(_) |
+        Value::FunctionReturn(_) | Value::Module(_) |
+        Value::Constant(_) => {
+            // TODO proper value as readable string formatting?
+            diag.report_internal_error(target_span, format!("assignment in clocked block to invalid target {:?}", value));
         }
     }
 }
@@ -819,6 +827,9 @@ fn value_to_verilog_inner(
         Value::UnaryNot(x) => {
             Ok(format!("(!{})", value_to_verilog_inner(diag, parsed, compiled, signal_map, Spanned { span, inner: x })?))
         }
+        Value::ArrayAccess { result_ty: _, base: _, indices: _ } => {
+            Err(VerilogValueError::Diag(diag.report_todo(span, "lower array access")))
+        }
 
         &Value::ModulePort(port) => {
             match signal_map.get(&Signal::Port(port)) {
@@ -965,6 +976,7 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
         Value::StringConstant(_) => Err(diag.report_todo(span, "value_evaluate_int value StringConstant")),
         Value::Unit => Err(diag.report_todo(span, "value_evaluate_int value Unit")),
         Value::UnaryNot(_) => Err(diag.report_todo(span, "value_evaluate_int value UnaryNot")),
+        Value::ArrayAccess { .. } => Err(diag.report_todo(span, "value_evaluate_int value ArrayAccess")),
         Value::GenericParameter(param) => {
             match map.generic_value.get(param) {
                 Some(value) => value_evaluate_int(diag, compiled, map, span, value),

@@ -6,10 +6,10 @@ use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomain};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
 use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
 use crate::front::values::{RangeInfo, Value};
-use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
+use crate::{new_index_type, swrite};
 use indexmap::IndexMap;
 use num_traits::Signed;
 
@@ -310,6 +310,7 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 let inner = self.value_to_readable_str(source, parsed, inner);
                 format!("(!{})", inner)
             }
+            Value::ArrayAccess { .. } => "array_access".to_string(),
             // TODO how to display function return values? we don't know the function call args here any more!
             Value::FunctionReturn(ret) =>
                 format!("function_return({})", self.defining_id_to_readable_string(self[ret.item].defining_id.as_ref())),
@@ -343,8 +344,20 @@ impl<S: CompiledStage> CompiledDatabase<S> {
                 Some(n) => format!("bits({})", self.value_to_readable_str(source, parsed, n)),
             },
             Type::Range => "range".to_string(),
-            Type::Array(inner, n) =>
-                format!("Array({}, {})", self.type_to_readable_str(source, parsed, inner), self.value_to_readable_str(source, parsed, n)),
+            Type::Array(inner, n) => {
+                let mut indices = String::new();
+                let f = &mut indices;
+
+                swrite!(f, "{}", self.value_to_readable_str(source, parsed, n));
+                let mut inner = inner;
+                while let Type::Array(next, n_next) = &**inner {
+                    swrite!(f, ", {}", self.value_to_readable_str(source, parsed, n_next));
+                    inner = next;
+                }
+
+                let ty_str = self.type_to_readable_str(source, parsed, inner);
+                format!("({ty_str}[{indices}])")
+            }
             Type::Integer(IntegerTypeInfo { range }) => {
                 // TODO match specific patterns again, eg. uint?
                 format!("int_range({})", self.value_to_readable_str(source, parsed, range))

@@ -7,7 +7,7 @@ use crate::front::driver::CompileState;
 use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::Visibility;
 use crate::front::types::{IntegerTypeInfo, Type};
-use crate::front::values::{RangeInfo, Value};
+use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{Block, BlockStatement, BlockStatementKind, ElseIfPair, ForStatement, PortDirection, Spanned, VariableDeclaration, WhileStatement};
 use crate::syntax::pos::Span;
@@ -69,7 +69,7 @@ impl CompileState<'_, '_> {
                 let (ty_eval, init_eval) = match ty_eval {
                     None => (self.type_of_value(init.span, &init_unchecked), init_unchecked),
                     Some(ty_eval) => {
-                        match self.check_type_contains(Some(ty_eval.span), init.span, &ty_eval.inner, &init_unchecked) {
+                        match self.require_type_contains_value(Some(ty_eval.span), init.span, &ty_eval.inner, &init_unchecked) {
                             Ok(()) => (ty_eval.inner, init_unchecked),
                             Err(e) => (Type::Error(e), Value::Error(e)),
                         }
@@ -120,7 +120,7 @@ impl CompileState<'_, '_> {
 
                 // check type
                 let target_ty = self.type_of_value(target.span, &target_eval);
-                any_err = any_err.and(self.check_type_contains(Some(target.span), value.span, &target_ty, &value_eval));
+                any_err = any_err.and(self.require_type_contains_value(Some(target.span), value.span, &target_ty, &value_eval));
 
                 // check read_write
                 any_err = any_err.and(self.check_value_usable_as_direction(ctx, collector, target.span, &target_eval, AccessDirection::Write));
@@ -193,7 +193,7 @@ impl CompileState<'_, '_> {
 
                 // evaluate conditions and blocks
                 let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
+                let _: Result<_, ErrorGuaranteed> = self.require_type_contains_value(None, cond.span, &Type::Boolean, &cond_eval);
 
                 let lower_then_block = self.visit_block(ctx, collector, then_block);
                 let mut pairs = vec![];
@@ -202,7 +202,7 @@ impl CompileState<'_, '_> {
                     let ElseIfPair { span: _, cond, block } = pair;
 
                     let pair_cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                    let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &pair_cond_eval);
+                    let _: Result<_, ErrorGuaranteed> = self.require_type_contains_value(None, cond.span, &Type::Boolean, &pair_cond_eval);
 
                     let pair_block = self.visit_block(ctx, collector, block);
 
@@ -241,7 +241,7 @@ impl CompileState<'_, '_> {
                 let WhileStatement { cond, body } = statement_while;
 
                 let cond_eval = self.eval_expression_as_value(ctx, collector, cond);
-                let _: Result<_, ErrorGuaranteed> = self.check_type_contains(None, cond.span, &Type::Boolean, &cond_eval);
+                let _: Result<_, ErrorGuaranteed> = self.require_type_contains_value(None, cond.span, &Type::Boolean, &cond_eval);
 
                 let lower_body = self.visit_block(ctx, collector, body);
 
@@ -328,7 +328,7 @@ impl CompileState<'_, '_> {
                                 LowerStatement::Return(Some(Value::Error(e)))
                             }
                             (Some(ret_value), ret_ty_inner) => {
-                                match self.check_type_contains(Some(ret_ty.span), ret_value.span, ret_ty_inner, &ret_value.inner) {
+                                match self.require_type_contains_value(Some(ret_ty.span), ret_value.span, ret_ty_inner, &ret_value.inner) {
                                     Ok(()) => LowerStatement::Return(Some(ret_value.inner)),
                                     Err(e) => LowerStatement::Return(Some(Value::Error(e))),
                                 }
@@ -354,6 +354,8 @@ impl CompileState<'_, '_> {
     }
 
     // TODO this could be much faster with proper LRValue-style tracking
+    // TODO handle this differently: we already know in advance whether we need a value to be readable or writeable,
+    //   pass it as an arg to eval_expression and check it there
     pub fn check_value_usable_as_direction(&self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, value_span: Span, value: &Value, dir: AccessDirection) -> Result<(), ErrorGuaranteed> {
         let diags = self.diags;
 
@@ -485,6 +487,22 @@ impl CompileState<'_, '_> {
             Value::UnaryNot(x) => {
                 let mut r = self.check_value_usable_as_direction(ctx, collector, value_span, x, AccessDirection::Read);
                 r = r.and(if_write_simple_error("unary not expression"));
+                r
+            }
+            Value::ArrayAccess { result_ty: _, base, indices } => {
+                let mut r = self.check_value_usable_as_direction(ctx, collector, value_span, base, dir);
+                for index in indices {
+                    match index {
+                        &ArrayAccessIndex::Error(e) =>
+                            r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, &Value::Error(e), AccessDirection::Read)),
+                        ArrayAccessIndex::Single(index) =>
+                            r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, index, AccessDirection::Read)),
+                        ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) => {
+                            r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, start_inc, AccessDirection::Read));
+                            r = r.and(self.check_value_usable_as_direction(ctx, collector, value_span, end_inc, AccessDirection::Read));
+                        }
+                    }
+                }
                 r
             }
         }
