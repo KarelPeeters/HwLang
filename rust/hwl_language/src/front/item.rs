@@ -2,12 +2,12 @@ use crate::data::compiled::{Constant, ConstantInfo, FunctionSignatureInfo, Gener
 use crate::data::diagnostic::{Diagnostic, ErrorGuaranteed};
 use crate::data::parsed::ModulePortAstReference;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ExpressionContext, ScopedEntry, TypeOrValue, ValueDomain};
+use crate::front::common::{ExpressionContext, ScopeValue, ScopedEntry, TypeOrScopedValue, TypeOrValue};
 use crate::front::driver::CompileState;
-use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
+use crate::front::solver::Solver;
 use crate::front::types::{Constructor, EnumTypeInfo, GenericArguments, GenericParameters, MaybeConstructor, NominalTypeUnique, StructTypeInfo, Type};
-use crate::front::values::{FunctionReturnValue, ModuleValueInfo, Value};
+use crate::front::value::{ModuleValueInfo, Value, ValueAccess, ValueContent, ValueDomain};
 use crate::syntax::ast;
 use crate::syntax::ast::{ConstDeclaration, EnumVariant, GenericParameterKind, ItemDefEnum, ItemDefFunction, ItemDefModule, ItemDefStruct, ItemDefType, ItemImport, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortKind, Spanned, StructField};
 use crate::util::data::IndexMapExt;
@@ -18,7 +18,10 @@ impl CompileState<'_, '_> {
     // TODO this signature is wrong: items are not always type constructors
     // TODO clarify: this resolves the _signature_, not the body, right?
     //   for type aliases it appears to resolve the body too.
-    pub fn resolve_item_signature_new(&mut self, item: Item) -> MaybeConstructor<TypeOrValue> {
+    pub fn resolve_item_signature_new(&mut self, item: Item) -> MaybeConstructor<TypeOrScopedValue> {
+        // TODO does creating a new solver here make sense? document why if it does
+        let solver = &mut Solver::new();
+
         // check that this is indeed a new query
         assert!(self.compiled[item].signature.is_none());
 
@@ -41,7 +44,7 @@ impl CompileState<'_, '_> {
             // type definitions
             ast::Item::Type(ItemDefType { span: _, vis: _, id: _, ref params, ref inner }) => {
                 self.resolve_new_generic_def(item, GenericItemKind::Type, file_scope, params.as_ref(), |s, _args, scope_inner| {
-                    TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, inner))
+                    TypeOrValue::Type(s.eval_expression_as_ty(scope_inner, solver, inner))
                 })
             }
             ast::Item::Struct(ItemDefStruct { span, vis: _, id: _, ref params, ref fields }) => {
@@ -50,7 +53,7 @@ impl CompileState<'_, '_> {
                     let mut fields_map = IndexMap::new();
                     for field in fields {
                         let StructField { span: _, id: field_id, ty } = field;
-                        let field_ty = s.eval_expression_as_ty(scope_inner, ty);
+                        let field_ty = s.eval_expression_as_ty(scope_inner, solver, ty);
 
                         let prev = fields_map.insert(field_id.string.clone(), (field_id, field_ty));
                         if let Some(prev) = prev {
@@ -76,7 +79,7 @@ impl CompileState<'_, '_> {
                         let EnumVariant { span: _, id: variant_id, content } = variant;
 
                         let content = content.as_ref()
-                            .map(|content| s.eval_expression_as_ty(scope_inner, content));
+                            .map(|content| s.eval_expression_as_ty(scope_inner, solver, content));
 
                         let prev = variants_map.insert(variant_id.string.clone(), (variant_id, content));
                         if let Some(prev) = prev {
@@ -95,7 +98,7 @@ impl CompileState<'_, '_> {
                 })
             }
             // value definitions
-            ast::Item::Module(ItemDefModule { span: _, vis: _, id: _, ref params, ref ports, ref body }) => {
+            ast::Item::Module(ItemDefModule { span: module_span, vis: _, id: _, ref params, ref ports, ref body }) => {
                 self.resolve_new_generic_def(item, GenericItemKind::Module, file_scope, params.as_ref(), |s, args, scope_inner| {
                     // yet another sub-scope for the ports that refer to each other
                     let scope_ports = s.compiled.scopes.new_child(scope_inner, ports.span.join(body.span), Visibility::Private);
@@ -121,25 +124,24 @@ impl CompileState<'_, '_> {
                                         PortKind::Clock => PortKind::Clock,
                                         PortKind::Normal { domain: sync, ty } => {
                                             PortKind::Normal {
-                                                domain: s.eval_domain(scope_ports, sync.as_ref()),
-                                                ty: s.eval_expression_as_ty(scope_ports, ty),
+                                                domain: s.eval_domain(scope_ports, solver, sync.as_ref()),
+                                                ty: s.eval_expression_as_ty(scope_ports, solver, ty),
                                             }
                                         }
                                     },
                                 };
+
                                 let module_port = s.compiled.module_ports.push(module_port_info);
                                 port_vec.push(module_port);
 
-                                s.compiled.scopes[scope_ports].declare(
-                                    s.diags,
-                                    &port_id,
-                                    ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
-                                    Visibility::Private,
-                                );
+                                let value = ScopeValue::ModulePort(module_port);
+                                let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(value)));
+
+                                s.compiled.scopes[scope_ports].declare(s.diags, &port_id, entry, Visibility::Private);
                             }
                             ModulePortItem::Block(block) => {
                                 let ModulePortBlock { span: _, domain, ports } = block;
-                                let domain = s.eval_domain(scope_ports, domain.as_ref());
+                                let domain = s.eval_domain(scope_ports, solver, domain.as_ref());
 
                                 for (port_in_block_index, port) in enumerate(ports) {
                                     let ModulePortInBlock { span: _, id: port_id, direction, ty } = port;
@@ -153,18 +155,16 @@ impl CompileState<'_, '_> {
                                         direction: direction.inner,
                                         kind: PortKind::Normal {
                                             domain: domain.clone(),
-                                            ty: s.eval_expression_as_ty(scope_ports, ty),
+                                            ty: s.eval_expression_as_ty(scope_ports, solver, ty),
                                         },
                                     };
                                     let module_port = s.compiled.module_ports.push(module_port_info);
                                     port_vec.push(module_port);
 
-                                    s.compiled.scopes[scope_ports].declare(
-                                        s.diags,
-                                        &port_id,
-                                        ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::ModulePort(module_port)))),
-                                        Visibility::Private,
-                                    );
+                                    let value = ScopeValue::ModulePort(module_port);
+                                    let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(value)));
+
+                                    s.compiled.scopes[scope_ports].declare(s.diags, &port_id, entry, Visibility::Private);
                                 }
                             }
                         }
@@ -179,12 +179,18 @@ impl CompileState<'_, '_> {
                         ports: port_vec,
                     };
 
-                    TypeOrValue::Value(Value::Module(module_ty_info))
+                    TypeOrValue::Value(ScopeValue::Value(Value {
+                        content: ValueContent::Module(module_ty_info),
+                        ty_default: Type::Module,
+                        domain: ValueDomain::CompileTime,
+                        access: ValueAccess::No,
+                        origin: module_span,
+                    }))
                 })
             }
             ast::Item::Const(ref cst) => {
-                let cst = self.process_const(file_scope, cst);
-                MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst)))
+                let cst = self.process_const(file_scope, solver, cst);
+                MaybeConstructor::Immediate(TypeOrValue::Value(ScopeValue::Constant(cst)))
             }
             ast::Item::Function(ItemDefFunction { span: _, vis: _, id: _, ref params, ref ret_ty, body: _ }) => {
                 self.resolve_new_generic_def(item, GenericItemKind::Function, file_scope, Some(params), |s, args, scope_inner| {
@@ -194,7 +200,7 @@ impl CompileState<'_, '_> {
 
                     let ret_ty = match ret_ty {
                         None => Type::Unit,
-                        Some(ret_ty) => s.eval_expression_as_ty(scope_inner, ret_ty),
+                        Some(ret_ty) => s.eval_expression_as_ty(scope_inner, solver, ret_ty),
                     };
 
                     // keep scope for later
@@ -205,7 +211,7 @@ impl CompileState<'_, '_> {
                     s.compiled.function_info.insert_first(item, info);
 
                     // result
-                    TypeOrValue::Value(Value::FunctionReturn(FunctionReturnValue { item, ret_ty }))
+                    TypeOrValue::Value(ScopeValue::FunctionResult(item))
                 })
             }
             ast::Item::Interface(_) =>
@@ -221,6 +227,9 @@ impl CompileState<'_, '_> {
         params: Option<&Spanned<Vec<ast::GenericParameter>>>,
         build: impl FnOnce(&mut Self, GenericArguments, Scope) -> T,
     ) -> MaybeConstructor<T> {
+        // TODO does it make sense to create a solver here?
+        let solver = &mut Solver::new();
+
         let item_span = self.parsed.item_ast(self.compiled[item].ast_ref).common_info().span_full;
         let scope_inner = self.compiled.scopes.new_child(scope_outer, item_span, Visibility::Private);
 
@@ -244,18 +253,24 @@ impl CompileState<'_, '_> {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
                             });
-                            (GenericParameter::Type(param), TypeOrValue::Type(Type::GenericParameter(param)))
+                            (GenericParameter::Type(param), TypeOrScopedValue::Type(Type::GenericParameter(param)))
                         }
                         GenericParameterKind::Value(ty_expr) => {
-                            let ty = self.eval_expression_as_ty(scope_inner, ty_expr);
+                            let ty = self.eval_expression_as_ty(scope_inner, solver, ty_expr);
                             let param = self.compiled.generic_value_params.push(GenericValueParameterInfo {
                                 defining_item: item,
                                 defining_id: param_ast.id.clone(),
                                 defining_item_kind: item_kind,
-                                ty,
+                                ty: ty.clone(),
                                 ty_span: ty_expr.span,
                             });
-                            (GenericParameter::Value(param), TypeOrValue::Value(Value::GenericParameter(param)))
+                            (GenericParameter::Value(param), TypeOrScopedValue::Value(ScopeValue::Value(Value {
+                                content: ValueContent::opaque_of_type(&ty, solver),
+                                ty_default: ty,
+                                domain: ValueDomain::CompileTime,
+                                access: ValueAccess::No,
+                                origin: param_ast.id.span,
+                            })))
                         }
                     };
 
@@ -280,29 +295,29 @@ impl CompileState<'_, '_> {
         }
     }
 
-    // TODO for const items, delay body processing if the type is specified
+    // TODO for const top-level items, delay body processing if the type is specified, similar to all other items
     #[must_use]
-    pub fn process_const<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Constant {
+    pub fn process_const<V>(&mut self, scope: Scope, solver: &mut Solver, decl: &ConstDeclaration<V>) -> Constant {
         let &ConstDeclaration { span: _, vis: _, ref id, ref ty, ref value } = decl;
 
         // eval type and value
         let ty_eval = ty.as_ref().map(|ty| {
-            let inner = self.eval_expression_as_ty(scope, ty);
+            let inner = self.eval_expression_as_ty(scope, solver, ty);
             Spanned { span: ty.span, inner }
         });
         let value_unchecked = self.eval_expression_as_value(
             &ExpressionContext::constant(decl.span, scope),
-            &mut MaybeDriverCollector::None,
+            solver,
             value,
         );
 
         // check or infer type
-        let (ty_eval, value_eval) = match ty_eval {
-            None => (self.type_of_value(value.span, &value_unchecked), value_unchecked),
+        let (ty_eval, value_checked) = match ty_eval {
+            None => (value_unchecked.ty_default.clone(), value_unchecked),
             Some(ty_eval) => {
                 match self.require_type_contains_value(Some(ty_eval.span), value.span, &ty_eval.inner, &value_unchecked) {
                     Ok(()) => (ty_eval.inner, value_unchecked),
-                    Err(e) => (Type::Error(e), Value::Error(e)),
+                    Err(e) => (Type::Error(e), Value::error(e, value.span)),
                 }
             }
         };
@@ -312,7 +327,7 @@ impl CompileState<'_, '_> {
             id.span(),
             &ValueDomain::CompileTime,
             value.span,
-            &self.domain_of_value(value.span, &value_eval),
+            &value_checked.domain,
             DomainUserControlled::Source,
             "const value must be const",
         );
@@ -321,15 +336,15 @@ impl CompileState<'_, '_> {
         let cst = self.compiled.constants.push(ConstantInfo {
             defining_id: id.clone(),
             ty: ty_eval,
-            value: value_eval,
+            value: value_checked,
         });
 
         cst
     }
 
-    pub fn process_and_declare_const<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>, vis: Visibility) {
-        let cst = self.process_const(scope, decl);
-        let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(Value::Constant(cst))));
+    pub fn process_and_declare_const<V>(&mut self, scope: Scope, solver: &mut Solver, decl: &ConstDeclaration<V>, vis: Visibility) {
+        let cst = self.process_const(scope, solver, decl);
+        let entry = ScopedEntry::Direct(MaybeConstructor::Immediate(TypeOrValue::Value(ScopeValue::Constant(cst))));
         self.compiled[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, vis)
     }
 

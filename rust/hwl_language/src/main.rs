@@ -18,6 +18,7 @@ struct Args {
     print_diagnostics_immediately: bool,
 }
 
+// TODO go through and delete commented-out code
 fn main() {
     let Args { root, print_diagnostics_immediately } = Args::parse();
 

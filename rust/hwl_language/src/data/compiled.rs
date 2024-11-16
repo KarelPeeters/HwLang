@@ -1,21 +1,21 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::module_body::{LowerBlock, ModuleChecked};
+use crate::data::module_body::{LowerBlock, LowerModule};
 use crate::data::parsed::{ItemAstReference, ModulePortAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, TypeOrValue, ValueDomain};
+use crate::front::common::{ScopedEntry, TypeOrValue};
 use crate::front::scope::{Scope, ScopeInfo, Scopes};
-use crate::front::types::{IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{ArrayAccessIndex, RangeInfo, Value};
-use crate::syntax::ast::{ArrayLiteralElement, DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
+use crate::front::solver::SolverInt;
+use crate::front::types::{MaybeConstructor, Type};
+use crate::front::value::{DomainSignal, RangeInfo, Value, ValueDomain};
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::Arena;
 use crate::{new_index_type, swrite};
 use indexmap::IndexMap;
-use num_traits::Signed;
 
 macro_rules! impl_index {
     ($arena:ident, $index:ty, $info:ty) => {
-        impl<S: CompiledStage> std::ops::Index<$index> for CompiledDatabase<S> {
+        impl<'a, S: CompiledStage> std::ops::Index<$index> for CompiledDatabase<'a, S> {
             type Output = $info;
             fn index(&self, index: $index) -> &Self::Output {
                 &self.$arena[index]
@@ -26,7 +26,7 @@ macro_rules! impl_index {
 
 macro_rules! impl_index_mut {
     ($arena:ident, $index:ty, $info:ty) => {
-        impl std::ops::IndexMut<$index> for CompiledDatabase<CompiledStagePartial> {
+        impl<'a> std::ops::IndexMut<$index> for CompiledDatabase<'a, CompiledStagePartial> {
             fn index_mut(&mut self, index: $index) -> &mut $info {
                 &mut self.$arena[index]
             }
@@ -34,13 +34,13 @@ macro_rules! impl_index_mut {
     };
 }
 
-pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
+pub type CompiledDatabasePartial<'a> = CompiledDatabase<'a, CompiledStagePartial>;
 
-pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
+pub struct CompiledDatabase<'a, S: CompiledStage = CompiledStateFull> {
     pub scopes: Scopes<ScopedEntry>,
 
     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
-    pub items: Arena<Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>>,
+    pub items: Arena<Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody<'a>>>,
 
     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
@@ -53,8 +53,8 @@ pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
     pub constants: Arena<Constant, ConstantInfo>,
 }
 
-impl_index!(items, Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>);
-impl_index_mut!(items, Item, ItemInfoPartial);
+impl_index!(items, Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody<'a>>);
+impl_index_mut!(items, Item, ItemInfoPartial<'a>);
 impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
 impl_index_mut!(scopes, Scope, ScopeInfo<ScopedEntry>);
 
@@ -66,7 +66,7 @@ impl_index!(wires, Wire, WireInfo);
 impl_index!(variables, Variable, VariableInfo);
 impl_index!(constants, Constant, ConstantInfo);
 
-impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
+impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<'_, S> {
     type Output = Result<FileScopes, ErrorGuaranteed>;
     fn index(&self, index: FileId) -> &Self::Output {
         self.file_scopes.get(&index).unwrap()
@@ -75,21 +75,21 @@ impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
 
 pub trait CompiledStage {
     type ItemInfoSignature;
-    type ItemInfoBody;
+    type ItemInfoBody<'a>;
 }
 
 pub struct CompiledStagePartial;
 
 impl CompiledStage for CompiledStagePartial {
     type ItemInfoSignature = Option<MaybeConstructor<TypeOrValue>>;
-    type ItemInfoBody = Option<ItemChecked>;
+    type ItemInfoBody<'a> = Option<ItemChecked<'a>>;
 }
 
 pub struct CompiledStateFull;
 
 impl CompiledStage for CompiledStateFull {
     type ItemInfoSignature = MaybeConstructor<TypeOrValue>;
-    type ItemInfoBody = ItemChecked;
+    type ItemInfoBody<'a> = ItemChecked<'a>;
 }
 
 new_index_type!(pub Item);
@@ -115,10 +115,11 @@ pub enum GenericParameter {
     Value(GenericValueParameter),
 }
 
-pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked>>;
+pub type ItemInfoPartial<'a> = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked<'a>>>;
+pub type ItemInfoFull<'a> = ItemInfo<MaybeConstructor<TypeOrValue>, ItemChecked<'a>>;
 
 #[derive(Debug)]
-pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemChecked> {
+pub struct ItemInfo<T, B> {
     pub defining_id: MaybeIdentifier,
     pub ast_ref: ItemAstReference,
     pub signature: T,
@@ -189,14 +190,21 @@ pub struct ModuleSignatureInfo {
 pub struct ModulePortInfo {
     pub ast: ModulePortAstReference,
     pub direction: PortDirection,
-    pub kind: PortKind<DomainKind<Value>, Type>,
+    pub kind: PortKind<DomainKind<DomainSignal>, Type>,
 }
 
-impl PortKind<DomainKind<Value>, Type> {
+impl PortKind<DomainKind<DomainSignal>, Type> {
     pub fn ty(&self) -> &Type {
         match self {
             PortKind::Clock => &Type::Clock,
             PortKind::Normal { domain: _, ty } => ty,
+        }
+    }
+
+    pub fn domain(&self) -> ValueDomain {
+        match self {
+            PortKind::Clock => ValueDomain::Clock,
+            PortKind::Normal { domain, ty: _ } => ValueDomain::from_domain_kind(domain.clone()),
         }
     }
 }
@@ -221,15 +229,7 @@ pub struct WireInfo {
     pub has_declaration_value: bool,
 }
 
-// TODO variables that are assigned to multiple different domains need to get the merged domain,
-//   but that is not implemented yet. Currently only obvious domains (ie. clocked, function) are set.
-//   This mostly works fine, except for combinatorial blocks.
-#[derive(Debug, Clone)]
-pub enum VariableDomain {
-    Unknown,
-    Known(ValueDomain),
-}
-
+// TODO most of this is redundant with the fields in Value 
 #[derive(Debug)]
 pub struct VariableInfo {
     pub defining_id: MaybeIdentifier,
@@ -238,7 +238,7 @@ pub struct VariableInfo {
     pub ty: Type,
     pub mutable: bool,
 
-    pub domain: VariableDomain,
+    pub domain: ValueDomain,
 }
 
 #[derive(Debug)]
@@ -254,104 +254,28 @@ pub struct ConstantInfo {
 /// Typechecking can store any additional information beyond the AST here,
 /// which can be used during lowering.
 #[derive(Debug)]
-pub enum ItemChecked {
+pub enum ItemChecked<'a> {
     /// For items that don't have a body.
     None,
-    Module(ModuleChecked),
-    Function(FunctionChecked),
+    Module(LowerModule<'a>),
+    Function(FunctionChecked<'a>),
     Error(ErrorGuaranteed),
 }
 
 #[derive(Debug)]
-pub struct FunctionChecked {
+pub struct FunctionChecked<'a> {
     #[allow(dead_code)]
-    pub block: LowerBlock,
+    pub block: LowerBlock<'a>,
 }
 
-impl<S: CompiledStage> CompiledDatabase<S> {
-    // TODO make sure generic variables are properly disambiguated
-    // TODO insert this into value_to_readable_str, no point keeping this one separate
-    pub fn range_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, range: &RangeInfo<Box<Value>>) -> String {
-        let RangeInfo { ref start_inc, ref end_inc } = *range;
-
-        let start = start_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
-        let end = end_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
-
-        format!("({}..={})", start, end)
-    }
-
-    // TODO integrate generic parameters properly in the diagnostic, by pointing to them
-    // TODO include span if there is any ambiguity
-    pub fn value_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, value: &Value) -> String {
-        match value {
-            Value::Error(_) => "error".to_string(),
-            &Value::GenericParameter(p) => self[p].defining_id.string.clone(),
-            &Value::ModulePort(p) => parsed.module_port_ast(self[p].ast).id().string.clone(),
-            Value::Never => "never".to_string(),
-            Value::Undefined => "undefined".to_string(),
-            Value::Unit => "()".to_string(),
-            Value::BoolConstant(b) => format!("{}", b),
-            Value::IntConstant(v) => {
-                if v.is_negative() {
-                    format!("({})", v)
-                } else {
-                    format!("{}", v)
-                }
-            }
-            Value::StringConstant(s) => format!("{:?}", s),
-            Value::Range(range) => self.range_to_readable_str(source, parsed, range),
-            &Value::Binary(op, ref left, ref right) => {
-                let left = self.value_to_readable_str(source, parsed, left);
-                let right = self.value_to_readable_str(source, parsed, right);
-                let symbol = op.symbol();
-                format!("({} {} {})", left, symbol, right)
-            }
-            Value::UnaryNot(inner) => {
-                let inner = self.value_to_readable_str(source, parsed, inner);
-                format!("(!{})", inner)
-            }
-            Value::ArrayAccess { result_ty: _, base, indices } => {
-                let base = self.value_to_readable_str(source, parsed, base);
-                let indices = indices.iter().map(|v| {
-                    match v {
-                        ArrayAccessIndex::Error(_) => "error".to_string(),
-                        ArrayAccessIndex::Single(v) => self.value_to_readable_str(source, parsed, v),
-                        ArrayAccessIndex::Range(range) => {
-                            let range = RangeInfo {
-                                start_inc: Some(range.start_inc.clone()),
-                                end_inc: Some(range.end_inc.clone()),
-                            };
-                            self.range_to_readable_str(source, parsed, &range)
-                        },
-                    }
-                }).collect::<Vec<_>>().join(", ");
-                format!("{}[{}]", base, indices)
-            },
-            Value::ArrayLiteral { result_ty: _, operands: operands_mixed } => {
-                let operands = operands_mixed.iter().map(|ArrayLiteralElement { spread, value }| {
-                    let value_str = self.value_to_readable_str(source, parsed, value);
-                    let spread_str = spread.map_or("", |_| "*");
-                    format!("{spread_str}{value_str}")
-                }).collect::<Vec<_>>().join(", ");
-                format!("[{}]", operands)
-            }
-            // TODO how to display function return values? we don't know the function call args here any more!
-            Value::FunctionReturn(ret) =>
-                format!("function_return({})", self.defining_id_to_readable_string(self[ret.item].defining_id.as_ref())),
-            Value::Module(module) =>
-                format!("module({})", self.defining_id_to_readable_string(self[module.nominal_type_unique.item].defining_id.as_ref())),
-            &Value::Wire(wire) =>
-                self.defining_id_to_readable_string(self[wire].defining_id.as_ref()).to_string(),
-            &Value::Register(reg) =>
-                self.defining_id_to_readable_string(self[reg].defining_id.as_ref()).to_string(),
-            &Value::Variable(var) =>
-                self.defining_id_to_readable_string(self[var].defining_id.as_ref()).to_string(),
-            &Value::Constant(c) =>
-                self.defining_id_to_readable_string(self[c].defining_id.as_ref()).to_string(),
-        }
+impl<S: CompiledStage> CompiledDatabase<'_, S> {
+    pub fn solver_int_to_readable_str(&self, _: SolverInt) -> String {
+        // TODO do something useful here, this will require adding debug info to the solver
+        "solver_int".to_string()
     }
 
     // TODO make sure to always print in disambiguated form
+    // TODO return something that automatically includes backticks during formatting
     pub fn type_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, ty: &Type) -> String {
         match ty {
             Type::Error(_) => "error".to_string(),
@@ -363,34 +287,46 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             Type::Boolean => "bool".to_string(),
             Type::Clock => "clock".to_string(),
             Type::String => "string".to_string(),
-            Type::Bits(n) => match n {
-                None => "bits".to_string(),
-                Some(n) => format!("bits({})", self.value_to_readable_str(source, parsed, n)),
-            },
             Type::Range => "range".to_string(),
-            Type::Array(inner, n) => {
+            Type::Module => "module".to_string(),
+            &Type::Array(ref inner, n) => {
                 let mut indices = String::new();
                 let f = &mut indices;
 
-                swrite!(f, "{}", self.value_to_readable_str(source, parsed, n));
+                swrite!(f, "{}", self.solver_int_to_readable_str(n));
                 let mut inner = inner;
-                while let Type::Array(next, n_next) = &**inner {
-                    swrite!(f, ", {}", self.value_to_readable_str(source, parsed, n_next));
+                while let &Type::Array(ref next, n_next) = &**inner {
+                    swrite!(f, ", {}", self.solver_int_to_readable_str(n_next));
                     inner = next;
                 }
 
                 let ty_str = self.type_to_readable_str(source, parsed, inner);
                 format!("({ty_str}[{indices}])")
             }
-            Type::Integer(IntegerTypeInfo { range }) => {
-                // TODO match specific patterns again, eg. uint?
-                format!("int_range({})", self.value_to_readable_str(source, parsed, range))
+            Type::Integer(RangeInfo { start_inc, end_inc }) => {
+                // TODO match specific patterns for even more readable strings, eg. uint?
+                let start_str = start_inc.map_or("".to_string(), |v| self.solver_int_to_readable_str(v));
+                let end_str = end_inc.map_or("".to_string(), |v| self.solver_int_to_readable_str(v));
+                format!("int_range({start_str}..{end_str})")
             }
             // TODO
             Type::Function(_) => "function".to_string(),
             Type::Tuple(_) => "tuple".to_string(),
             Type::Struct(_) => "struct".to_string(),
             Type::Enum(_) => "enum".to_string(),
+        }
+    }
+
+    pub fn domain_signal_to_readable_string(&self, source: &SourceDatabase, parsed: &ParsedDatabase, signal: &DomainSignal) -> String {
+        match signal {
+            DomainSignal::Error(_) => "error".to_string(),
+            &DomainSignal::Port(port) => parsed.module_port_ast(self[port].ast).id().string.clone(),
+            &DomainSignal::Wire(wire) => defining_id_to_readable_string(self[wire].defining_id.as_ref()).to_string(),
+            &DomainSignal::Register(reg) => defining_id_to_readable_string(self[reg].defining_id.as_ref()).to_string(),
+            DomainSignal::Invert(inner) => {
+                let inner_str = self.domain_signal_to_readable_string(source, parsed, inner);
+                format!("(!{})", inner_str)
+            }
         }
     }
 
@@ -402,17 +338,17 @@ impl<S: CompiledStage> CompiledDatabase<S> {
             ValueDomain::Clock => "clock".to_string(),
             ValueDomain::Async => "async".to_string(),
             ValueDomain::Sync(SyncDomain { clock, reset }) => {
-                let clock_str = self.value_to_readable_str(source, parsed, clock);
-                let reset_str = self.value_to_readable_str(source, parsed, reset);
+                let clock_str = self.domain_signal_to_readable_string(source, parsed, clock);
+                let reset_str = self.domain_signal_to_readable_string(source, parsed, reset);
                 format!("sync({clock_str}, {reset_str})")
             }
             &ValueDomain::FunctionBody(function) => {
-                format!("function_body({})", self.defining_id_to_readable_string(self[function].defining_id.as_ref()))
+                format!("function_body({})", defining_id_to_readable_string(self[function].defining_id.as_ref()))
             }
         }
     }
+}
 
-    pub fn defining_id_to_readable_string<'a>(&self, id: MaybeIdentifier<&'a Identifier>) -> &'a str {
-        id.string().unwrap_or("_")
-    }
+pub fn defining_id_to_readable_string(id: MaybeIdentifier<&Identifier>) -> &str {
+    id.string().unwrap_or("_")
 }

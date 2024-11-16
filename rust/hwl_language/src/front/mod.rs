@@ -1,8 +1,9 @@
 pub mod types;
-pub mod values;
+pub mod value;
 pub mod scope;
 pub mod common;
 pub mod driver;
+pub mod solver;
 
 // modules split out of the driver
 pub mod checking;

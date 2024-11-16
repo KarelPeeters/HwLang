@@ -1,13 +1,14 @@
 use crate::data::compiled::{Item, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::module_body::{LowerBlock, LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{LowerBlock, LowerBlockClocked, LowerBlockCombinatorial, LowerModule, LowerModuleInstance, LowerModuleStatement, LowerStatement};
 use crate::front::block::AccessDirection;
 use crate::front::checking::DomainUserControlled;
-use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
+use crate::front::common::{ContextDomain, ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue};
 use crate::front::driver::CompileState;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{Constructor, GenericArguments, PortConnections, Type};
-use crate::front::values::{ModuleValueInfo, Value};
+use crate::front::solver::Solver;
+use crate::front::types::{Constructor, GenericArguments, Type};
+use crate::front::value::{ModuleValueInfo, Value, ValueDomain};
 use crate::syntax::ast;
 use crate::syntax::ast::{ClockedBlock, CombinatorialBlock, Identifier, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, Spanned, WireDeclaration};
 use crate::syntax::pos::Span;
@@ -21,12 +22,17 @@ use std::hash::Hash;
 use unwrap_match::unwrap_match;
 
 impl<'d, 'a> CompileState<'d, 'a> {
-    pub fn check_module_body(&mut self, module_item: Item, module_ast: &'a ast::ItemDefModule) -> ModuleChecked {
+    pub fn check_module_body(&mut self, module_item: Item, module_ast: &'a ast::ItemDefModule) -> LowerModule {
+        // TODO does constructing the solver here make sense?
+        let mut solver = &mut Solver::new();
+        
         let ast::ItemDefModule { span: _, vis: _, id: _, params: _, ports: _, body } = module_ast;
         let ast::Block { span: _, statements: module_statements } = body;
 
         // TODO do we event want to convert to some simpler IR here,
         //   or just leave the backend to walk the AST if it wants?
+        // TODO reduce the duplication between regs/writes/ports: eg. just always map ports to wires/registers,
+        //   that also immediately solves the "backread" issue for older backend language versions
         let mut module_statements_lower = vec![];
         let mut module_regs = IndexMap::new();
         let mut module_wires = vec![];
@@ -53,7 +59,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         for module_statement in module_statements {
             match &module_statement.inner {
                 ModuleStatementKind::ConstDeclaration(decl) => {
-                    self.process_and_declare_const(scope_body, decl, Visibility::Private);
+                    self.process_and_declare_const(scope_body, solver, decl, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let (reg, init) = self.process_module_declaration_reg(module_item, scope_body, decl);
@@ -101,11 +107,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
                 // actual blocks
                 ModuleStatementKind::CombinatorialBlock(ref comb_block) => {
                     let block = self.process_module_block_combinatorial(&mut drivers, scope_body, lower_statement_index, comb_block);
-                    module_statements_lower.push(ModuleStatement::Combinatorial(block));
+                    module_statements_lower.push(LowerModuleStatement::Combinatorial(block));
                 }
                 ModuleStatementKind::ClockedBlock(ref clocked_block) => {
                     let block = self.process_module_block_clocked(&mut drivers, scope_body, lower_statement_index, clocked_block);
-                    module_statements_lower.push(ModuleStatement::Clocked(block));
+                    module_statements_lower.push(LowerModuleStatement::Clocked(block));
                 }
                 // instances
                 ModuleStatementKind::Instance(instance) => {
@@ -117,7 +123,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
         let output_port_driver = self.check_driver_validness(&mut module_statements_lower, &module_regs, &drivers, &output_port_regs);
 
-        ModuleChecked {
+        LowerModule {
             statements: module_statements_lower,
             regs: module_regs.keys().copied().collect_vec(),
             wires: module_wires,
@@ -127,7 +133,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
 
     fn check_driver_validness(
         &self,
-        module_statements_lower: &mut Vec<ModuleStatement>,
+        module_statements_lower: &mut Vec<LowerModuleStatement>,
         module_regs: &IndexMap<Register, Spanned<Value>>,
         drivers: &Drivers,
         output_port_regs: &IndexMap<ModulePort, (&'a Identifier, Spanned<Value>)>,
@@ -472,7 +478,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 
     #[must_use]
-    fn process_module_block_combinatorial(&mut self, drivers: &mut Drivers, scope_body: Scope, statement_index: usize, comb_block: &CombinatorialBlock) -> ModuleBlockCombinatorial {
+    fn process_module_block_combinatorial(&mut self, drivers: &mut Drivers, scope_body: Scope, statement_index: usize, comb_block: &CombinatorialBlock) -> LowerBlockCombinatorial {
         let &CombinatorialBlock { span, span_keyword: _, ref block } = comb_block;
 
         let mut collector = DriverCollector {
@@ -485,7 +491,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             block,
         );
 
-        ModuleBlockCombinatorial {
+        LowerBlockCombinatorial {
             span,
             block: lower_block,
         }
@@ -498,7 +504,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         scopy_body: Scope,
         statement_index: usize,
         clocked_block: &ClockedBlock,
-    ) -> ModuleBlockClocked {
+    ) -> LowerBlockClocked {
         let &ClockedBlock {
             span, span_keyword: _, ref domain, ref block
         } = clocked_block;
@@ -525,7 +531,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
             block,
         );
 
-        ModuleBlockClocked {
+        LowerBlockClocked {
             span,
             domain: sync_domain,
             on_reset: LowerBlock { statements: vec![] },
@@ -540,7 +546,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         scope_body: Scope,
         statement_index: usize,
         instance: &ast::ModuleInstance,
-    ) -> ModuleStatement {
+    ) -> LowerModuleStatement {
         // TODO check that ID is unique, both with other IDs but also signals and wires
         //   (or do we leave that to backend?)
         let &ast::ModuleInstance {
@@ -589,7 +595,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         // to continue checking ports we need the module to be valid
         let (module_with_generics, generic_arguments) = match module_with_generics {
             Ok(m) => m,
-            Err(e) => return ModuleStatement::Err(e),
+            Err(e) => return LowerModuleStatement::Err(e),
         };
 
         // check port connections
@@ -600,11 +606,11 @@ impl<'d, 'a> CompileState<'d, 'a> {
             &connections,
         ) {
             Ok(p) => p,
-            Err(e) => return ModuleStatement::Err(e),
+            Err(e) => return LowerModuleStatement::Err(e),
         };
 
         // successfully created instance
-        ModuleStatement::Instance(ModuleInstance {
+        LowerModuleStatement::Instance(LowerModuleInstance {
             module: module_with_generics.nominal_type_unique.item,
             name: name.as_ref().map(|s| s.string.clone()),
             generic_arguments,
@@ -619,7 +625,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
         collector: &mut MaybeDriverCollector,
         ports: &[ModulePort],
         connections: &Spanned<Vec<(Identifier, Spanned<Option<Value>>)>>,
-    ) -> Result<PortConnections, ErrorGuaranteed> {
+    ) -> Result<Vec<&'a ast::Expression>, ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut any_err = Ok(());
@@ -682,8 +688,6 @@ impl<'d, 'a> CompileState<'d, 'a> {
             match port_dir {
                 PortDirection::Input => {
                     if let Some(connection_value) = connection_value {
-                        let domain_value = self.domain_of_value(connection_value_span, connection_value);
-
                         any_err = any_err.and(self.check_value_usable_as_direction(
                             ctx,
                             collector,
@@ -695,7 +699,7 @@ impl<'d, 'a> CompileState<'d, 'a> {
                             connection_id.span,
                             &domain_port,
                             connection_value_span,
-                            &domain_value,
+                            &(&connection_value.domain),
                             DomainUserControlled::Source,
                             "instance port connections must respect domains",
                         ));
@@ -843,12 +847,12 @@ impl<'d, 'a> CompileState<'d, 'a> {
     }
 }
 
-fn pull_reg_init_into_single_clocked_block_driver(
+fn pull_reg_init_into_single_clocked_block_driver<'a>(
     driver: Driver,
-    module_statements_lower: &mut Vec<ModuleStatement>,
+    module_statements_lower: &mut Vec<LowerModuleStatement<'a>>,
     def_span: Span,
-    target: Spanned<Value>,
-    init: Spanned<Value>,
+    target: &'a ast::Expression,
+    init: &'a ast::Expression,
 ) {
     let lower_statement_index = unwrap_match!(
             driver,
@@ -856,7 +860,7 @@ fn pull_reg_init_into_single_clocked_block_driver(
         );
     let block = unwrap_match!(
             &mut module_statements_lower[lower_statement_index],
-            ModuleStatement::Clocked(block) => block
+            LowerModuleStatement::Clocked(block) => block
         );
 
     let stmt = LowerStatement::Assignment {

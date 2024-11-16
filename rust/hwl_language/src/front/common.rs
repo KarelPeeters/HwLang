@@ -1,8 +1,9 @@
-use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo};
+use crate::data::compiled::{CompiledDatabase, CompiledStage, Constant, GenericTypeParameter, GenericTypeParameterInfo, GenericValueParameter, GenericValueParameterInfo, Item, ModulePort, ModulePortInfo, Variable};
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::Scope;
+use crate::front::solver::Solver;
 use crate::front::types::{MaybeConstructor, Type};
-use crate::front::values::Value;
+use crate::front::value::{Value, ValueDomain};
 use crate::syntax::ast::{DomainKind, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use indexmap::IndexMap;
@@ -50,19 +51,10 @@ impl<'m> ExpressionContext<'m> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum ContextDomain<V = ValueDomain> {
-    Specific(V),
+#[derive(Debug, Clone)]
+pub enum ContextDomain<D = ValueDomain> {
+    Specific { domain: D, error_hint: String },
     Passthrough,
-}
-
-impl<V> ContextDomain<V> {
-    pub fn as_ref(&self) -> ContextDomain<&V> {
-        match self {
-            ContextDomain::Specific(domain) => ContextDomain::Specific(domain),
-            ContextDomain::Passthrough => ContextDomain::Passthrough,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,15 +63,37 @@ pub enum ScopedEntry {
     Direct(ScopedEntryDirect),
 }
 
-pub type ScopedEntryDirect = MaybeConstructor<TypeOrValue>;
+pub type ScopedEntryDirect = MaybeConstructor<TypeOrScopedValue, TypeOrValue>;
+pub type ExpressionEval = MaybeConstructor<TypeOrValue>;
+
+// TODO move this somewhere else
+#[derive(Debug, Clone)]
+pub enum ScopeValue {
+    Value(Value),
+
+    Variable(Variable),
+    ModulePort(ModulePort),
+    Constant(Constant),
+    FunctionResult(Item),
+}
+
+impl ScopeValue {
+    pub fn to_value(self, _solver: &mut Solver, _ctx: &()) -> Value {
+        match self {
+            ScopeValue::Variable(_) => todo!(),
+            ScopeValue::Value(value) => value,
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum TypeOrValue<T = Type, V = Value> {
     Type(T),
     Value(V),
-    /// This error case means we don't know whether this is a type or value.
+    /// This error case can be used if we don't even know whether this is a type or value.
     Error(ErrorGuaranteed),
 }
+pub type TypeOrScopedValue = TypeOrValue<Type, ScopeValue>;
 
 impl<T, V> TypeOrValue<T, V> {
     pub fn as_ref(&self) -> TypeOrValue<&T, &V> {
@@ -91,34 +105,13 @@ impl<T, V> TypeOrValue<T, V> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ValueDomain<V = Value> {
-    Error(ErrorGuaranteed),
-    // TODO rename to compile-time, this is not necessarily constant
-    //   (eg. in functions, certain variables might be constant) 
-    CompileTime,
-    Clock,
-    // TODO allow separate sync/async per edge, necessary for "async" reset
-    Async,
-    Sync(SyncDomain<V>),
-    FunctionBody(Item),
-}
-
-impl ValueDomain {
-    pub fn from_domain_kind(domain: DomainKind<Value>) -> Self {
-        match domain {
-            DomainKind::Async => ValueDomain::Async,
-            DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
-                clock: sync.clock,
-                reset: sync.reset,
-            }),
-        }
-    }
-}
-
 /// A Monad trait, specifically for replacing generic parameters in a type or value with more concrete arguments.
-// TODO this while concept is pretty tricky, maybe it's better to switch to something rust-like
+// TODO this whole concept is pretty tricky, maybe it's better to switch to something rust-like
 //   where generics don't get deep-replaced, but stay as at least one level of "parameter"
+// TODO get this of this, this is just an endless source of bugs
+//   instead, every type should freely refer to generic parameters,
+//   if users want the _real_ type they should convert it using their current generic context
+//   -> make Type and TypeContext generic over the realness of it's recursive types, adding type safety
 pub trait GenericContainer {
     type Result;
 
@@ -146,14 +139,14 @@ impl GenericMap {
     }
 }
 
-impl GenericContainer for TypeOrValue {
-    type Result = TypeOrValue;
+impl<T: GenericContainer, V: GenericContainer> GenericContainer for TypeOrValue<T, V> {
+    type Result = TypeOrValue<T::Result, V::Result>;
 
     fn replace_generics<S: CompiledStage>(
         &self,
         compiled: &mut CompiledDatabase<S>,
         map: &GenericMap,
-    ) -> Self {
+    ) -> Self::Result {
         match self {
             TypeOrValue::Type(t) => TypeOrValue::Type(t.replace_generics(compiled, map)),
             TypeOrValue::Value(v) => TypeOrValue::Value(v.replace_generics(compiled, map)),

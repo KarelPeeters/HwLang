@@ -480,12 +480,6 @@ pub struct RangeLiteral {
     pub end: Option<Box<Expression>>
 }
 
-#[derive(Debug, Clone)]
-pub struct SyncExpression {
-    pub clock: Box<Expression>,
-    pub body: Block<BlockStatement>,
-}
-
 // TODO allow: undefined, wildcard, 0, 1, hex, decimal, ...
 // TODO wildcard symbol: `_`, `?`, `*`, `#`?
 //     `*` is a bad idea
@@ -550,7 +544,7 @@ pub enum BinaryOp {
 
 #[derive(Debug, Copy, Clone)]
 pub enum UnaryOp {
-    Neg,
+    Negate,
     Not,
 }
 

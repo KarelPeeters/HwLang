@@ -2,7 +2,7 @@ use crate::data::compiled::{CompiledDatabase, CompiledDatabasePartial, FileScope
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::{ItemAstReference, ParsedDatabase};
 use crate::data::source::SourceDatabase;
-use crate::front::common::{ScopedEntry, ScopedEntryDirect, TypeOrValue};
+use crate::front::common::{ScopedEntry, ScopedEntryDirect};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::MaybeConstructor;
 use crate::syntax::ast::{Identifier, ImportEntry, ImportFinalKind, ItemImport, Spanned};
@@ -15,7 +15,7 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
-pub fn compile(diag: &Diagnostics, source: &SourceDatabase) -> (ParsedDatabase, CompiledDatabase) {
+pub fn compile<'a>(diag: &Diagnostics, source: &'a SourceDatabase) -> (ParsedDatabase, CompiledDatabase<'a>) {
     // sort files to ensure platform-independence
     // TODO make this the responsibility of the database builder, now file ids are still not deterministic
     let files_sorted = source.files.keys()
@@ -174,7 +174,7 @@ pub(super) struct CompileState<'d, 'a> {
     item_signature_stack: Vec<Item>,
     item_signatures_finished: bool,
 
-    pub(super) compiled: CompiledDatabasePartial,
+    pub(super) compiled: CompiledDatabasePartial<'a>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -194,7 +194,7 @@ impl EvalTrueError {
 }
 
 impl CompileState<'_, '_> {
-    pub fn resolve_item_signature(&mut self, item: Item) -> &MaybeConstructor<TypeOrValue> {
+    pub fn resolve_item_signature(&mut self, item: Item) -> &ScopedEntryDirect {
         // return existing signature if there is sone
         //   ideally we could just do `if let Some(...)` here, but for some reason the borrow checker rejects that
         if self.compiled.items[item].signature.is_some() {
@@ -211,7 +211,7 @@ impl CompileState<'_, '_> {
 
         // check for cycle
         let cycle_start_index = self.item_signature_stack.iter().position(|s| s == &item);
-        let result: MaybeConstructor<TypeOrValue> = if let Some(cycle_start_index) = cycle_start_index {
+        let result = if let Some(cycle_start_index) = cycle_start_index {
             // cycle detected, report error
             let cycle = &self.item_signature_stack[cycle_start_index..];
 
@@ -276,7 +276,7 @@ fn add_import_to_scope(
             Err(e) => Err(e),
         }
             .map(|entry| entry.value.clone())
-            .unwrap_or_else(|e| ScopedEntry::Direct(ScopedEntryDirect::Error(e)));
+            .unwrap_or_else(|e| ScopedEntry::Direct(MaybeConstructor::Error(e)));
 
         let target_scope = &mut scopes[target_scope];
         match as_ {

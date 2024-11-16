@@ -2,20 +2,20 @@ use crate::back::todo::{BackModule, BackModuleList, BackModuleName};
 use crate::data::compiled::{CompiledDatabase, GenericParameter, Item, ItemChecked, ModulePort, ModulePortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::data::diagnostic::{Diagnostic, Diagnostics, ErrorGuaranteed};
 use crate::data::lowered::LoweredDatabase;
-use crate::data::module_body::{LowerBlock, LowerIfStatement, LowerStatement, ModuleBlockClocked, ModuleBlockCombinatorial, ModuleChecked, ModuleInstance, ModuleStatement};
+use crate::data::module_body::{LowerBlock, LowerBlockClocked, LowerBlockCombinatorial, LowerIfStatement, LowerModule, LowerModuleInstance, LowerModuleStatement, LowerStatement};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::front::common::{GenericContainer, GenericMap, ScopedEntry, TypeOrValue};
 use crate::front::module::Driver;
 use crate::front::scope::Visibility;
-use crate::front::types::{Constructor, GenericArguments, IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{RangeInfo, Value};
+use crate::front::types::{Constructor, GenericArguments, MaybeConstructor, Type};
+use crate::front::value::{RangeInfo, Value};
 use crate::syntax::ast;
 use crate::syntax::ast::{BinaryOp, DomainKind, Identifier, MaybeIdentifier, PortDirection, PortKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::{result_pair, ResultExt};
-use crate::{swrite, swriteln, throw};
+use crate::{swrite, swriteln};
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use num_bigint::BigInt;
@@ -152,14 +152,6 @@ enum Signal {
 }
 
 impl Signal {
-    fn to_value(self) -> Value {
-        match self {
-            Signal::Reg(reg) => Value::Register(reg),
-            Signal::Wire(wire) => Value::Wire(wire),
-            Signal::Port(port) => Value::ModulePort(port),
-        }
-    }
-
     fn ty(self, compiled: &CompiledDatabase) -> &Type {
         match self {
             Signal::Reg(reg) => &compiled[reg].ty,
@@ -238,12 +230,12 @@ fn module_body_to_verilog(
     todo: &mut BackModuleList,
     generic_map: &GenericMap,
     module_span: Span,
-    body: &ModuleChecked,
+    body: &LowerModule,
 ) -> String {
     let mut result = String::new();
     let f = &mut result;
 
-    let ModuleChecked { statements, regs, wires, output_port_driver: _ } = body;
+    let LowerModule { statements, regs, wires, output_port_driver: _ } = body;
     let mut signal_map = IndexMap::new();
 
     let mut newline = NewlineGenerator::new();
@@ -296,19 +288,19 @@ fn module_body_to_verilog(
         newline.before_item(f);
 
         match statement {
-            ModuleStatement::Combinatorial(block) => {
-                let ModuleBlockCombinatorial { span: _, block } = block;
+            LowerModuleStatement::Combinatorial(block) => {
+                let LowerBlockCombinatorial { span: _, block } = block;
                 // TODO collect RHS expressions and use those instead of this star
                 // TODO add metadata pointing to source as comments
                 swriteln!(f, "{I}always @(*) begin");
                 block_to_verilog(diag, parsed, compiled, generic_map, &signal_map, block, f, Indent::new(2));
                 swriteln!(f, "{I}end");
             }
-            ModuleStatement::Clocked(block) => {
+            LowerModuleStatement::Clocked(block) => {
                 clocked_block_to_verilog(diag, parsed, compiled, generic_map, &signal_map, f, block);
             }
-            ModuleStatement::Instance(instance) => {
-                let &ModuleInstance {
+            LowerModuleStatement::Instance(instance) => {
+                let &LowerModuleInstance {
                     module: child,
                     name: ref child_instance_name,
                     generic_arguments: ref child_generic_arguments_raw,
@@ -360,7 +352,7 @@ fn module_body_to_verilog(
                     swriteln!(f, "{I});");
                 }
             }
-            &ModuleStatement::Err(e) => {
+            &LowerModuleStatement::Err(e) => {
                 let _: ErrorGuaranteed = e;
                 swriteln!(f, "{I}// error statement");
             }
@@ -377,9 +369,9 @@ fn clocked_block_to_verilog(
     generic_map: &GenericMap,
     signal_map: &IndexMap<Signal, SignalName>,
     f: &mut String,
-    block: &ModuleBlockClocked,
+    block: &LowerBlockClocked,
 ) {
-    let &ModuleBlockClocked {
+    let &LowerBlockClocked {
         span, ref domain, ref on_reset, ref on_clock
     } = block;
 
@@ -933,8 +925,7 @@ fn type_to_verilog(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Generi
                 Err(e) => VerilogType::Error(e),
             }
         }
-        Type::Integer(info) => {
-            let IntegerTypeInfo { range } = info;
+        Type::Integer(RangeInfo { start_inc, end_inc }) => {
             let range = match value_evaluate_int_range(diag, compiled, map, span, range) {
                 Ok(range) => range,
                 Err(e) => return VerilogType::Error(e),
@@ -1002,26 +993,6 @@ fn value_evaluate_int(diag: &Diagnostics, compiled: &CompiledDatabase, map: &Gen
             value_evaluate_int(diag, compiled, map, span, &compiled[*c].value),
         Value::Never => Err(diag.report_todo(span, "value_evaluate_int value Never")),
         Value::Undefined => Err(diag.report_todo(span, "value_evaluate_int value Undefined")),
-    }
-}
-
-fn value_evaluate_int_range(diag: &Diagnostics, compiled: &CompiledDatabase, map: &GenericMap, span: Span, value: &Value) -> Result<RangeInclusive<BigInt>, ErrorGuaranteed> {
-    match value {
-        &Value::Error(e) => Err(e),
-        Value::Range(info) => {
-            let &RangeInfo { ref start_inc, ref end_inc } = info;
-
-            let (start, end) = match (start_inc, end_inc) {
-                (Some(start), Some(end)) => (start, end),
-                _ => throw!(diag.report_internal_error(span, "unbound integers should not materialize")),
-            };
-
-            let start = value_evaluate_int(diag, compiled, map, span, start.as_ref())?;
-            let end = value_evaluate_int(diag, compiled, map, span, end.as_ref())?;
-
-            Ok(start..=end)
-        }
-        _ => Err(diag.report_todo(span, format!("evaluate range of non-range value {value:?}"))),
     }
 }
 

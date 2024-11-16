@@ -1,17 +1,16 @@
 use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericParameter, GenericTypeParameter, Item};
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::front::common::TypeOrValue;
 use crate::front::common::{GenericContainer, GenericMap};
-use crate::front::values::Value;
-use crate::syntax::ast::Spanned;
-use derivative::Derivative;
+use crate::front::common::TypeOrValue;
+use crate::front::solver::SolverInt;
+use crate::front::value::{RangeInfo, ValueContent};
 use indexmap::IndexMap;
 
 // TODO find a better name for this
 #[derive(Debug, Clone)]
-pub enum MaybeConstructor<T> {
-    Immediate(T),
-    Constructor(Constructor<T>),
+pub enum MaybeConstructor<R, RC = R> {
+    Immediate(R),
+    Constructor(Constructor<RC>),
     /// This error case means we don't know whether this is a constructor or not.
     Error(ErrorGuaranteed),
 }
@@ -27,22 +26,16 @@ pub struct GenericParameters {
     pub vec: Vec<GenericParameter>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct GenericArguments {
     // guaranteed to be the same length and ordering as the parameters
-    pub vec: Vec<TypeOrValue>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PortConnections {
-    // guaranteed to be the same length and ordering as the ports
-    pub vec: Vec<Spanned<Value>>,
+    pub vec: Vec<TypeOrValue<Type, ValueContent>>,
 }
 
 // TODO function arguments?
 
 // TODO push type constructor args into struct, enum, ... types, like Rust?
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Type {
     // error
     // TODO how should this behave under equality?
@@ -60,27 +53,21 @@ pub enum Type {
     Never,
     Boolean,
     Clock,
-    // TODO remove this (or at least the limited one), this has been replaced by arrays
-    Bits(Option<Box<Value>>),
     String,
     // TODO range of what inner type? and how do int ranges with mixed types work exactly?
     Range,
-    Array(Box<Type>, Box<Value>),
-    Integer(IntegerTypeInfo),
+    Array(Box<Type>, SolverInt),
+    Integer(RangeInfo<SolverInt>),
     Function(FunctionTypeInfo),
     Tuple(Vec<Type>),
     Struct(StructTypeInfo),
     Enum(EnumTypeInfo),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct IntegerTypeInfo {
-    pub range: Box<Value>,
+    Module,
 }
 
 /// This is only used for higher-order functions, which are restricted to only take values as parameters.
 /// Functions themselves don't really define a type, they define a value constructor.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct FunctionTypeInfo {
     pub params: Vec<Type>,
     pub ret: Box<Type>,
@@ -91,7 +78,7 @@ pub struct FunctionTypeInfo {
 /// * Both types need to be defined by the same exact item
 /// * The generic parameters need to match.
 /// This is an additional requirement if some of the parameters don't effect the structure of the type.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct NominalTypeUnique {
     pub item: Item,
     pub args: GenericArguments,
@@ -99,22 +86,14 @@ pub struct NominalTypeUnique {
 }
 
 #[derive(Debug, Clone)]
-#[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
 pub struct StructTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(Hash = "ignore")]
     pub fields: IndexMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
-#[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
 pub struct EnumTypeInfo {
     pub nominal_type_unique: NominalTypeUnique,
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(Hash = "ignore")]
     pub variants: IndexMap<String, Option<Type>>,
 }
 
@@ -152,21 +131,14 @@ impl GenericContainer for Type {
             Type::Boolean => Type::Boolean,
             Type::Clock => Type::Clock,
             Type::String => Type::String,
-            Type::Bits(ref width) => {
-                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generics(compiled, map))))
-            }
-            Type::Array(ref inner, ref len) => {
+            Type::Array(ref inner, len) => {
                 Type::Array(
                     Box::new(inner.replace_generics(compiled, map)),
-                    Box::new(len.replace_generics(compiled, map)),
+                    len,
                 )
             }
             Type::Range => Type::Range,
-            Type::Integer(ref info) => {
-                Type::Integer(IntegerTypeInfo {
-                    range: Box::new(info.range.replace_generics(compiled, map)),
-                })
-            }
+            Type::Integer(info) => Type::Integer(info),
             Type::Function(ref info) => {
                 Type::Function(FunctionTypeInfo {
                     params: info.params.iter()
@@ -196,6 +168,7 @@ impl GenericContainer for Type {
                         .collect(),
                 })
             }
+            Type::Module => Type::Module,
         }
     }
 }

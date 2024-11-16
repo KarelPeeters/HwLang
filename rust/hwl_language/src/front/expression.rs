@@ -1,16 +1,17 @@
 use crate::data::compiled::GenericParameter;
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::checking::TypeMismatch;
-use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
+use crate::front::checking::{DomainUserControlled, TypeMismatch};
+use crate::front::common::{ContextDomain, ExpressionContext, ExpressionEval, GenericContainer, GenericMap, ScopeValue, ScopedEntry, TypeOrScopedValue, TypeOrValue};
 use crate::front::driver::CompileState;
-use crate::front::module::MaybeDriverCollector;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
+use crate::front::solver::{Solver, SolverInt, UnknownOrFalse};
+use crate::front::types::{GenericArguments, GenericParameters, MaybeConstructor, Type};
+use crate::front::value::{ArrayAccessIndex, BoundedRangeInfo, DomainSignal, RangeInfo, Value, ValueAccess, ValueContent, ValueDomain, ValueInt};
 use crate::syntax::ast;
 use crate::syntax::ast::{ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
+use crate::util::{option_pair, result_pair};
 use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use num_bigint::BigInt;
@@ -18,230 +19,492 @@ use num_traits::One;
 use std::cmp::min;
 
 impl CompileState<'_, '_> {
-    // TODO this should support separate signature and value queries too
-    //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
-    //    careful, think about how this interacts with the future type inference system
-    // TODO return a spanned value here
-    pub fn eval_expression(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> ScopedEntryDirect {
+    pub fn eval_expression(
+        &mut self,
+        ctx: &ExpressionContext,
+        solver: &mut Solver,
+        expr: &Expression,
+    ) -> ExpressionEval {
         let diags = self.diags;
 
         match expr.inner {
             ExpressionKind::Dummy =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dummy expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "dummy expression")),
             ExpressionKind::Any =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Type(Type::Any)),
-            ExpressionKind::Wrapped(ref inner) =>
-                self.eval_expression(ctx, collector, inner),
+                ExpressionEval::Immediate(TypeOrValue::Type(Type::Any)),
+            ExpressionKind::Wrapped(ref inner) => {
+                // passthrough, except that writing is disabled for values
+                let inner = self.eval_expression(ctx, solver, inner);
+                match inner {
+                    ExpressionEval::Immediate(v) => {
+                        match v {
+                            TypeOrValue::Type(t) => ExpressionEval::Immediate(TypeOrValue::Type(t)),
+                            TypeOrValue::Value(v) => ExpressionEval::Immediate(TypeOrValue::Value(Value {
+                                content: v.content,
+                                ty_default: v.ty_default,
+                                domain: v.domain,
+                                access: ValueAccess::ReadOnly,
+                                origin: v.origin,
+                            })),
+                            TypeOrValue::Error(e) => ExpressionEval::Immediate(TypeOrValue::Error(e)),
+                        }
+                    }
+                    ExpressionEval::Constructor(c) => ExpressionEval::Constructor(c),
+                    ExpressionEval::Error(e) => ExpressionEval::Error(e),
+                }
+            }
             ExpressionKind::Id(ref id) => {
+                // lookup id in scope
                 let entry = match self.compiled[ctx.scope].find(&self.compiled.scopes, diags, id, Visibility::Private) {
-                    Err(e) => return ScopedEntryDirect::Error(e),
+                    Err(e) => return ExpressionEval::Error(e),
                     Ok(entry) => entry,
                 };
-                match entry.value {
+
+                // map potentially indirect to direct
+                let direct = match entry.value {
                     &ScopedEntry::Item(item) => self.resolve_item_signature(item).clone(),
                     ScopedEntry::Direct(entry) => entry.clone(),
+                };
+
+                // map scoped to actual
+                //   this is passthrough for most things, except for values, where we need to apply something equivalent
+                //   to single-static-assignment conversion so variables interact properly with the solver
+                match direct {
+                    MaybeConstructor::Immediate(imm) => {
+                        let imm = match imm {
+                            TypeOrScopedValue::Type(ty) => TypeOrValue::Type(ty),
+                            TypeOrScopedValue::Value(v) => {
+                                let v = match v {
+                                    // TODO for now just always return a unique variable, later do SSA-style numbering
+                                    ScopeValue::Variable(_) => todo!(),
+                                    ScopeValue::Value(v) => v,
+                                };
+                                TypeOrValue::Value(v)
+                            },
+                            TypeOrScopedValue::Error(e) => TypeOrValue::Error(e),
+                        };
+                        ExpressionEval::Immediate(imm)
+                    }
+                    MaybeConstructor::Constructor(c) => ExpressionEval::Constructor(c),
+                    MaybeConstructor::Error(e) => ExpressionEval::Error(e)
                 }
             }
             ExpressionKind::TypeFunc(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "type func expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "type func expression")),
             ExpressionKind::IntPattern(ref pattern) => {
                 match pattern {
                     IntPattern::Hex(_) =>
-                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "hex int-pattern expression")),
+                        ExpressionEval::Error(diags.report_todo(expr.span, "hex int-pattern expression")),
                     IntPattern::Bin(_) =>
-                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "bin int-pattern expression")),
+                        ExpressionEval::Error(diags.report_todo(expr.span, "bin int-pattern expression")),
                     IntPattern::Dec(str_raw) => {
                         let str_clean = str_raw.replace("_", "");
-                        let value = str_clean.parse::<BigInt>().unwrap();
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::IntConstant(value)))
+                        let value_int = str_clean.parse::<BigInt>().unwrap();
+
+                        let value_solver = solver.known_int(value_int);
+                        let value = Value {
+                            content: ValueContent::Int(value_solver),
+                            ty_default: Type::Integer(RangeInfo {
+                                start_inc: Some(value_solver),
+                                end_inc: Some(value_solver),
+                            }),
+                            domain: ValueDomain::CompileTime,
+                            access: ValueAccess::No,
+                            origin: expr.span,
+                        };
+
+                        ExpressionEval::Immediate(TypeOrValue::Value(value))
                     }
                 }
             }
-            ExpressionKind::BoolLiteral(b) =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::BoolConstant(b))),
-            ExpressionKind::StringLiteral(ref s) =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::StringConstant(s.clone()))),
+            ExpressionKind::BoolLiteral(b) => {
+                let value = Value {
+                    content: ValueContent::Bool(solver.known_bool(b)),
+                    ty_default: Type::Boolean,
+                    domain: ValueDomain::CompileTime,
+                    access: ValueAccess::No,
+                    origin: expr.span,
+                };
+                ExpressionEval::Immediate(TypeOrValue::Value(value))
+            }
+            ExpressionKind::StringLiteral(_) => {
+                let value = Value {
+                    content: ValueContent::Opaque(solver.new_opaque()),
+                    ty_default: Type::String,
+                    domain: ValueDomain::CompileTime,
+                    access: ValueAccess::No,
+                    origin: expr.span,
+                };
+                ExpressionEval::Immediate(TypeOrValue::Value(value))
+            }
             ExpressionKind::ArrayLiteral(ref elements) => {
                 let mut inner_ty = None;
-                let mut total_len = Value::IntConstant(BigInt::ZERO);
-                let mut operands = vec![];
+                let mut total_len = Ok(vec![]);
+                let mut domain = ValueDomain::CompileTime;
 
                 for &ArrayLiteralElement { spread, ref value } in elements {
-                    let value_eval = self.eval_expression_as_value(ctx, collector, value);
-                    let value_ty = self.type_of_value(value.span, &value_eval);
+                    let value_eval = self.eval_expression_as_value(ctx, solver, value);
 
-                    let (element_ty, element_len) = match spread {
-                        None => (value_ty, Value::IntConstant(BigInt::one())),
+                    // typecheck the value and get its length
+                    let (inner_ty_next, element_len) = match spread {
+                        // single value
+                        None => {
+                            // infer or check type, using the type checking variant that can better use the solver
+                            let inner_ty_next = match inner_ty {
+                                None => value_eval.ty_default,
+                                Some(inner_ty) => {
+                                    match self.require_type_contains_value(None, value.span, &inner_ty, &value_eval) {
+                                        Ok(()) => inner_ty,
+                                        Err(e) => Type::Error(e),
+                                    }
+                                }
+                            };
+
+                            (inner_ty_next, Ok(solver.one()))
+                        }
+                        // spread of array
                         Some(spread_span) => {
-                            match value_ty {
-                                Type::Error(e) => (Type::Error(e), Value::Error(e)),
-                                Type::Array(inner, len) => (*inner, *len),
+                            // check that the type is indeed an array
+                            match value_eval.ty_default {
+                                Type::Array(value_array_inner_ty, value_array_len) => {
+                                    // infer or check type, using basic subtype type checking
+                                    let inner_ty_next = match inner_ty {
+                                        None => *value_array_inner_ty,
+                                        Some(inner_ty) => {
+                                            match self.require_type_match(None, &inner_ty, value.span, &value_array_inner_ty, true) {
+                                                Ok(Ok(())) => inner_ty,
+                                                Ok(Err(e)) => Type::Error(e),
+                                                Err(TypeMismatch) => {
+                                                    let actual_str = self.compiled.type_to_readable_str(self.source, self.parsed, &value_array_inner_ty);
+                                                    let expected_str = self.compiled.type_to_readable_str(self.source, self.parsed, &inner_ty);
+
+                                                    let diag = Diagnostic::new("type mismatch: elements of spread array are not subtypes of inferred array type")
+                                                        .add_error(spread_span.join(value.span), format!("actual element type {}", actual_str))
+                                                        .add_info(expr.span, format!("inferred type of array literal elements: `{}`", expected_str))
+                                                        .finish();
+                                                    Type::Error(diags.report(diag))
+                                                }
+                                            }
+                                        }
+                                    };
+
+                                    (inner_ty_next, Ok(value_array_len))
+                                }
+                                Type::Error(e) => (Type::Error(e), Err(e)),
                                 _ => {
-                                    let diag = Diagnostic::new("spread operator requires array type")
+                                    let diag = Diagnostic::new("spread operator requires array operand")
                                         .add_error(spread_span, "for this spread operator")
-                                        .add_info(value.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
+                                        .add_info(value.span, format!("expected array, actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_eval.ty_default)))
                                         .finish();
                                     let e = diags.report(diag);
-                                    (Type::Error(e), Value::Error(e))
+                                    (Type::Error(e), Err(e))
                                 }
                             }
                         }
                     };
 
-                    // get the inner type from the first element, and check that all elements have the same type
-                    let inner_ty_next = match (inner_ty, element_ty) {
-                        (None, element_ty) => element_ty,
-                        (Some(Type::Error(e)), _) | (Some(_), Type::Error(e)) => Type::Error(e),
-                        (Some(inner_ty), element_ty) => {
-                            match self.require_type_match(None, &inner_ty, value.span, &element_ty, false) {
-                                Ok(Ok(())) => element_ty,
-                                Ok(Err(e)) => Type::Error(e),
-                                Err(e) => {
-                                    let _: TypeMismatch = e;
-                                    let diag = Diagnostic::new("array literal element type mismatch")
-                                        .add_error(value.span, format!("this element has type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &element_ty)))
-                                        .add_info(expr.span, format!("preceding elements have type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &inner_ty)))
-                                        .finish();
-                                    Type::Error(diags.report(diag))
-                                },
-                            }
-                        },
-                    };
+                    // set next inner type
                     inner_ty = Some(inner_ty_next);
 
-                    total_len = match (total_len, element_len) {
-                        (Value::Error(e), _) | (_, Value::Error(e)) => Value::Error(e),
-                        (total_len, element_len) => Value::Binary(BinaryOp::Add, Box::new(total_len), Box::new(element_len)),
+                    // add length
+                    // TODO the solver should be able to add errors itself already
+                    match (&mut total_len, element_len) {
+                        (Err(_), _) => {}
+                        (_, Err(e)) => total_len = Err(e),
+                        (Ok(total_len), Ok(element_len)) => total_len.push(element_len),
                     };
 
-                    operands.push(ArrayLiteralElement { spread, value: value_eval });
+                    // combine domains
+                    domain = self.merge_domains(expr.span, &domain, &value_eval.domain);
                 }
 
-                let result_ty = match inner_ty {
+                let inner_ty = match inner_ty {
                     // TODO we need at least _some_ forward type inference to implement this
-                    None => Type::Error(diags.report_todo(expr.span, "array literal expression")),
+                    None => Type::Error(diags.report_todo(expr.span, "empty array literal expression")),
                     Some(inner_ty) => inner_ty,
                 };
 
-                let result_ty = Type::Array(Box::new(result_ty), Box::new(total_len));
-                let result_value = Value::ArrayLiteral { result_ty: Box::new(result_ty), operands };
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result_value))
+                let total_len = match total_len {
+                    Ok(total_len) => solver.sum(total_len),
+                    Err(e) => solver.error_int(e),
+                };
+
+                let result_ty = Type::Array(Box::new(inner_ty), total_len);
+                let result_value = Value {
+                    content: ValueContent::Opaque(solver.new_opaque()),
+                    ty_default: result_ty,
+                    domain,
+                    access: ValueAccess::No,
+                    origin: expr.span,
+                };
+                ExpressionEval::Immediate(TypeOrValue::Value(result_value))
             }
             ExpressionKind::TupleLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "tuple literal expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "tuple literal expression")),
             ExpressionKind::StructLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "struct literal expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "struct literal expression")),
             ExpressionKind::RangeLiteral(ref range) => {
-                let &RangeLiteral { end_inclusive, ref start, end: ref end_raw } = range;
+                let &RangeLiteral { end_inclusive, start: ref start_inc, end: ref end_raw } = range;
 
-                let mut map_point = |point: &Option<Box<Expression>>| {
-                    point.as_ref()
-                        .map(|p| Box::new(self.eval_expression_as_value(ctx, collector, p)))
-                };
-
-                let start_inc = map_point(start);
-                let end_raw = map_point(end_raw);
-
-                // check range valid (before incrementing end to get more intuitive error messages)
-                if let (Some(start), Some(end)) = (&start_inc, &end_raw) {
-                    let cond_op = if end_inclusive {
-                        BinaryOp::CmpLte
-                    } else {
-                        BinaryOp::CmpLt
-                    };
-                    match self.require_value_true_for_range(expr.span, &Value::Binary(cond_op, start.clone(), end.clone())) {
-                        Ok(()) => {}
-                        Err(e) => return ScopedEntryDirect::Error(e),
-                    }
+                // double check grammar
+                if end_inclusive && end_raw.is_none() {
+                    diags.report_internal_error(expr.span, "range literal with inclusive end but no end value");
                 }
 
-                // convert to inclusive range
-                let end_inc = if end_inclusive {
-                    end_raw
-                } else {
-                    end_raw.map(|e| Box::new(Value::Binary(BinaryOp::Sub, e, Box::new(Value::IntConstant(BigInt::one())))))
+                // evaluate bounds
+                let start_inc = start_inc.as_ref()
+                    .map(|start| self.eval_expression_as_value_int(ctx, solver, start, "range bound"));
+                let end_raw = end_raw.as_ref()
+                    .map(|end_raw| self.eval_expression_as_value_int(ctx, solver, end_raw, "range bound"));
+
+                // turn end bound into inclusive
+                let end_inc = end_raw.map(|end_raw| {
+                    match end_inclusive {
+                        true => end_raw,
+                        false => ValueInt {
+                            content: solver.add_const(end_raw.content, -1),
+                            ty_default: end_raw.ty_default.map(|range| RangeInfo {
+                                start_inc: range.start_inc.map(|x| solver.add_const(x, -1)),
+                                end_inc: range.end_inc.map(|x| solver.add_const(x, -1)),
+                            }),
+                            domain: end_raw.domain,
+                            access: end_raw.access,
+                            origin: end_raw.origin, // TODO include "..=" in the span?
+                        },
+                    }
+                });
+
+                // combine domains
+                let mut domain = ValueDomain::CompileTime;
+                if let Some(start_inc) = &start_inc {
+                    domain = self.merge_domains(expr.span, &domain, &start_inc.domain);
+                }
+                if let Some(end_inc) = &end_inc {
+                    domain = self.merge_domains(expr.span, &domain, &end_inc.domain);
+                }
+
+                // check validness
+                let range_info = match (start_inc, end_inc) {
+                    (Some(start_inc), Some(end_inc)) => {
+                        let cond = solver.compare_lte(start_inc.content, end_inc.content);
+                        match solver.eval_bool_true(cond) {
+                            Ok(Ok(())) => RangeInfo {
+                                start_inc: Some(start_inc),
+                                end_inc: Some(end_inc),
+                            },
+                            Ok(Err(UnknownOrFalse)) => {
+                                let e = self.diags.report_simple("typecheck failed: could not prove that range is non-decreasing", expr.span, "for this range");
+                                RangeInfo {
+                                    start_inc: Some(ValueInt::error_int(solver, e, start_inc.origin)),
+                                    end_inc: Some(ValueInt::error_int(solver, e, end_inc.origin)),
+                                }
+                            }
+                            Err(e) => {
+                                RangeInfo {
+                                    start_inc: Some(ValueInt::error_int(solver, e, start_inc.origin)),
+                                    end_inc: Some(ValueInt::error_int(solver, e, end_inc.origin)),
+                                }
+                            }
+                        }
+                    }
+                    (start_inc, end_inc) => {
+                        RangeInfo {
+                            start_inc,
+                            end_inc,
+                        }
+                    }
                 };
 
-                let value = Value::Range(RangeInfo { start_inc, end_inc });
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
+                // construct final range
+                let value = Value {
+                    content: ValueContent::Range(range_info),
+                    ty_default: Type::Range,
+                    domain,
+                    access: ValueAccess::No,
+                    origin: expr.span,
+                };
+                ExpressionEval::Immediate(TypeOrValue::Value(value))
             }
             ExpressionKind::UnaryOp(op, ref inner) => {
                 let result = match op {
-                    UnaryOp::Neg => {
-                        Value::Binary(
-                            BinaryOp::Sub,
-                            Box::new(Value::IntConstant(BigInt::ZERO)),
-                            Box::new(self.eval_expression_as_value(ctx, collector, inner)),
-                        )
+                    UnaryOp::Negate => {
+                        let inner = self.eval_expression_as_value_int(ctx, solver, inner, "unary minus operand");
+
+                        Value {
+                            // negate content
+                            content: ValueContent::Int(solver.negate(inner.content)),
+                            // negate and swap start and end
+                            ty_default: inner.ty_default.map_or_else(
+                                Type::Error,
+                                |range| Type::Integer(RangeInfo {
+                                    start_inc: range.end_inc.map(|v| solver.negate(v)),
+                                    end_inc: range.start_inc.map(|v| solver.negate(v)),
+                                }),
+                            ),
+                            domain: inner.domain,
+                            access: ValueAccess::No,
+                            origin: expr.span,
+                        }
                     }
-                    UnaryOp::Not =>
-                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, collector, inner))),
+                    UnaryOp::Not => {
+                        let inner = self.eval_expression_as_value(ctx, solver, inner);
+
+                        let generate_type_error = || {
+                            let inner_ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &inner.ty_default);
+                            let title = format!("unary not only works for boolean or boolean array types, got `{}`", inner_ty_str);
+                            Value::error(diags.report_simple(title, expr.span, "for this expression"), expr.span)
+                        };
+
+                        match &inner.ty_default {
+                            Type::Boolean => {
+                                let inner_bool = inner.content.unwrap_bool(expr.span, diags, solver);
+                                Value {
+                                    content: ValueContent::Bool(solver.not(inner_bool)),
+                                    ty_default: Type::Boolean,
+                                    domain: inner.domain,
+                                    access: ValueAccess::No,
+                                    origin: expr.span,
+                                }
+                            }
+                            Type::Array(element_ty, len) => {
+                                // TODO support multidimensional boolean arrays?
+                                match &**element_ty {
+                                    Type::Boolean => {
+                                        Value {
+                                            content: ValueContent::Opaque(solver.new_opaque()),
+                                            ty_default: Type::Array(Box::new(Type::Boolean), len.clone()),
+                                            domain: inner.domain,
+                                            access: ValueAccess::No,
+                                            origin: expr.span,
+                                        }
+                                    }
+                                    _ => generate_type_error(),
+                                }
+                            }
+                            _ => generate_type_error(),
+                        }
+                    }
                 };
 
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
+                ExpressionEval::Immediate(TypeOrValue::Value(result))
             }
             ExpressionKind::BinaryOp(op, ref left, ref right) => {
-                let left = self.eval_expression_as_value(ctx, collector, left);
-                let right = self.eval_expression_as_value(ctx, collector, right);
+                let result = match op {
+                    BinaryOp::Add => {
+                        let left = self.eval_expression_as_value_int(ctx, solver, left, "addition operand");
+                        let right = self.eval_expression_as_value_int(ctx, solver, right, "addition operand");
 
-                let result = Value::Binary(op, Box::new(left), Box::new(right));
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
+                        let result = solver.add(left.content, right.content);
+
+                        let ty = result_pair(left.ty_default, right.ty_default)
+                            .map_or_else(Type::Error, |(left, right)| {
+                                Type::Integer(RangeInfo {
+                                    start_inc: option_pair(left.start_inc, right.start_inc)
+                                        .map(|(left, right)| solver.add(left, right)),
+                                    end_inc: option_pair(left.end_inc, right.end_inc)
+                                        .map(|(left, right)| solver.add(left, right)),
+                                })
+                            });
+
+                        Value {
+                            content: ValueContent::Int(result),
+                            ty_default: ty,
+                            domain: self.merge_domains(expr.span, &left.domain, &right.domain),
+                            access: ValueAccess::No,
+                            origin: expr.span,
+                        }
+                    }
+                    BinaryOp::Sub => todo!(),
+                    BinaryOp::Mul => todo!(),
+                    BinaryOp::Div => todo!(),
+                    BinaryOp::Mod => todo!(),
+                    BinaryOp::Pow => todo!(),
+                    BinaryOp::CmpLt => todo!(),
+                    BinaryOp::CmpLte => todo!(),
+                    BinaryOp::CmpGt => todo!(),
+                    BinaryOp::CmpGte => todo!(),
+
+                    // needs arrays of bools with matching len
+                    BinaryOp::BitAnd => todo!(),
+                    BinaryOp::BitOr => todo!(),
+                    BinaryOp::BitXor => todo!(),
+
+                    // needs bools
+                    BinaryOp::BoolAnd => todo!(),
+                    BinaryOp::BoolOr => todo!(),
+                    BinaryOp::BoolXor => todo!(),
+
+                    // TODO
+                    BinaryOp::Shl => todo!(),
+                    BinaryOp::Shr => todo!(),
+
+                    // needs matching types
+                    BinaryOp::CmpEq => todo!(),
+                    BinaryOp::CmpNeq => todo!(),
+
+                    // needs (int, range)
+                    BinaryOp::In => todo!(),
+                };
+
+                ExpressionEval::Immediate(TypeOrValue::Value(result))
             }
             ExpressionKind::TernarySelect(_, _, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "ternary select expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "ternary select expression")),
             ExpressionKind::ArrayIndex(ref base, ref args) => {
                 let base_span = base.span;
-                let base = self.eval_expression_as_ty_or_value(ctx, collector, base);
+                let base = self.eval_expression_as_ty_or_value(ctx, solver, base);
 
                 let args = args.map_inner(|arg| {
-                    Spanned { span: arg.span, inner: self.eval_expression_as_value(ctx, collector, arg) }
+                    Spanned { span: arg.span, inner: self.eval_expression_as_value(ctx, solver, arg) }
                 });
                 let args_len = args.inner.len();
 
                 match base {
-                    TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
+                    TypeOrValue::Error(e) => ExpressionEval::Error(e),
                     TypeOrValue::Type(base_ty) => {
                         if args.inner.is_empty() {
-                            ScopedEntryDirect::Error(diags.report_simple(
+                            ExpressionEval::Error(diags.report_simple(
                                 "array type definition requires at least one dimension",
                                 args.span,
                                 "array index",
                             ))
                         } else {
-                            // array dimensions are the other way around, the innermost type is the final dimension
+                            // array dimensions are reversed, the innermost type is the final dimension
                             let result_ty = args.inner.into_iter().rev().fold(base_ty, |ty_acc, arg| {
                                 let ast::Arg { span: _, name, value } = arg;
+                                let value = self.expect_value_int(solver, value.inner, "array type dimension length");
 
-                                let positive_range = RangeInfo {
-                                    start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                                    end_inc: None,
-                                };
-                                let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
-
-                                let value_checked = match self.require_type_contains_value(None, value.span, &positive_ty, &value.inner) {
-                                    Ok(()) => value.inner,
-                                    Err(e) => Value::Error(e),
+                                let zero = solver.zero();
+                                let cond = solver.compare_lte(zero, value.content);
+                                let value_checked = match solver.eval_bool_true(cond) {
+                                    Ok(Ok(())) => value.content,
+                                    Err(e) => solver.error_int(e),
+                                    Ok(Err(UnknownOrFalse)) => {
+                                        let e = diags.report_simple(
+                                            "array type dimension length must be non-negative",
+                                            value.origin, "failed to prove non-negativity for this value",
+                                        );
+                                        solver.error_int(e)
+                                    }
                                 };
 
                                 if let Some(name) = name {
                                     Type::Error(diags.report_todo(name.span, "named array dimensions"))
                                 } else {
-                                    Type::Array(Box::new(ty_acc), Box::new(value_checked))
+                                    Type::Array(Box::new(ty_acc), value_checked)
                                 }
                             });
 
-                            ScopedEntryDirect::Immediate(TypeOrValue::Type(result_ty))
+                            ExpressionEval::Immediate(TypeOrValue::Type(result_ty))
                         }
                     }
                     TypeOrValue::Value(base) => {
-                        let base_ty = self.type_of_value(expr.span, &base);
-
                         // check indices and get inner type
                         let mut indices = vec![];
-                        let mut curr_ty = base_ty.clone();
+                        let mut curr_ty = base.ty_default.clone();
 
                         for (arg_i, arg) in args.inner.into_iter().enumerate() {
-                            let (next_ty, index) = self.eval_array_index(expr.span, base_span, curr_ty, args.span, args_len, arg_i, arg);
+                            let (next_ty, index) = self.eval_array_index(solver, expr.span, base_span, curr_ty, args.span, args_len, arg_i, arg);
                             curr_ty = next_ty;
                             indices.push(index);
                         };
@@ -252,58 +515,59 @@ impl CompileState<'_, '_> {
                             match index {
                                 &ArrayAccessIndex::Error(e) => Type::Error(e),
                                 ArrayAccessIndex::Single(_) => acc,
-                                ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) => {
-                                    let length = Value::Binary(
-                                        BinaryOp::Add,
-                                        Box::new(Value::Binary(BinaryOp::Sub, end_inc.clone(), start_inc.clone())),
-                                        Box::new(Value::IntConstant(BigInt::one())),
-                                    );
-                                    Type::Array(Box::new(acc), Box::new(length))
+                                &ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) => {
+                                    let length_1 = solver.sub(end_inc, start_inc);
+                                    let length = solver.add_const(length_1, 1);
+                                    Type::Array(Box::new(acc), length)
                                 }
                             }
                         });
 
                         // result
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::ArrayAccess {
-                            result_ty: Box::new(result_ty),
-                            base: Box::new(base),
-                            indices,
+                        ExpressionEval::Immediate(TypeOrValue::Value(Value {
+                            content: ValueContent::opaque_of_type(&result_ty, solver),
+                            ty_default: result_ty,
+                            domain: base.domain,
+                            access: base.access,
+                            origin: expr.span,
                         }))
                     }
                 }
             }
             ExpressionKind::DotIdIndex(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot id index expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "dot id index expression")),
             ExpressionKind::DotIntIndex(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot int index expression")),
+                ExpressionEval::Error(diags.report_todo(expr.span, "dot int index expression")),
             ExpressionKind::Call(ref target, ref args) => {
-                let target_entry = self.eval_expression(ctx, collector, target);
-                let args_entry = args.map_inner(|e| self.eval_expression_as_ty_or_value(ctx, collector, e));
+                let target_entry = self.eval_expression(ctx, solver, target);
+                let args_entry = args.map_inner(|e| {
+                    self.eval_expression_as_ty_or_value(ctx, solver, e)
+                });
 
                 match target_entry {
-                    ScopedEntryDirect::Constructor(constr) => {
+                    ExpressionEval::Constructor(constr) => {
                         match self.eval_constructor_call(&constr.parameters, &constr.inner, args_entry, true) {
                             Ok((v, _)) => MaybeConstructor::Immediate(v),
                             Err(e) => MaybeConstructor::Error(e),
                         }
                     }
-                    ScopedEntryDirect::Immediate(entry) => {
+                    ExpressionEval::Immediate(entry) => {
                         match entry {
                             TypeOrValue::Type(_) => {
                                 let err = Diagnostic::new_simple("invalid call target", target.span, "invalid call target kind 'type'");
-                                ScopedEntryDirect::Error(diags.report(err))
+                                ExpressionEval::Error(diags.report(err))
                             }
                             TypeOrValue::Value(_) =>
-                                ScopedEntryDirect::Error(diags.report_todo(target.span, "value call target")),
+                                ExpressionEval::Error(diags.report_todo(target.span, "value call target")),
                             TypeOrValue::Error(e)
-                            => ScopedEntryDirect::Error(e),
+                            => ExpressionEval::Error(e),
                         }
                     }
-                    ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
+                    ExpressionEval::Error(e) => ExpressionEval::Error(e),
                 }
             }
             ExpressionKind::Builtin(ref args) => {
-                match self.eval_builtin_call(ctx, collector, expr.span, args) {
+                match self.eval_builtin_call(ctx, solver, expr.span, args) {
                     Ok(result) => MaybeConstructor::Immediate(result),
                     Err(e) => MaybeConstructor::Error(e),
                 }
@@ -313,6 +577,7 @@ impl CompileState<'_, '_> {
 
     fn eval_array_index(
         &mut self,
+        solver: &mut Solver,
         expr_span: Span,
         base_span: Span,
         base_ty: Type,
@@ -320,7 +585,7 @@ impl CompileState<'_, '_> {
         args_len: usize,
         arg_i: usize,
         arg: ast::Arg<Spanned<Value>>,
-    ) -> (Type, ArrayAccessIndex<Box<Value>>) {
+    ) -> (Type, ArrayAccessIndex<SolverInt>) {
         let diags = self.diags;
 
         let ast::Arg { span: _, name, value: index } = arg;
@@ -335,63 +600,96 @@ impl CompileState<'_, '_> {
                 (Type::Error(e), ArrayAccessIndex::Error(e))
             }
             Type::Array(inner, len) => {
-                let valid_index_type = Type::Integer(IntegerTypeInfo {
-                    range: Box::new(Value::Range(RangeInfo {
-                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                        end_inc: Some(Box::new(Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))))),
-                    }))
-                });
-                let valid_range_type = Type::Integer(IntegerTypeInfo {
-                    range: Box::new(Value::Range(RangeInfo {
-                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                        end_inc: Some(len.clone()),
-                    }))
-                });
+                match index.inner.content {
+                    ValueContent::Error(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
+                    ValueContent::Int(index_raw) => {
+                        let mut any_err = Ok(());
 
-                match self.type_of_value(index.span, &index.inner) {
-                    Type::Error(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
-                    Type::Integer(_) => {
-                        match self.require_type_contains_value(None, index.span, &valid_index_type, &index.inner) {
-                            Ok(()) => (*inner, ArrayAccessIndex::Single(Box::new(index.inner))),
-                            Err(e) => (*inner, ArrayAccessIndex::Error(e)),
-                        }
-                    }
-                    Type::Range => {
-                        match self.require_int_range_direct(index.span, &index.inner) {
-                            Err(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
-                            Ok(RangeInfo { start_inc, end_inc }) => {
-                                let start_inc_checked = match start_inc {
-                                    None => Value::IntConstant(BigInt::ZERO),
-                                    Some(start_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &start_inc) {
-                                            Ok(()) => (**start_inc).clone(),
-                                            Err(e) => Value::Error(e),
-                                        }
-                                    }
-                                };
-                                let end_inc_checked = match end_inc {
-                                    None => Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))),
-                                    Some(end_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &end_inc) {
-                                            Ok(()) => (**end_inc).clone(),
-                                            Err(e) => Value::Error(e),
-                                        }
-                                    }
-                                };
-
-                                let index = ArrayAccessIndex::Range(BoundedRangeInfo {
-                                    start_inc: Box::new(start_inc_checked),
-                                    end_inc: Box::new(end_inc_checked),
-                                });
-
-                                (*inner, index)
+                        let zero = solver.zero();
+                        let cond_non_neg = solver.compare_gte(index_raw, zero);
+                        match solver.eval_bool_true(cond_non_neg) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(UnknownOrFalse)) => {
+                                any_err = Err(diags.report_simple("array index must be non-negative", index.span, "for this array index"))
+                            }
+                            Err(e) => {
+                                any_err = Err(e)
                             }
                         }
+
+                        let cond_lt_len = solver.compare_lt(index_raw, len);
+                        match solver.eval_bool_true(cond_lt_len) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(UnknownOrFalse)) => {
+                                any_err = Err(diags.report_simple("array index out of bounds", index.span, "for this array index"))
+                            }
+                            Err(e) => {
+                                any_err = Err(e)
+                            }
+                        }
+
+                        let index_checked = match any_err {
+                            Ok(()) => index_raw,
+                            Err(e) => solver.error_int(e),
+                        };
+
+                        (*inner, ArrayAccessIndex::Single(index_checked))
                     }
-                    value_ty => {
+                    ValueContent::Range(RangeInfo { start_inc, end_inc }) => {
+                        // Notes:
+                        // * the validness of the range was already checked when it was constructed
+                        // * range edges can be equal to the length, contrary to single indices
+                        let mut check_edge = |solver: &mut Solver, v: ValueInt, edge: &str| {
+                            let mut result = Ok(v.content);
+
+                            let zero = solver.zero();
+                            let cond_gte_zero = solver.compare_lte(zero, v.content);
+                            let cond_lte_len = solver.compare_lte(v.content, len);
+
+                            match solver.eval_bool_true(cond_gte_zero) {
+                                Ok(Ok(())) => {}
+                                Ok(Err(UnknownOrFalse)) => {
+                                    result = Err(diags.report_simple(
+                                        format!("array slice range {edge} should be >= 0"),
+                                        index.span,
+                                        "failed to prove that this value is non-negative",
+                                    ))
+                                }
+                                Err(e) => result = Err(e),
+                            }
+                            match solver.eval_bool_true(cond_lte_len) {
+                                Ok(Ok(())) => {}
+                                Ok(Err(UnknownOrFalse)) => {
+                                    result = Err(diags.report_simple(
+                                        format!("array slice range {edge} should be <= array length"),
+                                        index.span,
+                                        "failed to prove that this value is not larger than the length",
+                                    ))
+                                }
+                                Err(e) => result = Err(e),
+                            }
+
+                            result.unwrap_or_else(|e| solver.error_int(e))
+                        };
+
+                        let start_inc_checked = match start_inc {
+                            Some(start_inc) => check_edge(solver, start_inc, "start"),
+                            None => solver.zero(),
+                        };
+                        let end_inc_checked = match end_inc {
+                            Some(end_inc) => check_edge(solver, end_inc, "end"),
+                            None => len,
+                        };
+
+                        (*inner, ArrayAccessIndex::Range(BoundedRangeInfo {
+                            start_inc: start_inc_checked,
+                            end_inc: end_inc_checked,
+                        }))
+                    }
+                    _content => {
                         let diag = Diagnostic::new("type mismatch: expected integer or range type for array index")
                             .add_error(expr_span, "for this array indexing operation")
-                            .add_info(index.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
+                            .add_info(index.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &index.inner.ty_default)))
                             .finish();
                         let e = diags.report(diag);
                         (Type::Error(e), ArrayAccessIndex::Error(e))
@@ -531,167 +829,250 @@ impl CompileState<'_, '_> {
         Ok((result, generic_args))
     }
 
-    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> TypeOrValue {
-        let entry = self.eval_expression(ctx, collector, expr);
+    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, solver: &mut Solver, expr: &Expression) -> TypeOrValue {
+        let entry = self.eval_expression(ctx, solver, expr);
 
         match entry {
-            ScopedEntryDirect::Immediate(entry) => entry,
-            ScopedEntryDirect::Constructor(_) => {
+            ExpressionEval::Immediate(entry) => entry,
+            ExpressionEval::Constructor(_) => {
                 let diag = Diagnostic::new_simple("expected type or value, got constructor", expr.span, "constructor");
                 TypeOrValue::Error(self.diags.report(diag))
             }
-            ScopedEntryDirect::Error(e) => TypeOrValue::Error(e),
+            ExpressionEval::Error(e) => TypeOrValue::Error(e),
         }
     }
 
-    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
+    pub fn eval_expression_as_ty(&mut self, scope: Scope, solver: &mut Solver, expr: &Expression) -> Type {
         let ctx = ExpressionContext::constant(expr.span, scope);
-        let entry = self.eval_expression(&ctx, &mut MaybeDriverCollector::None, expr);
+        let entry = self.eval_expression(&ctx, solver, expr);
 
         match entry {
             // TODO unify these error strings somewhere
             // TODO maybe move back to central error collection place for easier unit testing?
             // TODO report span for the _reason_ why we expect one or the other
-            ScopedEntryDirect::Constructor(_) => {
+            ExpressionEval::Constructor(_) => {
                 let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
                 Type::Error(self.diags.report(diag))
             }
-            ScopedEntryDirect::Immediate(entry) => entry.unwrap_ty(self.diags, expr.span),
-            ScopedEntryDirect::Error(e) => Type::Error(e),
+            ExpressionEval::Immediate(entry) => entry.unwrap_ty(self.diags, expr.span),
+            ExpressionEval::Error(e) => Type::Error(e),
         }
     }
 
-    pub fn eval_expression_as_value(
-        &mut self,
-        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
-        expr: &Expression,
-    ) -> Value {
-        let entry = self.eval_expression(ctx, collector, expr);
+    pub fn eval_expression_as_value_read(&mut self, ctx: &ExpressionContext, solver: &mut Solver, expr: &Expression) -> Value {
+        let entry = self.eval_expression(ctx, solver, expr);
 
-        match entry {
-            ScopedEntryDirect::Constructor(_) => {
-                let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
-                Value::Error(self.diags.report(err))
+        // check expression is a value
+        let value = match entry {
+            ExpressionEval::Immediate(entry) => {
+                entry.unwrap_value(self.diags, expr.span)
             }
-            ScopedEntryDirect::Immediate(entry) => entry.unwrap_value(self.diags, expr.span),
-            ScopedEntryDirect::Error(e) => Value::Error(e),
+            ExpressionEval::Constructor(_) => {
+                let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
+                Value::error(self.diags.report(err), expr.span)
+            }
+            ExpressionEval::Error(e) => Value::error(e, expr.span),
+        };
+
+        // check readable
+        match value.access {
+            ValueAccess::ReadOnly => {}
+            // TODO make everything readable, then we can just remove this
+            ValueAccess::WriteOnlyPort(_) => {
+                todo!()
+            }
+            ValueAccess::WriteReadWire(_) => {}
+            ValueAccess::WriteReadRegister(_) => {}
+            ValueAccess::WriteReadVariable(_) => {}
+            ValueAccess::Error(_) => {}
+        }
+
+        // check domain
+        match &ctx.domain {
+            ContextDomain::Specific { domain, error_hint } => {
+                let _: Result<(), ErrorGuaranteed> = self.check_domain_crossing(
+                    domain.span,
+                    domain.inner,
+                    value.origin,
+                    &value.domain,
+                    DomainUserControlled::Source,
+                    error_hint,
+                );
+            }
+            ContextDomain::Passthrough => {}
+        }
+
+        value
+    }
+
+    pub fn eval_expression_as_value_int(
+        &mut self,
+        ctx: &ExpressionContext,
+        solver: &mut Solver,
+        expr: &Expression,
+        reason: &str,
+    ) -> ValueInt {
+        let value = self.eval_expression_as_value(ctx, solver, expr);
+        self.expect_value_int(solver, value, reason)
+    }
+
+    pub fn expect_value_int(&mut self, solver: &mut Solver, value: Value, reason: &str) -> ValueInt {
+        let diags = self.diags;
+
+        match value.ty_default {
+            Type::Error(e) => ValueInt::error_int(solver, e, value.origin),
+            Type::Integer(range) => {
+                ValueInt {
+                    content: value.content.unwrap_int(value.origin, diags, solver),
+                    ty_default: Ok(range),
+                    domain: value.domain,
+                    access: value.access,
+                    origin: value.origin,
+                }
+            }
+            _ => {
+                let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &value.ty_default);
+                let title = format!("expected integer value for {reason}");
+                let diag = Diagnostic::new(title)
+                    .add_error(value.origin, format!("actual type {}", ty_str))
+                    .finish();
+                let e = diags.report(diag);
+                ValueInt::error_int(solver, e, value.origin)
+            }
         }
     }
 
-    pub fn eval_domain(&mut self, scope: Scope, domain: Spanned<&DomainKind<Box<Expression>>>) -> DomainKind<Value> {
+    pub fn eval_domain(&mut self, scope: Scope, solver: &mut Solver, domain: Spanned<&DomainKind<Box<Expression>>>) -> DomainKind<DomainSignal> {
         match domain.inner {
             DomainKind::Async =>
                 DomainKind::Async,
             DomainKind::Sync(sync_domain) => {
                 let sync = SyncDomain { clock: &*sync_domain.clock, reset: &*sync_domain.reset };
                 let sync = Spanned { span: domain.span, inner: sync };
-                DomainKind::Sync(self.eval_sync_domain(scope, sync))
+                DomainKind::Sync(self.eval_sync_domain(scope, solver, sync))
             }
         }
     }
 
-    pub fn eval_sync_domain(&mut self, scope: Scope, sync: Spanned<SyncDomain<&Expression>>) -> SyncDomain<Value> {
+    pub fn eval_expression_as_domain_signal(&mut self, ctx: &ExpressionContext, solver: &mut Solver, expr: &Expression) -> Value<DomainSignal, Type> {
+        todo!()
+    }
+
+    pub fn eval_sync_domain(&mut self, scope: Scope, solver: &mut Solver, sync: Spanned<SyncDomain<&Expression>>) -> SyncDomain<DomainSignal> {
         let Spanned { span: _, inner: sync } = sync;
         let SyncDomain { clock, reset } = sync;
 
         let ctx = ExpressionContext::passthrough(scope);
-        let mut collector = MaybeDriverCollector::None;
-        let clock_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, clock);
-        let reset_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, reset);
+        let clock_value_unchecked = self.eval_expression_as_domain_signal(&ctx, solver, clock);
+        let reset_value_unchecked = self.eval_expression_as_domain_signal(&ctx, solver, reset);
 
         // check that clock is a clock
-        let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
-        let clock_value = match &clock_domain {
+        // TODO also/instead check type?
+        let clock_value = match &clock_value_unchecked.domain {
             ValueDomain::Clock => clock_value_unchecked,
-            &ValueDomain::Error(e) => Value::Error(e),
+            &ValueDomain::Error(e) => Value::error(e, clock.span),
             _ => {
-                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
+                let sync_str = self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_value_unchecked.domain);
+                let title = format!("clock must be a clock, has domain {}", sync_str);
                 let e = self.diags.report_simple(title, clock.span, "clock value");
-                Value::Error(e)
+                Value::error(e, clock.span)
             }
         };
 
         // check that reset is an async bool
         // TODO allow sync reset
         // TODO require that async reset still comes out of sync in phase with the clock
-        let reset_value_bool = match self.require_type_contains_value(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
-            Ok(()) => reset_value_unchecked,
-            Err(e) => Value::Error(e),
-        };
-        let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
-        let reset_value = match &reset_domain {
-            ValueDomain::Async => reset_value_bool,
-            &ValueDomain::Error(e) => Value::Error(e),
+        let reset_value_bool = match reset_value_unchecked.ty_default {
+            Type::Error(e) => Value::error(e, reset.span),
+            Type::Boolean => reset_value_unchecked,
             _ => {
-                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
+                let ty_str = self.compiled.type_to_readable_str(self.source, self.parsed, &reset_value_unchecked.ty_default);
+                let title = "type mismatch: reset must be a boolean".to_string();
+                let label = format!("expected boolean, actual type `{}`", ty_str);
+                let e = self.diags.report_simple(title, reset.span, label);
+                Value::error(e, reset.span)
+            }
+        };
+
+        let reset_value = match &reset_value_bool.domain {
+            ValueDomain::Async => reset_value_bool,
+            &ValueDomain::Error(e) => Value::error(e, reset.span),
+            _ => {
+                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_value_bool.domain));
                 let e = self.diags.report_simple(title, reset.span, "reset value");
-                Value::Error(e)
+                Value::error(e, reset.span)
             }
         };
 
         SyncDomain {
-            clock: clock_value,
-            reset: reset_value,
+            clock: clock_value.content,
+            reset: reset_value.content,
         }
     }
 
     fn eval_builtin_call(
         &mut self,
-        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
+        ctx: &ExpressionContext,
+        solver: &mut Solver,
         expr_span: Span,
         args: &ast::Args,
     ) -> Result<TypeOrValue, ErrorGuaranteed> {
         let diags = self.diags;
 
         let args_span = args.span;
-        let args = args.inner.iter()
-            .map(|arg| {
-                let ast::Arg { span: _, name, value: arg_expr } = arg;
-                if let Some(name) = name {
-                    diags.report_simple("named arguments are not allowed for __builtin calls", name.span, "named argument");
-                }
-                let inner = self.eval_expression_as_ty_or_value(ctx, collector, arg_expr);
-                Spanned { span: arg.span, inner }
-            })
-            .collect_vec();
 
-        let get_arg_str = |i: usize| -> Option<&str> {
-            args.get(i).and_then(|e| match &e.inner {
-                TypeOrValue::Value(Value::StringConstant(s)) => Some(s.as_str()),
-                _ => None,
-            })
-        };
+        for arg in &args.inner {
+            if let Some(name) = &arg.name {
+                return Err(diags.report_simple(
+                    "named arguments are not allowed for __builtin calls",
+                    name.span,
+                    "named argument",
+                ));
+            }
+        }
 
-        if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
-            let rest = &args[2..];
+        if let (Some(first), Some(second)) = (args.inner.get(0), args.inner.get(1)) {
+            if let (ExpressionKind::StringLiteral(first), ExpressionKind::StringLiteral(second)) = (&first.value.inner, &second.value.inner) {
+                // TODO should we do type-checking of the "rest" arguments here,
+                //   or can we trust the (stdlib) caller to do this right?
+                let rest = args.inner[2..].iter()
+                    .map(|a| self.eval_expression_as_ty_or_value(ctx, solver, &a.value))
+                    .collect_vec();
 
-            match (first, second, rest) {
-                ("type", "unchecked", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Unchecked)),
-                ("value", "undefined", &[]) =>
-                    return Ok(TypeOrValue::Value(Value::Undefined)),
-                ("type", "bool", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Boolean)),
-                ("type", "int", &[]) => {
-                    let range = Box::new(Value::Range(RangeInfo::UNBOUNDED));
-                    return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
+                match (first.as_str(), second.as_str(), rest.as_slice()) {
+                    ("type", "unchecked", &[]) =>
+                        return Ok(TypeOrValue::Type(Type::Unchecked)),
+                    ("value", "undefined", &[]) =>
+                        return Ok(TypeOrValue::Value(Value {
+                            content: ValueContent::Undefined,
+                            ty_default: Type::Unchecked,
+                            domain: ValueDomain::CompileTime,
+                            access: ValueAccess::No,
+                            origin: expr_span,
+                        })),
+                    ("type", "bool", &[]) =>
+                        return Ok(TypeOrValue::Type(Type::Boolean)),
+                    ("type", "int", &[]) => {
+                        return Ok(TypeOrValue::Type(Type::Integer(RangeInfo {
+                            start_inc: None,
+                            end_inc: None,
+                        })));
+                    }
+                    ("type", "int_range", [TypeOrValue::Value(range)]) => {
+                        if let ValueContent::Range(range) = &range.content {
+                            return Ok(TypeOrValue::Type(Type::Integer(range.as_ref().map_inner(|v| v.content))));
+                        }
+                    }
+                    ("type", "Range", &[]) =>
+                        return Ok(TypeOrValue::Type(Type::Range)),
+                    ("type", "bits_inf", &[]) =>
+                        return Ok(TypeOrValue::Type(Type::Bits(None))),
+                    ("function", "print", [TypeOrValue::Value(value)]) => {
+                        return Ok(TypeOrValue::Value(value.clone()));
+                    }
+                    // fallthrough into error
+                    _ => {}
                 }
-                ("type", "int_range", [range]) => {
-                    // TODO typecheck (range must be integer)? or should we just trust stdlib?
-                    let range = Box::new(range.inner.clone().unwrap_value(diags, range.span));
-                    let ty_info = IntegerTypeInfo { range };
-                    return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
-                }
-                ("type", "Range", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Range)),
-                ("type", "bits_inf", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Bits(None))),
-                ("function", "print", [value]) => {
-                    let _: Value = value.inner.clone().unwrap_value(diags, value.span);
-                    return Ok(TypeOrValue::Value(Value::Unit));
-                }
-                // fallthrough into error
-                _ => {}
             }
         }
 
@@ -705,26 +1086,26 @@ impl CompileState<'_, '_> {
     }
 }
 
-impl TypeOrValue<Type, Value> {
-    pub fn unwrap_ty(self, diags: &Diagnostics, span: Span) -> Type {
+impl TypeOrValue {
+    pub fn unwrap_ty(self, diags: &Diagnostics, origin: Span) -> Type {
         match self {
             TypeOrValue::Type(ty) => ty,
             TypeOrValue::Value(_) => {
-                let diag = Diagnostic::new_simple("expected type, got value", span, "value");
+                let diag = Diagnostic::new_simple("expected type, got value", origin, "value");
                 Type::Error(diags.report(diag))
             }
             TypeOrValue::Error(e) => Type::Error(e),
         }
     }
 
-    pub fn unwrap_value(self, diags: &Diagnostics, span: Span) -> Value {
+    pub fn unwrap_value(self, diags: &Diagnostics, origin: Span) -> Value {
         match self {
             TypeOrValue::Type(_) => {
-                let diag = Diagnostic::new_simple("expected value, got type", span, "type");
-                Value::Error(diags.report(diag))
+                let diag = Diagnostic::new_simple("expected value, got type", origin, "type");
+                Value::error(diags.report(diag), origin)
             }
             TypeOrValue::Value(value) => value,
-            TypeOrValue::Error(e) => Value::Error(e),
+            TypeOrValue::Error(e) => Value::error(e, origin),
         }
     }
 }
