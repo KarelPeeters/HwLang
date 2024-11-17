@@ -2,12 +2,11 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use hwl_language::back::core::lower;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
-use hwl_language::data::lowered::LoweredDatabase;
-use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
-use hwl_language::front::driver::compile;
+use hwl_language::data::parsed::ParsedDatabase;
+use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
+use hwl_language::new::compile::compile;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
 
@@ -43,12 +42,13 @@ fn main() {
     };
 
     // run compilation
-    let diag = Diagnostics::new_with_handler(handler);
-    let (parsed, mut compiled) = compile(&diag, &source);
-    let lowered = lower(&diag, &source, &parsed, &mut compiled);
+    let diags = Diagnostics::new_with_handler(handler);
+    let parsed = ParsedDatabase::new(&diags, &source);
+    let ir_design = compile(&diags, &source, &parsed);
+    // TODO lower to verilog
 
     // print diagnostics
-    let diagnostics = diag.finish();
+    let diagnostics = diags.finish();
     let any_error = !diagnostics.is_empty();
     if !print_diagnostics_immediately {
         for diag in diagnostics {
@@ -58,22 +58,24 @@ fn main() {
     }
 
     // print result
-    let LoweredDatabase { top_module_name, verilog_source, module_names: _ } = lowered;
-    println!("top module name: {:?}", top_module_name);
-    println!("verilog source:");
-    println!("----------------------------------------");
-    print!("{}", verilog_source);
-    if !verilog_source.ends_with("\n") {
-        println!();
-    }
-    println!("----------------------------------------");
+    // TODO print verilog again
+    println!("{:?}", ir_design);
+    // let LoweredDatabase { top_module_name, verilog_source, module_names: _ } = lowered;
+    // println!("top module name: {:?}", top_module_name);
+    // println!("verilog source:");
+    // println!("----------------------------------------");
+    // print!("{}", verilog_source);
+    // if !verilog_source.ends_with("\n") {
+    //     println!();
+    // }
+    // println!("----------------------------------------");
 
     if any_error {
         std::process::exit(1);
     }
 }
 
-fn build_source_database(root: &Path) -> Result<SourceDatabase, CompileSetError> {
+fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> {
     let mut source_database = SourceDatabase::new();
 
     // TODO proper error handling for IO and string conversion errors
@@ -93,7 +95,7 @@ fn build_source_database(root: &Path) -> Result<SourceDatabase, CompileSetError>
         Ok(())
     }).unwrap();
 
-    if source_database.files.len() == 0 {
+    if source_database.len() == 0 {
         println!("Warning: no input files found");
     }
 

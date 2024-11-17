@@ -1,19 +1,19 @@
 import std.types.[bool, uint, int_range, natural, unchecked, undefined];
 
-import spi_master.spi_master;
+//import spi_master.spi_master;
 
 pub module top ports(
     clk: in clock,
     rst: in async bool,
 ) body {
-    instance spi_master generics(packet_length=8) ports(
-        .clk(clk),
-        .rst(rst),
-        .data(undefined),
-        .data_valid(false),
-        .data_ready(),
-        .sclk(),
-        .mosi(),
-        .cs(),
-    );
+//    instance spi_master generics(packet_length=8) ports(
+//        .clk(clk),
+//        .rst(rst),
+//        .data(undefined),
+//        .data_valid(false),
+//        .data_ready(),
+//        .sclk(),
+//        .mosi(),
+//        .cs(),
+//    );
 }

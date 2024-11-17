@@ -77,7 +77,7 @@ impl<V> ScopeInfo<V> {
     /// This function always appears to succeed, errors are instead reported as diagnostics.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &ast::Identifier, value: V, vis: Visibility) {
+    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &Identifier, value: V, vis: Visibility) {
         if let Some(declared) = self.values.get_mut(&id.string) {
             // get all spans
             let mut spans = match declared {
@@ -122,7 +122,7 @@ impl<V> ScopeInfo<V> {
         &'s self,
         scopes: &'s Scopes<V>,
         diagnostics: &Diagnostics,
-        id: &ast::Identifier,
+        id: &Identifier,
         vis: Visibility,
     ) -> Result<ScopeFound<&'s V>, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(&id.string) {

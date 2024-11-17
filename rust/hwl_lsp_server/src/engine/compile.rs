@@ -6,7 +6,7 @@ use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
 use hwl_language::data::diagnostic::{Annotation, Diagnostic, Diagnostics};
-use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
+use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::front::driver::compile;
 use hwl_language::syntax::pos::FileId;
 use hwl_language::{throw, try_inner};
@@ -63,7 +63,7 @@ impl ServerState {
         Ok(())
     }
 
-    pub fn build_source_database(&mut self) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), CompileSetError>> {
+    pub fn build_source_database(&mut self) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), SourceSetError>> {
         let vfs = self.vfs.inner()?;
         let vfs_root = vfs.root().clone();
 

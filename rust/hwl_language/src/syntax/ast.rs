@@ -15,6 +15,7 @@ pub enum Visibility {
 }
 
 // TODO add "doc comment" field to items?
+// TODO rename to ItemDef
 #[derive(Debug, Clone)]
 pub enum Item {
     Import(ItemImport),

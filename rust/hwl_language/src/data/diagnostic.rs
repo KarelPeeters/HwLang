@@ -26,6 +26,18 @@ use std::cmp::min;
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ErrorGuaranteed(());
 
+#[macro_export]
+macro_rules! impl_from_error_guaranteed {
+    ($ty:ident) => {
+        impl From<ErrorGuaranteed> for $ty {
+            fn from(e: ErrorGuaranteed) -> Self {
+                $ty::Error(e)
+            }
+        }
+    };
+}
+
+
 #[must_use]
 pub struct Diagnostics {
     handler: Option<Box<dyn Fn(&Diagnostic)>>,

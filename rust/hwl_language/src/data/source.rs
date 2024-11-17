@@ -3,21 +3,20 @@ use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::{new_index_type, throw};
 use indexmap::IndexMap;
-use itertools::enumerate;
+use itertools::{enumerate, Itertools};
 
 /// The full set of source files that are part of this compilation.
 /// Immutable once all files have been added.
 #[derive(Clone)]
 pub struct SourceDatabase {
-    // TODO use arena for this too?
-    pub files: IndexMap<FileId, FileSourceInfo>,
-    pub directories: Arena<Directory, DirectoryInfo>,
     pub root_directory: Directory,
+    files: IndexMap<FileId, FileSourceInfo>,
+    directories: Arena<Directory, DirectoryInfo>,
 }
 
 // TODO rename
 #[derive(Debug, Clone)]
-pub enum CompileSetError {
+pub enum SourceSetError {
     EmptyPath,
     DuplicatePath(FilePath),
 }
@@ -67,10 +66,21 @@ impl SourceDatabase {
         }
     }
 
-    // TODO parse immediately?
-    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<FileId, CompileSetError> {
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Get the list of files, in a platform-independent sorted order.
+    pub fn files(&self) -> Vec<FileId> {
+        // TODO cache this sort
+        let mut files = self.files.keys().copied().collect_vec();
+        files.sort_by_key(|&file| &self[self[file].directory].path);
+        files
+    }
+
+    pub fn add_file(&mut self, path: FilePath, path_raw: String, source: String) -> Result<FileId, SourceSetError> {
         if path.0.is_empty() {
-            throw!(CompileSetError::EmptyPath);
+            throw!(SourceSetError::EmptyPath);
         }
 
         let file_id = FileId(self.files.len());
@@ -86,7 +96,7 @@ impl SourceDatabase {
 
         let slot = &mut self.directories[directory].file;
         if slot.is_some() {
-            throw!(CompileSetError::DuplicatePath(path));
+            throw!(SourceSetError::DuplicatePath(path));
         }
         assert_eq!(*slot, None);
         *slot = Some(file_id);
