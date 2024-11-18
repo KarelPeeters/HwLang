@@ -43,18 +43,34 @@ impl ParsedDatabase {
 }
 
 // TODO general way to point back into the ast? should we just switch to actual references with lifetimes?
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefItem {
     file: FileId,
     file_item_index: usize,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+impl AstRefItem {
+    pub fn file(self) -> FileId {
+        self.file
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModule {
     item: AstRefItem,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+impl AstRefModule {
+    pub fn new_unchecked(item: AstRefItem) -> Self {
+        AstRefModule { item }
+    }
+
+    pub fn file(self) -> FileId {
+        self.item.file()
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {
     module: AstRefModule,
     port_item_index: usize,

@@ -1,20 +1,22 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::parsed::{AstRefItem, ParsedDatabase};
+use crate::data::parsed::{AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::ir::{IrDesign, IrModule};
-use crate::new::misc::{Item, ScopedEntry, TypeOrValue};
-use crate::new::value::KnownCompileValue;
-use crate::new_index_type;
+use crate::new::ir::{IrDesign, IrModule, IrModuleContent};
+use crate::new::misc::{MaybeUnchecked, ScopedEntry, TypeOrValue, Unchecked};
+use crate::new::types::{RangeInfo, Type};
+use crate::new::value::{KnownCompileValue, Value};
 use crate::syntax::ast;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, Spanned};
-use crate::syntax::pos::FileId;
+use crate::syntax::ast::{GenericParameterKind, Identifier, Spanned};
+use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
+use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{zip_eq, Itertools};
+use num_bigint::BigUint;
 
 pub struct CompileState<'a> {
     diags: &'a Diagnostics,
@@ -24,8 +26,11 @@ pub struct CompileState<'a> {
     scopes: Scopes<ScopedEntry>,
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
-    item_visit_stack: Vec<Item>,
-    items: Arena<Item, ItemInfo>,
+    ir_modules: Arena<IrModule, IrModuleContent>,
+    elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
+    elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
+
+    elaboration_stack: Vec<ModuleElaboration>,
 }
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
@@ -36,10 +41,6 @@ pub struct CompileState<'a> {
 //   * type-check all modules without generics automatically
 //   * type-check modules with generics partially
 pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> IrDesign {
-    // items only exists to serve as a level of indirection between values,
-    //   so we can easily do the graph solution in a single pass
-    let mut items: Arena<Item, ItemInfo> = Arena::default();
-
     // populate file scopes
     let mut map_file_scopes = IndexMap::new();
     let mut scopes = Scopes::default();
@@ -64,13 +65,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
                         ast::Visibility::Public(_) => Visibility::Public,
                         ast::Visibility::Private => Visibility::Private,
                     };
-
-                    let item = items.push(ItemInfo {
-                        defining_id: declaration_info.id.as_ref().map_inner(|&id| id.clone()),
-                        ast_ref: ast_item_ref,
-                    });
-
-                    local_scope_info.maybe_declare(diags, declaration_info.id, ScopedEntry::Item(item), vis);
+                    local_scope_info.maybe_declare(diags, declaration_info.id, ScopedEntry::Item(ast_item_ref), vis);
                 }
             }
 
@@ -99,39 +94,24 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         parsed,
         scopes,
         file_scopes: map_file_scopes,
-        items,
-        item_visit_stack: Vec::new(),
+        elaboration_stack: vec![],
+        ir_modules: Arena::default(),
+        elaborated_modules: ArenaSet::default(),
+        elaborated_modules_to_ir: IndexMap::new(),
     };
 
-    // start resolving from the top module
-    let mut modules = Arena::default();
-    let mut module_todo = vec![];
-    let mut instances = ArenaSet::<ModuleElaboration, ModuleElaborationInfo>::default();
-    let mut instance_ir_map = IndexMap::<ModuleElaboration, IrModule>::new();
-
+    // start elaborating from the top module
     let top_module = state.find_top_module()
-        .map(|top_item| {
-            let instance = instances.push(ModuleElaborationInfo { item: top_item, generic_args: vec![] });
-            module_todo.push(instance);
-            (top_item, instance)
+        .and_then(|top_item| {
+            let elaboration = state.elaborated_modules.push(ModuleElaborationInfo { item: top_item, args: None });
+            state.elaborate_module(elaboration)
         });
 
-    while let Some(instance) = module_todo.pop() {
-        // TODO
-    }
-
-    let top_module = top_module.and_then(|(top_item, top_instance)| {
-        instance_ir_map.get(&top_instance).copied().ok_or_else(|| {
-            diags.report_internal_error(
-                state.items[top_item].defining_id.span(),
-                "missing IR module for top module instance",
-            )
-        })
-    });
-
+    // return result
+    assert!(state.elaboration_stack.is_empty());
     IrDesign {
         top_module,
-        modules,
+        modules: state.ir_modules,
     }
 }
 
@@ -139,8 +119,8 @@ new_index_type!(pub ModuleElaboration);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationInfo {
-    pub item: Item,
-    pub generic_args: Vec<TypeOrValue<KnownCompileValue>>,
+    pub item: AstRefModule,
+    pub args: Option<Vec<TypeOrValue<KnownCompileValue>>>,
 }
 
 fn add_import_to_scope(
@@ -217,7 +197,7 @@ fn find_parent_scope(
                     .finish()
                     .footer(Level::Info, format!("possible options: {:?}", options))
                     .finish();
-                return Err(diags.report(diag));
+                throw!(diags.report(diag));
             }
         };
     }
@@ -225,7 +205,7 @@ fn find_parent_scope(
     let file = match source[curr_dir].file {
         Some(file) => file,
         None => {
-            return Err(diags.report_simple("expected path to file", parents_span, "no file exists at this path"))
+            throw!(diags.report_simple("expected path to file", parents_span, "no file exists at this path"))
         }
     };
 
@@ -234,7 +214,100 @@ fn find_parent_scope(
 }
 
 impl CompileState<'_> {
-    fn find_top_module(&self) -> Result<Item, ErrorGuaranteed> {
+    fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        // check cache
+        if let Some(&result) = self.elaborated_modules_to_ir.get(&module_elaboration) {
+            return result;
+        }
+
+        let ir_module = if let Some(loop_start) = self.elaboration_stack.iter().position(|&x| x == module_elaboration) {
+            // report elaboration loop
+            let cycle = &self.elaboration_stack[loop_start..];
+
+            // TODO include instantiation site in error message
+            let mut diag = Diagnostic::new("encountered elaboration cycle");
+            for &elem in cycle {
+                let item = self.elaborated_modules[elem].item;
+                diag = diag.add_error(self.parsed[item].id.span, "module part of elaboration cycle");
+            }
+
+            Err(diags.report(diag.finish()))
+        } else {
+            // elaborate new module
+            self.elaboration_stack.push(module_elaboration);
+            let elaboration_info = self.elaborated_modules[module_elaboration].clone();
+            self.elaborate_module_new(elaboration_info)
+                .map(|ir_content| self.ir_modules.push(ir_content))
+        };
+
+        // put into cache and return
+        self.elaborated_modules_to_ir.insert_first(module_elaboration, ir_module);
+        ir_module
+    }
+
+    // TODO clarify that argument type checking has already happened at the call site?
+    fn elaborate_module_new(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<IrModuleContent, ErrorGuaranteed> {
+        // elaborate new module
+        let diags = self.diags;
+        let ModuleElaborationInfo { item, args } = module_elaboration;
+
+        let file_scope = self[item.file()].as_ref_ok()?.scope_inner_import;
+        let &ast::ItemDefModule { span: def_span, vis: _, id: _, ref params, ref ports, ref body } = &self.parsed[item];
+
+        // check params and add to scope
+        let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
+        match (params, args) {
+            (None, None) => {}
+            (Some(params), Some(args)) => {
+                if params.inner.len() != args.len() {
+                    throw!(diags.report_internal_error(params.span, "mismatched number of arguments"));
+                }
+
+                for (param, arg) in zip_eq(&params.inner, args) {
+                    let entry = match (&param.kind, arg) {
+                        (&GenericParameterKind::Type(param_span), TypeOrValue::Type(arg)) => {
+                            let _: Span = param_span;
+                            TypeOrValue::Type(arg)
+                        }
+                        (GenericParameterKind::Value(param_ty), TypeOrValue::Value(arg)) => {
+                            let param_ty = self.eval_expression_as_ty(param_ty);
+                            match self.check_type_contains(&param_ty, &arg) {
+                                Ok(true) => {}
+                                Ok(false) => todo!(),
+                                Err(_) => todo!(),
+                            }
+                            TypeOrValue::Value(Value::Compile(MaybeUnchecked::Checked(arg)))
+                        }
+
+                        (_, TypeOrValue::Error(e)) => TypeOrValue::Error(e),
+
+                        (GenericParameterKind::Value(_), TypeOrValue::Type(_)) |
+                        (GenericParameterKind::Type(_), TypeOrValue::Value(_)) => {
+                            throw!(diags.report_internal_error(param.span, "mismatched generic arg kind"))
+                        }
+                    };
+
+                    let entry = ScopedEntry::Direct(entry);
+                    self.scopes[params_scope].declare(diags, &param.id, entry, Visibility::Private);
+                }
+            }
+            _ => throw!(diags.report_internal_error(def_span, "mismatched presence of arguments")),
+        };
+
+        // check ports and add to scope
+        let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
+        // TODO check ports (mostly domains)
+        // TODO add ports to scope
+
+        // elaborate module body
+        // TODO elaborate module body, probably best in a different file?
+
+        todo!()
+    }
+
+    fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
         let diags = self.diags;
 
         let top_file = self.source[self.source.root_directory].children.get("top")
@@ -248,10 +321,10 @@ impl CompileState<'_> {
 
         match top_entry.value {
             &ScopedEntry::Item(item) => {
-                match &self.parsed[self[item].ast_ref] {
+                match &self.parsed[item] {
                     ast::Item::Module(module) => {
                         match &module.params {
-                            None => Ok(item),
+                            None => Ok(AstRefModule::new_unchecked(item)),
                             Some(_) => {
                                 Err(diags.report_simple(
                                     "`top` cannot have generic parameters",
@@ -281,18 +354,73 @@ impl CompileState<'_> {
             }
         }
     }
-}
 
-// TODO maybe just delete this, it seems pretty redundant
-#[derive(Debug)]
-pub struct ItemInfo {
-    defining_id: MaybeIdentifier,
-    ast_ref: AstRefItem,
+    fn check_type_contains(&self, ty: &Type, value: &KnownCompileValue) -> Result<bool, Unchecked> {
+        let mut any_unchecked = None;
+
+        match (ty, value) {
+            (Type::Bool, KnownCompileValue::Bool(_)) => {},
+            (Type::String, KnownCompileValue::String(_)) => {},
+            (Type::Int(range), KnownCompileValue::Int(value)) => {
+                let RangeInfo { start_inc, end_inc } = range;
+
+                match start_inc {
+                    None => {}
+                    Some(MaybeUnchecked::Checked(start_inc)) => {
+                        if value < start_inc {
+                            return Ok(false);
+                        }
+                    }
+                    &Some(MaybeUnchecked::Unchecked(u)) => any_unchecked = Some(u),
+                }
+
+                match end_inc {
+                    None => {}
+                    Some(MaybeUnchecked::Checked(end_inc)) => {
+                        if value > end_inc {
+                            return Ok(false);
+                        }
+                    }
+                    &Some(MaybeUnchecked::Unchecked(u)) => any_unchecked = Some(u),
+                }
+            }
+            (Type::Array(inner, len), KnownCompileValue::Array(values)) => {
+                match len {
+                    MaybeUnchecked::Checked(len) => {
+                        if len != &BigUint::from(values.len()) {
+                            return Ok(false);
+                        }
+                    }
+                    &MaybeUnchecked::Unchecked(u) => any_unchecked = Some(u),
+                }
+
+                for value in values {
+                    match self.check_type_contains(inner, value) {
+                        Ok(true) => {}
+                        Ok(false) => return Ok(false),
+                        Err(u) => any_unchecked = Some(u),
+                    }
+                }
+            }
+
+            (&Type::Unchecked(u), _) => any_unchecked = Some(u),
+
+            (
+                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _),
+                KnownCompileValue::Bool(_) | KnownCompileValue::String(_) | KnownCompileValue::Int(_) | KnownCompileValue::Array(_)
+            ) => return Ok(false),
+        }
+
+        match any_unchecked {
+            None => Ok(true),
+            Some(u) => Err(u),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct FileScopes {
-    /// The scope that only includes top-level items defined in this file. 
+    /// The scope that only includes top-level items defined in this file.
     scope_outer_declare: Scope,
     /// Child scope of [scope_outer_declare] that includes all imported items.
     scope_inner_import: Scope,
@@ -309,7 +437,6 @@ macro_rules! impl_index {
     };
 }
 
-impl_index!(items, Item, ItemInfo);
 impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
 
 impl std::ops::Index<FileId> for CompileState<'_> {

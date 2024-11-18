@@ -5,7 +5,7 @@ use crate::util::arena::Arena;
 #[derive(Debug)]
 pub struct IrDesign {
     pub top_module: Result<IrModule, ErrorGuaranteed>,
-    pub modules: Arena<IrModule, Result<IrModuleContent, ErrorGuaranteed>>,
+    pub modules: Arena<IrModule, IrModuleContent>,
 }
 
 new_index_type!(pub IrModule);

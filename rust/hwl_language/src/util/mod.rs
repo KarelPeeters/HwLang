@@ -3,8 +3,15 @@ pub mod io;
 pub mod iter;
 pub mod data;
 
+// TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Never {}
+
+impl Never {
+    pub fn unreachable(self) -> ! {
+        match self {}
+    }
+}
 
 #[macro_export]
 macro_rules! throw {
