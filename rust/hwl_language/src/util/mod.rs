@@ -43,10 +43,24 @@ pub trait ResultExt<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E>;
 }
 
+pub trait ResultDoubleExt<T, E> {
+    fn flatten_err(self) -> Result<T, E>;
+}
+
 impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E> {
         match *self {
             Ok(ref v) => Ok(v),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl<T, E> ResultDoubleExt<T, E> for Result<Result<T, E>, E> {
+    fn flatten_err(self) -> Result<T, E> {
+        match self {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
             Err(e) => Err(e),
         }
     }

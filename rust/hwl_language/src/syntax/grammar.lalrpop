@@ -22,7 +22,6 @@ extern {
         "import" => TokenType::Import,
         "as" => TokenType::As,
         "type" => TokenType::Type,
-        "any" => TokenType::Any,
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
         "generics" => TokenType::Generics,
@@ -433,7 +432,7 @@ ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
 ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
 ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
-    "__builtin" "(" <args:Args> ")" =>
+    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" =>
         ExpressionKind::Builtin(args),
     <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
         ExpressionKind::Call(target, args),
@@ -513,8 +512,6 @@ ExprLevelAtomic: ExpressionKind = {
         let string = full[1..full.len()-1].to_owned();
         ExpressionKind::StringLiteral(string.to_owned())
     },
-    // any
-    "any" => ExpressionKind::Any,
 }
 
 //Path: Path = {

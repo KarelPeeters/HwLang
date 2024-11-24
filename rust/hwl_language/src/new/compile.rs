@@ -1,36 +1,21 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::parsed::{AstRefModule, ParsedDatabase};
+use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
 use crate::new::ir::{IrDesign, IrModule, IrModuleInfo};
 use crate::new::misc::{ScopedEntry, TypeOrValue, ValueDomain};
 use crate::new::types::Type;
-use crate::new::value::{CompileValue, ScopedValue};
+use crate::new::value::CompileValue;
 use crate::syntax::ast;
-use crate::syntax::ast::{GenericParameterKind, Identifier, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortKind, Spanned};
+use crate::syntax::ast::{Identifier, PortDirection, Spanned};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
+use crate::util::{ResultDoubleExt, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Itertools};
-
-pub struct CompileState<'a> {
-    diags: &'a Diagnostics,
-    source: &'a SourceDatabase,
-    parsed: &'a ParsedDatabase,
-
-    scopes: Scopes<ScopedEntry>,
-    file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
-
-    ir_modules: Arena<IrModule, IrModuleInfo>,
-    elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
-    elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
-
-    elaboration_stack: Vec<ModuleElaboration>,
-}
+use itertools::Itertools;
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -93,10 +78,14 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         parsed,
         scopes,
         file_scopes: map_file_scopes,
-        elaboration_stack: vec![],
+        ports: Arena::default(),
+        wires: Arena::default(),
+        registers: Arena::default(),
+        variables: Arena::default(),
         ir_modules: Arena::default(),
         elaborated_modules: ArenaSet::default(),
         elaborated_modules_to_ir: IndexMap::new(),
+        elaboration_stack: vec![],
     };
 
     // start elaborating from the top module
@@ -114,12 +103,75 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
     }
 }
 
+pub struct CompileState<'a> {
+    pub diags: &'a Diagnostics,
+    pub source: &'a SourceDatabase,
+    pub parsed: &'a ParsedDatabase,
+
+    pub scopes: Scopes<ScopedEntry>,
+    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+
+    pub ports: Arena<Port, PortInfo>,
+    pub wires: Arena<Wire, WireInfo>,
+    pub registers: Arena<Register, RegisterInfo>,
+    pub variables: Arena<Variable, VariableInfo>,
+
+    pub ir_modules: Arena<IrModule, IrModuleInfo>,
+    pub elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
+    pub elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
+
+    elaboration_stack: Vec<ElaborationStackEntry>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ElaborationStackEntry {
+    // TODO properly refer to ast instantiation site
+    /// Module instantiation is only here to provide nicer error messages.
+    ModuleInstantiation(Span),
+    ModuleElaboration(ModuleElaboration),
+    // TODO better name, is this ItemEvaluation, ItemSignature, ...?
+    Item(AstRefItem),
+}
+
 new_index_type!(pub ModuleElaboration);
+new_index_type!(pub Port);
+new_index_type!(pub Wire);
+new_index_type!(pub Register);
+new_index_type!(pub Variable);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationInfo {
     pub item: AstRefModule,
     pub args: Option<Vec<TypeOrValue<CompileValue>>>,
+}
+
+// TODO should a register-marked port count as a register or a port?
+#[derive(Debug)]
+pub struct PortInfo {
+    pub def_id_span: Span,
+    pub direction: PortDirection,
+    pub domain: ValueDomain,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct WireInfo {
+    pub def_id_span: Span,
+    pub domain: ValueDomain,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct RegisterInfo {
+    pub def_id_span: Span,
+    pub domain: ValueDomain,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct VariableInfo {
+    pub def_id_span: Span,
+    pub ty: Type,
 }
 
 fn add_import_to_scope(
@@ -213,168 +265,59 @@ fn find_parent_scope(
 }
 
 impl CompileState<'_> {
-    fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
-        let diags = self.diags;
+    fn check_elaboration_loop<T>(&mut self, entry: ElaborationStackEntry, f: impl FnOnce(&mut Self) -> T) -> Result<T, ErrorGuaranteed> {
+        if let Some(loop_start) = self.elaboration_stack.iter().position(|&x| x == entry) {
+            // report elaboration loop
+            let cycle = &self.elaboration_stack[loop_start..];
 
+            let mut diag = Diagnostic::new("encountered elaboration cycle");
+            for &elem in cycle {
+                match elem {
+                    ElaborationStackEntry::ModuleInstantiation(span) => {
+                        diag = diag.add_error(span, "module instantiation part of elaboration cycle");
+                    }
+                    ElaborationStackEntry::ModuleElaboration(elem) => {
+                        let item = self.elaborated_modules[elem].item;
+                        diag = diag.add_error(self.parsed[item].id.span, "module part of elaboration cycle");
+                    }
+                    ElaborationStackEntry::Item(item) => {
+                        diag = diag.add_error(self.parsed[item].common_info().span_short, "item part of elaboration cycle");
+                    }
+                }
+            }
+
+            Err(self.diags.report(diag.finish()))
+        } else {
+            self.elaboration_stack.push(entry);
+            let len_expected = self.elaboration_stack.len();
+
+            let result = f(self);
+
+            assert_eq!(self.elaboration_stack.len(), len_expected);
+            self.elaboration_stack.pop().unwrap();
+
+            Ok(result)
+        }
+    }
+
+    fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
         // check cache
         if let Some(&result) = self.elaborated_modules_to_ir.get(&module_elaboration) {
             return result;
         }
 
-        let ir_module = if let Some(loop_start) = self.elaboration_stack.iter().position(|&x| x == module_elaboration) {
-            // report elaboration loop
-            let cycle = &self.elaboration_stack[loop_start..];
-
-            // TODO include instantiation site in error message
-            let mut diag = Diagnostic::new("encountered elaboration cycle");
-            for &elem in cycle {
-                let item = self.elaborated_modules[elem].item;
-                diag = diag.add_error(self.parsed[item].id.span, "module part of elaboration cycle");
-            }
-
-            Err(diags.report(diag.finish()))
-        } else {
-            // elaborate new module
-            self.elaboration_stack.push(module_elaboration);
-            let elaboration_info = self.elaborated_modules[module_elaboration].clone();
-            self.elaborate_module_new(elaboration_info)
-                .map(|ir_content| self.ir_modules.push(ir_content))
-        };
+        // new elaboration
+        let ir_module = self.check_elaboration_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
+            s.elaborate_module_new(module_elaboration)
+                .map(|ir_content| s.ir_modules.push(ir_content))
+        }).flatten_err();
 
         // put into cache and return
+        // this is correct even for errors caused by cycles:
+        //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
         self.elaborated_modules_to_ir.insert_first(module_elaboration, ir_module);
+
         ir_module
-    }
-
-    // TODO clarify that argument type checking and port validness checking 
-    //   has already happened at the call site?
-    // TODO keep track of elaboration + function call stack trace, include it in error messages
-    //   (stack grows top down, error message itself at the bottom)
-    fn elaborate_module_new(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<IrModuleInfo, ErrorGuaranteed> {
-        // elaborate new module
-        let diags = self.diags;
-        let ModuleElaborationInfo { item, args } = module_elaboration;
-
-        let file_scope = self[item.file()].as_ref_ok()?.scope_inner_import;
-        let &ast::ItemDefModule { span: def_span, vis: _, id: _, ref params, ref ports, ref body } = &self.parsed[item];
-
-        // check params and add to scope
-        let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
-        match (params, args) {
-            (None, None) => {}
-            (Some(params), Some(args)) => {
-                if params.inner.len() != args.len() {
-                    throw!(diags.report_internal_error(params.span, "mismatched generic argument count"));
-                }
-
-                for (param, arg) in zip_eq(&params.inner, args) {
-                    let entry = match (&param.kind, arg) {
-                        (&GenericParameterKind::Type(param_span), TypeOrValue::Type(arg)) => {
-                            let _: Span = param_span;
-                            TypeOrValue::Type(arg)
-                        }
-                        (GenericParameterKind::Value(param_ty), TypeOrValue::Value(arg)) => {
-                            let param_ty_span = param_ty.span;
-                            let param_ty = self.eval_expression_as_ty(param_ty);
-
-                            if !param_ty.contains_value(&arg).unwrap_or(true) {
-                                diags.report_internal_error(
-                                    param_ty_span,
-                                    format!(
-                                        "invalid generic argument: type `{}` does not contain value `{}`",
-                                        param_ty.to_diagnostic_string(),
-                                        arg.to_diagnostic_string()
-                                    ),
-                                );
-                            }
-
-                            TypeOrValue::Value(ScopedValue::Compile(arg))
-                        }
-
-                        (_, TypeOrValue::Error(e)) => TypeOrValue::Error(e),
-
-                        (GenericParameterKind::Value(_), TypeOrValue::Type(_)) |
-                        (GenericParameterKind::Type(_), TypeOrValue::Value(_)) => {
-                            throw!(diags.report_internal_error(param.span, "mismatched generic argument kind"))
-                        }
-                    };
-
-                    let entry = ScopedEntry::Direct(entry);
-                    self.scopes[params_scope].declare(diags, &param.id, entry, Visibility::Private);
-                }
-            }
-            _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
-        };
-
-        // check ports and add to scope
-        let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
-
-        for port_item in &ports.inner {
-            match port_item {
-                ModulePortItem::Single(port_item) => {
-                    let ModulePortSingle { span: _, id, direction, kind } = port_item;
-
-                    let (domain, ty_raw, ty_span) = match &kind.inner {
-                        PortKind::Clock => (
-                            ValueDomain::Clock,
-                            Type::Clock,
-                            kind.span,
-                        ),
-                        PortKind::Normal { domain, ty } => (
-                            ValueDomain::from_domain_kind(self.eval_domain(&domain.inner)),
-                            self.eval_expression_as_ty(ty),
-                            ty.span,
-                        ),
-                    };
-
-                    let ty = self.check_port_ty(ty_raw, ty_span);
-                    let port = ScopedValue::Port {
-                        direction: direction.inner,
-                        domain,
-                        ty,
-                    };
-                    let entry = ScopedEntry::Direct(TypeOrValue::Value(port));
-                    self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
-                }
-                ModulePortItem::Block(port_item) => {
-                    let ModulePortBlock { span: _, domain, ports } = port_item;
-
-                    let domain = ValueDomain::from_domain_kind(self.eval_domain(&domain.inner));
-
-                    for port in ports {
-                        let ModulePortInBlock { span: _, id, direction, ty } = port;
-
-                        let ty_raw = self.eval_expression_as_ty(ty);
-                        let ty = self.check_port_ty(ty_raw, ty.span);
-
-                        let port = ScopedValue::Port {
-                            direction: direction.inner,
-                            domain: domain.clone(),
-                            ty,
-                        };
-                        let entry = ScopedEntry::Direct(TypeOrValue::Value(port));
-                        self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
-                    }
-                }
-            }
-        }
-
-        // elaborate module body
-        // TODO elaborate module body, probably best in a different file?
-
-        todo!()
-    }
-
-    fn check_port_ty(&self, ty: Type, ty_span: Span) -> Type {
-        match ty.hardware_bit_width() {
-            Err(e) => Type::Error(e),
-            Ok(Some(_bit_width)) => ty,
-            Ok(None) => Type::Error(self.diags.report_simple(
-                "port type must be representable in hardware",
-                ty_span,
-                format!("type `{}` is not representable in hardware", ty.to_diagnostic_string()),
-            )),
-        }
     }
 
     fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
@@ -429,9 +372,9 @@ impl CompileState<'_> {
 #[derive(Debug)]
 pub struct FileScopes {
     /// The scope that only includes top-level items defined in this file.
-    scope_outer_declare: Scope,
+    pub scope_outer_declare: Scope,
     /// Child scope of [scope_outer_declare] that includes all imported items.
-    scope_inner_import: Scope,
+    pub scope_inner_import: Scope,
 }
 
 macro_rules! impl_index {

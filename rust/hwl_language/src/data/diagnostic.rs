@@ -66,6 +66,7 @@ impl Diagnostics {
         ErrorGuaranteed(())
     }
 
+    // TODO only single string parameter, used for both title and label?
     pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_simple(title, span, label))
     }

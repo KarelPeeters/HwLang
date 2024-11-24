@@ -1,13 +1,22 @@
+use crate::data::diagnostic::ErrorGuaranteed;
+use crate::new::compile::{Port, Register, Variable, Wire};
 use crate::new::misc::ValueDomain;
-use crate::new::types::Type;
-use crate::syntax::ast::PortDirection;
+use crate::new::types::{IntRange, Type};
 use num_bigint::BigInt;
 
 pub enum ExpressionValue {
+    Error(ErrorGuaranteed),
     Compile(CompileValue),
-    // TODO add ports, wires, regs, variables, _including_ a unique SSA id?
 
-    General {
+    // TODO unique SSA ID for type constraining based on ifs?
+    Port(Port),
+    Wire(Wire),
+    Register(Register),
+    // TODO separate compile-time and runtime variables in syntax?
+    //   maybe rename runtime variables to be wires?
+    Variable(Variable),
+
+    RuntimeExpression {
         ty: Type,
         domain: ValueDomain,
     },
@@ -16,22 +25,27 @@ pub enum ExpressionValue {
 #[derive(Debug, Clone)]
 pub enum ScopedValue {
     Compile(CompileValue),
-    // TODO replace ports, vars, signals, regs, ... with arenas?
-    Port { direction: PortDirection, domain: ValueDomain, ty: Type },
+    Port(Port),
+    Wire(Wire),
+    Register(Register),
+    Variable(Variable),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileValue {
+    Undefined,
     Bool(bool),
     Int(BigInt),
     String(String),
     Array(Vec<CompileValue>),
+    IntRange(IntRange),
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
 impl CompileValue {
     pub fn to_diagnostic_string(&self) -> String {
         match self {
+            CompileValue::Undefined => "undefined".to_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
             CompileValue::String(value) => value.clone(),
@@ -42,6 +56,7 @@ impl CompileValue {
                     .join(", ");
                 format!("[{}]", values)
             }
+            CompileValue::IntRange(range) => format!("({})", range),
         }
     }
 }

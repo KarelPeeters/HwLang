@@ -3,16 +3,20 @@ use crate::new::value::CompileValue;
 use crate::swrite;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
-use num_traits::{One, Zero};
+use num_traits::One;
+use std::fmt::{Display, Formatter};
 
+// TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
     Error(ErrorGuaranteed),
     Clock,
+    Any,
     Bool,
     String,
     Int(IntRange),
     Array(Box<Type>, BigUint),
+    Range,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -32,6 +36,9 @@ impl Type {
     pub fn contains_value(&self, value: &CompileValue) -> Result<bool, ErrorGuaranteed> {
         let result = match (self, value) {
             (&Type::Error(e), _) => return Err(e),
+            (Type::Any, _) => true,
+            (_, CompileValue::Undefined) => true,
+
             (Type::Bool, CompileValue::Bool(_)) => true,
             (Type::String, CompileValue::String(_)) => true,
             (Type::Int(range), CompileValue::Int(value)) => {
@@ -51,13 +58,14 @@ impl Type {
                 }
                 r
             }
+            (Type::Range, CompileValue::IntRange(_)) => true,
 
             // TODO maybe clock should accept bool values?
             (Type::Clock, _) => false,
 
             (
-                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _),
-                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) | CompileValue::Array(_)
+                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _) | Type::Range,
+                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) | CompileValue::Array(_) | CompileValue::IntRange(_),
             ) => false,
         };
         Ok(result)
@@ -66,6 +74,9 @@ impl Type {
     pub fn hardware_bit_width(&self) -> Result<Option<BigUint>, ErrorGuaranteed> {
         match self {
             &Type::Error(e) => Err(e),
+            Type::Any => Ok(None),
+            Type::Range => Ok(None),
+
             Type::Clock => Ok(Some(BigUint::one())),
             Type::Bool => Ok(Some(BigUint::one())),
             Type::String => Ok(None),
@@ -89,26 +100,12 @@ impl Type {
     pub fn to_diagnostic_string(&self) -> String {
         match self {
             Type::Error(_) => "error".to_string(),
+            Type::Any => "any".to_string(),
+
             Type::Clock => "clock".to_string(),
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
-            Type::Int(range) => {
-                let IntRange { start_inc, end_inc } = range;
-
-                // TODO is this back-lifting a good idea or not?
-                match (start_inc, end_inc) {
-                    (None, None) => "int".to_string(),
-                    (Some(start_inc), None) => {
-                        if start_inc.is_zero() {
-                            "uint".to_string()
-                        } else {
-                            format!("int_range({}..)", start_inc)
-                        }
-                    },
-                    (None, Some(end_inc)) => format!("int_range(..={})", end_inc),
-                    (Some(start_inc), Some(end_inc)) => format!("int_range({}..={})", start_inc, end_inc),
-                }
-            }
+            Type::Int(range) => format!("int({})", range),
             Type::Array(first_inner, first_len) => {
                 let mut dims = String::new();
 
@@ -122,6 +119,7 @@ impl Type {
                 let inner_str = inner.to_diagnostic_string();
                 format!("{inner_str}[{dims}]")
             }
+            Type::Range => "range".to_string(),
         }
     }
 }
@@ -133,5 +131,17 @@ impl IntRange {
             start_inc: start_inc?,
             end_inc: end_inc?,
         })
+    }
+}
+
+impl std::fmt::Display for IntRange {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let IntRange { start_inc, end_inc } = self;
+        match (start_inc, end_inc) {
+            (None, None) => write!(f, ".."),
+            (Some(start_inc), None) => write!(f, "{}..", start_inc),
+            (None, Some(end_inc)) => write!(f, "..={}", end_inc),
+            (Some(start_inc), Some(end_inc)) => write!(f, "{}..={}", start_inc, end_inc),
+        }
     }
 }

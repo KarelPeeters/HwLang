@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::types::{ClosedIntRange, Type};
+use crate::new::types::ClosedIntRange;
 use crate::new_index_type;
 use crate::syntax::ast::{PortDirection, SyncDomain};
 use crate::util::arena::Arena;
@@ -23,10 +23,16 @@ pub struct IrDesign {
 new_index_type!(pub IrModule);
 new_index_type!(pub IrPort);
 new_index_type!(pub IrVariable);
+new_index_type!(pub IrRegister);
+new_index_type!(pub IrWire);
 
 #[derive(Debug)]
 pub struct IrModuleInfo {
     pub ports: Arena<IrPort, IrPortInfo>,
+    pub registers: Arena<IrRegister, IrRegisterInfo>,
+    pub wires: Arena<IrWire, IrWireInfo>,
+
+    pub processes: Vec<IrProcess>,
 }
 
 #[derive(Debug)]
@@ -37,8 +43,26 @@ pub struct IrPortInfo {
 }
 
 #[derive(Debug)]
+pub struct IrRegisterInfo {
+    pub name: String,
+    pub ty: IrType,
+}
+
+#[derive(Debug)]
+pub struct IrWireInfo {
+    pub name: String,
+    pub ty: IrType,
+}
+
+#[derive(Debug)]
+pub struct IrVariableInfo {
+    pub name: String,
+    pub ty: IrType,
+}
+
+#[derive(Debug)]
 pub enum IrProcess {
-    Clocked(SyncDomain<IrSignal>, IrProcessBody),
+    Clocked(SyncDomain<IrExpression>, IrProcessBody),
     Combinatorial(IrProcessBody),
 }
 
@@ -50,15 +74,17 @@ pub enum IrProcess {
 /// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug)]
 pub struct IrProcessBody {
-    pub locals: Arena<IrVariable, Type>,
+    pub locals: Arena<IrVariable, IrVariableInfo>,
     pub body: IrBlock,
 }
 
 #[derive(Debug)]
 pub enum IrSignal {
     Port(IrPort),
-    // TODO reg
-    // TODO wire
+    Register(IrRegister),
+    Wire(IrWire),
+    // TODO are variables not just wires?
+    Variable(IrVariable),
 }
 
 #[derive(Debug)]
@@ -74,4 +100,9 @@ pub enum IrStatement {
     // Break,
     // Continue,
     // Return(IrExpression),
+}
+
+#[derive(Debug)]
+pub enum IrExpression {
+    // TODO
 }

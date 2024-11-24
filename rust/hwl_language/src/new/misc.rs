@@ -12,6 +12,18 @@ pub enum TypeOrValue<V> {
     Error(ErrorGuaranteed),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum TypeOrValueNoError<V> {
+    Type(Type),
+    Value(V),
+}
+
+impl<V> From<ErrorGuaranteed> for TypeOrValue<V> {
+    fn from(e: ErrorGuaranteed) -> Self {
+        TypeOrValue::Error(e)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(AstRefItem),
@@ -32,6 +44,7 @@ impl<V> TypeOrValue<V> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DomainSignal {
     Error(ErrorGuaranteed),
+    Compile(bool),
     Port(/*TODO*/),
     Wire(/*TODO*/),
     Register(/*TODO*/),
