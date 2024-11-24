@@ -73,6 +73,7 @@ impl Debug for Idx {
 pub struct Arena<K: IndexType, T> {
     //TODO for now this is implemented as a map, but this can be improved
     //  to just be a vec using generational indices
+    // TODO add "check" value to ensure that indices are of the right arena instance
     map: IndexMap<usize, T>,
     next_index: usize,
     ph: PhantomData<K>,

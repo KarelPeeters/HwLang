@@ -2,6 +2,7 @@ pub mod arena;
 pub mod io;
 pub mod iter;
 pub mod data;
+pub mod int;
 
 // TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]

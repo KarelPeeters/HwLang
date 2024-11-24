@@ -143,7 +143,7 @@ pub struct ItemDefInterface {
 pub struct InterfaceField {
     pub span: Span,
     pub id: Identifier,
-    pub dir: Direction,
+    pub dir: InterfaceDirection,
     pub ty: Expression,
 }
 
@@ -207,6 +207,7 @@ pub enum DomainKind<S> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SyncDomain<S> {
     pub clock: S,
+    // TODO make reset optional
     pub reset: S,
 }
 
@@ -556,7 +557,7 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Direction {
+pub enum InterfaceDirection {
     None,
     In,
     Out,

@@ -2,12 +2,12 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::parsed::{AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::ir::{IrDesign, IrModule, IrModuleContent};
-use crate::new::misc::{MaybeUnchecked, ScopedEntry, TypeOrValue, Unchecked};
-use crate::new::types::{RangeInfo, Type};
-use crate::new::value::{KnownCompileValue, Value};
+use crate::new::ir::{IrDesign, IrModule, IrModuleInfo};
+use crate::new::misc::{ScopedEntry, TypeOrValue, ValueDomain};
+use crate::new::types::Type;
+use crate::new::value::{CompileValue, ScopedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{GenericParameterKind, Identifier, Spanned};
+use crate::syntax::ast::{GenericParameterKind, Identifier, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortKind, Spanned};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
@@ -16,7 +16,6 @@ use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{zip_eq, Itertools};
-use num_bigint::BigUint;
 
 pub struct CompileState<'a> {
     diags: &'a Diagnostics,
@@ -26,7 +25,7 @@ pub struct CompileState<'a> {
     scopes: Scopes<ScopedEntry>,
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
-    ir_modules: Arena<IrModule, IrModuleContent>,
+    ir_modules: Arena<IrModule, IrModuleInfo>,
     elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
     elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
 
@@ -120,7 +119,7 @@ new_index_type!(pub ModuleElaboration);
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationInfo {
     pub item: AstRefModule,
-    pub args: Option<Vec<TypeOrValue<KnownCompileValue>>>,
+    pub args: Option<Vec<TypeOrValue<CompileValue>>>,
 }
 
 fn add_import_to_scope(
@@ -247,8 +246,11 @@ impl CompileState<'_> {
         ir_module
     }
 
-    // TODO clarify that argument type checking has already happened at the call site?
-    fn elaborate_module_new(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<IrModuleContent, ErrorGuaranteed> {
+    // TODO clarify that argument type checking and port validness checking 
+    //   has already happened at the call site?
+    // TODO keep track of elaboration + function call stack trace, include it in error messages
+    //   (stack grows top down, error message itself at the bottom)
+    fn elaborate_module_new(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<IrModuleInfo, ErrorGuaranteed> {
         // elaborate new module
         let diags = self.diags;
         let ModuleElaborationInfo { item, args } = module_elaboration;
@@ -262,7 +264,7 @@ impl CompileState<'_> {
             (None, None) => {}
             (Some(params), Some(args)) => {
                 if params.inner.len() != args.len() {
-                    throw!(diags.report_internal_error(params.span, "mismatched number of arguments"));
+                    throw!(diags.report_internal_error(params.span, "mismatched generic argument count"));
                 }
 
                 for (param, arg) in zip_eq(&params.inner, args) {
@@ -272,20 +274,28 @@ impl CompileState<'_> {
                             TypeOrValue::Type(arg)
                         }
                         (GenericParameterKind::Value(param_ty), TypeOrValue::Value(arg)) => {
+                            let param_ty_span = param_ty.span;
                             let param_ty = self.eval_expression_as_ty(param_ty);
-                            match self.check_type_contains(&param_ty, &arg) {
-                                Ok(true) => {}
-                                Ok(false) => todo!(),
-                                Err(_) => todo!(),
+
+                            if !param_ty.contains_value(&arg).unwrap_or(true) {
+                                diags.report_internal_error(
+                                    param_ty_span,
+                                    format!(
+                                        "invalid generic argument: type `{}` does not contain value `{}`",
+                                        param_ty.to_diagnostic_string(),
+                                        arg.to_diagnostic_string()
+                                    ),
+                                );
                             }
-                            TypeOrValue::Value(Value::Compile(MaybeUnchecked::Checked(arg)))
+
+                            TypeOrValue::Value(ScopedValue::Compile(arg))
                         }
 
                         (_, TypeOrValue::Error(e)) => TypeOrValue::Error(e),
 
                         (GenericParameterKind::Value(_), TypeOrValue::Type(_)) |
                         (GenericParameterKind::Type(_), TypeOrValue::Value(_)) => {
-                            throw!(diags.report_internal_error(param.span, "mismatched generic arg kind"))
+                            throw!(diags.report_internal_error(param.span, "mismatched generic argument kind"))
                         }
                     };
 
@@ -293,18 +303,78 @@ impl CompileState<'_> {
                     self.scopes[params_scope].declare(diags, &param.id, entry, Visibility::Private);
                 }
             }
-            _ => throw!(diags.report_internal_error(def_span, "mismatched presence of arguments")),
+            _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
         };
 
         // check ports and add to scope
         let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
-        // TODO check ports (mostly domains)
-        // TODO add ports to scope
+
+        for port_item in &ports.inner {
+            match port_item {
+                ModulePortItem::Single(port_item) => {
+                    let ModulePortSingle { span: _, id, direction, kind } = port_item;
+
+                    let (domain, ty_raw, ty_span) = match &kind.inner {
+                        PortKind::Clock => (
+                            ValueDomain::Clock,
+                            Type::Clock,
+                            kind.span,
+                        ),
+                        PortKind::Normal { domain, ty } => (
+                            ValueDomain::from_domain_kind(self.eval_domain(&domain.inner)),
+                            self.eval_expression_as_ty(ty),
+                            ty.span,
+                        ),
+                    };
+
+                    let ty = self.check_port_ty(ty_raw, ty_span);
+                    let port = ScopedValue::Port {
+                        direction: direction.inner,
+                        domain,
+                        ty,
+                    };
+                    let entry = ScopedEntry::Direct(TypeOrValue::Value(port));
+                    self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                }
+                ModulePortItem::Block(port_item) => {
+                    let ModulePortBlock { span: _, domain, ports } = port_item;
+
+                    let domain = ValueDomain::from_domain_kind(self.eval_domain(&domain.inner));
+
+                    for port in ports {
+                        let ModulePortInBlock { span: _, id, direction, ty } = port;
+
+                        let ty_raw = self.eval_expression_as_ty(ty);
+                        let ty = self.check_port_ty(ty_raw, ty.span);
+
+                        let port = ScopedValue::Port {
+                            direction: direction.inner,
+                            domain: domain.clone(),
+                            ty,
+                        };
+                        let entry = ScopedEntry::Direct(TypeOrValue::Value(port));
+                        self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                    }
+                }
+            }
+        }
 
         // elaborate module body
         // TODO elaborate module body, probably best in a different file?
 
         todo!()
+    }
+
+    fn check_port_ty(&self, ty: Type, ty_span: Span) -> Type {
+        match ty.hardware_bit_width() {
+            Err(e) => Type::Error(e),
+            Ok(Some(_bit_width)) => ty,
+            Ok(None) => Type::Error(self.diags.report_simple(
+                "port type must be representable in hardware",
+                ty_span,
+                format!("type `{}` is not representable in hardware", ty.to_diagnostic_string()),
+            )),
+        }
     }
 
     fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
@@ -352,68 +422,6 @@ impl CompileState<'_> {
                     "defined here",
                 ))
             }
-        }
-    }
-
-    fn check_type_contains(&self, ty: &Type, value: &KnownCompileValue) -> Result<bool, Unchecked> {
-        let mut any_unchecked = None;
-
-        match (ty, value) {
-            (Type::Bool, KnownCompileValue::Bool(_)) => {},
-            (Type::String, KnownCompileValue::String(_)) => {},
-            (Type::Int(range), KnownCompileValue::Int(value)) => {
-                let RangeInfo { start_inc, end_inc } = range;
-
-                match start_inc {
-                    None => {}
-                    Some(MaybeUnchecked::Checked(start_inc)) => {
-                        if value < start_inc {
-                            return Ok(false);
-                        }
-                    }
-                    &Some(MaybeUnchecked::Unchecked(u)) => any_unchecked = Some(u),
-                }
-
-                match end_inc {
-                    None => {}
-                    Some(MaybeUnchecked::Checked(end_inc)) => {
-                        if value > end_inc {
-                            return Ok(false);
-                        }
-                    }
-                    &Some(MaybeUnchecked::Unchecked(u)) => any_unchecked = Some(u),
-                }
-            }
-            (Type::Array(inner, len), KnownCompileValue::Array(values)) => {
-                match len {
-                    MaybeUnchecked::Checked(len) => {
-                        if len != &BigUint::from(values.len()) {
-                            return Ok(false);
-                        }
-                    }
-                    &MaybeUnchecked::Unchecked(u) => any_unchecked = Some(u),
-                }
-
-                for value in values {
-                    match self.check_type_contains(inner, value) {
-                        Ok(true) => {}
-                        Ok(false) => return Ok(false),
-                        Err(u) => any_unchecked = Some(u),
-                    }
-                }
-            }
-
-            (&Type::Unchecked(u), _) => any_unchecked = Some(u),
-
-            (
-                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _),
-                KnownCompileValue::Bool(_) | KnownCompileValue::String(_) | KnownCompileValue::Int(_) | KnownCompileValue::Array(_)
-            ) => return Ok(false),
-        }
-
-        match any_unchecked {
-            None => Ok(true),
-            Some(u) => Err(u),
         }
     }
 }

@@ -1,8 +1,8 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::AstRefItem;
 use crate::new::types::Type;
-use crate::new::value::Value;
-use crate::util::Never;
+use crate::new::value::ScopedValue;
+use crate::syntax::ast::{DomainKind, SyncDomain};
 
 // TODO move everything in this file to a better place
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -15,7 +15,7 @@ pub enum TypeOrValue<V> {
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(AstRefItem),
-    Direct(TypeOrValue<Value>),
+    Direct(TypeOrValue<ScopedValue>),
 }
 
 impl<V> TypeOrValue<V> {
@@ -28,49 +28,34 @@ impl<V> TypeOrValue<V> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Unchecked(());
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum MaybeUnchecked<T, U = Unchecked> {
-    Checked(T),
-    Unchecked(U),
+// TODO expand to all possible values again
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DomainSignal {
+    Error(ErrorGuaranteed),
+    Port(/*TODO*/),
+    Wire(/*TODO*/),
+    Register(/*TODO*/),
+    Invert(Box<DomainSignal>),
 }
 
-impl<T, U: Copy> MaybeUnchecked<T, U> {
-    pub fn as_ref(&self) -> MaybeUnchecked<&T, U> {
-        match self {
-            MaybeUnchecked::Checked(t) => MaybeUnchecked::Checked(t),
-            &MaybeUnchecked::Unchecked(u) => MaybeUnchecked::Unchecked(u),
+#[derive(Debug, Clone)]
+pub enum ValueDomain<V = DomainSignal> {
+    Error(ErrorGuaranteed),
+    CompileTime,
+    Clock,
+    // TODO allow separate sync/async per edge, necessary for "async" reset
+    Async,
+    Sync(SyncDomain<V>),
+}
+
+impl ValueDomain {
+    pub fn from_domain_kind(domain: DomainKind<DomainSignal>) -> Self {
+        match domain {
+            DomainKind::Async => ValueDomain::Async,
+            DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
+                clock: sync.clock,
+                reset: sync.reset,
+            }),
         }
-    }
-}
-
-impl<T> MaybeUnchecked<T, Never> {
-    pub fn inner(self) -> T {
-        match self {
-            MaybeUnchecked::Checked(t) => t,
-            MaybeUnchecked::Unchecked(u) => match u {}
-        }
-    }
-}
-
-impl<T> MaybeUnchecked<T, Unchecked> {
-    pub fn require_checked(self) -> Result<MaybeUnchecked<T, Never>, Unchecked> {
-        match self {
-            MaybeUnchecked::Checked(t) => Ok(MaybeUnchecked::Checked(t)),
-            MaybeUnchecked::Unchecked(u) => Err(u),
-        }
-    }
-}
-
-impl Unchecked {
-    pub fn from_err(e: ErrorGuaranteed) -> Self {
-        let _ = e;
-        Unchecked(())
-    }
-
-    pub fn new_unchecked_param() -> Self {
-        Unchecked(())
     }
 }

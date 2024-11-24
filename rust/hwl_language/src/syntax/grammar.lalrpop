@@ -191,6 +191,8 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::CombinatorialBlock(inner)
     },
     // clocked block
+    // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
+    //   registers declared inside of the block do still inherit their clock/reset from the block though
     <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R> => {
         let inner = ClockedBlock {
             domain: Spanned { span: clock.span.join(reset.span), inner: SyncDomain { clock, reset } },
