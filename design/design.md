@@ -822,3 +822,44 @@ Both can probably be sped up:
 
 * only store starts instead of ranges, the end can be computed by re-tokenizing
 * find usages: do what rust-analyzer does instead, do a grep and then only visit those items
+
+# Simulator
+
+Updated simulator design:
+
+* double-buffer prev/next for each "signal": reg, wire, top-level input port, ...
+  * (all other ports are transparant, in particular IR will not have register ports)
+* for each process, generate a C function that
+  * checks the sensitivity list, if not active return without doing anything
+    * for `combinatorial`: `any(x.prev != x.next for x in read_signals)`
+    * for `clocked(clk, rst)`: `(clk.prev == 0 && clk.next == 1) || (rst.next == 1)`
+      * maybe also any(reset value used changed)? for this this is impossible since reset values have to be compile-time
+        const
+    * for `@(10ns)`: `current_time == start + 10ns`
+    * this should fully guarantee correctness of sensitivities, without
+  * runs the content of the block
+    * any reads use `x.prev`, any writes set `x.next`
+    * careful: _someone_ has to do the "local block sees changes immediately", either front or back
+    * exception for local vars: there is no prev/next?
+* the simulator api is:
+  * `sim = Simulator(compiled)` create a new simulator
+  * `sim.top_ports.x = 1` set the "next" value of an input port, this is also the way to drive clocks
+  * `print(sim.top_ports.y)` get the `prev` value of an output port
+  * can we read back input ports? what is returned in that case? probably .next, we don't want to expose anyone ever to
+    the weird "nonblocking assignment" behavior from legacy RTL languages
+  * `sim.advance(x ns)` advance time
+    * run all process functions (see below for optimizations)
+      * starting from elapsed delay statements and changed input ports
+    * swap the double buffer
+    * increment time
+      * continue running processes for elapsed delay statements
+* process running has a couple of possible implementations:
+  * just run all processes repeatedly until fixpoint
+    * very simple
+    * correct if all sensitivity checks are correct (and there are no loops)
+    * very slow
+  * schedule all blocks in some fixed correct order in advance
+    * correct, should be fast, relatively simple
+  * schedule blocks dynamically depending on the set of inputs and intermediate signals that changed?
+    * add schedule caching, in a design there won't be many different ones
+    * correct, potentially fastest, tricky
