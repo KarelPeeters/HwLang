@@ -2,7 +2,7 @@
 
 // Basic types
 pub type any = __builtin("type", "any");
-pub const undefined: unchecked = __builtin("value", "undefined");
+pub const undefined = __builtin("value", "undefined");
 
 // TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");
@@ -27,10 +27,10 @@ pub type bool = __builtin("type", "bool");
 // TODO do we want to allow uint to take ranges?
 
 // Utility
-pub enum Option(T: type) {
-    None,
-    Some(T),
-}
+//pub enum Option(T: type) {
+//    None,
+//    Some(T),
+//}
 
 // TODO go back to a more user-accessible struct
 //pub type Range = __builtin("type", "Range");

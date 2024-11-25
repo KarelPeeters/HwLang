@@ -1,27 +1,28 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
-use crate::data::parsed::AstRefItem;
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ScopedEntry, TypeOrValue, TypeOrValueNoError};
 use crate::new::types::Type;
 use crate::new::value::{CompileValue, ExpressionValue, ScopedValue};
-use crate::syntax::ast;
-use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Item, Spanned, SyncDomain};
+use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use itertools::Itertools;
 use num_bigint::BigInt;
 
 impl CompileState<'_> {
-    pub fn eval_expression_as_any(&mut self, scope: Scope, expr: &Expression) -> TypeOrValue<ExpressionValue> {
+    pub fn eval_expression_as_ty_or_value(&mut self, scope: Scope, expr: &Expression) -> TypeOrValue<ExpressionValue> {
         match &expr.inner {
             ExpressionKind::Dummy =>
-                TypeOrValue::Error(self.diags.report_todo(expr.span, "expr kind Dummy")),
+                self.diags.report_todo(expr.span, "expr kind Dummy").into(),
             ExpressionKind::Wrapped(inner) =>
-                self.eval_expression_as_any(scope, inner),
+                self.eval_expression_as_ty_or_value(scope, inner),
             ExpressionKind::Id(id) => {
                 match self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private) {
                     Ok(found) => match found.value {
-                        &ScopedEntry::Item(item) => self.eval_item_as_any(item),
+                        &ScopedEntry::Item(item) =>
+                            self.eval_item_as_ty_or_value(item)
+                                .clone()
+                                .map_value(ExpressionValue::Compile),
                         ScopedEntry::Direct(direct) => match direct {
                             TypeOrValue::Type(ty) => TypeOrValue::Type(ty.clone()),
                             TypeOrValue::Value(v) => match v {
@@ -69,7 +70,13 @@ impl CompileState<'_> {
             ExpressionKind::ArrayIndex(_, _) => self.diags.report_todo(expr.span, "expr kind ArrayIndex").into(),
             ExpressionKind::DotIdIndex(_, _) => self.diags.report_todo(expr.span, "expr kind DotIdIndex").into(),
             ExpressionKind::DotIntIndex(_, _) => self.diags.report_todo(expr.span, "expr kind DotIntIndex").into(),
-            ExpressionKind::Call(_, _) => self.diags.report_todo(expr.span, "expr kind Call").into(),
+            ExpressionKind::Call(target, args) => {
+                let target = self.eval_expression_as_value(scope, target);
+                let args = args.map_inner(|arg| self.eval_expression_as_ty_or_value(scope, arg));
+
+                let _ = (target, args);
+                self.diags.report_todo(expr.span, "expr kind Call").into()
+            }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, expr.span, args),
         }
     }
@@ -80,7 +87,7 @@ impl CompileState<'_> {
 
         // evaluate args
         for arg in &args.inner {
-            let eval = match self.eval_expression_as_any(scope, arg) {
+            let eval = match self.eval_expression_as_ty_or_value(scope, arg) {
                 TypeOrValue::Type(ty) => TypeOrValue::Type(ty),
                 TypeOrValue::Value(v) => {
                     let err_value = |s| {
@@ -137,33 +144,8 @@ impl CompileState<'_> {
         TypeOrValue::Error(self.diags.report(diag))
     }
 
-    fn eval_item_as_any(&mut self, item: AstRefItem) -> TypeOrValue<ExpressionValue> {
-        let file_scope = match self.file_scopes.get(&item.file()).unwrap() {
-            Ok(file_scopes) => file_scopes.scope_inner_import,
-            &Err(e) => return TypeOrValue::Error(e),
-        };
-
-        match &self.parsed[item] {
-            Item::Import(item) => self.diags.report_internal_error(item.span, "imports should have been resolved already").into(),
-            Item::Const(item) => self.diags.report_todo(item.span, "eval item kind Const").into(),
-            Item::Type(item) => {
-                let ast::ItemDefType { span: _, vis: _, id: _, params, inner } = item;
-
-                match params {
-                    None => TypeOrValue::Type(self.eval_expression_as_ty(file_scope, inner)),
-                    Some(_) => self.diags.report_todo(item.span, "type with parameters").into(),
-                }
-            }
-            Item::Struct(item) => self.diags.report_todo(item.span, "eval item kind Struct").into(),
-            Item::Enum(item) => self.diags.report_todo(item.span, "eval item kind Enum").into(),
-            Item::Function(item) => self.diags.report_todo(item.span, "eval item kind Function").into(),
-            Item::Module(item) => self.diags.report_todo(item.span, "eval item kind Module").into(),
-            Item::Interface(item) => self.diags.report_todo(item.span, "eval item kind Interface").into(),
-        }
-    }
-
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        match self.eval_expression_as_any(scope, expr) {
+        match self.eval_expression_as_ty_or_value(scope, expr) {
             TypeOrValue::Type(ty) => ty,
             TypeOrValue::Value(_) => {
                 let e = self.diags.report_simple("expected type, got value", expr.span, "got value");
@@ -173,23 +155,34 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn eval_expression_as_value_any(&mut self, scope: Scope, expr: &Expression) -> ExpressionValue {
+    pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
         let _ = (scope, expr);
         todo!()
     }
 
-    // TODO enforce domain, here or more inward?
-    pub fn eval_expression_as_value_read(&mut self, scope: Scope, expr: &Expression) -> ExpressionValue {
+    pub fn eval_expression_as_value(&mut self, scope: Scope, expr: &Expression) -> ExpressionValue {
         let _ = (scope, expr);
-        todo!()
+        let eval = self.eval_expression_as_ty_or_value(scope, expr);
+
+        match eval {
+            TypeOrValue::Type(_) => {
+                ExpressionValue::Error(self.diags.report_simple("expected value, got type", expr.span, "got type"))
+            }
+            TypeOrValue::Value(v) => v,
+            TypeOrValue::Error(e) => e.into(),
+        }
     }
 
-    pub fn eval_expression_as_value_read_compile(&mut self, scope: Scope, expr: &Expression) -> ExpressionValue {
-        let _ = (scope, expr);
-        todo!()
+    pub fn eval_expression_as_value_compile(&mut self, scope: Scope, expr: &Expression) -> Result<CompileValue, ErrorGuaranteed> {
+        let eval = self.eval_expression_as_value(scope, expr);
+        match eval {
+            ExpressionValue::Error(e) => Err(e),
+            ExpressionValue::Compile(c) => Ok(c),
+            _ => Err(self.diags.report_simple("expected compile-time constant", expr.span, "got runtime expression")),
+        }
     }
 
-    pub fn eval_expression_as_domain_signal_read(&mut self, scope: Scope, expr: &Expression) -> DomainSignal {
+    pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> DomainSignal {
         let _ = (scope, expr);
         todo!()
     }
@@ -199,8 +192,8 @@ impl CompileState<'_> {
             DomainKind::Async => DomainKind::Async,
             DomainKind::Sync(domain) => {
                 DomainKind::Sync(SyncDomain {
-                    clock: self.eval_expression_as_domain_signal_read(scope, &domain.clock),
-                    reset: self.eval_expression_as_domain_signal_read(scope, &domain.reset),
+                    clock: self.eval_expression_as_domain_signal(scope, &domain.clock),
+                    reset: self.eval_expression_as_domain_signal(scope, &domain.reset),
                 })
             }
         }

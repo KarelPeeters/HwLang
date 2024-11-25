@@ -10,14 +10,13 @@ use crate::syntax::ast::{Block, GenericParameter, GenericParameterKind, ModulePo
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::arena::Arena;
-use crate::util::ResultExt;
 use itertools::{zip_eq, Itertools};
 
 impl CompileState<'_> {
     pub fn elaborate_module_new(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ModuleElaborationInfo { item, args } = self.elaborated_modules[module_elaboration].clone();
         let &ast::ItemDefModule { span: def_span, vis: _, id: _, ref params, ref ports, ref body } = &self.parsed[item];
-        let scope_file = self[item.file()].as_ref_ok()?.scope_inner_import;
+        let scope_file = self.file_scope(item.file())?;
 
         let scope_params = self.elaborate_module_generics(def_span, scope_file, params, args)?;
         let scope_ports = self.elaborate_module_ports(def_span, scope_params, ports);

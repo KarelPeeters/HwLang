@@ -17,6 +17,7 @@ pub enum Type {
     Int(IntRange),
     Array(Box<Type>, BigUint),
     Range,
+    Module,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -59,13 +60,16 @@ impl Type {
                 r
             }
             (Type::Range, CompileValue::IntRange(_)) => true,
+            (Type::Module, CompileValue::Module(_)) => true,
 
             // TODO maybe clock should accept bool values?
             (Type::Clock, _) => false,
 
             (
-                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _) | Type::Range,
-                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) | CompileValue::Array(_) | CompileValue::IntRange(_),
+                Type::Bool | Type::String | Type::Int(_) |
+                Type::Array(_, _) | Type::Range | Type::Module,
+                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) |
+                CompileValue::Array(_) | CompileValue::IntRange(_) | CompileValue::Module(_),
             ) => false,
         };
         Ok(result)
@@ -94,6 +98,7 @@ impl Type {
                     .map(|inner_width| {
                         inner_width.map(|inner_width| inner_width * len)
                     }),
+            Type::Module => Ok(None),
         }
     }
 
@@ -120,6 +125,7 @@ impl Type {
                 format!("{inner_str}[{dims}]")
             }
             Type::Range => "range".to_string(),
+            Type::Module => "module".to_string(),
         }
     }
 }

@@ -2,6 +2,11 @@ import std.types.[bool, uint, int_range, natural, any, undefined];
 
 //import spi_master.spi_master;
 
+// TODO check the signature of all items without generic parameters immediately
+//   for constants that means immediately fully visiting them
+//   eventually, include generic items but just with a "placeholder" value for generic params
+const A: bool = 5;
+
 pub module top ports(
     clk: in clock,
     rst: in async bool,

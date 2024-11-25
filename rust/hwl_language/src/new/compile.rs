@@ -30,6 +30,8 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
     let mut scopes = Scopes::default();
 
     let files = source.files();
+    let mut all_items = vec![];
+    
     for &file in &files {
         let file_source = &source[file];
 
@@ -43,6 +45,8 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
             let local_scope_info = &mut scopes[scope_declare];
 
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
+                all_items.push(ast_item_ref);
+                
                 // TODO add enum-match safety here
                 if let Some(declaration_info) = ast_item.declaration_info() {
                     let vis = match declaration_info.vis {
@@ -86,9 +90,15 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         elaborated_modules: ArenaSet::default(),
         elaborated_modules_to_ir: IndexMap::new(),
         elaboration_stack: vec![],
+        items: IndexMap::default(),
     };
 
-    // start elaborating from the top module
+    // visit all items, possibly using them as an elaboration starting point
+    for item in all_items {
+        let _ = state.eval_item_as_ty_or_value(item);
+    }
+
+    // get the top module (it will always hit the elaboration cache)
     let top_module = state.find_top_module()
         .and_then(|top_item| {
             let elaboration = state.elaborated_modules.push(ModuleElaborationInfo { item: top_item, args: None });
@@ -109,7 +119,7 @@ pub struct CompileState<'a> {
     pub parsed: &'a ParsedDatabase,
 
     pub scopes: Scopes<ScopedEntry>,
-    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
     pub ports: Arena<Port, PortInfo>,
     pub wires: Arena<Wire, WireInfo>,
@@ -119,6 +129,8 @@ pub struct CompileState<'a> {
     pub ir_modules: Arena<IrModule, IrModuleInfo>,
     pub elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
     pub elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
+
+    pub items: IndexMap<AstRefItem, TypeOrValue<CompileValue>>,
 
     elaboration_stack: Vec<ElaborationStackEntry>,
 }
@@ -265,7 +277,7 @@ fn find_parent_scope(
 }
 
 impl CompileState<'_> {
-    fn check_elaboration_loop<T>(&mut self, entry: ElaborationStackEntry, f: impl FnOnce(&mut Self) -> T) -> Result<T, ErrorGuaranteed> {
+    pub fn check_compile_loop<T>(&mut self, entry: ElaborationStackEntry, f: impl FnOnce(&mut Self) -> T) -> Result<T, ErrorGuaranteed> {
         if let Some(loop_start) = self.elaboration_stack.iter().position(|&x| x == entry) {
             // report elaboration loop
             let cycle = &self.elaboration_stack[loop_start..];
@@ -300,14 +312,14 @@ impl CompileState<'_> {
         }
     }
 
-    fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
+    pub fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
         // check cache
         if let Some(&result) = self.elaborated_modules_to_ir.get(&module_elaboration) {
             return result;
         }
 
         // new elaboration
-        let ir_module = self.check_elaboration_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
+        let ir_module = self.check_compile_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
             s.elaborate_module_new(module_elaboration)
                 .map(|ir_content| s.ir_modules.push(ir_content))
         }).flatten_err();
@@ -329,7 +341,7 @@ impl CompileState<'_> {
                 let title = "no top file found, should be called `top` and be in the root directory of the project";
                 diags.report(Diagnostic::new(title).finish())
             })?;
-        let top_file_scope = self[top_file].as_ref_ok()?.scope_outer_declare;
+        let top_file_scope = self.file_scopes.get(&top_file).unwrap().as_ref_ok()?.scope_outer_declare;
         let top_entry = self[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
 
         match top_entry.value {
@@ -367,6 +379,14 @@ impl CompileState<'_> {
             }
         }
     }
+
+    pub fn file_scope(&self, file: FileId) -> Result<Scope, ErrorGuaranteed> {
+        match self.file_scopes.get(&file) {
+            None => Err(self.diags.report_internal_error(self.source[file].offsets.full_span(file), "file scopes not found")),
+            Some(Ok(scopes)) => Ok(scopes.scope_inner_import),
+            Some(&Err(e)) => Err(e),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -389,10 +409,3 @@ macro_rules! impl_index {
 }
 
 impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
-
-impl std::ops::Index<FileId> for CompileState<'_> {
-    type Output = Result<FileScopes, ErrorGuaranteed>;
-    fn index(&self, file: FileId) -> &Self::Output {
-        self.file_scopes.get(&file).unwrap()
-    }
-}
