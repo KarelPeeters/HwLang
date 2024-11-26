@@ -1,6 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::new::compile::{CompileState, ElaborationStackEntry, ModuleElaborationInfo};
+use crate::new::function::{FunctionBody, FunctionValue};
 use crate::new::misc::TypeOrValue;
 use crate::new::value::CompileValue;
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType, Spanned};
@@ -11,7 +12,7 @@ impl CompileState<'_> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
         if !self.items.contains_key(&item) {
             let result = self.check_compile_loop(ElaborationStackEntry::Item(item), |s| {
-                s.visit_item_new(item)
+                s.eval_item_as_ty_or_value_new(item)
             }).unwrap_or_else(|e| TypeOrValue::Error(e));
 
             self.items.insert_first(item, result)
@@ -20,7 +21,7 @@ impl CompileState<'_> {
         }
     }
 
-    fn visit_item_new(&mut self, item: AstRefItem) -> TypeOrValue<CompileValue> {
+    fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> TypeOrValue<CompileValue> {
         let diags = self.diags;
         let file_scope = match self.file_scope(item.file()) {
             Ok(file_scope) => file_scope,
@@ -69,7 +70,13 @@ impl CompileState<'_> {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item;
                 match params {
                     None => TypeOrValue::Type(self.eval_expression_as_ty(file_scope, inner)),
-                    Some(_) => diags.report_todo(item.span, "visit item kind Type with params").into(),
+                    Some(_) => {
+                        let func = FunctionValue {
+                            outer_scope: file_scope.clone(),
+                            body: FunctionBody::Type,
+                        };
+                        TypeOrValue::Value(CompileValue::Function(func))
+                    },
                 }
             }
             Item::Struct(item) => diags.report_todo(item.span, "visit item kind Struct").into(),

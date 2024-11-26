@@ -17,7 +17,8 @@ pub enum Type {
     Int(IntRange),
     Array(Box<Type>, BigUint),
     Range,
-    Module,
+    Module, // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces? 
+    Function, // TODO make this (optionally) more specific, with arg and return types
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -61,15 +62,16 @@ impl Type {
             }
             (Type::Range, CompileValue::IntRange(_)) => true,
             (Type::Module, CompileValue::Module(_)) => true,
+            (Type::Function, CompileValue::Function(_)) => true,
 
             // TODO maybe clock should accept bool values?
             (Type::Clock, _) => false,
 
             (
-                Type::Bool | Type::String | Type::Int(_) |
-                Type::Array(_, _) | Type::Range | Type::Module,
-                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) |
-                CompileValue::Array(_) | CompileValue::IntRange(_) | CompileValue::Module(_),
+                Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _) |
+                Type::Range | Type::Module | Type::Function,
+                CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) | CompileValue::Array(_) |
+                CompileValue::IntRange(_) | CompileValue::Module(_) | CompileValue::Function(_),
             ) => false,
         };
         Ok(result)
@@ -99,6 +101,7 @@ impl Type {
                         inner_width.map(|inner_width| inner_width * len)
                     }),
             Type::Module => Ok(None),
+            Type::Function => Ok(None),
         }
     }
 
@@ -126,6 +129,7 @@ impl Type {
             }
             Type::Range => "range".to_string(),
             Type::Module => "module".to_string(),
+            Type::Function => "function".to_string(),
         }
     }
 }

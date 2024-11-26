@@ -55,20 +55,37 @@ impl AstRefItem {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct AstRefModule {
-    item: AstRefItem,
+macro_rules! impl_ast_ref_alias {
+    ($ref_name:ident, $item_path:path, $ast_path:path) => {
+        #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+        pub struct $ref_name {
+            item: AstRefItem,
+        }
+        
+        impl $ref_name {
+            pub fn new_unchecked(item: AstRefItem) -> Self {
+                Self { item }
+            }
+        
+            pub fn file(self) -> FileId {
+                self.item.file()
+            }
+        }
+        
+        impl std::ops::Index<$ref_name> for ParsedDatabase {
+            type Output = $ast_path;
+            fn index(&self, item: $ref_name) -> &Self::Output {
+                let item_ast = &self[item.item];
+                unwrap_match!(item_ast, $item_path(inner) => inner)
+            }
+        }
+    };
 }
 
-impl AstRefModule {
-    pub fn new_unchecked(item: AstRefItem) -> Self {
-        AstRefModule { item }
-    }
-
-    pub fn file(self) -> FileId {
-        self.item.file()
-    }
-}
+impl_ast_ref_alias!(AstRefModule, ast::Item::Module, ast::ItemDefModule);
+impl_ast_ref_alias!(AstRefDefType, ast::Item::Type, ast::ItemDefType);
+impl_ast_ref_alias!(AstRefDefStruct, ast::Item::Struct, ast::ItemDefStruct);
+impl_ast_ref_alias!(AstRefDefEnum, ast::Item::Enum, ast::ItemDefEnum);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {
@@ -106,14 +123,6 @@ impl std::ops::Index<AstRefItem> for ParsedDatabase {
             .as_ref()
             .expect("the item existing implies that the auxiliary info exists too");
         &aux.items[file_item_index]
-    }
-}
-
-impl std::ops::Index<AstRefModule> for ParsedDatabase {
-    type Output = ast::ItemDefModule;
-    fn index(&self, item: AstRefModule) -> &Self::Output {
-        let item_ast = &self[item.item];
-        unwrap_match!(item_ast, ast::Item::Module(module) => module)
     }
 }
 

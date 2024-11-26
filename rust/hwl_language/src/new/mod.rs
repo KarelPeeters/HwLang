@@ -7,3 +7,4 @@ pub mod compile;
 pub mod item;
 pub mod expression;
 pub mod module;
+pub mod function;

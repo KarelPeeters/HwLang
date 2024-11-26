@@ -30,7 +30,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
     let mut scopes = Scopes::default();
 
     let files = source.files();
-    let mut all_items = vec![];
+    let mut all_items_except_imports = vec![];
     
     for &file in &files {
         let file_source = &source[file];
@@ -45,15 +45,17 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
             let local_scope_info = &mut scopes[scope_declare];
 
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
-                all_items.push(ast_item_ref);
-                
-                // TODO add enum-match safety here
                 if let Some(declaration_info) = ast_item.declaration_info() {
                     let vis = match declaration_info.vis {
                         ast::Visibility::Public(_) => Visibility::Public,
                         ast::Visibility::Private => Visibility::Private,
                     };
                     local_scope_info.maybe_declare(diags, declaration_info.id, ScopedEntry::Item(ast_item_ref), vis);
+                }
+
+                match ast_item {
+                    ast::Item::Import(_) => {}
+                    _ => all_items_except_imports.push(ast_item_ref),
                 }
             }
 
@@ -94,7 +96,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
     };
 
     // visit all items, possibly using them as an elaboration starting point
-    for item in all_items {
+    for item in all_items_except_imports {
         let _ = state.eval_item_as_ty_or_value(item);
     }
 

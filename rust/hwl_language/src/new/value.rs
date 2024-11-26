@@ -1,6 +1,7 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::impl_from_error_guaranteed;
 use crate::new::compile::{Port, Register, Variable, Wire};
+use crate::new::function::FunctionValue;
 use crate::new::ir::IrModule;
 use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
@@ -45,6 +46,7 @@ pub enum CompileValue {
     Array(Vec<CompileValue>),
     IntRange(IntRange),
     Module(IrModule),
+    Function(FunctionValue),
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
@@ -65,6 +67,7 @@ impl CompileValue {
             CompileValue::IntRange(range) => format!("({})", range),
             // TODO module item name and generic args?
             CompileValue::Module(_) => "module".to_string(),
+            CompileValue::Function(_) => "function".to_string(),
         }
     }
 }

@@ -2,8 +2,9 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ScopedEntry, TypeOrValue, TypeOrValueNoError};
-use crate::new::types::Type;
+use crate::new::types::{IntRange, Type};
 use crate::new::value::{CompileValue, ExpressionValue, ScopedValue};
+use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use itertools::Itertools;
@@ -63,7 +64,55 @@ impl CompileState<'_> {
             ExpressionKind::ArrayLiteral(_) => self.diags.report_todo(expr.span, "expr kind ArrayLiteral").into(),
             ExpressionKind::TupleLiteral(_) => self.diags.report_todo(expr.span, "expr kind TupleLiteral").into(),
             ExpressionKind::StructLiteral(_) => self.diags.report_todo(expr.span, "expr kind StructLiteral").into(),
-            ExpressionKind::RangeLiteral(_) => self.diags.report_todo(expr.span, "expr kind RangeLiteral").into(),
+            ExpressionKind::RangeLiteral(literal) => {
+                let &ast::RangeLiteral { end_inclusive, ref start, ref end } = literal;
+
+                let start = start.as_ref().map(|start| self.eval_expression_as_value_compile(scope, start));
+                let end = end.as_ref().map(|end| self.eval_expression_as_value_compile(scope, end));
+
+                // TODO reduce code duplication
+                let start_inc = match start.transpose() {
+                    Ok(None) => None,
+                    Ok(Some(CompileValue::Int(start))) => Some(start),
+                    Ok(Some(start)) => {
+                        let e = self.diags.report_simple(
+                            "range bound must be integer",
+                            expr.span,
+                            format!("got `{}`", start.to_diagnostic_string()),
+                        );
+                        return TypeOrValue::Value(ExpressionValue::Error(e));
+                    }
+                    Err(e) => return TypeOrValue::Value(ExpressionValue::Error(e)),
+                };
+                let end = match end.transpose() {
+                    Ok(None) => None,
+                    Ok(Some(CompileValue::Int(start))) => Some(start),
+                    Ok(Some(start)) => {
+                        let e = self.diags.report_simple(
+                            "range bound must be integer",
+                            expr.span,
+                            format!("got `{}`", start.to_diagnostic_string()),
+                        );
+                        return TypeOrValue::Value(ExpressionValue::Error(e));
+                    }
+                    Err(e) => return TypeOrValue::Value(ExpressionValue::Error(e)),
+                };
+
+                let end_inc = if end_inclusive {
+                    match end {
+                        Some(end) => Some(end),
+                        None => {
+                            let e = self.diags.report_internal_error(expr.span, "inclusive range must have end");
+                            return TypeOrValue::Value(ExpressionValue::Error(e));
+                        }
+                    }
+                } else {
+                    end.map(|end| end - 1)
+                };
+
+                let range = IntRange { start_inc, end_inc };
+                TypeOrValue::Value(ExpressionValue::Compile(CompileValue::IntRange(range)))
+            },
             ExpressionKind::UnaryOp(_, _) => self.diags.report_todo(expr.span, "expr kind UnaryOp").into(),
             ExpressionKind::BinaryOp(_, _, _) => self.diags.report_todo(expr.span, "expr kind BinaryOp").into(),
             ExpressionKind::TernarySelect(_, _, _) => self.diags.report_todo(expr.span, "expr kind TernarySelect").into(),
@@ -74,6 +123,33 @@ impl CompileState<'_> {
                 let target = self.eval_expression_as_value(scope, target);
                 let args = args.map_inner(|arg| self.eval_expression_as_ty_or_value(scope, arg));
 
+                let target = match target {
+                    ExpressionValue::Error(e) => return TypeOrValue::Error(e),
+                    ExpressionValue::Compile(c) => {
+                        match c {
+                            CompileValue::Function(f) => f,
+                            _ => {
+                                let e = self.diags.report_simple(
+                                    "call target must be function",
+                                    expr.span,
+                                    format!("got `{}`", c.to_diagnostic_string()),
+                                );
+                                return TypeOrValue::Error(e);
+                            }
+                        }
+                    }
+                    _ => {
+                        let e = self.diags.report_simple(
+                            "call target must be compile-time constant function",
+                            expr.span,
+                            "got runtime value",
+                        );
+                        return TypeOrValue::Error(e);
+                    }
+                };
+
+                // TODO implement compile-time function calling for now
+                // TODO in the future, allow runtime expressions in call args
                 let _ = (target, args);
                 self.diags.report_todo(expr.span, "expr kind Call").into()
             }
