@@ -10,7 +10,7 @@ use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
-use indexmap::map::IndexMap;
+use indexmap::map::{Entry, IndexMap};
 
 new_index_type!(pub Scope);
 
@@ -112,6 +112,18 @@ impl ScopeInfo {
         }
     }
 
+    pub fn declare_already_checked(&mut self, diagnostics: &Diagnostics, id: String, span: Span, value: Result<ScopedEntry, ErrorGuaranteed>) -> Result<(), ErrorGuaranteed> {
+        match self.values.entry(id.clone()) {
+            Entry::Occupied(_) => {
+                Err(diagnostics.report_internal_error(span, format!("identifier `{}` already declared", id)))
+            },
+            Entry::Vacant(entry) => {
+                entry.insert(DeclaredValue::Once { value, span, vis: Visibility::Private });
+                Ok(())
+            }
+        }
+    }
+
     pub fn maybe_declare(
         &mut self,
         diagnostics: &Diagnostics,
@@ -140,6 +152,17 @@ impl ScopeInfo {
         id: &Identifier,
         vis: Visibility,
     ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+        self.find_impl(scopes, diagnostics, id, vis, self.span)
+    }
+
+    fn find_impl<'s>(
+        &'s self,
+        scopes: &'s Scopes,
+        diagnostics: &Diagnostics,
+        id: &Identifier,
+        vis: Visibility,
+        initial_scope_span: Span,
+    ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(&id.string) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
@@ -162,13 +185,13 @@ impl ScopeInfo {
             Ok(ScopeFound { defining_span: value_span, value })
         } else if let Some((parent, parent_vis)) = self.parent {
             // TODO does min access make sense?
-            scopes[parent].find(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis))
+            scopes[parent].find_impl(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis), initial_scope_span)
         } else {
             // TODO add fuzzy-matched suggestions as info
             // TODO insert identifier into the current scope to sureness downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
-                .add_info(Span::empty_at(self.span.start), "searched in the scope starting here, and its parents")
+                .add_info(Span::empty_at(initial_scope_span.start), "searched in the scope starting here, and its parents")
                 .finish();
             Err(diagnostics.report(err))
         }

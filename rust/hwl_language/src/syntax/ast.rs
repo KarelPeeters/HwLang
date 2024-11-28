@@ -1,4 +1,5 @@
 use crate::syntax::pos::Span;
+use itertools::Itertools;
 
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
@@ -147,7 +148,7 @@ pub struct InterfaceField {
     pub ty: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct GenericParameter {
     pub span: Span,
     pub id: Identifier,
@@ -384,7 +385,7 @@ pub struct ModuleInstance {
 
 pub type Expression = Spanned<ExpressionKind>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
@@ -423,13 +424,13 @@ pub enum ExpressionKind {
     Builtin(Spanned<Vec<Expression>>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Args<T = Expression> {
     pub span: Span,
     pub inner: Vec<Arg<T>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Arg<T = Expression> {
     pub span: Span,
     pub name: Option<Identifier>,
@@ -447,6 +448,17 @@ impl<T> Args<T> {
             }).collect(),
         }
     }
+
+    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<U>, E> {
+        Ok(Args {
+            span: self.span,
+            inner: self.inner.into_iter().map(|arg| Ok(Arg {
+                span: arg.span,
+                name: arg.name,
+                value: f(arg.value)?,
+            })).try_collect()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -455,20 +467,20 @@ pub struct ArrayLiteralElement<V> {
     pub value: V,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct StructLiteral {
     pub struct_ty: Box<Expression>,
     pub fields: Vec<StructLiteralField>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct StructLiteralField {
     pub span: Span,
     pub id: Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RangeLiteral {
     pub end_inclusive: bool,
     pub start: Option<Box<Expression>>,
@@ -485,7 +497,7 @@ pub struct SyncExpression {
 // TODO wildcard symbol: `_`, `?`, `*`, `#`?
 //     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum IntPattern {
     // [0-9a-fA-F_]+
     Hex(String),
@@ -503,7 +515,7 @@ pub enum MaybeIdentifier<I = Identifier> {
 
 // TODO this is also just a spanned string
 // TODO intern identifiers 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,
@@ -543,7 +555,7 @@ pub enum BinaryOp {
     In,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum UnaryOp {
     Neg,
     Not,
@@ -556,7 +568,7 @@ pub enum InterfaceDirection {
     Out,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,

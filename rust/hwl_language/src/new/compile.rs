@@ -7,7 +7,7 @@ use crate::new::misc::{ScopedEntry, ValueDomain};
 use crate::new::types::Type;
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
-use crate::syntax::ast::{Identifier, PortDirection, Spanned};
+use crate::syntax::ast::{Args, Identifier, PortDirection, Spanned};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
@@ -15,7 +15,7 @@ use crate::util::{ResultDoubleExt, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{enumerate, Itertools};
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -137,7 +137,7 @@ pub struct CompileState<'a> {
     elaboration_stack: Vec<ElaborationStackEntry>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ElaborationStackEntry {
     // TODO properly refer to ast instantiation site
     /// Module instantiation is only here to provide nicer error messages.
@@ -145,6 +145,9 @@ pub enum ElaborationStackEntry {
     ModuleElaboration(ModuleElaboration),
     // TODO better name, is this ItemEvaluation, ItemSignature, ...?
     Item(AstRefItem),
+    // TODO better names
+    FunctionCall(Span, Args<CompileValue>),
+    FunctionRun(AstRefItem, Args<CompileValue>),
 }
 
 new_index_type!(pub ModuleElaboration);
@@ -278,23 +281,33 @@ fn find_parent_scope(
 }
 
 impl CompileState<'_> {
+    // TODO add stack limit
     pub fn check_compile_loop<T>(&mut self, entry: ElaborationStackEntry, f: impl FnOnce(&mut Self) -> T) -> Result<T, ErrorGuaranteed> {
-        if let Some(loop_start) = self.elaboration_stack.iter().position(|&x| x == entry) {
+        if let Some(loop_start) = self.elaboration_stack.iter().position(|x| x == &entry) {
             // report elaboration loop
             let cycle = &self.elaboration_stack[loop_start..];
 
             let mut diag = Diagnostic::new("encountered elaboration cycle");
-            for &elem in cycle {
+            for (i, elem) in enumerate(cycle) {
                 match elem {
-                    ElaborationStackEntry::ModuleInstantiation(span) => {
-                        diag = diag.add_error(span, "module instantiation part of elaboration cycle");
+                    &ElaborationStackEntry::ModuleInstantiation(span) => {
+                        // TODO include generic args
+                        diag = diag.add_error(span, format!("({i}): module instantiation"));
                     }
-                    ElaborationStackEntry::ModuleElaboration(elem) => {
+                    &ElaborationStackEntry::ModuleElaboration(elem) => {
                         let item = self.elaborated_modules[elem].item;
-                        diag = diag.add_error(self.parsed[item].id.span, "module part of elaboration cycle");
+                        diag = diag.add_error(self.parsed[item].id.span, format!("({i}): module"));
                     }
-                    ElaborationStackEntry::Item(item) => {
-                        diag = diag.add_error(self.parsed[item].common_info().span_short, "item part of elaboration cycle");
+                    &ElaborationStackEntry::Item(item) => {
+                        diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): item"));
+                    }
+                    &ElaborationStackEntry::FunctionCall(expr_span, _) => {
+                        // TODO include args
+                        diag = diag.add_error(expr_span, format!("({i}): function call"));
+                    }
+                    &ElaborationStackEntry::FunctionRun(item, _) => {
+                        // TODO include args
+                        diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): function run"));
                     }
                 }
             }

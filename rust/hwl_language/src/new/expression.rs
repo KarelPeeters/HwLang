@@ -1,15 +1,16 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::CompileState;
+use crate::new::compile::{CompileState, ElaborationStackEntry};
 use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{IntRange, Type};
 use crate::new::value::{CompileValue, ExpressionValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
-use crate::util::ResultExt;
+use crate::util::ResultDoubleExt;
 use itertools::Itertools;
 use num_bigint::BigInt;
+use std::convert::identity;
 
 impl CompileState<'_> {
     pub fn eval_expression(&mut self, scope: Scope, expr: &Expression) -> Result<ExpressionValue, ErrorGuaranteed> {
@@ -125,13 +126,14 @@ impl CompileState<'_> {
                         return Err(e);
                     }
                 };
-                let args: Vec<&CompileValue> = args.inner.iter()
-                    .map(|a| a.value.as_ref_ok())
-                    .try_collect()?;
+                let args = args.try_map_inner(identity)?;
 
-                // TODO do name matching
-                let _ = (target, args);
-                Err(self.diags.report_todo(expr.span, "expr kind Call"))
+                // actually do the call
+                let entry = ElaborationStackEntry::FunctionCall(expr.span, args.clone());
+                self.check_compile_loop(entry, |s| {
+                    target.call_compile_time(s, args)
+                        .map(ExpressionValue::Compile)
+                }).flatten_err()
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, expr.span, args),
         }
@@ -183,6 +185,7 @@ impl CompileState<'_> {
 
     // TODO add reason, maybe even span
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
+        // TODO unify this message with the one when a normal type-check fails
         match self.eval_expression(scope, expr)? {
             ExpressionValue::Compile(CompileValue::Type(ty)) => Ok(ty),
             _ => Err(self.diags.report_simple("expected type, got value", expr.span, "got value")),

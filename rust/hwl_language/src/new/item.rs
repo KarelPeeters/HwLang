@@ -1,7 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::new::compile::{CompileState, ElaborationStackEntry, ModuleElaborationInfo};
-use crate::new::function::{FunctionBody, FunctionValue};
+use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::value::CompileValue;
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType, Spanned};
 use crate::util::data::IndexMapExt;
@@ -27,14 +27,14 @@ impl CompileState<'_> {
 
         match &self.parsed[item] {
             // imports were already handled in a separate import resolution pass
-            Item::Import(item) => {
+            Item::Import(item_inner) => {
                 Err(diags.report_internal_error(
-                    item.span,
+                    item_inner.span,
                     "import items should have been resolved in a separate pass already",
                 ))
             }
-            Item::Const(item) => {
-                let ConstDeclaration { span: _, vis: _, id: _, ty, value } = item;
+            Item::Const(item_inner) => {
+                let ConstDeclaration { span: _, vis: _, id: _, ty, value } = item_inner;
 
                 let ty = ty.as_ref()
                     .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(file_scope, ty)? }))
@@ -48,7 +48,7 @@ impl CompileState<'_> {
                     if !ty.inner.contains_value(&value_eval) {
                         // TODO common type diagnostic formatting
                         let diag = Diagnostic::new("const value does not fit in type")
-                            .add_error(item.span, "const value does not fit in type")
+                            .add_error(item_inner.span, "const value does not fit in type")
                             .add_info(ty.span, format!("type `{}` defined here", ty.inner.to_diagnostic_string()))
                             .add_info(value.span, format!("value `{}` defined here", value_eval.to_diagnostic_string()))
                             .finish();
@@ -58,24 +58,28 @@ impl CompileState<'_> {
 
                 Ok(value_eval)
             }
-            Item::Type(item) => {
-                let ItemDefType { span: _, vis: _, id: _, params, inner } = item;
+            Item::Type(item_inner) => {
+                let ItemDefType { span: _, vis: _, id: _, params, inner } = item_inner;
                 match params {
                     None => Ok(CompileValue::Type(self.eval_expression_as_ty(file_scope, inner)?)),
-                    Some(_) => {
+                    Some(params) => {
                         let func = FunctionValue {
                             outer_scope: file_scope.clone(),
-                            body: FunctionBody::Type,
+                            item,
+                            params: params.clone(),
+                            ret_ty: ReturnType::Type,
+                            body_span: inner.span,
+                            body: FunctionBody::Expression(inner.clone()),
                         };
                         Ok(CompileValue::Function(func))
                     }
                 }
             }
-            Item::Struct(item) => Err(diags.report_todo(item.span, "visit item kind Struct")),
-            Item::Enum(item) => Err(diags.report_todo(item.span, "visit item kind Enum")),
-            Item::Function(item) => Err(diags.report_todo(item.span, "visit item kind Function")),
-            Item::Module(item_module) => {
-                let ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ } = item_module;
+            Item::Struct(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Struct")),
+            Item::Enum(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Enum")),
+            Item::Function(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Function")),
+            Item::Module(item_inner) => {
+                let ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ } = item_inner;
 
                 match params {
                     None => {
@@ -87,7 +91,7 @@ impl CompileState<'_> {
                         Ok(CompileValue::Module(ir_module))
                     }
                     Some(_) =>
-                        Err(diags.report_todo(item_module.span, "visit item kind Module with params")),
+                        Err(diags.report_todo(item_inner.span, "visit item kind Module with params")),
                 }
             }
             Item::Interface(item) =>
