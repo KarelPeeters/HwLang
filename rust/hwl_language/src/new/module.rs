@@ -9,7 +9,6 @@ use crate::syntax::ast;
 use crate::syntax::ast::{Block, GenericParameter, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortKind, Spanned};
 use crate::syntax::pos::Span;
 use crate::throw;
-use crate::util::arena::Arena;
 use itertools::zip_eq;
 
 impl CompileState<'_> {
@@ -132,8 +131,11 @@ impl CompileState<'_> {
     }
 
     fn elaborate_module_body(&mut self, scope_ports: Scope, body: &Block<ModuleStatement>) -> Result<IrModuleInfo, ErrorGuaranteed> {
+        let diags = self.diags;
         let scope_body = self.scopes.new_child(scope_ports, body.span, Visibility::Private);
         let Block { span: _, statements } = body;
+
+        let _ = scope_body;
 
         // first pass: populate scope with declarations
         // TODO fully implement graph-ness,
@@ -141,10 +143,10 @@ impl CompileState<'_> {
         for stmt in statements {
             match &stmt.inner {
                 // declarations
-                ModuleStatementKind::ConstDeclaration(_) => todo!(),
-                ModuleStatementKind::RegDeclaration(_) => todo!(),
-                ModuleStatementKind::WireDeclaration(_) => todo!(),
-                ModuleStatementKind::RegOutPortMarker(_) => todo!(),
+                ModuleStatementKind::ConstDeclaration(_) => throw!(diags.report_todo(stmt.span, "const declaration")),
+                ModuleStatementKind::RegDeclaration(_) => throw!(diags.report_todo(stmt.span, "reg declaration")),
+                ModuleStatementKind::WireDeclaration(_) => throw!(diags.report_todo(stmt.span, "wire declaration")),
+                ModuleStatementKind::RegOutPortMarker(_) => throw!(diags.report_todo(stmt.span, "reg out port marker")),
                 // non declarations, skip
                 ModuleStatementKind::CombinatorialBlock(_) => {}
                 ModuleStatementKind::ClockedBlock(_) => {}
@@ -153,18 +155,30 @@ impl CompileState<'_> {
         }
 
         // second pass: codegen for the actual blocks
-        // TODO
+        for stmt in statements {
+            match &stmt.inner {
+                // declarations, already handled
+                ModuleStatementKind::ConstDeclaration(_) => {}
+                ModuleStatementKind::RegDeclaration(_) => {}
+                ModuleStatementKind::WireDeclaration(_) => {}
+                ModuleStatementKind::RegOutPortMarker(_) => {}
+                // non declarations, skip
+                ModuleStatementKind::CombinatorialBlock(_) => throw!(diags.report_todo(stmt.span, "combinatorial block")),
+                ModuleStatementKind::ClockedBlock(_) => throw!(diags.report_todo(stmt.span, "clocked block")),
+                ModuleStatementKind::Instance(_) => throw!(diags.report_todo(stmt.span, "instance")),
+            }
+        }
 
         // check driver validness
-        // TODO
+        throw!(diags.report_internal_error(body.span, "check module drivers"));
 
         // return result
-        Ok(IrModuleInfo {
-            ports: Arena::default(),
-            registers: Arena::default(),
-            wires: Arena::default(),
-            processes: vec![],
-        })
+        // Ok(IrModuleInfo {
+        //     ports: Arena::default(),
+        //     registers: Arena::default(),
+        //     wires: Arena::default(),
+        //     processes: vec![],
+        // })
     }
 
     fn check_port_ty(&self, ty: Type, ty_span: Span) -> Result<Type, ErrorGuaranteed> {

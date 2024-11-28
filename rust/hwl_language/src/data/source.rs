@@ -105,14 +105,6 @@ impl SourceDatabase {
         Ok(file_id)
     }
 
-    pub fn add_external_vhdl(&mut self, library: String, source: String) {
-        todo!("compile VHDL library={:?}, source.len={}", library, source.len())
-    }
-
-    pub fn add_external_verilog(&mut self, source: String) {
-        todo!("compile verilog source.len={}", source.len())
-    }
-
     fn get_directory(&mut self, path: &FilePath) -> Directory {
         let mut curr_dir = self.root_directory;
         for (i, path_item) in enumerate(&path.0) {

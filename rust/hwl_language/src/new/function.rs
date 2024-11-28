@@ -95,6 +95,7 @@ impl FunctionValue {
                             match param_ids.get(name.string.as_str()) {
                                 Some(_) => {
                                     args_passed.insert(name.string.clone(), (arg_span, arg_value));
+                                    first_named_span = first_named_span.or(Some(arg_span));
                                 }
                                 None => {
                                     let diag = Diagnostic::new(format!("unexpected argument `{}`", name.string))

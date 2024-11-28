@@ -476,8 +476,8 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
 ExprLevelStructInit: ExpressionKind = {
     //  struct
     // TODO allow struct type params?
-    // <struct_ty:Id> "{" "}" => todo!(),
-    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
+    // <struct_ty:Id> "{" "}" => {},
+//    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => {},
 //        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
     ExprLevelAtomic,
 }

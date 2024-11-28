@@ -195,13 +195,13 @@ impl CompileState<'_> {
     // TODO add reason, maybe even span
     pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
         let _ = (scope, expr);
-        todo!()
+        self.diags.report_todo(expr.span, "assignment target expression");
     }
 
     // TODO add reason, maybe even span
     pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> DomainSignal {
         let _ = (scope, expr);
-        todo!()
+        DomainSignal::Error(self.diags.report_todo(expr.span, "domain signal expression"))
     }
 
     pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> DomainKind<DomainSignal> {
