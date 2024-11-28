@@ -1,5 +1,5 @@
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::Scope;
-use crate::new::misc::TypeOrValue;
 use crate::new::value::CompileValue;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -20,7 +20,7 @@ pub enum FunctionBody {
 
 // TODO implement call_runtime which generates ir code
 impl FunctionValue {
-    pub fn call_compile_time(&self/*TODO args*/) -> TypeOrValue<CompileValue> {
+    pub fn call_compile_time(&self/*TODO args*/) -> Result<CompileValue, ErrorGuaranteed> {
         let _ = self.body;
         // TODO create scope, fill in args
         // TODO run body

@@ -1,15 +1,14 @@
-use crate::data::diagnostic::ErrorGuaranteed;
 use crate::new::value::CompileValue;
 use crate::swrite;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
-use std::fmt::{Display, Formatter};
+use std::fmt::Formatter;
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
-    Error(ErrorGuaranteed),
+    Type,
     Clock,
     Any,
     Bool,
@@ -35,12 +34,17 @@ pub struct ClosedIntRange {
 
 impl Type {
     // TODO return detailed justification on failure
-    pub fn contains_value(&self, value: &CompileValue) -> Result<bool, ErrorGuaranteed> {
-        let result = match (self, value) {
-            (&Type::Error(e), _) => return Err(e),
+    pub fn contains_value(&self, value: &CompileValue) -> bool {
+        match (self, value) {
+            // type only contains types
+            (Type::Type, CompileValue::Type(_)) => true,
+            (Type::Type, _) | (_, CompileValue::Type(_)) => false,
+
+            // any and undefined only apply to values
             (Type::Any, _) => true,
             (_, CompileValue::Undefined) => true,
 
+            // simple matches
             (Type::Bool, CompileValue::Bool(_)) => true,
             (Type::String, CompileValue::String(_)) => true,
             (Type::Int(range), CompileValue::Int(value)) => {
@@ -56,7 +60,7 @@ impl Type {
             (Type::Array(inner, len), CompileValue::Array(values)) => {
                 let mut r = len == &BigUint::from(values.len());
                 for v in values {
-                    r &= inner.contains_value(v)?;
+                    r &= inner.contains_value(v);
                 }
                 r
             }
@@ -67,47 +71,46 @@ impl Type {
             // TODO maybe clock should accept bool values?
             (Type::Clock, _) => false,
 
+            // simple mismatches
             (
                 Type::Bool | Type::String | Type::Int(_) | Type::Array(_, _) |
                 Type::Range | Type::Module | Type::Function,
                 CompileValue::Bool(_) | CompileValue::String(_) | CompileValue::Int(_) | CompileValue::Array(_) |
                 CompileValue::IntRange(_) | CompileValue::Module(_) | CompileValue::Function(_),
             ) => false,
-        };
-        Ok(result)
+        }
     }
 
-    pub fn hardware_bit_width(&self) -> Result<Option<BigUint>, ErrorGuaranteed> {
+    pub fn hardware_bit_width(&self) -> Option<BigUint> {
         match self {
-            &Type::Error(e) => Err(e),
-            Type::Any => Ok(None),
-            Type::Range => Ok(None),
+            Type::Type => None,
+            Type::Any => None,
+            Type::Range => None,
 
-            Type::Clock => Ok(Some(BigUint::one())),
-            Type::Bool => Ok(Some(BigUint::one())),
-            Type::String => Ok(None),
+            Type::Clock => Some(BigUint::one()),
+            Type::Bool => Some(BigUint::one()),
+            Type::String => None,
             Type::Int(range) => {
                 let IntRange { start_inc, end_inc } = range;
                 match (start_inc, end_inc) {
                     (Some(start_inc), Some(end_inc)) =>
-                        Ok(Some(IntRepresentation::for_range(start_inc.clone()..=end_inc.clone()).bits)),
+                        Some(IntRepresentation::for_range(start_inc.clone()..=end_inc.clone()).bits),
                     _ =>
-                        Ok(None),
+                        None,
                 }
             }
-            Type::Array(inner, len) =>
+            Type::Array(inner, len) => {
                 inner.hardware_bit_width()
-                    .map(|inner_width| {
-                        inner_width.map(|inner_width| inner_width * len)
-                    }),
-            Type::Module => Ok(None),
-            Type::Function => Ok(None),
+                    .map(|inner_width| inner_width * len)
+            }
+            Type::Module => None,
+            Type::Function => None,
         }
     }
 
     pub fn to_diagnostic_string(&self) -> String {
         match self {
-            Type::Error(_) => "error".to_string(),
+            Type::Type => "type".to_string(),
             Type::Any => "any".to_string(),
 
             Type::Clock => "clock".to_string(),

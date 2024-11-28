@@ -2,12 +2,14 @@ use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::new::misc::ScopedEntry;
 use crate::new_index_type;
 use crate::syntax::ast;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
 use indexmap::map::IndexMap;
 
 new_index_type!(pub Scope);
@@ -19,33 +21,40 @@ pub enum Visibility {
 }
 
 #[derive(Debug)]
-pub struct ScopeInfo<V> {
+pub struct ScopeInfo {
     span: Span,
     #[allow(dead_code)]
     scope: Scope,
     parent: Option<(Scope, Visibility)>,
-    values: IndexMap<String, DeclaredValue<V>>,
+    values: IndexMap<String, DeclaredValue>,
 }
 
 #[derive(Debug)]
-pub enum DeclaredValue<V> {
-    Once { value: V, span: Span, vis: Visibility },
-    Multiple { spans: Vec<Span>, err: ErrorGuaranteed },
+pub enum DeclaredValue {
+    Once {
+        value: Result<ScopedEntry, ErrorGuaranteed>,
+        span: Span,
+        vis: Visibility,
+    },
+    Multiple {
+        spans: Vec<Span>,
+        err: ErrorGuaranteed,
+    },
 }
 
 #[derive(Debug)]
-pub struct ScopeFound<V> {
+pub struct ScopeFound<'s> {
     pub defining_span: Span,
-    pub value: V,
+    pub value: &'s ScopedEntry,
 }
 
-pub struct Scopes<V> {
-    arena: Arena<Scope, ScopeInfo<V>>,
+pub struct Scopes {
+    arena: Arena<Scope, ScopeInfo>,
 }
 
 // TODO rethink: have a separate scope builder that needs all declarations to be provided before any lookups can start?
 //   more safe and elegant, but makes "a bunch of nested scopes" like in generic params much slower
-impl<V> Scopes<V> {
+impl Scopes {
     pub fn default() -> Self {
         Self { arena: Arena::default() }
     }
@@ -69,7 +78,7 @@ impl<V> Scopes<V> {
     }
 }
 
-impl<V> ScopeInfo<V> {
+impl ScopeInfo {
     /// Declare a value in this scope.
     ///
     /// Allows shadowing identifiers in the parent scope, but not in the local scope.
@@ -77,7 +86,7 @@ impl<V> ScopeInfo<V> {
     /// This function always appears to succeed, errors are instead reported as diagnostics.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &Identifier, value: V, vis: Visibility) {
+    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &Identifier, value: Result<ScopedEntry, ErrorGuaranteed>, vis: Visibility) {
         if let Some(declared) = self.values.get_mut(&id.string) {
             // get all spans
             let mut spans = match declared {
@@ -103,7 +112,13 @@ impl<V> ScopeInfo<V> {
         }
     }
 
-    pub fn maybe_declare(&mut self, diagnostics: &Diagnostics, id: ast::MaybeIdentifier<&Identifier>, var: V, vis: Visibility) {
+    pub fn maybe_declare(
+        &mut self,
+        diagnostics: &Diagnostics,
+        id: ast::MaybeIdentifier<&Identifier>,
+        var: Result<ScopedEntry, ErrorGuaranteed>,
+        vis: Visibility,
+    ) {
         match id {
             ast::MaybeIdentifier::Identifier(id) =>
                 self.declare(diagnostics, id, var, vis),
@@ -120,16 +135,18 @@ impl<V> ScopeInfo<V> {
     /// This still allows typechecking to happen.
     pub fn find<'s>(
         &'s self,
-        scopes: &'s Scopes<V>,
+        scopes: &'s Scopes,
         diagnostics: &Diagnostics,
         id: &Identifier,
         vis: Visibility,
-    ) -> Result<ScopeFound<&'s V>, ErrorGuaranteed> {
+    ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(&id.string) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
-                DeclaredValue::Once { ref value, span, vis } => (value, span, vis),
-                DeclaredValue::Multiple { spans: _, err } => return Err(err),
+                DeclaredValue::Once { ref value, span, vis } =>
+                    (value.as_ref_ok()?, span, vis),
+                DeclaredValue::Multiple { spans: _, err } =>
+                    return Err(err),
             };
 
             // check access
@@ -163,12 +180,14 @@ impl<V> ScopeInfo<V> {
         diagnostics: &Diagnostics,
         id: &str,
         vis: Visibility,
-    ) -> Result<ScopeFound<&V>, ErrorGuaranteed> {
+    ) -> Result<ScopeFound, ErrorGuaranteed> {
         if let Some(declared) = self.values.get(id) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
-                DeclaredValue::Once { ref value, span, vis } => (value, span, vis),
-                DeclaredValue::Multiple { spans: _, err } => return Err(err),
+                DeclaredValue::Once { ref value, span, vis } =>
+                    (value.as_ref_ok()?, span, vis),
+                DeclaredValue::Multiple { spans: _, err } =>
+                    return Err(err),
             };
 
             // check vis
@@ -196,14 +215,14 @@ impl<V> ScopeInfo<V> {
     }
 }
 
-impl<V> std::ops::Index<Scope> for Scopes<V> {
-    type Output = ScopeInfo<V>;
+impl std::ops::Index<Scope> for Scopes {
+    type Output = ScopeInfo;
     fn index(&self, index: Scope) -> &Self::Output {
         &self.arena[index]
     }
 }
 
-impl<V> std::ops::IndexMut<Scope> for Scopes<V> {
+impl std::ops::IndexMut<Scope> for Scopes {
     fn index_mut(&mut self, index: Scope) -> &mut Self::Output {
         &mut self.arena[index]
     }

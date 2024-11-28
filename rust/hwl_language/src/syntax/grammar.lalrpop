@@ -279,12 +279,7 @@ Parameters<P>: Spanned<Vec<P>> = {
 }
 
 GenericParameter: GenericParameter = {
-    <start:@L> <id:Id> ":" <kind:GenericParameterKind> <end:@R> => GenericParameter { id, kind, span: loc.span(start, end) },
-}
-
-GenericParameterKind: GenericParameterKind = {
-    <start:@L> "type" <end:@R> => GenericParameterKind::Type(loc.span(start, end)),
-    <ty:Expr> => GenericParameterKind::Value(ty),
+    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => GenericParameter { id, ty, span: loc.span(start, end) },
 }
 
 // TODO get rid of the need for a comma after a block

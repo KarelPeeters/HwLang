@@ -1,43 +1,13 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::AstRefItem;
-use crate::new::types::Type;
 use crate::new::value::ScopedValue;
 use crate::syntax::ast::{DomainKind, SyncDomain};
 
-// TODO move everything in this file to a better place
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum TypeOrValue<V> {
-    Type(Type),
-    Value(V),
-    Error(ErrorGuaranteed),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum TypeOrValueNoError<V> {
-    Type(Type),
-    Value(V),
-}
-
-impl<V> From<ErrorGuaranteed> for TypeOrValue<V> {
-    fn from(e: ErrorGuaranteed) -> Self {
-        TypeOrValue::Error(e)
-    }
-}
-
+// TODO move this to a better place
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(AstRefItem),
-    Direct(TypeOrValue<ScopedValue>),
-}
-
-impl<V> TypeOrValue<V> {
-    pub fn map_value<W>(self, mut f: impl FnMut(V) -> W) -> TypeOrValue<W> {
-        match self {
-            TypeOrValue::Type(t) => TypeOrValue::Type(t),
-            TypeOrValue::Value(v) => TypeOrValue::Value(f(v)),
-            TypeOrValue::Error(e) => TypeOrValue::Error(e),
-        }
-    }
+    Direct(ScopedValue),
 }
 
 // TODO expand to all possible values again
@@ -53,6 +23,7 @@ pub enum DomainSignal {
 
 #[derive(Debug, Clone)]
 pub enum ValueDomain<V = DomainSignal> {
+    // TODO extract error case out?
     Error(ErrorGuaranteed),
     CompileTime,
     Clock,

@@ -151,13 +151,7 @@ pub struct InterfaceField {
 pub struct GenericParameter {
     pub span: Span,
     pub id: Identifier,
-    pub kind: GenericParameterKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum GenericParameterKind {
-    Type(Span),
-    Value(Expression),
+    pub ty: Expression,
 }
 
 #[derive(Debug, Clone)]

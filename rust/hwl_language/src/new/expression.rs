@@ -1,74 +1,61 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
-use crate::new::misc::{DomainSignal, ScopedEntry, TypeOrValue, TypeOrValueNoError};
+use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{IntRange, Type};
-use crate::new::value::{CompileValue, ExpressionValue, ScopedValue};
+use crate::new::value::{CompileValue, ExpressionValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::util::ResultExt;
 use itertools::Itertools;
 use num_bigint::BigInt;
 
 impl CompileState<'_> {
-    pub fn eval_expression_as_ty_or_value(&mut self, scope: Scope, expr: &Expression) -> TypeOrValue<ExpressionValue> {
+    pub fn eval_expression(&mut self, scope: Scope, expr: &Expression) -> Result<ExpressionValue, ErrorGuaranteed> {
         match &expr.inner {
             ExpressionKind::Dummy =>
-                self.diags.report_todo(expr.span, "expr kind Dummy").into(),
+                Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
             ExpressionKind::Wrapped(inner) =>
-                self.eval_expression_as_ty_or_value(scope, inner),
+                self.eval_expression(scope, inner),
             ExpressionKind::Id(id) => {
-                match self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private) {
-                    Ok(found) => match found.value {
-                        &ScopedEntry::Item(item) =>
-                            self.eval_item_as_ty_or_value(item)
-                                .clone()
-                                .map_value(ExpressionValue::Compile),
-                        ScopedEntry::Direct(direct) => match direct {
-                            TypeOrValue::Type(ty) => TypeOrValue::Type(ty.clone()),
-                            TypeOrValue::Value(v) => match v {
-                                ScopedValue::Compile(v) => TypeOrValue::Value(ExpressionValue::Compile(v.clone())),
-                                &ScopedValue::Port(v) => TypeOrValue::Value(ExpressionValue::Port(v)),
-                                &ScopedValue::Wire(v) => TypeOrValue::Value(ExpressionValue::Wire(v)),
-                                &ScopedValue::Register(v) => TypeOrValue::Value(ExpressionValue::Register(v)),
-                                &ScopedValue::Variable(v) => TypeOrValue::Value(ExpressionValue::Variable(v)),
-                            },
-                            &TypeOrValue::Error(e) => TypeOrValue::Error(e),
-                        },
-                    },
-                    Err(e) => TypeOrValue::Error(e),
+                match self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?.value {
+                    &ScopedEntry::Item(item) =>
+                        Ok(ExpressionValue::Compile(self.eval_item_as_ty_or_value(item)?.clone())),
+                    ScopedEntry::Direct(scoped) =>
+                        Ok(ExpressionValue::from_scoped(scoped.clone()))
                 }
             }
 
-            ExpressionKind::TypeFunc(_, _) => self.diags.report_todo(expr.span, "expr kind TypeFunc").into(),
+            ExpressionKind::TypeFunc(_, _) => Err(self.diags.report_todo(expr.span, "expr kind TypeFunc")),
             ExpressionKind::IntPattern(ref pattern) =>
                 match pattern {
                     IntPattern::Hex(_) =>
-                        TypeOrValue::Error(self.diags.report_todo(expr.span, "hex int-pattern expression")),
+                        Err(self.diags.report_todo(expr.span, "hex int-pattern expression")),
                     IntPattern::Bin(_) =>
-                        TypeOrValue::Error(self.diags.report_todo(expr.span, "bin int-pattern expression")),
+                        Err(self.diags.report_todo(expr.span, "bin int-pattern expression")),
                     IntPattern::Dec(pattern_raw) => {
                         let pattern_clean = pattern_raw.replace("_", "");
                         match pattern_clean.parse::<BigInt>() {
-                            Ok(value) => TypeOrValue::Value(ExpressionValue::Compile(CompileValue::Int(value))),
-                            Err(_) => self.diags.report_internal_error(expr.span, "failed to parse int-pattern").into(),
+                            Ok(value) => Ok(ExpressionValue::Compile(CompileValue::Int(value))),
+                            Err(_) => Err(self.diags.report_internal_error(expr.span, "failed to parse int-pattern")),
                         }
                     }
                 }
             &ExpressionKind::BoolLiteral(literal) =>
-                TypeOrValue::Value(ExpressionValue::Compile(CompileValue::Bool(literal))),
+                Ok(ExpressionValue::Compile(CompileValue::Bool(literal))),
             // TODO f-string formatting
             ExpressionKind::StringLiteral(literal) =>
-                TypeOrValue::Value(ExpressionValue::Compile(CompileValue::String(literal.clone()))),
+                Ok(ExpressionValue::Compile(CompileValue::String(literal.clone()))),
 
-            ExpressionKind::ArrayLiteral(_) => self.diags.report_todo(expr.span, "expr kind ArrayLiteral").into(),
-            ExpressionKind::TupleLiteral(_) => self.diags.report_todo(expr.span, "expr kind TupleLiteral").into(),
-            ExpressionKind::StructLiteral(_) => self.diags.report_todo(expr.span, "expr kind StructLiteral").into(),
+            ExpressionKind::ArrayLiteral(_) => Err(self.diags.report_todo(expr.span, "expr kind ArrayLiteral")),
+            ExpressionKind::TupleLiteral(_) => Err(self.diags.report_todo(expr.span, "expr kind TupleLiteral")),
+            ExpressionKind::StructLiteral(_) => Err(self.diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
                 let &ast::RangeLiteral { end_inclusive, ref start, ref end } = literal;
 
-                let start = start.as_ref().map(|start| self.eval_expression_as_value_compile(scope, start));
-                let end = end.as_ref().map(|end| self.eval_expression_as_value_compile(scope, end));
+                let start = start.as_ref().map(|start| self.eval_expression_as_compile(scope, start));
+                let end = end.as_ref().map(|end| self.eval_expression_as_compile(scope, end));
 
                 // TODO reduce code duplication
                 let start_inc = match start.transpose() {
@@ -80,9 +67,9 @@ impl CompileState<'_> {
                             expr.span,
                             format!("got `{}`", start.to_diagnostic_string()),
                         );
-                        return TypeOrValue::Value(ExpressionValue::Error(e));
+                        return Err(e);
                     }
-                    Err(e) => return TypeOrValue::Value(ExpressionValue::Error(e)),
+                    Err(e) => return Err(e),
                 };
                 let end = match end.transpose() {
                     Ok(None) => None,
@@ -93,9 +80,9 @@ impl CompileState<'_> {
                             expr.span,
                             format!("got `{}`", start.to_diagnostic_string()),
                         );
-                        return TypeOrValue::Value(ExpressionValue::Error(e));
+                        return Err(e);
                     }
-                    Err(e) => return TypeOrValue::Value(ExpressionValue::Error(e)),
+                    Err(e) => return Err(e),
                 };
 
                 let end_inc = if end_inclusive {
@@ -103,7 +90,7 @@ impl CompileState<'_> {
                         Some(end) => Some(end),
                         None => {
                             let e = self.diags.report_internal_error(expr.span, "inclusive range must have end");
-                            return TypeOrValue::Value(ExpressionValue::Error(e));
+                            return Err(e);
                         }
                     }
                 } else {
@@ -111,101 +98,67 @@ impl CompileState<'_> {
                 };
 
                 let range = IntRange { start_inc, end_inc };
-                TypeOrValue::Value(ExpressionValue::Compile(CompileValue::IntRange(range)))
-            },
-            ExpressionKind::UnaryOp(_, _) => self.diags.report_todo(expr.span, "expr kind UnaryOp").into(),
-            ExpressionKind::BinaryOp(_, _, _) => self.diags.report_todo(expr.span, "expr kind BinaryOp").into(),
-            ExpressionKind::TernarySelect(_, _, _) => self.diags.report_todo(expr.span, "expr kind TernarySelect").into(),
-            ExpressionKind::ArrayIndex(_, _) => self.diags.report_todo(expr.span, "expr kind ArrayIndex").into(),
-            ExpressionKind::DotIdIndex(_, _) => self.diags.report_todo(expr.span, "expr kind DotIdIndex").into(),
-            ExpressionKind::DotIntIndex(_, _) => self.diags.report_todo(expr.span, "expr kind DotIntIndex").into(),
+                Ok(ExpressionValue::Compile(CompileValue::IntRange(range)))
+            }
+            ExpressionKind::UnaryOp(_, _) => Err(self.diags.report_todo(expr.span, "expr kind UnaryOp")),
+            ExpressionKind::BinaryOp(_, _, _) => Err(self.diags.report_todo(expr.span, "expr kind BinaryOp")),
+            ExpressionKind::TernarySelect(_, _, _) => Err(self.diags.report_todo(expr.span, "expr kind TernarySelect")),
+            ExpressionKind::ArrayIndex(_, _) => Err(self.diags.report_todo(expr.span, "expr kind ArrayIndex")),
+            ExpressionKind::DotIdIndex(_, _) => Err(self.diags.report_todo(expr.span, "expr kind DotIdIndex")),
+            ExpressionKind::DotIntIndex(_, _) => Err(self.diags.report_todo(expr.span, "expr kind DotIntIndex")),
             ExpressionKind::Call(target, args) => {
-                let target = self.eval_expression_as_value(scope, target);
-                let args = args.map_inner(|arg| self.eval_expression_as_ty_or_value(scope, arg));
+                // evaluate target and args
+                let target = self.eval_expression_as_compile(scope, target)?;
+                // TODO allow runtime expressions in arguments
+                let args = args.map_inner(|arg| self.eval_expression_as_compile(scope, arg));
 
+                // report errors for invalid target and args
+                //   (only after both have been evaluated to get all diagnostics)
                 let target = match target {
-                    ExpressionValue::Error(e) => return TypeOrValue::Error(e),
-                    ExpressionValue::Compile(c) => {
-                        match c {
-                            CompileValue::Function(f) => f,
-                            _ => {
-                                let e = self.diags.report_simple(
-                                    "call target must be function",
-                                    expr.span,
-                                    format!("got `{}`", c.to_diagnostic_string()),
-                                );
-                                return TypeOrValue::Error(e);
-                            }
-                        }
-                    }
+                    CompileValue::Function(f) => f,
                     _ => {
                         let e = self.diags.report_simple(
-                            "call target must be compile-time constant function",
+                            "call target must be function",
                             expr.span,
-                            "got runtime value",
+                            format!("got `{}`", target.to_diagnostic_string()),
                         );
-                        return TypeOrValue::Error(e);
+                        return Err(e);
                     }
                 };
+                let args: Vec<&CompileValue> = args.inner.iter()
+                    .map(|a| a.value.as_ref_ok())
+                    .try_collect()?;
 
-                // TODO implement compile-time function calling for now
-                // TODO in the future, allow runtime expressions in call args
+                // TODO do name matching
                 let _ = (target, args);
-                self.diags.report_todo(expr.span, "expr kind Call").into()
+                Err(self.diags.report_todo(expr.span, "expr kind Call"))
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, expr.span, args),
         }
     }
 
     // TODO replace builtin+import+prelude with keywords?
-    fn eval_builtin(&mut self, scope: Scope, expr_span: Span, args: &Spanned<Vec<Expression>>) -> TypeOrValue<ExpressionValue> {
-        let mut args_eval = Ok(vec![]);
-
+    fn eval_builtin(&mut self, scope: Scope, expr_span: Span, args: &Spanned<Vec<Expression>>) -> Result<ExpressionValue, ErrorGuaranteed> {
         // evaluate args
-        for arg in &args.inner {
-            let eval = match self.eval_expression_as_ty_or_value(scope, arg) {
-                TypeOrValue::Type(ty) => TypeOrValue::Type(ty),
-                TypeOrValue::Value(v) => {
-                    let err_value = |s| {
-                        self.diags.report_simple("__builtin arguments must be compile-time constants", arg.span, format!("got {}", s))
-                    };
+        let args_eval: Vec<CompileValue> = args.inner.iter()
+            .map(|arg| self.eval_expression_as_compile(scope, arg))
+            .try_collect()?;
 
-                    match v {
-                        ExpressionValue::Error(e) => TypeOrValue::Error(e),
-                        ExpressionValue::Compile(v) => TypeOrValue::Value(v),
-                        ExpressionValue::Port(_) => err_value("port").into(),
-                        ExpressionValue::Wire(_) => err_value("wire").into(),
-                        ExpressionValue::Register(_) => err_value("register").into(),
-                        ExpressionValue::Variable(_) => err_value("variable").into(),
-                        ExpressionValue::RuntimeExpression { .. } => err_value("runtime expression").into(),
-                    }
-                }
-                TypeOrValue::Error(e) => TypeOrValue::Error(e),
-            };
-
-            match (&mut args_eval, eval) {
-                (Ok(args_eval), TypeOrValue::Type(ty)) => args_eval.push(TypeOrValueNoError::Type(ty)),
-                (Ok(args_eval), TypeOrValue::Value(v)) => args_eval.push(TypeOrValueNoError::Value(v)),
-                (&mut Err(e), _) | (_, TypeOrValue::Error(e)) => args_eval = Err(e),
-            }
-        }
-        let args_eval = match args_eval {
-            Ok(args_eval) => args_eval,
-            Err(e) => return TypeOrValue::Error(e),
-        };
-
-        if let (Some(TypeOrValueNoError::Value(CompileValue::String(a0))), Some(TypeOrValueNoError::Value(CompileValue::String(a1)))) = (args_eval.get(0), args_eval.get(1)) {
+        if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
             let rest = &args_eval[2..];
             match (a0.as_str(), a1.as_str(), rest) {
-                ("type", "any", []) => return TypeOrValue::Type(Type::Any),
-                ("type", "bool", []) => return TypeOrValue::Type(Type::Bool),
+                ("type", "any", []) =>
+                    return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Any))),
+                ("type", "bool", []) =>
+                    return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Bool))),
                 ("type", "int_range", [range]) => {
-                    if let TypeOrValueNoError::Value(CompileValue::IntRange(range)) = range {
-                        return TypeOrValue::Type(Type::Int(range.clone()));
+                    if let CompileValue::IntRange(range) = range {
+                        return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Int(range.clone()))));
                     }
                 }
 
-                ("value", "undefined", []) => return TypeOrValue::Value(ExpressionValue::Compile(CompileValue::Undefined)),
+                ("value", "undefined", []) =>
+                    return Ok(ExpressionValue::Compile(CompileValue::Undefined)),
 
                 // fallthrough into err
                 _ => {}
@@ -217,47 +170,32 @@ impl CompileState<'_> {
             .add_error(args.span, "invalid args")
             .finish()
             .finish();
-        TypeOrValue::Error(self.diags.report(diag))
+        Err(self.diags.report(diag))
     }
 
-    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        match self.eval_expression_as_ty_or_value(scope, expr) {
-            TypeOrValue::Type(ty) => ty,
-            TypeOrValue::Value(_) => {
-                let e = self.diags.report_simple("expected type, got value", expr.span, "got value");
-                Type::Error(e)
-            }
-            TypeOrValue::Error(e) => Type::Error(e),
-        }
-    }
-
-    pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
-        let _ = (scope, expr);
-        todo!()
-    }
-
-    pub fn eval_expression_as_value(&mut self, scope: Scope, expr: &Expression) -> ExpressionValue {
-        let _ = (scope, expr);
-        let eval = self.eval_expression_as_ty_or_value(scope, expr);
-
-        match eval {
-            TypeOrValue::Type(_) => {
-                ExpressionValue::Error(self.diags.report_simple("expected value, got type", expr.span, "got type"))
-            }
-            TypeOrValue::Value(v) => v,
-            TypeOrValue::Error(e) => e.into(),
-        }
-    }
-
-    pub fn eval_expression_as_value_compile(&mut self, scope: Scope, expr: &Expression) -> Result<CompileValue, ErrorGuaranteed> {
-        let eval = self.eval_expression_as_value(scope, expr);
-        match eval {
-            ExpressionValue::Error(e) => Err(e),
+    // TODO add reason, maybe even span
+    pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression) -> Result<CompileValue, ErrorGuaranteed> {
+        match self.eval_expression(scope, expr)? {
             ExpressionValue::Compile(c) => Ok(c),
             _ => Err(self.diags.report_simple("expected compile-time constant", expr.span, "got runtime expression")),
         }
     }
 
+    // TODO add reason, maybe even span
+    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
+        match self.eval_expression(scope, expr)? {
+            ExpressionValue::Compile(CompileValue::Type(ty)) => Ok(ty),
+            _ => Err(self.diags.report_simple("expected type, got value", expr.span, "got value")),
+        }
+    }
+
+    // TODO add reason, maybe even span
+    pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
+        let _ = (scope, expr);
+        todo!()
+    }
+
+    // TODO add reason, maybe even span
     pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> DomainSignal {
         let _ = (scope, expr);
         todo!()

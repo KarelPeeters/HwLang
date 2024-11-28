@@ -3,7 +3,7 @@ use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
 use crate::new::ir::{IrDesign, IrModule, IrModuleInfo};
-use crate::new::misc::{ScopedEntry, TypeOrValue, ValueDomain};
+use crate::new::misc::{ScopedEntry, ValueDomain};
 use crate::new::types::Type;
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
@@ -31,7 +31,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
 
     let files = source.files();
     let mut all_items_except_imports = vec![];
-    
+
     for &file in &files {
         let file_source = &source[file];
 
@@ -50,7 +50,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
                         ast::Visibility::Public(_) => Visibility::Public,
                         ast::Visibility::Private => Visibility::Private,
                     };
-                    local_scope_info.maybe_declare(diags, declaration_info.id, ScopedEntry::Item(ast_item_ref), vis);
+                    local_scope_info.maybe_declare(diags, declaration_info.id, Ok(ScopedEntry::Item(ast_item_ref)), vis);
                 }
 
                 match ast_item {
@@ -120,7 +120,7 @@ pub struct CompileState<'a> {
     pub source: &'a SourceDatabase,
     pub parsed: &'a ParsedDatabase,
 
-    pub scopes: Scopes<ScopedEntry>,
+    pub scopes: Scopes,
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
     pub ports: Arena<Port, PortInfo>,
@@ -132,7 +132,7 @@ pub struct CompileState<'a> {
     pub elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
     pub elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
 
-    pub items: IndexMap<AstRefItem, TypeOrValue<CompileValue>>,
+    pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
 
     elaboration_stack: Vec<ElaborationStackEntry>,
 }
@@ -156,7 +156,7 @@ new_index_type!(pub Variable);
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationInfo {
     pub item: AstRefModule,
-    pub args: Option<Vec<TypeOrValue<CompileValue>>>,
+    pub args: Option<Vec<CompileValue>>,
 }
 
 // TODO should a register-marked port count as a register or a port?
@@ -191,7 +191,7 @@ pub struct VariableInfo {
 fn add_import_to_scope(
     diags: &Diagnostics,
     source: &SourceDatabase,
-    scopes: &mut Scopes<ScopedEntry>,
+    scopes: &mut Scopes,
     file_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
     target_scope: Scope,
     item: &ast::ItemImport,
@@ -213,12 +213,11 @@ fn add_import_to_scope(
         let ast::ImportEntry { span: _, id, as_ } = import_entry;
 
         // TODO allow private visibility into child scopes?
-        let entry = match parent_scope {
-            Ok(parent_scope) => scopes[parent_scope].find(&scopes, diags, id, Visibility::Public),
-            Err(e) => Err(e),
+        let entry = parent_scope.and_then(|parent_scope| {
+            scopes[parent_scope].find(&scopes, diags, id, Visibility::Public)
+                .map(|entry| entry.value.clone())
         }
-            .map(|entry| entry.value.clone())
-            .unwrap_or_else(|e| ScopedEntry::Direct(TypeOrValue::Error(e)));
+        );
 
         let target_scope = &mut scopes[target_scope];
         match as_ {
@@ -410,4 +409,4 @@ macro_rules! impl_index {
     };
 }
 
-impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
+impl_index!(scopes, Scope, ScopeInfo);

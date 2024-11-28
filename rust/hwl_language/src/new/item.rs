@@ -1,87 +1,79 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::new::compile::{CompileState, ElaborationStackEntry, ModuleElaborationInfo};
 use crate::new::function::{FunctionBody, FunctionValue};
-use crate::new::misc::TypeOrValue;
 use crate::new::value::CompileValue;
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType, Spanned};
 use crate::util::data::IndexMapExt;
+use crate::util::ResultExt;
 
 impl CompileState<'_> {
-    pub fn eval_item_as_ty_or_value(&mut self, item: AstRefItem) -> &TypeOrValue<CompileValue> {
+    pub fn eval_item_as_ty_or_value(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
         if !self.items.contains_key(&item) {
             let result = self.check_compile_loop(ElaborationStackEntry::Item(item), |s| {
                 s.eval_item_as_ty_or_value_new(item)
-            }).unwrap_or_else(|e| TypeOrValue::Error(e));
+            }).unwrap_or_else(|e| Err(e));
 
-            self.items.insert_first(item, result)
+            self.items.insert_first(item, result).as_ref_ok()
         } else {
-            self.items.get(&item).unwrap()
+            self.items.get(&item).unwrap().as_ref_ok()
         }
     }
 
-    fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> TypeOrValue<CompileValue> {
+    fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
-        let file_scope = match self.file_scope(item.file()) {
-            Ok(file_scope) => file_scope,
-            Err(e) => return e.into(),
-        };
+        let file_scope = self.file_scope(item.file())?;
 
         match &self.parsed[item] {
             // imports were already handled in a separate import resolution pass
             Item::Import(item) => {
-                diags.report_internal_error(item.span, "import items should have been resolved in a separate pass already").into()
+                Err(diags.report_internal_error(
+                    item.span,
+                    "import items should have been resolved in a separate pass already",
+                ))
             }
             Item::Const(item) => {
                 let ConstDeclaration { span: _, vis: _, id: _, ty, value } = item;
 
-                let ty = ty.as_ref().map(|ty| Spanned {
-                    span: ty.span,
-                    inner: self.eval_expression_as_ty(file_scope, ty),
-                });
+                let ty = ty.as_ref()
+                    .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(file_scope, ty)? }))
+                    .transpose();
 
-                let value_raw = match self.eval_expression_as_value_compile(file_scope, value) {
-                    Ok(value_raw) => value_raw,
-                    Err(e) => return e.into(),
-                };
+                let value_eval = self.eval_expression_as_compile(file_scope, value)?;
+                let ty = ty?;
 
-                let value = if let Some(ty) = ty {
-                    match ty.inner.contains_value(&value_raw) {
-                        Ok(true) => value_raw,
-                        Ok(false) => {
-                            // TODO common type diagnostic formatting
-                            let diag = Diagnostic::new("const value does not fit in type")
-                                .add_error(item.span, "const value does not fit in type")
-                                .add_info(ty.span, format!("type `{}` defined here", ty.inner.to_diagnostic_string()))
-                                .add_info(value.span, format!("value `{}` defined here", value_raw.to_diagnostic_string()))
-                                .finish();
-                            return diags.report(diag).into();
-                        }
-                        Err(e) => return e.into(),
+                // check type
+                if let Some(ty) = ty {
+                    if !ty.inner.contains_value(&value_eval) {
+                        // TODO common type diagnostic formatting
+                        let diag = Diagnostic::new("const value does not fit in type")
+                            .add_error(item.span, "const value does not fit in type")
+                            .add_info(ty.span, format!("type `{}` defined here", ty.inner.to_diagnostic_string()))
+                            .add_info(value.span, format!("value `{}` defined here", value_eval.to_diagnostic_string()))
+                            .finish();
+                        return Err(diags.report(diag));
                     }
-                } else {
-                    value_raw
                 };
 
-                TypeOrValue::Value(value)
+                Ok(value_eval)
             }
             Item::Type(item) => {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item;
                 match params {
-                    None => TypeOrValue::Type(self.eval_expression_as_ty(file_scope, inner)),
+                    None => Ok(CompileValue::Type(self.eval_expression_as_ty(file_scope, inner)?)),
                     Some(_) => {
                         let func = FunctionValue {
                             outer_scope: file_scope.clone(),
                             body: FunctionBody::Type,
                         };
-                        TypeOrValue::Value(CompileValue::Function(func))
-                    },
+                        Ok(CompileValue::Function(func))
+                    }
                 }
             }
-            Item::Struct(item) => diags.report_todo(item.span, "visit item kind Struct").into(),
-            Item::Enum(item) => diags.report_todo(item.span, "visit item kind Enum").into(),
-            Item::Function(item) => diags.report_todo(item.span, "visit item kind Function").into(),
+            Item::Struct(item) => Err(diags.report_todo(item.span, "visit item kind Struct")),
+            Item::Enum(item) => Err(diags.report_todo(item.span, "visit item kind Enum")),
+            Item::Function(item) => Err(diags.report_todo(item.span, "visit item kind Function")),
             Item::Module(item_module) => {
                 let ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ } = item_module;
 
@@ -91,21 +83,15 @@ impl CompileState<'_> {
                             item: AstRefModule::new_unchecked(item),
                             args: None,
                         });
-                        let module = self.elaborate_module(elaboration);
-
-                        module.map_or_else(
-                            |e| e.into(),
-                            |module| TypeOrValue::Value(CompileValue::Module(module)),
-                        )
+                        let ir_module = self.elaborate_module(elaboration)?;
+                        Ok(CompileValue::Module(ir_module))
                     }
-                    Some(_) => {
-                        diags.report_todo(item_module.span, "visit item kind Module with params").into()
-                    }
+                    Some(_) =>
+                        Err(diags.report_todo(item_module.span, "visit item kind Module with params")),
                 }
             }
-            Item::Interface(item) => {
-                diags.report_todo(item.span, "visit item kind Interface").into()
-            }
+            Item::Interface(item) =>
+                Err(diags.report_todo(item.span, "visit item kind Interface")),
         }
     }
 }

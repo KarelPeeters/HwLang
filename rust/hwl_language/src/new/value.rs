@@ -1,5 +1,3 @@
-use crate::data::diagnostic::ErrorGuaranteed;
-use crate::impl_from_error_guaranteed;
 use crate::new::compile::{Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::IrModule;
@@ -7,8 +5,8 @@ use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
 use num_bigint::BigInt;
 
+#[derive(Debug, Clone)]
 pub enum ExpressionValue {
-    Error(ErrorGuaranteed),
     Compile(CompileValue),
 
     // TODO unique SSA ID for type constraining based on ifs?
@@ -26,8 +24,6 @@ pub enum ExpressionValue {
     },
 }
 
-impl_from_error_guaranteed!(ExpressionValue);
-
 #[derive(Debug, Clone)]
 pub enum ScopedValue {
     Compile(CompileValue),
@@ -39,6 +35,9 @@ pub enum ScopedValue {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileValue {
+    Type(Type),
+
+    // TODO undefined should not be allowed for compile-time values, for register initialization
     Undefined,
     Bool(bool),
     Int(BigInt),
@@ -50,9 +49,22 @@ pub enum CompileValue {
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
+impl ExpressionValue {
+    pub fn from_scoped(scoped: ScopedValue) -> Self {
+        match scoped {
+            ScopedValue::Compile(value) => ExpressionValue::Compile(value),
+            ScopedValue::Port(port) => ExpressionValue::Port(port),
+            ScopedValue::Wire(wire) => ExpressionValue::Wire(wire),
+            ScopedValue::Register(register) => ExpressionValue::Register(register),
+            ScopedValue::Variable(variable) => ExpressionValue::Variable(variable),
+        }
+    }
+}
+
 impl CompileValue {
     pub fn to_diagnostic_string(&self) -> String {
         match self {
+            CompileValue::Type(ty) => ty.to_diagnostic_string(),
             CompileValue::Undefined => "undefined".to_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
