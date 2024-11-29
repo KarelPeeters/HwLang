@@ -33,9 +33,9 @@ pub enum ReturnType {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum FunctionBody {
-    Expression(Box<Expression>),
-    Enum(/*TODO*/),
-    Struct(/*TODO*/),
+    Type(Box<Expression>),
+    // Enum(/*TODO*/),
+    // Struct(/*TODO*/),
     // TODO add normal functions
 }
 
@@ -142,11 +142,9 @@ impl FunctionValue {
             // run the body
             // TODO add execution limits?
             match &self.body {
-                FunctionBody::Expression(expr) => {
-                    state.eval_expression_as_compile(scope, expr)
+                FunctionBody::Type(expr) => {
+                    state.eval_expression_as_compile(scope, expr, "type body")
                 }
-                FunctionBody::Enum() => Err(diags.report_todo(self.body_span, "generic enum")),
-                FunctionBody::Struct() => Err(diags.report_todo(self.body_span, "generic struct")),
             }
         }).flatten_err()
     }

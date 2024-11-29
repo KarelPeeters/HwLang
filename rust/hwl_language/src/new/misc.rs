@@ -22,6 +22,12 @@ pub enum DomainSignal {
 }
 
 #[derive(Debug, Clone)]
+pub enum PortDomain<V> {
+    Clock,
+    Kind(DomainKind<V>),
+}
+
+#[derive(Debug, Clone)]
 pub enum ValueDomain<V = DomainSignal> {
     // TODO extract error case out?
     Error(ErrorGuaranteed),

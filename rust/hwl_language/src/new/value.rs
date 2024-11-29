@@ -3,10 +3,11 @@ use crate::new::function::FunctionValue;
 use crate::new::ir::IrModule;
 use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
 
 #[derive(Debug, Clone)]
 pub enum ExpressionValue {
+    Undefined,
     Compile(CompileValue),
 
     // TODO unique SSA ID for type constraining based on ifs?
@@ -37,8 +38,6 @@ pub enum ScopedValue {
 pub enum CompileValue {
     Type(Type),
 
-    // TODO undefined should not be allowed for compile-time values, for register initialization
-    Undefined,
     Bool(bool),
     Int(BigInt),
     String(String),
@@ -62,10 +61,29 @@ impl ExpressionValue {
 }
 
 impl CompileValue {
+    pub fn ty(&self) -> Type {
+        match self {
+            CompileValue::Type(_) => Type::Type,
+            CompileValue::Bool(_) => Type::Bool,
+            CompileValue::Int(value) => Type::Int(IntRange {
+                start_inc: Some(value.clone()),
+                end_inc: Some(value.clone()),
+            }),
+            CompileValue::String(_) => Type::String,
+            CompileValue::Array(values) => {
+                let inner = values.iter()
+                    .fold(Type::Undefined, |acc, v| acc.union(&v.ty()));
+                Type::Array(Box::new(inner), BigUint::from(values.len()))
+            }
+            CompileValue::IntRange(_) => Type::Range,
+            CompileValue::Module(_) => Type::Module,
+            CompileValue::Function(_) => Type::Function,
+        }
+    }
+    
     pub fn to_diagnostic_string(&self) -> String {
         match self {
             CompileValue::Type(ty) => ty.to_diagnostic_string(),
-            CompileValue::Undefined => "undefined".to_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
             CompileValue::String(value) => value.clone(),

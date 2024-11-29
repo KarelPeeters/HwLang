@@ -3,11 +3,11 @@ use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
 use crate::new::ir::{IrDesign, IrModule, IrModuleInfo};
-use crate::new::misc::{ScopedEntry, ValueDomain};
-use crate::new::types::Type;
+use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry};
+use crate::new::types::{HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
-use crate::syntax::ast::{Args, Identifier, PortDirection, Spanned};
+use crate::syntax::ast::{Args, DomainKind, Identifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
@@ -162,27 +162,32 @@ pub struct ModuleElaborationInfo {
     pub args: Option<Vec<CompileValue>>,
 }
 
-// TODO should a register-marked port count as a register or a port?
 #[derive(Debug)]
 pub struct PortInfo {
     pub def_id_span: Span,
-    pub direction: PortDirection,
-    pub domain: ValueDomain,
-    pub ty: Type,
+    pub direction: Spanned<PortDirection>,
+    pub domain: Spanned<PortDomain<DomainSignal>>,
+    pub ty: Spanned<HardwareType>,
 }
 
 #[derive(Debug)]
 pub struct WireInfo {
     pub def_id_span: Span,
-    pub domain: ValueDomain,
-    pub ty: Type,
+    pub domain: Spanned<DomainKind<DomainSignal>>,
+    pub ty: Spanned<HardwareType>,
+}
+
+#[derive(Debug)]
+pub enum MaybeUndefined<T> {
+    Defined(T),
+    Undefined,
 }
 
 #[derive(Debug)]
 pub struct RegisterInfo {
     pub def_id_span: Span,
-    pub domain: ValueDomain,
-    pub ty: Type,
+    pub domain: SyncDomain<DomainSignal>,
+    pub ty: Spanned<HardwareType>,
 }
 
 #[derive(Debug)]

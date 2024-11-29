@@ -80,6 +80,13 @@ pub fn result_pair<A, B, E>(left: Result<A, E>, right: Result<B, E>) -> Result<(
     }
 }
 
+pub fn result_triple<A, B, C, E>(a: Result<A, E>, b: Result<B, E>, c: Result<C, E>) -> Result<(A, B, C), E> {
+    match (a, b, c) {
+        (Ok(a), Ok(b), Ok(c)) => Ok((a, b, c)),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+    }
+}
+
 /// Variant of write! that only works for strings, and doesn't return a spurious error.
 #[macro_export]
 macro_rules! swrite {

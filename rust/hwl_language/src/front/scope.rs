@@ -188,7 +188,7 @@ impl ScopeInfo {
             scopes[parent].find_impl(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis), initial_scope_span)
         } else {
             // TODO add fuzzy-matched suggestions as info
-            // TODO insert identifier into the current scope to sureness downstream errors
+            // TODO insert identifier into the current scope to suppress downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
                 .add_info(Span::empty_at(initial_scope_span.start), "searched in the scope starting here, and its parents")
@@ -224,7 +224,7 @@ impl ScopeInfo {
 
             Ok(ScopeFound { defining_span: value_span, value })
         } else {
-            // TODO insert identifier into the current scope to sureness downstream errors
+            // TODO insert identifier into the current scope to suppress downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id))
                 .add_info(Span::empty_at(self.span.start), "searched in the scope starting here")
                 .finish();

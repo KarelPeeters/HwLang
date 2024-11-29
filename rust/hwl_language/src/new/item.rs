@@ -1,5 +1,6 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::{AstRefItem, AstRefModule};
+use crate::front::scope::Scope;
 use crate::new::compile::{CompileState, ElaborationStackEntry, ModuleElaborationInfo};
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::value::CompileValue;
@@ -21,6 +22,25 @@ impl CompileState<'_> {
         }
     }
 
+    pub fn const_eval_and_check<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
+        let ConstDeclaration { span: _, vis: _, id: _, ty, value } = decl;
+
+        let ty = ty.as_ref()
+            .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, ty)? }))
+            .transpose();
+
+        let value_eval = self.eval_expression_as_compile(scope, value, "const value")?;
+        let ty = ty?;
+
+        // check type
+        if let Some(ty) = ty {
+            let value_eval_spanned = Spanned { span: value.span, inner: &value_eval };
+            self.check_type_contains_compile_value(decl.span, ty.as_ref(), value_eval_spanned)?;
+        };
+
+        Ok(value_eval)
+    }
+
     fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
         let file_scope = self.file_scope(item.file())?;
@@ -33,31 +53,7 @@ impl CompileState<'_> {
                     "import items should have been resolved in a separate pass already",
                 ))
             }
-            Item::Const(item_inner) => {
-                let ConstDeclaration { span: _, vis: _, id: _, ty, value } = item_inner;
-
-                let ty = ty.as_ref()
-                    .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(file_scope, ty)? }))
-                    .transpose();
-
-                let value_eval = self.eval_expression_as_compile(file_scope, value)?;
-                let ty = ty?;
-
-                // check type
-                if let Some(ty) = ty {
-                    if !ty.inner.contains_value(&value_eval) {
-                        // TODO common type diagnostic formatting
-                        let diag = Diagnostic::new("const value does not fit in type")
-                            .add_error(item_inner.span, "const value does not fit in type")
-                            .add_info(ty.span, format!("type `{}` defined here", ty.inner.to_diagnostic_string()))
-                            .add_info(value.span, format!("value `{}` defined here", value_eval.to_diagnostic_string()))
-                            .finish();
-                        return Err(diags.report(diag));
-                    }
-                };
-
-                Ok(value_eval)
-            }
+            Item::Const(item_inner) => self.const_eval_and_check(file_scope, item_inner),
             Item::Type(item_inner) => {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item_inner;
                 match params {
@@ -69,7 +65,7 @@ impl CompileState<'_> {
                             params: params.clone(),
                             ret_ty: ReturnType::Type,
                             body_span: inner.span,
-                            body: FunctionBody::Expression(inner.clone()),
+                            body: FunctionBody::Type(inner.clone()),
                         };
                         Ok(CompileValue::Function(func))
                     }

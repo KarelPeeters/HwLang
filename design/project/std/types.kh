@@ -2,7 +2,6 @@
 
 // Basic types
 pub type any = __builtin("type", "any");
-pub const undefined = __builtin("value", "undefined");
 
 // TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");

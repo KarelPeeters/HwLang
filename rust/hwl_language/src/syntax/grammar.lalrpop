@@ -47,6 +47,7 @@ extern {
         "continue" => TokenType::Continue,
         "true" => TokenType::True,
         "false" => TokenType::False,
+        "undefined" => TokenType::Undefined,
         "if" => TokenType::If,
         "else" => TokenType::Else,
         "loop" => TokenType::Loop,
@@ -496,6 +497,7 @@ ExprLevelAtomic: ExpressionKind = {
     // literals
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
+    "undefined" => ExpressionKind::Undefined,
     <string:TokenIntPatternHexadecimal>
         => ExpressionKind::IntPattern(IntPattern::Hex(string[2..].to_owned())),
     <string:TokenIntPatternBinary>

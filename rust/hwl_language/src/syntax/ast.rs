@@ -389,6 +389,7 @@ pub type Expression = Spanned<ExpressionKind>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
+    Undefined,
 
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
@@ -568,7 +569,7 @@ pub enum InterfaceDirection {
     Out,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,

@@ -374,6 +374,7 @@ declare_tokens! {
         Continue("continue", TC::Keyword, TP::Normal),
         True("true", TC::Keyword, TP::Normal),
         False("false", TC::Keyword, TP::Normal),
+        Undefined("undefined", TC::Keyword, TP::Normal),
         If("if", TC::Keyword, TP::Normal),
         Else("else", TC::Keyword, TP::Normal),
         Loop("loop", TC::Keyword, TP::Normal),

@@ -1,4 +1,4 @@
-import std.types.[bool, uint, int_range, natural, any, undefined];
+import std.types.[bool, uint, int_range, natural, any];
 
 //import spi_master.spi_master;
 
@@ -10,7 +10,21 @@ const A: uint = 5;
 pub module top ports(
     clk: in clock,
     rst: in async bool,
+
+    y: out sync(clk, rst) bool,
 ) body {
+    const c: bool = false;
+    reg s: sync(clk, rst) bool = undefined;
+    reg out y = false;
+    wire w0: async bool;
+    wire w1: async bool = true;
+
+    clocked(clk, rst) {
+        s = !s;
+        y = s;
+        w = false;
+    }
+
 //    instance spi_master generics(packet_length=8) ports(
 //        .clk(clk),
 //        .rst(rst),

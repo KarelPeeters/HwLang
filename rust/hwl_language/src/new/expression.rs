@@ -1,8 +1,8 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::{CompileState, ElaborationStackEntry};
+use crate::new::compile::{CompileState, ElaborationStackEntry, MaybeUndefined};
 use crate::new::misc::{DomainSignal, ScopedEntry};
-use crate::new::types::{IntRange, Type};
+use crate::new::types::{HardwareType, IntRange, Type};
 use crate::new::value::{CompileValue, ExpressionValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain, UnaryOp};
@@ -17,6 +17,8 @@ impl CompileState<'_> {
         match &expr.inner {
             ExpressionKind::Dummy =>
                 Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
+            ExpressionKind::Undefined =>
+                Ok(ExpressionValue::Undefined),
             ExpressionKind::Wrapped(inner) =>
                 self.eval_expression(scope, inner),
             ExpressionKind::Id(id) => {
@@ -55,8 +57,10 @@ impl CompileState<'_> {
             ExpressionKind::RangeLiteral(literal) => {
                 let &ast::RangeLiteral { end_inclusive, ref start, ref end } = literal;
 
-                let start = start.as_ref().map(|start| self.eval_expression_as_compile(scope, start));
-                let end = end.as_ref().map(|end| self.eval_expression_as_compile(scope, end));
+                let start = start.as_ref()
+                    .map(|start| self.eval_expression_as_compile(scope, start, "range start"));
+                let end = end.as_ref()
+                    .map(|end| self.eval_expression_as_compile(scope, end, "range end"));
 
                 // TODO reduce code duplication
                 let start_inc = match start.transpose() {
@@ -109,9 +113,9 @@ impl CompileState<'_> {
             ExpressionKind::DotIntIndex(_, _) => Err(self.diags.report_todo(expr.span, "expr kind DotIntIndex")),
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
-                let target = self.eval_expression_as_compile(scope, target)?;
+                let target = self.eval_expression_as_compile(scope, target, "call target")?;
                 // TODO allow runtime expressions in arguments
-                let args = args.map_inner(|arg| self.eval_expression_as_compile(scope, arg));
+                let args = args.map_inner(|arg| self.eval_expression_as_compile(scope, arg, "call argument"));
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
@@ -143,7 +147,7 @@ impl CompileState<'_> {
     fn eval_builtin(&mut self, scope: Scope, expr_span: Span, args: &Spanned<Vec<Expression>>) -> Result<ExpressionValue, ErrorGuaranteed> {
         // evaluate args
         let args_eval: Vec<CompileValue> = args.inner.iter()
-            .map(|arg| self.eval_expression_as_compile(scope, arg))
+            .map(|arg| self.eval_expression_as_compile(scope, arg, "builtin argument"))
             .try_collect()?;
 
         if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
@@ -158,16 +162,12 @@ impl CompileState<'_> {
                         return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Int(range.clone()))));
                     }
                 }
-
-                ("value", "undefined", []) =>
-                    return Ok(ExpressionValue::Compile(CompileValue::Undefined)),
-
                 // fallthrough into err
                 _ => {}
             }
         }
 
-        let diag = Diagnostic::new("invalid __builtin args")
+        let diag = Diagnostic::new("invalid builtin arguments")
             .snippet(expr_span)
             .add_error(args.span, "invalid args")
             .finish()
@@ -175,15 +175,29 @@ impl CompileState<'_> {
         Err(self.diags.report(diag))
     }
 
-    // TODO add reason, maybe even span
-    pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn eval_expression_as_compile_or_undefined(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<MaybeUndefined<CompileValue>, ErrorGuaranteed> {
         match self.eval_expression(scope, expr)? {
-            ExpressionValue::Compile(c) => Ok(c),
-            _ => Err(self.diags.report_simple("expected compile-time constant", expr.span, "got runtime expression")),
+            ExpressionValue::Undefined => Ok(MaybeUndefined::Undefined),
+            ExpressionValue::Compile(c) => Ok(MaybeUndefined::Defined(c)),
+            _ => Err(self.diags.report_simple(
+                format!("{} must be compile-time constant or undefined", reason),
+                expr.span,
+                "got expression",
+            )),
         }
     }
 
-    // TODO add reason, maybe even span
+    pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<CompileValue, ErrorGuaranteed> {
+        match self.eval_expression(scope, expr)? {
+            ExpressionValue::Compile(c) => Ok(c),
+            _ => Err(self.diags.report_simple(
+                format!("{} must be compile-time constant", reason),
+                expr.span,
+                "got expression",
+            )),
+        }
+    }
+
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
         // TODO unify this message with the one when a normal type-check fails
         match self.eval_expression(scope, expr)? {
@@ -192,13 +206,22 @@ impl CompileState<'_> {
         }
     }
 
-    // TODO add reason, maybe even span
+    pub fn eval_expression_as_ty_hardware(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<HardwareType, ErrorGuaranteed> {
+        let ty = self.eval_expression_as_ty(scope, expr)?;
+        ty.as_hardware_type().ok_or_else(|| {
+            self.diags.report_simple(
+                format!("{} type must be representable in hardware", reason),
+                expr.span,
+                format!("got `{}`", ty.to_diagnostic_string()),
+            )
+        })
+    }
+
     pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
         let _ = (scope, expr);
         self.diags.report_todo(expr.span, "assignment target expression");
     }
 
-    // TODO add reason, maybe even span
     pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> Result<DomainSignal, ErrorGuaranteed> {
         // TODO expand to allow general expressions (which then probably create implicit signals)?
 
@@ -215,21 +238,27 @@ impl CompileState<'_> {
             ExpressionValue::Port(port) => Ok(DomainSignal::Port(port)),
             ExpressionValue::Wire(wire) => Ok(DomainSignal::Wire(wire)),
             ExpressionValue::Register(reg) => Ok(DomainSignal::Register(reg)),
+
+            ExpressionValue::Undefined => Err(build_err("undefined")),
             ExpressionValue::Variable(_) => Err(build_err("variable")),
             ExpressionValue::Compile(_) => Err(build_err("compile-time value")),
             ExpressionValue::Expression { .. } => Err(build_err("expression")),
         }
     }
 
+    pub fn eval_domain_sync(&mut self, scope: Scope, domain: &SyncDomain<Box<Expression>>) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
+        Ok(SyncDomain {
+            clock: self.eval_expression_as_domain_signal(scope, &domain.clock)?,
+            reset: self.eval_expression_as_domain_signal(scope, &domain.reset)?,
+        })
+    }
+
     pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> Result<DomainKind<DomainSignal>, ErrorGuaranteed> {
         match domain {
-            DomainKind::Async => Ok(DomainKind::Async),
-            DomainKind::Sync(domain) => {
-                Ok(DomainKind::Sync(SyncDomain {
-                    clock: self.eval_expression_as_domain_signal(scope, &domain.clock)?,
-                    reset: self.eval_expression_as_domain_signal(scope, &domain.reset)?,
-                }))
-            }
+            DomainKind::Async =>
+                Ok(DomainKind::Async),
+            DomainKind::Sync(domain) =>
+                self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
         }
     }
 }
