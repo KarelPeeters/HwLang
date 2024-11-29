@@ -18,7 +18,7 @@ pub enum ExpressionValue {
     Variable(Variable),
 
     // TODO how to represent read/write? should write targets just be a special case distinct from all other expression evaluation?
-    RuntimeExpression {
+    Expression {
         ty: Type,
         domain: ValueDomain,
     },

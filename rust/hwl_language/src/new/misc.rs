@@ -1,5 +1,6 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::AstRefItem;
+use crate::new::compile::{Port, Register, Wire};
 use crate::new::value::ScopedValue;
 use crate::syntax::ast::{DomainKind, SyncDomain};
 
@@ -13,11 +14,10 @@ pub enum ScopedEntry {
 // TODO expand to all possible values again
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DomainSignal {
-    Error(ErrorGuaranteed),
-    Compile(bool),
-    Port(/*TODO*/),
-    Wire(/*TODO*/),
-    Register(/*TODO*/),
+    Port(Port),
+    Wire(Wire),
+    Register(Register),
+    // TODO make invert a common struct field instead of a boxed variant?
     Invert(Box<DomainSignal>),
 }
 

@@ -9,6 +9,7 @@ use crate::syntax::ast;
 use crate::syntax::ast::{Block, GenericParameter, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortKind, Spanned};
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::ResultExt;
 use itertools::zip_eq;
 
 impl CompileState<'_> {
@@ -73,12 +74,13 @@ impl CompileState<'_> {
                     // eval kind
                     let (domain, ty_eval, ty_span) = match &kind.inner {
                         PortKind::Clock => (
-                            ValueDomain::Clock,
+                            Ok(ValueDomain::Clock),
                             Ok(Type::Clock),
                             kind.span,
                         ),
                         PortKind::Normal { domain, ty } => (
-                            ValueDomain::from_domain_kind(self.eval_domain(ports_scope, &domain.inner)),
+                            self.eval_domain(ports_scope, &domain.inner)
+                                .map(ValueDomain::from_domain_kind),
                             self.eval_expression_as_ty(ports_scope, ty),
                             ty.span,
                         ),
@@ -90,7 +92,7 @@ impl CompileState<'_> {
                         let port = self.ports.push(PortInfo {
                             def_id_span: id.span,
                             direction: direction.inner,
-                            domain,
+                            domain: domain?,
                             ty,
                         });
                         Ok(ScopedEntry::Direct(ScopedValue::Port(port)))
@@ -101,7 +103,8 @@ impl CompileState<'_> {
                 ModulePortItem::Block(port_item) => {
                     let ModulePortBlock { span: _, domain, ports } = port_item;
 
-                    let domain = ValueDomain::from_domain_kind(self.eval_domain(ports_scope, &domain.inner));
+                    let domain = self.eval_domain(ports_scope, &domain.inner)
+                        .map(ValueDomain::from_domain_kind);
 
                     for port in ports {
                         let ModulePortInBlock { span: _, id, direction, ty } = port;
@@ -115,7 +118,7 @@ impl CompileState<'_> {
                             let port = self.ports.push(PortInfo {
                                 def_id_span: id.span,
                                 direction: direction.inner,
-                                domain: domain.clone(),
+                                domain: domain.as_ref_ok()?.clone(),
                                 ty,
                             });
                             Ok(ScopedEntry::Direct(ScopedValue::Port(port)))

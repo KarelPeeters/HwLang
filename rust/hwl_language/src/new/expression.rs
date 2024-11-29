@@ -5,7 +5,7 @@ use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{IntRange, Type};
 use crate::new::value::{CompileValue, ExpressionValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain};
+use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::ResultDoubleExt;
 use itertools::Itertools;
@@ -199,19 +199,36 @@ impl CompileState<'_> {
     }
 
     // TODO add reason, maybe even span
-    pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> DomainSignal {
-        let _ = (scope, expr);
-        DomainSignal::Error(self.diags.report_todo(expr.span, "domain signal expression"))
+    pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> Result<DomainSignal, ErrorGuaranteed> {
+        // TODO expand to allow general expressions (which then probably create implicit signals)?
+
+        // special support for inversion, otherwise it would fail as an expression
+        if let ExpressionKind::UnaryOp(UnaryOp::Not, inner) = &expr.inner {
+            let inner = self.eval_expression_as_domain_signal(scope, inner)?;
+            return Ok(DomainSignal::Invert(Box::new(inner)));
+        }
+
+        let build_err = |actual: &str| {
+            self.diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
+        };
+        match self.eval_expression(scope, expr)? {
+            ExpressionValue::Port(port) => Ok(DomainSignal::Port(port)),
+            ExpressionValue::Wire(wire) => Ok(DomainSignal::Wire(wire)),
+            ExpressionValue::Register(reg) => Ok(DomainSignal::Register(reg)),
+            ExpressionValue::Variable(_) => Err(build_err("variable")),
+            ExpressionValue::Compile(_) => Err(build_err("compile-time value")),
+            ExpressionValue::Expression { .. } => Err(build_err("expression")),
+        }
     }
 
-    pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> DomainKind<DomainSignal> {
+    pub fn eval_domain(&mut self, scope: Scope, domain: &DomainKind<Box<Expression>>) -> Result<DomainKind<DomainSignal>, ErrorGuaranteed> {
         match domain {
-            DomainKind::Async => DomainKind::Async,
+            DomainKind::Async => Ok(DomainKind::Async),
             DomainKind::Sync(domain) => {
-                DomainKind::Sync(SyncDomain {
-                    clock: self.eval_expression_as_domain_signal(scope, &domain.clock),
-                    reset: self.eval_expression_as_domain_signal(scope, &domain.reset),
-                })
+                Ok(DomainKind::Sync(SyncDomain {
+                    clock: self.eval_expression_as_domain_signal(scope, &domain.clock)?,
+                    reset: self.eval_expression_as_domain_signal(scope, &domain.reset)?,
+                }))
             }
         }
     }
