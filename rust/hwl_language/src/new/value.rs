@@ -1,41 +1,31 @@
-use crate::new::compile::{Port, Register, Variable, Wire};
+use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::IrModule;
-use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
 use num_bigint::{BigInt, BigUint};
 
+// TODO rename
 #[derive(Debug, Clone)]
-pub enum ExpressionValue {
-    Undefined,
+pub enum ExpressionValue<T> {
     Compile(CompileValue),
-
-    // TODO unique SSA ID for type constraining based on ifs?
-    Port(Port),
-    Wire(Wire),
-    Register(Register),
-    // TODO separate compile-time and runtime variables in syntax?
-    //   maybe rename runtime variables to be wires?
-    Variable(Variable),
-
-    // TODO how to represent read/write? should write targets just be a special case distinct from all other expression evaluation?
-    Expression {
-        ty: Type,
-        domain: ValueDomain,
-    },
+    // TODO rename
+    Other(T),
 }
 
-#[derive(Debug, Clone)]
-pub enum ScopedValue {
-    Compile(CompileValue),
+#[derive(Debug, Copy, Clone)]
+pub enum NamedValue {
+    Constant(Constant),
+    Parameter(Parameter),
+    Variable(Variable),
+
     Port(Port),
     Wire(Wire),
     Register(Register),
-    Variable(Variable),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileValue {
+    Undefined,
     Type(Type),
 
     Bool(bool),
@@ -48,21 +38,18 @@ pub enum CompileValue {
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
-impl ExpressionValue {
-    pub fn from_scoped(scoped: ScopedValue) -> Self {
-        match scoped {
-            ScopedValue::Compile(value) => ExpressionValue::Compile(value),
-            ScopedValue::Port(port) => ExpressionValue::Port(port),
-            ScopedValue::Wire(wire) => ExpressionValue::Wire(wire),
-            ScopedValue::Register(register) => ExpressionValue::Register(register),
-            ScopedValue::Variable(variable) => ExpressionValue::Variable(variable),
-        }
-    }
+#[derive(Debug, Clone)]
+pub enum AssignmentTarget {
+    Port(Port),
+    Wire(Wire),
+    Register(Register),
+    Variable(Variable),
 }
 
 impl CompileValue {
     pub fn ty(&self) -> Type {
         match self {
+            CompileValue::Undefined => Type::Undefined,
             CompileValue::Type(_) => Type::Type,
             CompileValue::Bool(_) => Type::Bool,
             CompileValue::Int(value) => Type::Int(IntRange {
@@ -80,9 +67,10 @@ impl CompileValue {
             CompileValue::Function(_) => Type::Function,
         }
     }
-    
+
     pub fn to_diagnostic_string(&self) -> String {
         match self {
+            CompileValue::Undefined => "undefined".to_string(),
             CompileValue::Type(ty) => ty.to_diagnostic_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),

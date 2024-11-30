@@ -84,9 +84,11 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         parsed,
         scopes,
         file_scopes: map_file_scopes,
+        constants: Arena::default(),
+        parameters: Arena::default(),
+        registers: Arena::default(),
         ports: Arena::default(),
         wires: Arena::default(),
-        registers: Arena::default(),
         variables: Arena::default(),
         ir_modules: Arena::default(),
         elaborated_modules: ArenaSet::default(),
@@ -123,10 +125,12 @@ pub struct CompileState<'a> {
     pub scopes: Scopes,
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
+    pub constants: Arena<Constant, ConstantInfo>,
+    pub parameters: Arena<Parameter, ConstantInfo>,
+    pub variables: Arena<Variable, VariableInfo>,
     pub ports: Arena<Port, PortInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
-    pub variables: Arena<Variable, VariableInfo>,
 
     pub ir_modules: Arena<IrModule, IrModuleInfo>,
     pub elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
@@ -151,15 +155,29 @@ pub enum ElaborationStackEntry {
 }
 
 new_index_type!(pub ModuleElaboration);
+new_index_type!(pub Constant);
+new_index_type!(pub Parameter);
+new_index_type!(pub Variable);
 new_index_type!(pub Port);
 new_index_type!(pub Wire);
 new_index_type!(pub Register);
-new_index_type!(pub Variable);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationInfo {
     pub item: AstRefModule,
     pub args: Option<Vec<CompileValue>>,
+}
+
+#[derive(Debug)]
+pub struct ConstantInfo {
+    pub def_id_span: Span,
+    pub value: CompileValue,
+}
+
+#[derive(Debug)]
+pub struct VariableInfo {
+    pub def_id_span: Span,
+    pub ty: Type,
 }
 
 #[derive(Debug)]
@@ -178,22 +196,10 @@ pub struct WireInfo {
 }
 
 #[derive(Debug)]
-pub enum MaybeUndefined<T> {
-    Defined(T),
-    Undefined,
-}
-
-#[derive(Debug)]
 pub struct RegisterInfo {
     pub def_id_span: Span,
     pub domain: SyncDomain<DomainSignal>,
     pub ty: Spanned<HardwareType>,
-}
-
-#[derive(Debug)]
-pub struct VariableInfo {
-    pub def_id_span: Span,
-    pub ty: Type,
 }
 
 fn add_import_to_scope(

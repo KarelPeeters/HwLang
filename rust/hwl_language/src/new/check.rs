@@ -1,24 +1,32 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::new::compile::CompileState;
 use crate::new::types::Type;
-use crate::new::value::{CompileValue, ExpressionValue};
+use crate::new::value::{CompileValue, ExpressionValue, NamedValue};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 
 impl CompileState<'_> {
-    pub fn type_of_expression_value(&self, value: &ExpressionValue) -> Type {
+    pub fn type_of_expression_value(&self, value: &ExpressionValue<NamedValue>) -> Type {
         match value {
-            ExpressionValue::Undefined => Type::Undefined,
             ExpressionValue::Compile(c) => c.ty(),
-            &ExpressionValue::Port(port) => self.ports[port].ty.inner.as_type(),
-            &ExpressionValue::Wire(wire) => self.wires[wire].ty.inner.as_type(),
-            &ExpressionValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
-            &ExpressionValue::Variable(var) => self.variables[var].ty.clone(),
-            ExpressionValue::Expression { ty, domain: _ } => ty.clone()
+            &ExpressionValue::Other(n) => self.type_of_named_value(n),
         }
     }
 
-    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&ExpressionValue>) -> Result<(), ErrorGuaranteed> {
+    // TODO this function is a bit weird, usually you'd just ask the type _after_ context evaluation
+    pub fn type_of_named_value(&self, value: NamedValue) -> Type {
+        match value {
+            NamedValue::Constant(cst) => self.constants[cst].value.ty(),
+            NamedValue::Parameter(param) => self.parameters[param].value.ty(),
+            // TODO for compile-time variables, just look at the value itself
+            NamedValue::Variable(var) => self.variables[var].ty.clone(),
+            NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
+            NamedValue::Wire(wire) => self.wires[wire].ty.inner.as_type(),
+            NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
+        }
+    }
+
+    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&ExpressionValue<NamedValue>>) -> Result<(), ErrorGuaranteed> {
         let value_ty = self.type_of_expression_value(&value.inner);
         if target_ty.inner.contains_type(&value_ty) {
             Ok(())

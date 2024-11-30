@@ -1,9 +1,9 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::parsed::AstRefItem;
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::{CompileState, ElaborationStackEntry};
+use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::misc::ScopedEntry;
-use crate::new::value::{CompileValue, ScopedValue};
+use crate::new::value::{CompileValue, NamedValue};
 use crate::syntax::ast::{Arg, Args, Expression, GenericParameter, Identifier, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
@@ -76,8 +76,8 @@ impl FunctionValue {
                 (None, None) => {
                     // positional arg
                     match param_ids.get_index(args_passed.len()) {
-                        Some((_, param_id)) => {
-                            args_passed.insert_first(param_id.string.clone(), (arg_span, arg_value));
+                        Some((_, &param_id)) => {
+                            args_passed.insert_first(param_id.string.clone(), (param_id, arg_span, arg_value));
                         }
                         None => {
                             let diag = Diagnostic::new("too many arguments")
@@ -93,8 +93,8 @@ impl FunctionValue {
                     match args_passed.get(&name.string) {
                         None => {
                             match param_ids.get(name.string.as_str()) {
-                                Some(_) => {
-                                    args_passed.insert(name.string.clone(), (arg_span, arg_value));
+                                Some(&param_id) => {
+                                    args_passed.insert(name.string.clone(), (param_id, arg_span, arg_value));
                                     first_named_span = first_named_span.or(Some(arg_span));
                                 }
                                 None => {
@@ -106,7 +106,7 @@ impl FunctionValue {
                                 }
                             }
                         }
-                        Some(&(prev_span, _)) => {
+                        Some(&(_, prev_span, _)) => {
                             let diag = Diagnostic::new(format!("argument `{}` passed twice", name.string))
                                 .add_info(prev_span, "first passed here")
                                 .add_error(arg.span, "passed again here")
@@ -134,8 +134,12 @@ impl FunctionValue {
             let scope = state.scopes.new_child(self.outer_scope, scope_span, Visibility::Private);
 
             // populate scope with args
-            for (id, (span, value)) in args_passed {
-                let entry = ScopedEntry::Direct(ScopedValue::Compile(value.clone()));
+            for (id, (param_id, span, value)) in args_passed {
+                let param = state.parameters.push(ConstantInfo {
+                    def_id_span: param_id.span,
+                    value: value.clone(),
+                });
+                let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
                 state.scopes[scope].declare_already_checked(diags, id, span, Ok(entry))?;
             }
 

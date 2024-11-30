@@ -1,12 +1,12 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::{CompileState, MaybeUndefined, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
+use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::new::ir::IrModuleInfo;
 use crate::new::misc::{PortDomain, ScopedEntry};
 use crate::new::types::HardwareType;
-use crate::new::value::{CompileValue, ScopedValue};
+use crate::new::value::{CompileValue, NamedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, DomainKind, GenericParameter, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, WireDeclaration};
+use crate::syntax::ast::{Block, ClockedBlock, CombinatorialBlock, DomainKind, GenericParameter, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::data::IndexMapExt;
@@ -41,7 +41,11 @@ impl CompileState<'_> {
 
                     let entry = param_ty.and_then(|param_ty| {
                         if param_ty.contains_type(&arg.ty()) {
-                            Ok(ScopedEntry::Direct(ScopedValue::Compile(CompileValue::Type(param_ty))))
+                            let param = self.parameters.push(ConstantInfo {
+                                def_id_span: param.id.span,
+                                value: arg,
+                            });
+                            Ok(ScopedEntry::Direct(NamedValue::Parameter(param)))
                         } else {
                             let e = diags.report_internal_error(
                                 param.ty.span,
@@ -95,7 +99,7 @@ impl CompileState<'_> {
                             domain,
                             ty,
                         });
-                        Ok(ScopedEntry::Direct(ScopedValue::Port(port)))
+                        Ok(ScopedEntry::Direct(NamedValue::Port(port)))
                     });
 
                     self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -122,7 +126,7 @@ impl CompileState<'_> {
                                 domain: domain.clone(),
                                 ty,
                             });
-                            Ok(ScopedEntry::Direct(ScopedValue::Port(port)))
+                            Ok(ScopedEntry::Direct(NamedValue::Port(port)))
                         });
 
                         self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -150,7 +154,13 @@ impl CompileState<'_> {
                 // declarations
                 ModuleStatementKind::ConstDeclaration(decl) => {
                     let entry = self.const_eval_and_check(scope_body, decl)
-                        .map(|value| ScopedEntry::Direct(ScopedValue::Compile(value)));
+                        .map(|value| {
+                            let cst = self.constants.push(ConstantInfo {
+                                def_id_span: decl.id.span(),
+                                value,
+                            });
+                            ScopedEntry::Direct(NamedValue::Constant(cst))
+                        });
                     self.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
@@ -158,13 +168,13 @@ impl CompileState<'_> {
                     let entry = reg.map(|reg_init| {
                         register_initial_values.insert_first(reg_init.reg, reg_init.init);
 
-                        ScopedEntry::Direct(ScopedValue::Register(reg_init.reg))
+                        ScopedEntry::Direct(NamedValue::Register(reg_init.reg))
                     });
                     self.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let wire = self.elaborate_module_declaration_wire(scope_body, decl);
-                    let entry = wire.map(|wire| ScopedEntry::Direct(ScopedValue::Wire(wire)));
+                    let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
                     self.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
@@ -174,7 +184,7 @@ impl CompileState<'_> {
                             register_initial_values.insert_first(reg_init.reg, reg_init.init);
                             port_register_connections.insert_first(port, reg_init.reg);
 
-                            let entry = Ok(ScopedEntry::Direct(ScopedValue::Register(reg_init.reg)));
+                            let entry = Ok(ScopedEntry::Direct(NamedValue::Register(reg_init.reg)));
                             self.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
                         }
                         Err(e) => {
@@ -191,6 +201,8 @@ impl CompileState<'_> {
         }
 
         // second pass: codegen for the actual blocks
+        let mut processes = vec![];
+
         for stmt in statements {
             match &stmt.inner {
                 // declarations, already handled
@@ -199,25 +211,49 @@ impl CompileState<'_> {
                 ModuleStatementKind::WireDeclaration(_) => {}
                 ModuleStatementKind::RegOutPortMarker(_) => {}
                 // non declarations, skip
-                ModuleStatementKind::CombinatorialBlock(_) => throw!(diags.report_todo(stmt.span, "combinatorial block")),
-                ModuleStatementKind::ClockedBlock(_) => throw!(diags.report_todo(stmt.span, "clocked block")),
-                ModuleStatementKind::Instance(_) => throw!(diags.report_todo(stmt.span, "instance")),
+                ModuleStatementKind::CombinatorialBlock(block) => {
+                    let CombinatorialBlock { span: _, span_keyword: _, block } = block;
+                    let block = self.elaborate_ir_block(scope_body, DomainKind::Async, block);
+                    processes.push(block);
+                }
+                ModuleStatementKind::ClockedBlock(block) => {
+                    let ClockedBlock { span: _, span_keyword: _, domain, block } = block;
+
+                    let domain = self.eval_domain_sync(scope_body, &domain.inner);
+                    match domain {
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+
+                    let block = domain.map(|domain| {
+                        self.elaborate_ir_block(scope_body, DomainKind::Sync(domain), block)
+                    });
+
+                    if let Ok(block) = block {
+                        processes.push(block);
+                    }
+                }
+                ModuleStatementKind::Instance(_) => throw!(diags.report_todo(stmt.span, "module instance")),
             }
         }
 
-        // check driver validness
-        throw!(diags.report_internal_error(body.span, "check module drivers"));
-
         let _ = register_initial_values;
         let _ = port_register_connections;
+        let _ = processes;
+
+        // check driver validness
+        // TODO skip if any bad enough errors happened before
+        // TODO implement
 
         // return result
+        // TODO
         // Ok(IrModuleInfo {
         //     ports: Arena::default(),
         //     registers: Arena::default(),
         //     wires: Arena::default(),
         //     processes: vec![],
         // })
+        throw!(diags.report_todo(body.span, "module elaboration"));
     }
 
     fn elaborate_module_declaration_wire(&mut self, scope_body: Scope, decl: &WireDeclaration) -> Result<Wire, ErrorGuaranteed> {
@@ -228,20 +264,27 @@ impl CompileState<'_> {
         // evaluate
         let domain = self.eval_domain(scope_body, &sync.inner);
         let ty = self.eval_expression_as_ty_hardware(scope_body, ty, "wire");
-        let value = value.as_ref()
-            .map(|value| Ok((value.span, self.eval_expression(scope_body, value)?)))
-            .transpose();
+
+        if let Some(value) = value {
+            self.diags.report_todo(value.span, "wire with immediate assignment");
+        }
+
+        // TODO lower value to IR
+        // TODO check value domain
+        // let value = value.as_ref()
+        //     .map(|value| Ok((value.span, self.eval_expression(scope_body, value)?)))
+        //     .transpose();
 
         let domain = domain?;
         let ty = ty?;
-        let value = value?;
+        // let value = value?;
 
         // check type
-        if let Some((value_span, value)) = value {
-            let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
-            let value_spanned = Spanned { span: value_span, inner: &value };
-            self.check_type_contains_value(decl.span, ty_spanned, value_spanned)?;
-        }
+        // if let Some((value_span, value)) = value {
+        //     let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
+        //     let value_spanned = Spanned { span: value_span, inner: &value };
+        //     self.check_type_contains_value(decl.span, ty_spanned, value_spanned)?;
+        // }
 
         // build wire
         let wire = self.wires.push(WireInfo {
@@ -261,21 +304,16 @@ impl CompileState<'_> {
         // evaluate
         let sync = self.eval_domain_sync(scope_body, &sync.inner);
         let ty = self.eval_expression_as_ty_hardware(scope_body, ty, "register");
-        let init = self.eval_expression_as_compile_or_undefined(scope_body, init.as_ref(), "register reset value");
+        let init = self.eval_expression_as_compile(scope_body, init.as_ref(), "register reset value");
 
         let sync = sync?;
         let ty = ty?;
 
         // check type
         let init = init.and_then(|init| {
-            match &init {
-                MaybeUndefined::Undefined => {}
-                MaybeUndefined::Defined(init) => {
-                    let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
-                    let init_spanned = Spanned { span: init_span, inner: init };
-                    self.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned)?;
-                }
-            }
+            let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
+            let init_spanned = Spanned { span: init_span, inner: &init };
+            self.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned)?;
             Ok(init)
         });
 
@@ -294,11 +332,11 @@ impl CompileState<'_> {
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
         let port = self.scopes[scope_ports].find_immediate_str(self.diags, &id.string, Visibility::Private)?;
         let port = match port.value {
-            &ScopedEntry::Direct(ScopedValue::Port(port)) => Ok(port),
+            &ScopedEntry::Direct(NamedValue::Port(port)) => Ok(port),
             _ => Err(self.diags.report_internal_error(id.span, "found non-port in port scope")),
         };
 
-        let init = self.eval_expression_as_compile_or_undefined(scope_body, init, "register reset value")
+        let init = self.eval_expression_as_compile(scope_body, init, "register reset value")
             .map(|i| Spanned { span: init.span, inner: i });
         let port = port?;
 
@@ -339,14 +377,8 @@ impl CompileState<'_> {
 
         // check type
         let init = init.and_then(|init| {
-            match &init.inner {
-                MaybeUndefined::Undefined => {}
-                MaybeUndefined::Defined(init_compile) => {
-                    let ty_spanned = Spanned { span: port_info.ty.span, inner: &port_info.ty.inner.as_type() };
-                    let init_spanned = Spanned { span: init.span, inner: init_compile };
-                    self.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned)?;
-                }
-            }
+            let ty_spanned = Spanned { span: port_info.ty.span, inner: &port_info.ty.inner.as_type() };
+            self.check_type_contains_compile_value(decl.span, ty_spanned, init.as_ref())?;
             Ok(init.inner)
         });
 
@@ -363,5 +395,5 @@ impl CompileState<'_> {
 #[derive(Debug)]
 struct RegisterInit {
     reg: Register,
-    init: Result<MaybeUndefined<CompileValue>, ErrorGuaranteed>,
+    init: Result<CompileValue, ErrorGuaranteed>,
 }

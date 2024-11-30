@@ -1,36 +1,90 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::{CompileState, ElaborationStackEntry, MaybeUndefined};
+use crate::new::compile::{CompileState, ElaborationStackEntry};
 use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{HardwareType, IntRange, Type};
-use crate::new::value::{CompileValue, ExpressionValue};
+use crate::new::value::{AssignmentTarget, CompileValue, ExpressionValue, NamedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, IntPattern, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, Identifier, IntPattern, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
-use crate::util::ResultDoubleExt;
+use crate::util::{Never, ResultDoubleExt};
 use itertools::Itertools;
 use num_bigint::BigInt;
 use std::convert::identity;
 
+pub trait ExpressionContext {
+    type T;
+    fn eval_scoped(self, s: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed>;
+}
+
+pub struct PassNamedContext;
+pub struct CompileNamedContext<'s> {
+    pub reason: &'s str,
+}
+
+impl ExpressionContext for PassNamedContext {
+    type T = NamedValue;
+    fn eval_scoped(self, _: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed> {
+        Ok(ExpressionValue::Other(n.inner))
+    }
+}
+
+impl ExpressionContext for CompileNamedContext<'_> {
+    type T = Never;
+    fn eval_scoped(self, s: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed> {
+        let build_err = |actual: &str| {
+            s.diags.report_simple(
+                format!("{} must be compile-time value", self.reason),
+                n.span,
+                format!("got `{}`", actual),
+            )
+        };
+
+        match n.inner {
+            NamedValue::Constant(c) => Ok(ExpressionValue::Compile(s.constants[c].value.clone())),
+            NamedValue::Parameter(p) => Ok(ExpressionValue::Compile(s.parameters[p].value.clone())),
+            NamedValue::Variable(_) => Err(s.diags.report_todo(n.span, "variable in compile-time context")),
+            NamedValue::Port(_) => Err(build_err("port")),
+            NamedValue::Wire(_) => Err(build_err("wire")),
+            NamedValue::Register(_) => Err(build_err("register")),
+        }
+    }
+}
+
 impl CompileState<'_> {
-    pub fn eval_expression(&mut self, scope: Scope, expr: &Expression) -> Result<ExpressionValue, ErrorGuaranteed> {
+    pub fn eval_id(&mut self, scope: Scope, id: &Identifier) -> Result<Spanned<ExpressionValue<NamedValue>>, ErrorGuaranteed> {
+        let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
+        let def_span = found.defining_span;
+        let result = match found.value {
+            &ScopedEntry::Item(item) =>
+                ExpressionValue::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
+            &ScopedEntry::Direct(value) =>
+                ExpressionValue::Other(value),
+        };
+        Ok(Spanned { span: def_span, inner: result })
+    }
+
+    // TODO better handling of scoped, in particular params and variables:
+    //   * params should always be converted to compile-time constants
+    //   * variables should be turned into compile-time constants or ir values depending on the context
+    //   * these need to happen early enough that followup expression can handle them (eg.
+    pub fn eval_expression<C: ExpressionContext>(&mut self, ctx: C, scope: Scope, expr: &Expression) -> Result<ExpressionValue<C::T>, ErrorGuaranteed> {
         match &expr.inner {
             ExpressionKind::Dummy =>
                 Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
             ExpressionKind::Undefined =>
-                Ok(ExpressionValue::Undefined),
+                Ok(ExpressionValue::Compile(CompileValue::Undefined)),
             ExpressionKind::Wrapped(inner) =>
-                self.eval_expression(scope, inner),
+                self.eval_expression(ctx, scope, inner),
             ExpressionKind::Id(id) => {
-                match self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?.value {
-                    &ScopedEntry::Item(item) =>
-                        Ok(ExpressionValue::Compile(self.eval_item_as_ty_or_value(item)?.clone())),
-                    ScopedEntry::Direct(scoped) =>
-                        Ok(ExpressionValue::from_scoped(scoped.clone()))
+                let eval = self.eval_id(scope, id)?;
+                match eval.inner {
+                    ExpressionValue::Compile(c) => Ok(ExpressionValue::Compile(c)),
+                    ExpressionValue::Other(s) => ctx.eval_scoped(self, Spanned { span: eval.span, inner: s }),
                 }
             }
-
-            ExpressionKind::TypeFunc(_, _) => Err(self.diags.report_todo(expr.span, "expr kind TypeFunc")),
+            ExpressionKind::TypeFunc(_, _) =>
+                Err(self.diags.report_todo(expr.span, "expr kind TypeFunc")),
             ExpressionKind::IntPattern(ref pattern) =>
                 match pattern {
                     IntPattern::Hex(_) =>
@@ -139,12 +193,13 @@ impl CompileState<'_> {
                         .map(ExpressionValue::Compile)
                 }).flatten_err()
             }
-            ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, expr.span, args),
+            ExpressionKind::Builtin(ref args) =>
+                Ok(ExpressionValue::Compile(self.eval_builtin(scope, expr.span, args)?)),
         }
     }
 
     // TODO replace builtin+import+prelude with keywords?
-    fn eval_builtin(&mut self, scope: Scope, expr_span: Span, args: &Spanned<Vec<Expression>>) -> Result<ExpressionValue, ErrorGuaranteed> {
+    fn eval_builtin(&mut self, scope: Scope, expr_span: Span, args: &Spanned<Vec<Expression>>) -> Result<CompileValue, ErrorGuaranteed> {
         // evaluate args
         let args_eval: Vec<CompileValue> = args.inner.iter()
             .map(|arg| self.eval_expression_as_compile(scope, arg, "builtin argument"))
@@ -154,12 +209,12 @@ impl CompileState<'_> {
             let rest = &args_eval[2..];
             match (a0.as_str(), a1.as_str(), rest) {
                 ("type", "any", []) =>
-                    return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Any))),
+                    return Ok(CompileValue::Type(Type::Any)),
                 ("type", "bool", []) =>
-                    return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Bool))),
+                    return Ok(CompileValue::Type(Type::Bool)),
                 ("type", "int_range", [range]) => {
                     if let CompileValue::IntRange(range) = range {
-                        return Ok(ExpressionValue::Compile(CompileValue::Type(Type::Int(range.clone()))));
+                        return Ok(CompileValue::Type(Type::Int(range.clone())));
                     }
                 }
                 // fallthrough into err
@@ -175,32 +230,16 @@ impl CompileState<'_> {
         Err(self.diags.report(diag))
     }
 
-    pub fn eval_expression_as_compile_or_undefined(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<MaybeUndefined<CompileValue>, ErrorGuaranteed> {
-        match self.eval_expression(scope, expr)? {
-            ExpressionValue::Undefined => Ok(MaybeUndefined::Undefined),
-            ExpressionValue::Compile(c) => Ok(MaybeUndefined::Defined(c)),
-            _ => Err(self.diags.report_simple(
-                format!("{} must be compile-time constant or undefined", reason),
-                expr.span,
-                "got expression",
-            )),
-        }
-    }
-
     pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<CompileValue, ErrorGuaranteed> {
-        match self.eval_expression(scope, expr)? {
+        match self.eval_expression(CompileNamedContext { reason }, scope, expr)? {
             ExpressionValue::Compile(c) => Ok(c),
-            _ => Err(self.diags.report_simple(
-                format!("{} must be compile-time constant", reason),
-                expr.span,
-                "got expression",
-            )),
+            ExpressionValue::Other(never) => never.unreachable(),
         }
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
         // TODO unify this message with the one when a normal type-check fails
-        match self.eval_expression(scope, expr)? {
+        match self.eval_expression(PassNamedContext, scope, expr)? {
             ExpressionValue::Compile(CompileValue::Type(ty)) => Ok(ty),
             _ => Err(self.diags.report_simple("expected type, got value", expr.span, "got value")),
         }
@@ -217,9 +256,32 @@ impl CompileState<'_> {
         })
     }
 
-    pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> () {
-        let _ = (scope, expr);
-        self.diags.report_todo(expr.span, "assignment target expression");
+    pub fn eval_expression_as_assign_target(&mut self, scope: Scope, expr: &Expression) -> Result<AssignmentTarget, ErrorGuaranteed> {
+        let build_err = |actual: &str| {
+            self.diags.report_simple("expected assignment target", expr.span, format!("got `{}`", actual))
+        };
+
+        match &expr.inner {
+            ExpressionKind::Id(id) => {
+                match self.eval_id(scope, id)?.inner {
+                    ExpressionValue::Compile(_) => Err(build_err("compile-time constant")),
+                    ExpressionValue::Other(s) => {
+                        match s {
+                            NamedValue::Constant(_) => Err(build_err("constant")),
+                            NamedValue::Parameter(_) => Err(build_err("parameter")),
+                            NamedValue::Variable(v) => Ok(AssignmentTarget::Variable(v)),
+                            NamedValue::Port(p) => Ok(AssignmentTarget::Port(p)),
+                            NamedValue::Wire(w) => Ok(AssignmentTarget::Wire(w)),
+                            NamedValue::Register(r) => Ok(AssignmentTarget::Register(r)),
+                        }
+                    }
+                }
+            }
+            ExpressionKind::ArrayIndex(_, _) => Err(self.diags.report_todo(expr.span, "assignment target array index"))?,
+            ExpressionKind::DotIdIndex(_, _) => Err(self.diags.report_todo(expr.span, "assignment target dot id index"))?,
+            ExpressionKind::DotIntIndex(_, _) => Err(self.diags.report_todo(expr.span, "assignment target dot int index"))?,
+            _ => Err(build_err("other expression")),
+        }
     }
 
     pub fn eval_expression_as_domain_signal(&mut self, scope: Scope, expr: &Expression) -> Result<DomainSignal, ErrorGuaranteed> {
@@ -234,15 +296,16 @@ impl CompileState<'_> {
         let build_err = |actual: &str| {
             self.diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
         };
-        match self.eval_expression(scope, expr)? {
-            ExpressionValue::Port(port) => Ok(DomainSignal::Port(port)),
-            ExpressionValue::Wire(wire) => Ok(DomainSignal::Wire(wire)),
-            ExpressionValue::Register(reg) => Ok(DomainSignal::Register(reg)),
-
-            ExpressionValue::Undefined => Err(build_err("undefined")),
-            ExpressionValue::Variable(_) => Err(build_err("variable")),
+        match self.eval_expression(PassNamedContext, scope, expr)? {
             ExpressionValue::Compile(_) => Err(build_err("compile-time value")),
-            ExpressionValue::Expression { .. } => Err(build_err("expression")),
+            ExpressionValue::Other(s) => match s {
+                NamedValue::Constant(_) => Err(build_err("constant")),
+                NamedValue::Parameter(_) => Err(build_err("parameter")),
+                NamedValue::Variable(_) => Err(build_err("variable")),
+                NamedValue::Port(p) => Ok(DomainSignal::Port(p)),
+                NamedValue::Wire(w) => Ok(DomainSignal::Wire(w)),
+                NamedValue::Register(r) => Ok(DomainSignal::Register(r)),
+            }
         }
     }
 
