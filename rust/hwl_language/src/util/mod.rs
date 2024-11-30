@@ -47,6 +47,13 @@ pub trait ResultDoubleExt<T, E> {
     fn flatten_err(self) -> Result<T, E>;
 }
 
+pub trait ResultSplitExt {
+    type A;
+    type B;
+    type E;
+    fn result_split(self) -> (Result<Self::A, Self::E>, Result<Self::B, Self::E>);
+}
+
 impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E> {
         match *self {
@@ -84,6 +91,13 @@ pub fn result_triple<A, B, C, E>(a: Result<A, E>, b: Result<B, E>, c: Result<C, 
     match (a, b, c) {
         (Ok(a), Ok(b), Ok(c)) => Ok((a, b, c)),
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+    }
+}
+
+pub fn result_pair_split<A, B, E: Copy>(r: Result<(A, B), E>) -> (Result<A, E>, Result<B, E>) {
+    match r {
+        Ok((a, b)) => (Ok(a), Ok(b)),
+        Err(e) => (Err(e), Err(e)),
     }
 }
 

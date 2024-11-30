@@ -1,3 +1,4 @@
+use crate::new::ir::IrType;
 use crate::swrite;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
@@ -25,7 +26,6 @@ pub enum Type {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
-    // TODO should this just be booL?
     Clock,
     Bool,
     Int(ClosedIntRange),
@@ -167,6 +167,15 @@ impl HardwareType {
             HardwareType::Array(inner, len) => inner.bit_width() * len,
         }
     }
+
+    pub fn to_ir(&self) -> IrType {
+        match self {
+            HardwareType::Clock => IrType::Bool,
+            HardwareType::Bool => IrType::Bool,
+            HardwareType::Int(range) => IrType::Int(range.clone()),
+            HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.to_ir()), len.clone()),
+        }
+    }
 }
 
 impl IntRange {
@@ -180,6 +189,13 @@ impl IntRange {
 }
 
 impl ClosedIntRange {
+    pub fn single(value: &BigInt) -> ClosedIntRange {
+        ClosedIntRange {
+            start_inc: value.clone(),
+            end_inc: value.clone(),
+        }
+    }
+
     pub fn into_range(self) -> IntRange {
         let ClosedIntRange { start_inc, end_inc } = self;
         IntRange {

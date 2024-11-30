@@ -1,15 +1,16 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::new::compile::CompileState;
+use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::Type;
-use crate::new::value::{CompileValue, ExpressionValue, NamedValue};
-use crate::syntax::ast::Spanned;
+use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 
 impl CompileState<'_> {
-    pub fn type_of_expression_value(&self, value: &ExpressionValue<NamedValue>) -> Type {
+    pub fn type_of_expression_value(&self, value: &MaybeCompile<NamedValue>) -> Type {
         match value {
-            ExpressionValue::Compile(c) => c.ty(),
-            &ExpressionValue::Other(n) => self.type_of_named_value(n),
+            MaybeCompile::Compile(c) => c.ty(),
+            &MaybeCompile::Other(n) => self.type_of_named_value(n),
         }
     }
 
@@ -26,7 +27,7 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&ExpressionValue<NamedValue>>) -> Result<(), ErrorGuaranteed> {
+    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&MaybeCompile<NamedValue>>) -> Result<(), ErrorGuaranteed> {
         let value_ty = self.type_of_expression_value(&value.inner);
         if target_ty.inner.contains_type(&value_ty) {
             Ok(())
@@ -63,6 +64,62 @@ impl CompileState<'_> {
                 .add_info(source_ty.span, format!("source type `{}` defined here", source_ty.inner.to_diagnostic_string()))
                 .finish();
             Err(self.diags.report(diag))
+        }
+    }
+
+    pub fn check_assign_domains(&self, assignment_span: Span, target: Spanned<&DomainKind<DomainSignal>>, source: Spanned<&ValueDomain>) -> Result<(), ErrorGuaranteed> {
+        let valid = match (target.inner, source.inner) {
+            (DomainKind::Async, _) => Ok(()),
+            (_, ValueDomain::CompileTime) => Ok(()),
+            (DomainKind::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
+            (DomainKind::Sync(_), ValueDomain::Async) => Err("async to sync"),
+            (DomainKind::Sync(target_inner), ValueDomain::Sync(source_inner)) => {
+                let SyncDomain { clock: target_clock, reset: target_reset } = target_inner;
+                let SyncDomain { clock: source_clock, reset: source_reset } = source_inner;
+
+                match (target_clock == source_clock, target_reset == source_reset) {
+                    (true, true) => Ok(()),
+                    (false, true) => Err("different clock"),
+                    (true, false) => Err("different reset"),
+                    (false, false) => Err("different clock and reset"),
+                }
+            }
+        };
+
+        valid.map_err(|reason| {
+            let target_str = self.value_domain_to_diagnostic_string(&ValueDomain::from_domain_kind(target.inner.clone()));
+            let source_str = self.value_domain_to_diagnostic_string(source.inner);
+            let diag = Diagnostic::new(format!("invalid domain crossing: {reason}"))
+                .add_error(assignment_span, "invalid assignment here")
+                .add_info(target.span, format!("target domain is {target_str}"))
+                .add_info(source.span, format!("source domain is {source_str}"))
+                .finish();
+            self.diags.report(diag)
+        })
+    }
+
+    fn value_domain_to_diagnostic_string(&self, domain: &ValueDomain) -> String {
+        match domain {
+            ValueDomain::CompileTime => "compile-time".to_string(),
+            ValueDomain::Clock => "clock".to_string(),
+            ValueDomain::Async => "async".to_string(),
+            ValueDomain::Sync(sync) => {
+                let SyncDomain { clock, reset } = sync;
+                format!(
+                    "sync({}, {})",
+                    self.domain_signal_to_diagnostic_string(clock),
+                    self.domain_signal_to_diagnostic_string(reset),
+                )
+            }
+        }
+    }
+
+    fn domain_signal_to_diagnostic_string(&self, signal: &DomainSignal) -> String {
+        match signal {
+            &DomainSignal::Port(port) => self.ports[port].id.string.clone(),
+            &DomainSignal::Wire(wire) => self.wires[wire].id.string().unwrap_or("_").to_string(),
+            &DomainSignal::Register(reg) => self.registers[reg].id.string().unwrap_or("_").to_string(),
+            DomainSignal::BoolNot(signal) => format!("!{}", self.domain_signal_to_diagnostic_string(signal)),
         }
     }
 }

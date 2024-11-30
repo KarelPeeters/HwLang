@@ -1,14 +1,15 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::types::ClosedIntRange;
+use crate::new::types::{ClosedIntRange, Type};
 use crate::new_index_type;
 use crate::syntax::ast::{PortDirection, SyncDomain};
 use crate::util::arena::Arena;
-use num_bigint::BigUint;
+use crate::util::int::IntRepresentation;
+use num_bigint::{BigInt, BigUint};
+use num_traits::One;
 
 // Variant of `Type` that can only represent types that are valid in hardware.
 #[derive(Debug)]
 pub enum IrType {
-    Clock,
     Bool,
     Int(ClosedIntRange),
     Array(Box<IrType>, BigUint),
@@ -44,19 +45,19 @@ pub struct IrPortInfo {
 
 #[derive(Debug)]
 pub struct IrRegisterInfo {
-    pub name: String,
+    pub debug_name: Option<String>,
     pub ty: IrType,
 }
 
 #[derive(Debug)]
 pub struct IrWireInfo {
-    pub name: String,
+    pub debug_name: Option<String>,
     pub ty: IrType,
 }
 
 #[derive(Debug)]
 pub struct IrVariableInfo {
-    pub name: String,
+    pub debug_name: Option<String>,
     pub ty: IrType,
 }
 
@@ -74,9 +75,14 @@ pub enum IrProcess {
 /// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug)]
 pub struct IrProcessBody {
-    pub locals: Arena<IrVariable, IrVariableInfo>,
-    pub body: IrBlock,
+    pub locals: IrLocals,
+    pub block: IrBlock,
 }
+
+pub type IrPorts = Arena<IrPort, IrPortInfo>;
+pub type IrWires = Arena<IrWire, IrWireInfo>;
+pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;
+pub type IrLocals = Arena<IrVariable, IrVariableInfo>;
 
 #[derive(Debug)]
 pub enum IrSignal {
@@ -102,7 +108,38 @@ pub enum IrStatement {
     // Return(IrExpression),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrExpression {
-    // TODO
+    // constants
+    Bool(bool),
+    Int(BigInt),
+    Array(Vec<IrExpression>),
+    // "signals"
+    Port(IrPort),
+    Wire(IrWire),
+    Register(IrRegister),
+    Variable(IrVariable),
+    // actual expressions
+    BoolNot(Box<IrExpression>),
+}
+
+impl IrType {
+    pub fn as_type(&self) -> Type {
+        match self {
+            IrType::Bool => Type::Bool,
+            IrType::Int(range) => Type::Int(range.clone().into_range()),
+            IrType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
+        }
+    }
+
+    pub fn bit_width(&self) -> BigUint {
+        match self {
+            IrType::Bool => BigUint::one(),
+            IrType::Int(range) => {
+                let ClosedIntRange { start_inc, end_inc } = range;
+                IntRepresentation::for_range(start_inc.clone()..=end_inc.clone()).bits
+            }
+            IrType::Array(inner, len) => inner.bit_width() * len,
+        }
+    }
 }

@@ -3,7 +3,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::{CompileState, ElaborationStackEntry};
 use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{HardwareType, IntRange, Type};
-use crate::new::value::{AssignmentTarget, CompileValue, ExpressionValue, NamedValue};
+use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, Identifier, IntPattern, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
@@ -14,7 +14,7 @@ use std::convert::identity;
 
 pub trait ExpressionContext {
     type T;
-    fn eval_scoped(self, s: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed>;
+    fn eval_named(self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
 }
 
 pub struct PassNamedContext;
@@ -24,26 +24,26 @@ pub struct CompileNamedContext<'s> {
 
 impl ExpressionContext for PassNamedContext {
     type T = NamedValue;
-    fn eval_scoped(self, _: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed> {
-        Ok(ExpressionValue::Other(n.inner))
+    fn eval_named(self, _: &CompileState, _: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+        Ok(MaybeCompile::Other(named))
     }
 }
 
 impl ExpressionContext for CompileNamedContext<'_> {
     type T = Never;
-    fn eval_scoped(self, s: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed> {
+    fn eval_named(self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         let build_err = |actual: &str| {
-            s.diags.report_simple(
-                format!("{} must be compile-time value", self.reason),
-                n.span,
-                format!("got `{}`", actual),
-            )
+            let diag = Diagnostic::new(format!("{} must be compile-time value", self.reason))
+                .add_error(span_use, format!("got `{}`", actual))
+                .add_info(span_def, "defined here")
+                .finish();
+            s.diags.report(diag)
         };
 
-        match n.inner {
-            NamedValue::Constant(c) => Ok(ExpressionValue::Compile(s.constants[c].value.clone())),
-            NamedValue::Parameter(p) => Ok(ExpressionValue::Compile(s.parameters[p].value.clone())),
-            NamedValue::Variable(_) => Err(s.diags.report_todo(n.span, "variable in compile-time context")),
+        match named {
+            NamedValue::Constant(c) => Ok(MaybeCompile::Compile(s.constants[c].value.clone())),
+            NamedValue::Parameter(p) => Ok(MaybeCompile::Compile(s.parameters[p].value.clone())),
+            NamedValue::Variable(_) => Err(s.diags.report_todo(span_use, "variable in compile-time context")),
             NamedValue::Port(_) => Err(build_err("port")),
             NamedValue::Wire(_) => Err(build_err("wire")),
             NamedValue::Register(_) => Err(build_err("register")),
@@ -52,14 +52,14 @@ impl ExpressionContext for CompileNamedContext<'_> {
 }
 
 impl CompileState<'_> {
-    pub fn eval_id(&mut self, scope: Scope, id: &Identifier) -> Result<Spanned<ExpressionValue<NamedValue>>, ErrorGuaranteed> {
+    pub fn eval_id(&mut self, scope: Scope, id: &Identifier) -> Result<Spanned<MaybeCompile<NamedValue>>, ErrorGuaranteed> {
         let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
         let result = match found.value {
             &ScopedEntry::Item(item) =>
-                ExpressionValue::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
+                MaybeCompile::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
             &ScopedEntry::Direct(value) =>
-                ExpressionValue::Other(value),
+                MaybeCompile::Other(value),
         };
         Ok(Spanned { span: def_span, inner: result })
     }
@@ -68,19 +68,19 @@ impl CompileState<'_> {
     //   * params should always be converted to compile-time constants
     //   * variables should be turned into compile-time constants or ir values depending on the context
     //   * these need to happen early enough that followup expression can handle them (eg.
-    pub fn eval_expression<C: ExpressionContext>(&mut self, ctx: C, scope: Scope, expr: &Expression) -> Result<ExpressionValue<C::T>, ErrorGuaranteed> {
+    pub fn eval_expression<C: ExpressionContext>(&mut self, ctx: C, scope: Scope, expr: &Expression) -> Result<MaybeCompile<C::T>, ErrorGuaranteed> {
         match &expr.inner {
             ExpressionKind::Dummy =>
                 Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
             ExpressionKind::Undefined =>
-                Ok(ExpressionValue::Compile(CompileValue::Undefined)),
+                Ok(MaybeCompile::Compile(CompileValue::Undefined)),
             ExpressionKind::Wrapped(inner) =>
                 self.eval_expression(ctx, scope, inner),
             ExpressionKind::Id(id) => {
                 let eval = self.eval_id(scope, id)?;
                 match eval.inner {
-                    ExpressionValue::Compile(c) => Ok(ExpressionValue::Compile(c)),
-                    ExpressionValue::Other(s) => ctx.eval_scoped(self, Spanned { span: eval.span, inner: s }),
+                    MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(c)),
+                    MaybeCompile::Other(value) => ctx.eval_named(self, expr.span, eval.span, value),
                 }
             }
             ExpressionKind::TypeFunc(_, _) =>
@@ -94,16 +94,16 @@ impl CompileState<'_> {
                     IntPattern::Dec(pattern_raw) => {
                         let pattern_clean = pattern_raw.replace("_", "");
                         match pattern_clean.parse::<BigInt>() {
-                            Ok(value) => Ok(ExpressionValue::Compile(CompileValue::Int(value))),
+                            Ok(value) => Ok(MaybeCompile::Compile(CompileValue::Int(value))),
                             Err(_) => Err(self.diags.report_internal_error(expr.span, "failed to parse int-pattern")),
                         }
                     }
                 }
             &ExpressionKind::BoolLiteral(literal) =>
-                Ok(ExpressionValue::Compile(CompileValue::Bool(literal))),
+                Ok(MaybeCompile::Compile(CompileValue::Bool(literal))),
             // TODO f-string formatting
             ExpressionKind::StringLiteral(literal) =>
-                Ok(ExpressionValue::Compile(CompileValue::String(literal.clone()))),
+                Ok(MaybeCompile::Compile(CompileValue::String(literal.clone()))),
 
             ExpressionKind::ArrayLiteral(_) => Err(self.diags.report_todo(expr.span, "expr kind ArrayLiteral")),
             ExpressionKind::TupleLiteral(_) => Err(self.diags.report_todo(expr.span, "expr kind TupleLiteral")),
@@ -157,7 +157,7 @@ impl CompileState<'_> {
                 };
 
                 let range = IntRange { start_inc, end_inc };
-                Ok(ExpressionValue::Compile(CompileValue::IntRange(range)))
+                Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
             }
             ExpressionKind::UnaryOp(_, _) => Err(self.diags.report_todo(expr.span, "expr kind UnaryOp")),
             ExpressionKind::BinaryOp(_, _, _) => Err(self.diags.report_todo(expr.span, "expr kind BinaryOp")),
@@ -190,11 +190,11 @@ impl CompileState<'_> {
                 let entry = ElaborationStackEntry::FunctionCall(expr.span, args.clone());
                 self.check_compile_loop(entry, |s| {
                     target.call_compile_time(s, args)
-                        .map(ExpressionValue::Compile)
+                        .map(MaybeCompile::Compile)
                 }).flatten_err()
             }
             ExpressionKind::Builtin(ref args) =>
-                Ok(ExpressionValue::Compile(self.eval_builtin(scope, expr.span, args)?)),
+                Ok(MaybeCompile::Compile(self.eval_builtin(scope, expr.span, args)?)),
         }
     }
 
@@ -232,15 +232,15 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<CompileValue, ErrorGuaranteed> {
         match self.eval_expression(CompileNamedContext { reason }, scope, expr)? {
-            ExpressionValue::Compile(c) => Ok(c),
-            ExpressionValue::Other(never) => never.unreachable(),
+            MaybeCompile::Compile(c) => Ok(c),
+            MaybeCompile::Other(never) => never.unreachable(),
         }
     }
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
         // TODO unify this message with the one when a normal type-check fails
         match self.eval_expression(PassNamedContext, scope, expr)? {
-            ExpressionValue::Compile(CompileValue::Type(ty)) => Ok(ty),
+            MaybeCompile::Compile(CompileValue::Type(ty)) => Ok(ty),
             _ => Err(self.diags.report_simple("expected type, got value", expr.span, "got value")),
         }
     }
@@ -264,8 +264,8 @@ impl CompileState<'_> {
         match &expr.inner {
             ExpressionKind::Id(id) => {
                 match self.eval_id(scope, id)?.inner {
-                    ExpressionValue::Compile(_) => Err(build_err("compile-time constant")),
-                    ExpressionValue::Other(s) => {
+                    MaybeCompile::Compile(_) => Err(build_err("compile-time constant")),
+                    MaybeCompile::Other(s) => {
                         match s {
                             NamedValue::Constant(_) => Err(build_err("constant")),
                             NamedValue::Parameter(_) => Err(build_err("parameter")),
@@ -290,15 +290,15 @@ impl CompileState<'_> {
         // special support for inversion, otherwise it would fail as an expression
         if let ExpressionKind::UnaryOp(UnaryOp::Not, inner) = &expr.inner {
             let inner = self.eval_expression_as_domain_signal(scope, inner)?;
-            return Ok(DomainSignal::Invert(Box::new(inner)));
+            return Ok(DomainSignal::BoolNot(Box::new(inner)));
         }
 
         let build_err = |actual: &str| {
             self.diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
         };
         match self.eval_expression(PassNamedContext, scope, expr)? {
-            ExpressionValue::Compile(_) => Err(build_err("compile-time value")),
-            ExpressionValue::Other(s) => match s {
+            MaybeCompile::Compile(_) => Err(build_err("compile-time value")),
+            MaybeCompile::Other(s) => match s {
                 NamedValue::Constant(_) => Err(build_err("constant")),
                 NamedValue::Parameter(_) => Err(build_err("parameter")),
                 NamedValue::Variable(_) => Err(build_err("variable")),

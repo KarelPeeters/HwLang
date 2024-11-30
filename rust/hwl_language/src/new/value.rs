@@ -1,12 +1,12 @@
 use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
-use crate::new::ir::IrModule;
+use crate::new::ir::{IrExpression, IrModule};
 use crate::new::types::{IntRange, Type};
 use num_bigint::{BigInt, BigUint};
 
 // TODO rename
 #[derive(Debug, Clone)]
-pub enum ExpressionValue<T> {
+pub enum MaybeCompile<T> {
     Compile(CompileValue),
     // TODO rename
     Other(T),
@@ -65,6 +65,24 @@ impl CompileValue {
             CompileValue::IntRange(_) => Type::Range,
             CompileValue::Module(_) => Type::Module,
             CompileValue::Function(_) => Type::Function,
+        }
+    }
+
+    pub fn as_hardware_value(&self) -> Option<IrExpression> {
+        match self {
+            // TODO support undefined? maybe only for register init?
+            CompileValue::Undefined => None,
+            &CompileValue::Bool(value) => Some(IrExpression::Bool(value)),
+            CompileValue::Int(value) => Some(IrExpression::Int(value.clone())),
+            CompileValue::Array(values) => {
+                let values = values.iter()
+                    .map(|value| value.as_hardware_value())
+                    .collect::<Option<Vec<_>>>()?;
+                Some(IrExpression::Array(values))
+            }
+            CompileValue::Type(_) |
+            CompileValue::String(_) | CompileValue::IntRange(_) |
+            CompileValue::Module(_) | CompileValue::Function(_) => None,
         }
     }
 

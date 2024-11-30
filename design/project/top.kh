@@ -17,12 +17,12 @@ pub module top ports(
     reg s: sync(clk, rst) bool = undefined;
     reg out y = false;
     wire w0: async bool;
-    wire w1: async bool = true;
+    wire w1: sync(clk, rst) bool = y;
 
     clocked(clk, rst) {
         s = !s;
         y = s;
-        w = false;
+        w0 = false;
     }
 
 //    instance spi_master generics(packet_length=8) ports(

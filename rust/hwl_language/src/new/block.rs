@@ -2,24 +2,85 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
 use crate::new::expression::ExpressionContext;
-use crate::new::ir::{IrBlock, IrVariable};
-use crate::new::misc::DomainSignal;
-use crate::new::value::{ExpressionValue, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, DomainKind, Spanned};
+use crate::new::ir::{IrBlock, IrExpression, IrLocals, IrStatement};
+use crate::new::misc::{DomainSignal, ValueDomain};
+use crate::new::types::HardwareType;
+use crate::new::value::{MaybeCompile, NamedValue};
+use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, DomainKind, Expression};
+use crate::syntax::pos::Span;
 use crate::throw;
 
-pub struct IrContext;
+// TODO move
+// TODO create some common ir process builder
+pub struct IrContext<'b> {
+    ir_locals: &'b mut IrLocals,
+    ir_statements: &'b mut Vec<IrStatement>,
+}
 
-impl ExpressionContext for IrContext {
-    type T = IrVariable;
+impl ExpressionContext for IrContext<'_> {
+    type T = TypedIrExpression;
 
-    fn eval_scoped(self, s: &CompileState, n: Spanned<NamedValue>) -> Result<ExpressionValue<Self::T>, ErrorGuaranteed> {
-        Err(s.diags.report_todo(n.span, "eval scoped value in IrContext"))
+    // TODO reduce the duplication here, const and param will always be evaluated exactly like this, right?
+    fn eval_named(self, s: &CompileState, span_use: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+        match named {
+            NamedValue::Constant(cst) =>
+                Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
+            NamedValue::Parameter(param) =>
+                Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
+            NamedValue::Variable(var) =>
+                Err(s.diags.report_todo(span_use, "eval variable in IrContext")),
+            NamedValue::Port(port) => {
+                let port_info = &s.ports[port];
+                let expr = TypedIrExpression {
+                    ty: port_info.ty.inner.clone(),
+                    domain: ValueDomain::from_port_domain(port_info.domain.inner.clone()),
+                    expr: IrExpression::Port(port_info.ir),
+                };
+                Ok(MaybeCompile::Other(expr))
+            }
+            NamedValue::Wire(wire) => {
+                let wire_info = &s.wires[wire];
+                let expr = TypedIrExpression {
+                    ty: wire_info.ty.inner.clone(),
+                    domain: ValueDomain::from_domain_kind(wire_info.domain.inner.clone()),
+                    expr: IrExpression::Wire(wire_info.ir),
+                };
+                Ok(MaybeCompile::Other(expr))
+            }
+            NamedValue::Register(reg) => {
+                let reg_info = &s.registers[reg];
+                let expr = TypedIrExpression {
+                    ty: reg_info.ty.inner.clone(),
+                    domain: ValueDomain::Sync(reg_info.domain.inner.clone()),
+                    expr: IrExpression::Register(reg_info.ir),
+                };
+                Ok(MaybeCompile::Other(expr))
+            }
+        }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TypedIrExpression {
+    pub ty: HardwareType,
+    pub domain: ValueDomain,
+    pub expr: IrExpression,
+}
+
 impl CompileState<'_> {
-    pub fn elaborate_ir_block(&mut self, parent_scope: Scope, domain: DomainKind<DomainSignal>, block: &Block<BlockStatement>) -> Result<IrBlock, ErrorGuaranteed> {
+    // TODO move
+    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<IrStatement>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let ctx = IrContext { ir_locals, ir_statements };
+        self.eval_expression(ctx, scope, value)
+    }
+
+    pub fn elaborate_ir_block(
+        &mut self,
+        ir_locals: &mut IrLocals,
+        domain: DomainKind<DomainSignal>,
+        parent_scope: Scope,
+        block: &Block<BlockStatement>,
+    ) -> Result<IrBlock, ErrorGuaranteed> {
         let Block { span: _, statements } = block;
 
         let scope = self.scopes.new_child(parent_scope, block.span, Visibility::Private);

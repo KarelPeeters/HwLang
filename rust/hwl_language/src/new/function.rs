@@ -4,7 +4,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::misc::ScopedEntry;
 use crate::new::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{Arg, Args, Expression, GenericParameter, Identifier, Spanned};
+use crate::syntax::ast::{Arg, Args, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultDoubleExt;
@@ -136,7 +136,7 @@ impl FunctionValue {
             // populate scope with args
             for (id, (param_id, span, value)) in args_passed {
                 let param = state.parameters.push(ConstantInfo {
-                    def_id_span: param_id.span,
+                    id: MaybeIdentifier::Identifier(param_id.clone()),
                     value: value.clone(),
                 });
                 let entry = ScopedEntry::Direct(NamedValue::Parameter(param));

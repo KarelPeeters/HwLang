@@ -2,12 +2,12 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::ir::{IrDesign, IrModule, IrModuleInfo};
+use crate::new::ir::{IrDesign, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
-use crate::syntax::ast::{Args, DomainKind, Identifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
 use crate::util::arena::{Arena, ArenaSet};
 use crate::util::data::IndexMapExt;
@@ -170,36 +170,39 @@ pub struct ModuleElaborationInfo {
 
 #[derive(Debug)]
 pub struct ConstantInfo {
-    pub def_id_span: Span,
+    pub id: MaybeIdentifier,
     pub value: CompileValue,
 }
 
 #[derive(Debug)]
 pub struct VariableInfo {
-    pub def_id_span: Span,
+    pub id: Identifier,
     pub ty: Type,
 }
 
 #[derive(Debug)]
 pub struct PortInfo {
-    pub def_id_span: Span,
+    pub id: Identifier,
     pub direction: Spanned<PortDirection>,
     pub domain: Spanned<PortDomain<DomainSignal>>,
     pub ty: Spanned<HardwareType>,
+    pub ir: IrPort,
 }
 
 #[derive(Debug)]
 pub struct WireInfo {
-    pub def_id_span: Span,
+    pub id: MaybeIdentifier,
     pub domain: Spanned<DomainKind<DomainSignal>>,
     pub ty: Spanned<HardwareType>,
+    pub ir: IrWire,
 }
 
 #[derive(Debug)]
 pub struct RegisterInfo {
-    pub def_id_span: Span,
-    pub domain: SyncDomain<DomainSignal>,
+    pub id: MaybeIdentifier,
+    pub domain: Spanned<SyncDomain<DomainSignal>>,
     pub ty: Spanned<HardwareType>,
+    pub ir: IrRegister,
 }
 
 fn add_import_to_scope(

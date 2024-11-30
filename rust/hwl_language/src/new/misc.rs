@@ -1,4 +1,3 @@
-use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::AstRefItem;
 use crate::new::compile::{Port, Register, Wire};
 use crate::new::value::NamedValue;
@@ -18,7 +17,7 @@ pub enum DomainSignal {
     Wire(Wire),
     Register(Register),
     // TODO make invert a common struct field instead of a boxed variant?
-    Invert(Box<DomainSignal>),
+    BoolNot(Box<DomainSignal>),
 }
 
 #[derive(Debug, Clone)]
@@ -29,8 +28,6 @@ pub enum PortDomain<V> {
 
 #[derive(Debug, Clone)]
 pub enum ValueDomain<V = DomainSignal> {
-    // TODO extract error case out?
-    Error(ErrorGuaranteed),
     CompileTime,
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset
@@ -46,6 +43,13 @@ impl ValueDomain {
                 clock: sync.clock,
                 reset: sync.reset,
             }),
+        }
+    }
+
+    pub fn from_port_domain(domain: PortDomain<DomainSignal>) -> Self {
+        match domain {
+            PortDomain::Clock => ValueDomain::Clock,
+            PortDomain::Kind(kind) => ValueDomain::from_domain_kind(kind),
         }
     }
 }
