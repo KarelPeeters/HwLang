@@ -1,5 +1,6 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
+use crate::new::block::BlockDomain;
 use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrProcessBody, IrRegister, IrRegisterInfo, IrStatement, IrWire, IrWireInfo};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
@@ -311,15 +312,11 @@ impl BodyElaborationState<'_, '_> {
                 ModuleStatementKind::RegOutPortMarker(_) => {}
                 // blocks, handle now
                 ModuleStatementKind::CombinatorialBlock(block) => {
-                    let &CombinatorialBlock { span: _, span_keyword, ref block } = block;
+                    let &CombinatorialBlock { span: _, span_keyword: _, ref block } = block;
 
-                    let domain = Spanned {
-                        span: span_keyword,
-                        inner: DomainKind::Async,
-                    };
-
+                    let block_domain = BlockDomain::Combinatorial;
                     let mut ir_locals = Arena::default();
-                    let ir_block = state.elaborate_ir_block(&mut ir_locals, domain.as_ref(), scope_body, block);
+                    let ir_block = state.elaborate_ir_block(&mut ir_locals, &block_domain, scope_body, block);
                     let ir_process = ir_block.map(|block| {
                         let ir_body = IrProcessBody { locals: ir_locals, block };
                         IrProcess::Combinatorial(ir_body)
@@ -340,12 +337,13 @@ impl BodyElaborationState<'_, '_> {
                             reset: state.domain_signal_to_ir(&domain.inner.reset),
                         };
 
-                        let domain = Spanned {
+                        let block_domain = Spanned {
                             span: span_keyword.join(domain.span),
-                            inner: DomainKind::Sync(domain.inner),
+                            inner: domain.inner,
                         };
+                        let block_domain = BlockDomain::Clocked(block_domain);
 
-                        state.elaborate_ir_block(&mut ir_locals, domain.as_ref(), scope_body, block)
+                        state.elaborate_ir_block(&mut ir_locals, &block_domain, scope_body, block)
                             .map(|block| {
                                 let ir_body = IrProcessBody { locals: ir_locals, block };
                                 IrProcess::Clocked(ir_domain, ir_body)
@@ -367,7 +365,6 @@ impl BodyElaborationState<'_, '_> {
         let diags = state.diags;
 
         let WireDeclaration { span: _, id, sync, ty, value } = decl;
-        let domain_span = sync.span;
         let ty_span = ty.span;
 
         // evaluate

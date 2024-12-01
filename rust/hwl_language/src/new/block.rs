@@ -6,7 +6,7 @@ use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrStat
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{AssignmentTarget, MaybeCompile, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, DomainKind, Expression, Spanned};
+use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::result_pair;
@@ -81,6 +81,12 @@ pub struct TypedIrExpression {
     pub expr: IrExpression,
 }
 
+#[derive(Debug)]
+pub enum BlockDomain {
+    Combinatorial,
+    Clocked(Spanned<SyncDomain<DomainSignal>>),
+}
+
 impl CompileState<'_> {
     // TODO move
     pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<Result<IrStatement, ErrorGuaranteed>>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
@@ -96,7 +102,7 @@ impl CompileState<'_> {
     pub fn elaborate_ir_block(
         &mut self,
         ir_locals: &mut IrLocals,
-        block_domain: Spanned<&DomainKind<DomainSignal>>,
+        block_domain: &BlockDomain,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> Result<IrBlock, ErrorGuaranteed> {
@@ -173,17 +179,28 @@ impl CompileState<'_> {
                         };
 
                         // check domains
-                        // TODO better error messages
-                        let block_domain = block_domain
-                            .map_inner(|d| ValueDomain::from_domain_kind(d.clone()));
+                        // TODO better error messages with more explanation
                         let target_domain = Spanned { span: target_span, inner: &target_domain };
                         let value_domain = Spanned { span: value_span, inner: &value_domain };
-                        let check_target_domain = self.check_valid_domain_crossing(stmt.span, target_domain, block_domain.as_ref());
-                        let check_value_domain = self.check_valid_domain_crossing(stmt.span, block_domain.as_ref(), value_domain);
+
+                        let check_domains = match block_domain {
+                            BlockDomain::Combinatorial => {
+                                self.check_valid_domain_crossing(stmt.span, target_domain, value_domain)
+                            }
+                            BlockDomain::Clocked(block_domain) => {
+                                let block_domain = block_domain
+                                    .as_ref()
+                                    .map_inner(|d| ValueDomain::Sync(d.clone()));
+
+                                let check_target_domain = self.check_valid_domain_crossing(stmt.span, target_domain, block_domain.as_ref());
+                                let check_value_domain = self.check_valid_domain_crossing(stmt.span, block_domain.as_ref(), value_domain);
+
+                                check_target_domain.and(check_value_domain)
+                            }
+                        };
 
                         let ir_value = ir_value?;
-                        check_target_domain?;
-                        check_value_domain?;
+                        check_domains?;
 
                         Ok(IrStatement::Assign(ir_target, ir_value))
                     });

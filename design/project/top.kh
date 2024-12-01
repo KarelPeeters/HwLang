@@ -25,6 +25,10 @@ pub module top ports(
         w0 = false;
     }
 
+//    combinatorial {
+//        s = w0;
+//    }
+
 //    instance spi_master generics(packet_length=8) ports(
 //        .clk(clk),
 //        .rst(rst),
