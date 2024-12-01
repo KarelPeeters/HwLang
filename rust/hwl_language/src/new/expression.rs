@@ -12,9 +12,12 @@ use itertools::Itertools;
 use num_bigint::BigInt;
 use std::convert::identity;
 
+// TODO rethink this abstraction, and don't overcomplicate things
+//   (look at use cases of eval_expression, split it up if that's simpler)
 pub trait ExpressionContext {
     type T;
-    fn eval_named(self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
+    fn eval_named(&mut self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
+    fn bool_not(&mut self, s: &CompileState, span_use: Span, inner: Self::T) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
 }
 
 pub struct PassNamedContext;
@@ -24,14 +27,20 @@ pub struct CompileNamedContext<'s> {
 
 impl ExpressionContext for PassNamedContext {
     type T = NamedValue;
-    fn eval_named(self, _: &CompileState, _: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+
+    fn eval_named(&mut self, _: &CompileState, _: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         Ok(MaybeCompile::Other(named))
+    }
+
+    fn bool_not(&mut self, _: &CompileState, _: Span, _: Self::T) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+        todo!()
     }
 }
 
 impl ExpressionContext for CompileNamedContext<'_> {
     type T = Never;
-    fn eval_named(self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+
+    fn eval_named(&mut self, s: &CompileState, span_use: Span, span_def: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         let build_err = |actual: &str| {
             let diag = Diagnostic::new(format!("{} must be compile-time value", self.reason))
                 .add_error(span_use, format!("got `{}`", actual))
@@ -48,6 +57,10 @@ impl ExpressionContext for CompileNamedContext<'_> {
             NamedValue::Wire(_) => Err(build_err("wire")),
             NamedValue::Register(_) => Err(build_err("register")),
         }
+    }
+
+    fn bool_not(&mut self, _: &CompileState, _: Span, _: Self::T) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+        todo!()
     }
 }
 
@@ -68,7 +81,7 @@ impl CompileState<'_> {
     //   * params should always be converted to compile-time constants
     //   * variables should be turned into compile-time constants or ir values depending on the context
     //   * these need to happen early enough that followup expression can handle them (eg.
-    pub fn eval_expression<C: ExpressionContext>(&mut self, ctx: C, scope: Scope, expr: &Expression) -> Result<MaybeCompile<C::T>, ErrorGuaranteed> {
+    pub fn eval_expression<C: ExpressionContext>(&mut self, ctx: &mut C, scope: Scope, expr: &Expression) -> Result<MaybeCompile<C::T>, ErrorGuaranteed> {
         match &expr.inner {
             ExpressionKind::Dummy =>
                 Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
@@ -159,7 +172,25 @@ impl CompileState<'_> {
                 let range = IntRange { start_inc, end_inc };
                 Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
             }
-            ExpressionKind::UnaryOp(_, _) => Err(self.diags.report_todo(expr.span, "expr kind UnaryOp")),
+            ExpressionKind::UnaryOp(op, inner) => {
+                match op {
+                    UnaryOp::Neg => Err(self.diags.report_todo(expr.span, "expr kind UnaryOp Neg")),
+                    UnaryOp::Not => {
+                        let inner = self.eval_expression(ctx, scope, inner)?;
+
+                        // TODO unified type checking for this MaybeCompile thing, see all usages of check_type_contains_compile_value
+                        match inner {
+                            MaybeCompile::Compile(c) => match c {
+                                // TODO propagate or undefined?
+                                CompileValue::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
+                                CompileValue::Bool(b) => Ok(MaybeCompile::Compile(CompileValue::Bool(!b))),
+                                _ => todo!("type-check first, then report internal error here"),
+                            }
+                            MaybeCompile::Other(v) => ctx.bool_not(self, expr.span, v),
+                        }
+                    }
+                }
+            },
             ExpressionKind::BinaryOp(_, _, _) => Err(self.diags.report_todo(expr.span, "expr kind BinaryOp")),
             ExpressionKind::TernarySelect(_, _, _) => Err(self.diags.report_todo(expr.span, "expr kind TernarySelect")),
             ExpressionKind::ArrayIndex(_, _) => Err(self.diags.report_todo(expr.span, "expr kind ArrayIndex")),
@@ -231,7 +262,7 @@ impl CompileState<'_> {
     }
 
     pub fn eval_expression_as_compile(&mut self, scope: Scope, expr: &Expression, reason: &str) -> Result<CompileValue, ErrorGuaranteed> {
-        match self.eval_expression(CompileNamedContext { reason }, scope, expr)? {
+        match self.eval_expression(&mut CompileNamedContext { reason }, scope, expr)? {
             MaybeCompile::Compile(c) => Ok(c),
             MaybeCompile::Other(never) => never.unreachable(),
         }
@@ -239,7 +270,7 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Result<Type, ErrorGuaranteed> {
         // TODO unify this message with the one when a normal type-check fails
-        match self.eval_expression(PassNamedContext, scope, expr)? {
+        match self.eval_expression(&mut PassNamedContext, scope, expr)? {
             MaybeCompile::Compile(CompileValue::Type(ty)) => Ok(ty),
             _ => Err(self.diags.report_simple("expected type, got value", expr.span, "got value")),
         }
@@ -302,7 +333,7 @@ impl CompileState<'_> {
         let build_err = |actual: &str| {
             self.diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
         };
-        match self.eval_expression(PassNamedContext, scope, expr)? {
+        match self.eval_expression(&mut PassNamedContext, scope, expr)? {
             MaybeCompile::Compile(_) => Err(build_err("compile-time value")),
             MaybeCompile::Other(s) => match s {
                 NamedValue::Constant(_) => Err(build_err("constant")),

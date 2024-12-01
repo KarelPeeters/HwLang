@@ -23,7 +23,7 @@ impl ExpressionContext for IrContext<'_> {
     type T = TypedIrExpression;
 
     // TODO reduce the duplication here, const and param will always be evaluated exactly like this, right?
-    fn eval_named(self, s: &CompileState, span_use: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+    fn eval_named(&mut self, s: &CompileState, span_use: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         match named {
             NamedValue::Constant(cst) =>
                 Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
@@ -60,6 +60,18 @@ impl ExpressionContext for IrContext<'_> {
             }
         }
     }
+
+    fn bool_not(&mut self, s: &CompileState, span_use: Span, v: TypedIrExpression) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+        match v.ty {
+            HardwareType::Clock | HardwareType::Bool => {}
+            _ => return Err(s.diags.report_internal_error(span_use, "unexpected type for bool_not")),
+        }
+        Ok(MaybeCompile::Other(TypedIrExpression {
+            ty: v.ty,
+            domain: v.domain,
+            expr: IrExpression::BoolNot(Box::new(v.expr)),
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,8 +84,8 @@ pub struct TypedIrExpression {
 impl CompileState<'_> {
     // TODO move
     pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<Result<IrStatement, ErrorGuaranteed>>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        let ctx = IrContext { ir_locals, ir_statements };
-        self.eval_expression(ctx, scope, value)
+        let mut ctx = IrContext { ir_locals, ir_statements };
+        self.eval_expression(&mut ctx, scope, value)
     }
 
     // TODO how to implement compile-time variables?
@@ -105,12 +117,12 @@ impl CompileState<'_> {
                     }
 
                     let target = self.eval_expression_as_assign_target(scope, target);
-                    let ctx = IrContext {
+                    let mut ctx = IrContext {
                         ir_locals,
                         ir_statements: &mut ir_statements,
                     };
                     let value_span = value.span;
-                    let value = self.eval_expression(ctx, scope, value);
+                    let value = self.eval_expression(&mut ctx, scope, value);
 
                     let stmt = result_pair(target, value).and_then(|(target, value)| {
                         // TODO check that we can read from source domain
