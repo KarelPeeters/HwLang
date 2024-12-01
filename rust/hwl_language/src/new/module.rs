@@ -1,7 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
-use crate::new::ir::{IrBlock, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrProcessBody, IrRegister, IrRegisterInfo, IrWire, IrWireInfo};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrProcessBody, IrRegister, IrRegisterInfo, IrStatement, IrWire, IrWireInfo};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
@@ -353,6 +353,7 @@ impl BodyElaborationState<'_, '_> {
     fn elaborate_module_declaration_wire(&mut self, decl: &WireDeclaration) -> Result<(Wire, Option<IrProcess>), ErrorGuaranteed> {
         let state = &mut self.state;
         let scope_body = self.scope_body;
+        let diags = state.diags;
 
         let WireDeclaration { span: _, id, sync, ty, value } = decl;
         let domain_span = sync.span;
@@ -363,20 +364,12 @@ impl BodyElaborationState<'_, '_> {
         let domain = state.eval_domain(scope_body, &sync.inner);
         let ty = state.eval_expression_as_ty_hardware(scope_body, ty, "wire");
 
+        let mut ir_locals = IrLocals::default();
+        let mut ir_statements = vec![];
         let value = value.as_ref()
             .map(|value| {
-                //there is an init value, create a new combinatorial process to assign it
-                let mut ir_locals = IrLocals::default();
-                let mut ir_statements = vec![];
-
                 let eval = state.eval_expression_as_ir(&mut ir_locals, &mut ir_statements, scope_body, value)?;
-                let spanned = Spanned { span: value.span, inner: eval };
-
-                let ir_statements = ir_statements.into_iter().try_collect()?;
-                let ir_body = IrProcessBody { locals: ir_locals, block: IrBlock { statements: ir_statements } };
-                let ir_process = IrProcess::Combinatorial(ir_body);
-
-                Ok((spanned, ir_process))
+                Ok(Spanned { span: value.span, inner: eval })
             })
             .transpose();
 
@@ -384,7 +377,7 @@ impl BodyElaborationState<'_, '_> {
         let ty = ty?;
         let value = value?;
 
-        if let Some((value, _)) = &value {
+        if let Some(value) = &value {
             let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
 
             // check type and get domain
@@ -422,7 +415,21 @@ impl BodyElaborationState<'_, '_> {
             ir: ir_wire,
         });
 
-        let process = value.map(|(_, process)| process);
+        // build process
+        let process = value.map(|value| {
+            let target = IrAssignmentTarget::Wire(ir_wire);
+            let source = match value.inner {
+                MaybeCompile::Compile(_) => throw!(diags.report_todo(value.span, "compile-time wire value")),
+                MaybeCompile::Other(v) => v.expr,
+            };
+            ir_statements.push(Ok(IrStatement::Assign(target, source)));
+
+            let ir_statements = ir_statements.into_iter().try_collect()?;
+            let ir_body = IrProcessBody { locals: ir_locals, block: IrBlock { statements: ir_statements } };
+            let ir_process = IrProcess::Combinatorial(ir_body);
+
+            Ok(ir_process)
+        }).transpose()?;
 
         Ok((wire, process))
     }
