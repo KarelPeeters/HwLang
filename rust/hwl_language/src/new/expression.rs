@@ -5,7 +5,7 @@ use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{HardwareType, IntRange, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, Identifier, IntPattern, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain, UnaryOp};
 use crate::syntax::pos::Span;
 use crate::util::{Never, ResultDoubleExt};
 use itertools::Itertools;
@@ -270,7 +270,13 @@ impl CompileState<'_> {
                             NamedValue::Constant(_) => Err(build_err("constant")),
                             NamedValue::Parameter(_) => Err(build_err("parameter")),
                             NamedValue::Variable(v) => Ok(AssignmentTarget::Variable(v)),
-                            NamedValue::Port(p) => Ok(AssignmentTarget::Port(p)),
+                            NamedValue::Port(p) => {
+                                let direction = self.ports[p].direction;
+                                match direction.inner {
+                                    PortDirection::Input => Err(build_err("input port")),
+                                    PortDirection::Output => Ok(AssignmentTarget::Port(p))
+                                }
+                            },
                             NamedValue::Wire(w) => Ok(AssignmentTarget::Wire(w)),
                             NamedValue::Register(r) => Ok(AssignmentTarget::Register(r)),
                         }

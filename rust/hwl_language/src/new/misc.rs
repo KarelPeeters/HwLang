@@ -36,6 +36,17 @@ pub enum ValueDomain<V = DomainSignal> {
 }
 
 impl ValueDomain {
+    pub fn join(&self, other: &Self) -> Self {
+        // expand clock equality
+        match (self, other) {
+            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) =>
+                other.clone(),
+            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right =>
+                ValueDomain::Sync(left.clone()),
+            _ => ValueDomain::Async,
+        }
+    }
+    
     pub fn from_domain_kind(domain: DomainKind<DomainSignal>) -> Self {
         match domain {
             DomainKind::Async => ValueDomain::Async,

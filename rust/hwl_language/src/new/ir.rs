@@ -100,12 +100,20 @@ pub struct IrBlock {
 
 #[derive(Debug)]
 pub enum IrStatement {
-    // Assign(IrVariable, IrExpression),
+    Assign(IrAssignmentTarget, IrExpression),
     // If(IrExpression, IrBlock, IrBlock),
     // While(IrExpression, IrBlock),
     // Break,
     // Continue,
     // Return(IrExpression),
+}
+
+#[derive(Debug)]
+pub enum IrAssignmentTarget {
+    Port(IrPort),
+    Register(IrRegister),
+    Wire(IrWire),
+    Variable(IrVariable),
 }
 
 #[derive(Debug, Clone)]

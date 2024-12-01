@@ -2,19 +2,21 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
 use crate::new::expression::ExpressionContext;
-use crate::new::ir::{IrBlock, IrExpression, IrLocals, IrStatement};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrStatement};
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::HardwareType;
-use crate::new::value::{MaybeCompile, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, DomainKind, Expression};
+use crate::new::value::{AssignmentTarget, MaybeCompile, NamedValue};
+use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, DomainKind, Expression, Spanned};
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::result_pair;
+use itertools::Itertools;
 
 // TODO move
 // TODO create some common ir process builder
 pub struct IrContext<'b> {
     ir_locals: &'b mut IrLocals,
-    ir_statements: &'b mut Vec<IrStatement>,
+    ir_statements: &'b mut Vec<Result<IrStatement, ErrorGuaranteed>>,
 }
 
 impl ExpressionContext for IrContext<'_> {
@@ -27,7 +29,7 @@ impl ExpressionContext for IrContext<'_> {
                 Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
             NamedValue::Parameter(param) =>
                 Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
-            NamedValue::Variable(var) =>
+            NamedValue::Variable(_) =>
                 Err(s.diags.report_todo(span_use, "eval variable in IrContext")),
             NamedValue::Port(port) => {
                 let port_info = &s.ports[port];
@@ -69,11 +71,16 @@ pub struct TypedIrExpression {
 
 impl CompileState<'_> {
     // TODO move
-    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<IrStatement>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<Result<IrStatement, ErrorGuaranteed>>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let ctx = IrContext { ir_locals, ir_statements };
         self.eval_expression(ctx, scope, value)
     }
 
+    // TODO how to implement compile-time variables?
+    //   * always emit all reads/writes (if possible and using hardware types)
+    //   * if not possible; record that this variable is compile-time only
+    //   * keep a shadow map of variables to compile-time values,
+    //       merge at the end of blocks that depend on runtime
     pub fn elaborate_ir_block(
         &mut self,
         ir_locals: &mut IrLocals,
@@ -84,7 +91,7 @@ impl CompileState<'_> {
         let Block { span: _, statements } = block;
 
         let scope = self.scopes.new_child(parent_scope, block.span, Visibility::Private);
-        let mut statements_ir = vec![];
+        let mut ir_statements = vec![];
 
         for stmt in statements {
             match &stmt.inner {
@@ -97,19 +104,58 @@ impl CompileState<'_> {
                         throw!(self.diags.report_todo(stmt.span, "compound assignment"));
                     }
 
-                    throw!(self.diags.report_todo(stmt.span, "assignment"));
+                    let target = self.eval_expression_as_assign_target(scope, target);
+                    let ctx = IrContext {
+                        ir_locals,
+                        ir_statements: &mut ir_statements,
+                    };
+                    let value_span = value.span;
+                    let value = self.eval_expression(ctx, scope, value);
 
-                    // TODO how to implement compile-time variables?
-                    //   * always emit all reads/writes (if possible and using hardware types)
-                    //   * if not possible; record that this variable is compile-time only
-                    //   * keep a shadow map of variables to compile-time values,
-                    //       merge at the end of blocks that depend on runtime
-                    // let target = self.eval_expression_as_assign_target(scope, target);
-                    // let value = self.eval_expression::<IrContext>(scope, value);
+                    let stmt = result_pair(target, value).and_then(|(target, value)| {
+                        // TODO check that we can read from source domain
+                        // TODO check that we can write to target domain
+                        // TODO record write to target
+                        // TODO for variables, (also) do the assignment at compile-time (see above)
 
-                    // TODO check that we can read from valid domain
-                    // TODO check that we can write to target domain
-                    // TODO record write
+                        let (target_ty, ir_target) = match target {
+                            AssignmentTarget::Port(port) => {
+                                let info = &self.ports[port];
+                                (&info.ty, IrAssignmentTarget::Port(info.ir))
+                            },
+                            AssignmentTarget::Wire(wire) => {
+                                let info = &self.wires[wire];
+                                (&info.ty, IrAssignmentTarget::Wire(info.ir))
+                            },
+                            AssignmentTarget::Register(reg) => {
+                                let info = &self.registers[reg];
+                                (&info.ty, IrAssignmentTarget::Register(self.registers[reg].ir))
+                            },
+                            AssignmentTarget::Variable(_) => throw!(self.diags.report_todo(stmt.span, "assignment to variable")),
+                        };
+
+                        let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
+
+                        let ir_value = match value {
+                            MaybeCompile::Compile(v) => {
+                                let value_spanned = Spanned { span: value_span, inner: &v };
+                                self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned)?;
+                                v.as_hardware_value()
+                                    .ok_or_else(|| {
+                                        let reason = "compile time value fits in hardware type but is not convertible to hardware value";
+                                        self.diags.report_internal_error(value_span, reason)
+                                    })?
+                            }
+                            MaybeCompile::Other(v) => {
+                                let value_ty = Spanned { span: value_span, inner: v.ty.as_type() };
+                                self.check_type_contains_type(stmt.span, target_ty.as_ref(), value_ty.as_ref())?;
+                                v.expr
+                            },
+                        };
+
+                        Ok(IrStatement::Assign(ir_target, ir_value))
+                    });
+                    ir_statements.push(stmt);
                 }
                 BlockStatementKind::Expression(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Expression")),
                 BlockStatementKind::Block(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Block")),
@@ -123,7 +169,7 @@ impl CompileState<'_> {
         }
 
         let result = IrBlock {
-            statements: statements_ir,
+            statements: ir_statements.into_iter().try_collect()?,
         };
         Ok(result)
     }
