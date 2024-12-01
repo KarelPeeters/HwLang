@@ -311,32 +311,43 @@ impl BodyElaborationState<'_, '_> {
                 ModuleStatementKind::RegOutPortMarker(_) => {}
                 // blocks, handle now
                 ModuleStatementKind::CombinatorialBlock(block) => {
-                    let CombinatorialBlock { span: _, span_keyword: _, block } = block;
+                    let &CombinatorialBlock { span: _, span_keyword, ref block } = block;
 
-                    let mut locals = Arena::default();
-                    let ir_block = state.elaborate_ir_block(&mut locals, DomainKind::Async, scope_body, block);
+                    let domain = Spanned {
+                        span: span_keyword,
+                        inner: DomainKind::Async,
+                    };
+
+                    let mut ir_locals = Arena::default();
+                    let ir_block = state.elaborate_ir_block(&mut ir_locals, domain.as_ref(), scope_body, block);
                     let ir_process = ir_block.map(|block| {
-                        let ir_body = IrProcessBody { locals, block };
+                        let ir_body = IrProcessBody { locals: ir_locals, block };
                         IrProcess::Combinatorial(ir_body)
                     });
                     self.processes.push(ir_process);
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
-                    let ClockedBlock { span: _, span_keyword: _, domain, block } = block;
+                    let &ClockedBlock { span: _, span_keyword, ref domain, ref block } = block;
 
-                    let domain = state.eval_domain_sync(scope_body, &domain.inner);
+                    let domain = domain.as_ref()
+                        .map_inner(|d| state.eval_domain_sync(scope_body, d))
+                        .transpose();
 
                     let ir_process = domain.and_then(|domain| {
-                        let mut locals = Arena::default();
-
+                        let mut ir_locals = Arena::default();
                         let ir_domain = SyncDomain {
-                            clock: state.domain_signal_to_ir(&domain.clock),
-                            reset: state.domain_signal_to_ir(&domain.reset),
+                            clock: state.domain_signal_to_ir(&domain.inner.clock),
+                            reset: state.domain_signal_to_ir(&domain.inner.reset),
                         };
 
-                        state.elaborate_ir_block(&mut locals, DomainKind::Sync(domain), scope_body, block)
+                        let domain = Spanned {
+                            span: span_keyword.join(domain.span),
+                            inner: DomainKind::Sync(domain.inner),
+                        };
+
+                        state.elaborate_ir_block(&mut ir_locals, domain.as_ref(), scope_body, block)
                             .map(|block| {
-                                let ir_body = IrProcessBody { locals, block };
+                                let ir_body = IrProcessBody { locals: ir_locals, block };
                                 IrProcess::Clocked(ir_domain, ir_body)
                             })
                     });
@@ -361,7 +372,9 @@ impl BodyElaborationState<'_, '_> {
 
         // evaluate
         // TODO allow clock wires
-        let domain = state.eval_domain(scope_body, &sync.inner);
+        let domain = sync.as_ref()
+            .map_inner(|sync| state.eval_domain(scope_body, sync))
+            .transpose();
         let ty = state.eval_expression_as_ty_hardware(scope_body, ty, "wire");
 
         let mut ir_locals = IrLocals::default();
@@ -395,9 +408,9 @@ impl BodyElaborationState<'_, '_> {
             };
 
             // check domain
-            let domain_spanned = Spanned { span: domain_span, inner: &domain };
+            let domain = domain.clone().map_inner(|d| ValueDomain::from_domain_kind(d));
             let value_domain_spanned = Spanned { span: value.span, inner: value_domain };
-            let err_domain = state.check_assign_domains(decl.span, domain_spanned, value_domain_spanned);
+            let err_domain = state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned);
 
             err_ty?;
             err_domain?;
@@ -410,7 +423,7 @@ impl BodyElaborationState<'_, '_> {
         });
         let wire = state.wires.push(WireInfo {
             id: id.clone(),
-            domain: Spanned { span: domain_span, inner: domain },
+            domain,
             ty: Spanned { span: ty_span, inner: ty },
             ir: ir_wire,
         });

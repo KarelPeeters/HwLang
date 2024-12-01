@@ -96,7 +96,7 @@ impl CompileState<'_> {
     pub fn elaborate_ir_block(
         &mut self,
         ir_locals: &mut IrLocals,
-        domain: DomainKind<DomainSignal>,
+        block_domain: Spanned<&DomainKind<DomainSignal>>,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> Result<IrBlock, ErrorGuaranteed> {
@@ -111,6 +111,8 @@ impl CompileState<'_> {
                 BlockStatementKind::VariableDeclaration(_) => throw!(self.diags.report_todo(stmt.span, "statement kind VariableDeclaration")),
                 BlockStatementKind::Assignment(stmt) => {
                     let Assignment { span: _, op, target, value } = stmt;
+                    let target_span = target.span;
+                    let value_span = value.span;
 
                     if op.inner.is_some() {
                         throw!(self.diags.report_todo(stmt.span, "compound assignment"));
@@ -121,49 +123,67 @@ impl CompileState<'_> {
                         ir_locals,
                         ir_statements: &mut ir_statements,
                     };
-                    let value_span = value.span;
                     let value = self.eval_expression(&mut ctx, scope, value);
 
                     let stmt = result_pair(target, value).and_then(|(target, value)| {
-                        // TODO check that we can read from source domain
-                        // TODO check that we can write to target domain
-                        // TODO record write to target
-                        // TODO for variables, (also) do the assignment at compile-time (see above)
-
-                        let (target_ty, ir_target) = match target {
+                        // TODO extract this to a function
+                        let (target_ty, target_domain, ir_target) = match target {
                             AssignmentTarget::Port(port) => {
                                 let info = &self.ports[port];
-                                (&info.ty, IrAssignmentTarget::Port(info.ir))
+                                let domain = ValueDomain::from_port_domain(info.domain.inner.clone());
+                                (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
                             },
                             AssignmentTarget::Wire(wire) => {
                                 let info = &self.wires[wire];
-                                (&info.ty, IrAssignmentTarget::Wire(info.ir))
+                                let domain = ValueDomain::from_domain_kind(info.domain.inner.clone());
+                                (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
                             },
                             AssignmentTarget::Register(reg) => {
                                 let info = &self.registers[reg];
-                                (&info.ty, IrAssignmentTarget::Register(self.registers[reg].ir))
+                                let domain = ValueDomain::Sync(info.domain.inner.clone());
+                                (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
                             },
                             AssignmentTarget::Variable(_) => throw!(self.diags.report_todo(stmt.span, "assignment to variable")),
                         };
 
+                        // TODO record write to target
+                        // TODO for variables, (also) do the assignment at compile-time (see above)
+
                         let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
 
-                        let ir_value = match value {
+                        // check type and convert to value
+                        let (value_domain, ir_value) = match value {
                             MaybeCompile::Compile(v) => {
                                 let value_spanned = Spanned { span: value_span, inner: &v };
-                                self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned)?;
-                                v.as_hardware_value()
-                                    .ok_or_else(|| {
-                                        let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                                        self.diags.report_internal_error(value_span, reason)
-                                    })?
+                                let ir_value = self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned).and_then(|()| {
+                                    v.as_hardware_value()
+                                        .ok_or_else(|| {
+                                            let reason = "compile time value fits in hardware type but is not convertible to hardware value";
+                                            self.diags.report_internal_error(value_span, reason)
+                                        })
+                                });
+                                (ValueDomain::CompileTime, ir_value)
                             }
                             MaybeCompile::Other(v) => {
                                 let value_ty = Spanned { span: value_span, inner: v.ty.as_type() };
-                                self.check_type_contains_type(stmt.span, target_ty.as_ref(), value_ty.as_ref())?;
-                                v.expr
+                                let ir_value = self.check_type_contains_type(stmt.span, target_ty.as_ref(), value_ty.as_ref())
+                                    .map(|()| v.expr);
+                                (v.domain, ir_value)
                             },
                         };
+
+                        // check domains
+                        // TODO better error messages
+                        let block_domain = block_domain
+                            .map_inner(|d| ValueDomain::from_domain_kind(d.clone()));
+                        let target_domain = Spanned { span: target_span, inner: &target_domain };
+                        let value_domain = Spanned { span: value_span, inner: &value_domain };
+                        let check_target_domain = self.check_valid_domain_crossing(stmt.span, target_domain, block_domain.as_ref());
+                        let check_value_domain = self.check_valid_domain_crossing(stmt.span, block_domain.as_ref(), value_domain);
+
+                        let ir_value = ir_value?;
+                        check_target_domain?;
+                        check_value_domain?;
 
                         Ok(IrStatement::Assign(ir_target, ir_value))
                     });

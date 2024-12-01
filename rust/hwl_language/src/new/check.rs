@@ -3,8 +3,9 @@ use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::Type;
 use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
-use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
+use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::throw;
 
 impl CompileState<'_> {
     pub fn type_of_expression_value(&self, value: &MaybeCompile<NamedValue>) -> Type {
@@ -67,13 +68,25 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn check_assign_domains(&self, assignment_span: Span, target: Spanned<&DomainKind<DomainSignal>>, source: Spanned<&ValueDomain>) -> Result<(), ErrorGuaranteed> {
+    pub fn check_valid_domain_crossing(&self, assignment_span: Span, target: Spanned<&ValueDomain>, source: Spanned<&ValueDomain>) -> Result<(), ErrorGuaranteed> {
         let valid = match (target.inner, source.inner) {
-            (DomainKind::Async, _) => Ok(()),
+            // clock only clock, and even that is not yet supported
+            (ValueDomain::Clock, ValueDomain::Clock) =>
+                throw!(self.diags.report_todo(assignment_span, "clock assignments")),
+            (ValueDomain::Clock, _) => Err("non-clock to clock"),
+            (ValueDomain::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
+            (ValueDomain::Sync(_), ValueDomain::Async) => Err("async to sync"),
+
+            // compile-time from nothing else and to everything
             (_, ValueDomain::CompileTime) => Ok(()),
-            (DomainKind::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
-            (DomainKind::Sync(_), ValueDomain::Async) => Err("async to sync"),
-            (DomainKind::Sync(target_inner), ValueDomain::Sync(source_inner)) => {
+            (ValueDomain::CompileTime, _) => Err("compile-time to non-compile-time"),
+
+            // async from everything
+            (ValueDomain::Async, _) => Ok(()),
+
+            // sync only if matching
+            // TODO expand this to look though wires without logic
+            (ValueDomain::Sync(target_inner), ValueDomain::Sync(source_inner)) => {
                 let SyncDomain { clock: target_clock, reset: target_reset } = target_inner;
                 let SyncDomain { clock: source_clock, reset: source_reset } = source_inner;
 
@@ -87,7 +100,7 @@ impl CompileState<'_> {
         };
 
         valid.map_err(|reason| {
-            let target_str = self.value_domain_to_diagnostic_string(&ValueDomain::from_domain_kind(target.inner.clone()));
+            let target_str = self.value_domain_to_diagnostic_string(&target.inner);
             let source_str = self.value_domain_to_diagnostic_string(source.inner);
             let diag = Diagnostic::new(format!("invalid domain crossing: {reason}"))
                 .add_error(assignment_span, "invalid assignment here")

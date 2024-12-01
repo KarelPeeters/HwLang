@@ -184,8 +184,7 @@ pub struct ModulePortInBlock {
     pub ty: Box<Expression>,
 }
 
-
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PortKind<S, T> {
     Clock,
     Normal { domain: S, ty: T },
@@ -588,6 +587,15 @@ impl<T> Spanned<T> {
             span: self.span,
             inner: &self.inner,
         }
+    }
+}
+
+impl<T, E> Spanned<Result<T, E>> {
+    pub fn transpose(self) -> Result<Spanned<T>, E> {
+        self.inner.map(|inner| Spanned {
+            span: self.span,
+            inner,
+        })
     }
 }
 
