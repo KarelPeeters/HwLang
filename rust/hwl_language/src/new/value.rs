@@ -46,6 +46,14 @@ pub enum AssignmentTarget {
     Variable(Variable),
 }
 
+#[derive(Debug, Clone)]
+pub enum HardwareValueResult {
+    Success(IrExpression),
+    Undefined,
+    PartiallyUndefined,
+    Unrepresentable,
+}
+
 impl CompileValue {
     pub fn ty(&self) -> Type {
         match self {
@@ -68,21 +76,46 @@ impl CompileValue {
         }
     }
 
-    pub fn as_hardware_value(&self) -> Option<IrExpression> {
+    pub fn as_hardware_value(&self) -> HardwareValueResult {
         match self {
-            // TODO support undefined? maybe only for register init?
-            CompileValue::Undefined => None,
-            &CompileValue::Bool(value) => Some(IrExpression::Bool(value)),
-            CompileValue::Int(value) => Some(IrExpression::Int(value.clone())),
+            CompileValue::Undefined => HardwareValueResult::Undefined,
+            &CompileValue::Bool(value) => HardwareValueResult::Success(IrExpression::Bool(value)),
+            CompileValue::Int(value) => HardwareValueResult::Success(IrExpression::Int(value.clone())),
             CompileValue::Array(values) => {
-                let values = values.iter()
-                    .map(|value| value.as_hardware_value())
-                    .collect::<Option<Vec<_>>>()?;
-                Some(IrExpression::Array(values))
+                let mut hardware_values = vec![];
+                let mut all_undefined = true;
+                let mut any_undefined = false;
+
+                for value in values {
+                    match value.as_hardware_value() {
+                        HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
+                        HardwareValueResult::Success(v) => {
+                            all_undefined = false;
+                            hardware_values.push(v)
+                        },
+                        HardwareValueResult::Undefined => {
+                            any_undefined = true;
+                        }
+                        HardwareValueResult::PartiallyUndefined => return HardwareValueResult::PartiallyUndefined,
+                    }
+                }
+
+                match (any_undefined, all_undefined) {
+                    (true, true) => HardwareValueResult::Undefined,
+                    (true, false) => HardwareValueResult::PartiallyUndefined,
+                    (false, false) => {
+                        assert_eq!(hardware_values.len(), values.len());
+                        HardwareValueResult::Success(IrExpression::Array(hardware_values))
+                    }
+                    (false, true) => {
+                        assert!(hardware_values.is_empty());
+                        HardwareValueResult::Success(IrExpression::Array(vec![]))
+                    }
+                }
             }
             CompileValue::Type(_) |
             CompileValue::String(_) | CompileValue::IntRange(_) |
-            CompileValue::Module(_) | CompileValue::Function(_) => None,
+            CompileValue::Module(_) | CompileValue::Function(_) => HardwareValueResult::Unrepresentable,
         }
     }
 

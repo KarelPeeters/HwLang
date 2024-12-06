@@ -5,7 +5,7 @@ use crate::new::expression::ExpressionContext;
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrStatement};
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::HardwareType;
-use crate::new::value::{AssignmentTarget, MaybeCompile, NamedValue};
+use crate::new::value::{AssignmentTarget, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -101,6 +101,7 @@ impl CompileState<'_> {
     //       merge at the end of blocks that depend on runtime
     pub fn elaborate_ir_block(
         &mut self,
+        report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
         ir_locals: &mut IrLocals,
         block_domain: &BlockDomain,
         parent_scope: Scope,
@@ -149,11 +150,11 @@ impl CompileState<'_> {
                                 let domain = ValueDomain::Sync(info.domain.inner.clone());
                                 (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
                             },
-                            AssignmentTarget::Variable(_) => throw!(self.diags.report_todo(stmt.span, "assignment to variable")),
+                            AssignmentTarget::Variable(_) => {
+                                // TODO for variables, (also) do the assignment at compile-time (see above)
+                                throw!(self.diags.report_todo(stmt.span, "assignment to variable"))
+                            },
                         };
-
-                        // TODO record write to target
-                        // TODO for variables, (also) do the assignment at compile-time (see above)
 
                         let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
 
@@ -162,11 +163,17 @@ impl CompileState<'_> {
                             MaybeCompile::Compile(v) => {
                                 let value_spanned = Spanned { span: value_span, inner: &v };
                                 let ir_value = self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned).and_then(|()| {
-                                    v.as_hardware_value()
-                                        .ok_or_else(|| {
+                                    match v.as_hardware_value() {
+                                        HardwareValueResult::Success(v) =>
+                                            Ok(v),
+                                        HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined =>
+                                            Err(self.diags.report_simple("undefined can only be used for register initialization", value_span, "value is undefined")),
+                                        HardwareValueResult::Unrepresentable => {
+                                            // TODO fix this duplication
                                             let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                                            self.diags.report_internal_error(value_span, reason)
-                                        })
+                                            Err(self.diags.report_internal_error(value_span, reason))
+                                        }
+                                    }
                                 });
                                 (ValueDomain::CompileTime, ir_value)
                             }
@@ -202,6 +209,7 @@ impl CompileState<'_> {
                         let ir_value = ir_value?;
                         check_domains?;
 
+                        report_assignment(Spanned { span: target_span, inner: &target })?;
                         Ok(IrStatement::Assign(ir_target, ir_value))
                     });
                     ir_statements.push(stmt);

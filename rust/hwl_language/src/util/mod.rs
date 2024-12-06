@@ -41,6 +41,7 @@ macro_rules! try_inner {
 
 pub trait ResultExt<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E>;
+    fn as_ref_mut_ok(&mut self) -> Result<&mut T, E>;
 }
 
 pub trait ResultDoubleExt<T, E> {
@@ -56,9 +57,16 @@ pub trait ResultSplitExt {
 
 impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E> {
-        match *self {
-            Ok(ref v) => Ok(v),
-            Err(e) => Err(e),
+        match self {
+            Ok(v) => Ok(v),
+            &Err(e) => Err(e),
+        }
+    }
+
+    fn as_ref_mut_ok(&mut self) -> Result<&mut T, E> {
+        match self {
+            Ok(v) => Ok(v),
+            &mut Err(e) => Err(e),
         }
     }
 }

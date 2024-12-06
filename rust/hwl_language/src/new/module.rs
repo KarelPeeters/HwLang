@@ -1,35 +1,40 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::BlockDomain;
 use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
-use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrProcessBody, IrRegister, IrRegisterInfo, IrStatement, IrWire, IrWireInfo};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrWire, IrWireInfo};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::HardwareType;
-use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{Block, ClockedBlock, CombinatorialBlock, DomainKind, GenericParameter, MaybeIdentifier, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::iter::IterExt;
 use crate::util::{result_pair, result_pair_split, ResultExt};
+use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Itertools};
+use itertools::{enumerate, zip_eq, Itertools};
+use std::hash::Hash;
 
-pub struct BodyElaborationState<'a, 'b> {
-    pub state: &'a mut CompileState<'b>,
+struct BodyElaborationState<'a, 'b> {
+    state: &'a mut CompileState<'b>,
 
-    pub scope_ports: Scope,
-    pub scope_body: Scope,
+    scope_ports: Scope,
+    scope_body: Scope,
 
-    pub ir_ports: Arena<IrPort, IrPortInfo>,
-    pub ir_wires: Arena<IrWire, IrWireInfo>,
-    pub ir_registers: Arena<IrRegister, IrRegisterInfo>,
+    ir_ports: Arena<IrPort, IrPortInfo>,
+    ir_wires: Arena<IrWire, IrWireInfo>,
+    ir_registers: Arena<IrRegister, IrRegisterInfo>,
+    drivers: Drivers,
 
-    pub register_initial_values: IndexMap<Register, Result<CompileValue, ErrorGuaranteed>>,
-    pub port_register_connections: IndexMap<Port, Register>,
+    register_initial_values: IndexMap<Register, Spanned<Result<CompileValue, ErrorGuaranteed>>>,
+    port_register_connections: IndexMap<Port, Register>,
 
-    pub processes: Vec<Result<IrProcess, ErrorGuaranteed>>,
+    clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
+    processes: Vec<Result<IrProcess, ErrorGuaranteed>>,
 }
 
 impl CompileState<'_> {
@@ -191,26 +196,28 @@ impl CompileState<'_> {
             ir_ports,
             ir_wires: Arena::default(),
             ir_registers: Arena::default(),
+            drivers: Drivers::default(),
 
             register_initial_values: IndexMap::new(),
             port_register_connections: IndexMap::new(),
+            clocked_block_statement_index_to_process_index: IndexMap::new(),
             processes: vec![],
         };
 
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future declarations
-        state.first_pass_declarations(body);
-        state.second_pass_processes(body);
+        state.pass_0_declarations(body);
+        state.pass_1_processes(body);
 
         // check driver validness
-        // TODO skip if any bad enough errors happened before
-        // TODO implement
-
-        // pull in register initial values
-        // TODO
+        // TODO skip if any bad enough errors happened before?
+        // TODO more checking: combinatorial blocks can't read values they will later write,
+        //   unless they have already written them
+        state.pass_2_check_drivers_and_populate_resets()?;
 
         // return result
         let processes = state.processes.into_iter().try_collect()?;
+
         Ok(IrModuleInfo {
             ports: state.ir_ports,
             registers: state.ir_registers,
@@ -232,7 +239,7 @@ impl CompileState<'_> {
 }
 
 impl BodyElaborationState<'_, '_> {
-    fn first_pass_declarations(&mut self, body: &Block<ModuleStatement>) {
+    fn pass_0_declarations(&mut self, body: &Block<ModuleStatement>) {
         let scope_body = self.scope_body;
         let diags = self.state.diags;
 
@@ -255,7 +262,7 @@ impl BodyElaborationState<'_, '_> {
                     let reg = self.elaborate_module_declaration_reg(decl);
                     let entry = reg.map(|reg_init| {
                         self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
-
+                        self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                         ScopedEntry::Direct(NamedValue::Register(reg_init.reg))
                     });
 
@@ -265,8 +272,17 @@ impl BodyElaborationState<'_, '_> {
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let (wire, process) =
                         result_pair_split(self.elaborate_module_declaration_wire(decl));
+                    let process = process.transpose();
 
-                    if let Some(process) = process.transpose() {
+                    if let Ok(wire) = wire {
+                        let mut drivers = IndexMap::new();
+                        if let Some(value) = &decl.value {
+                            drivers.insert_first(Driver::WireDeclaration, value.span);
+                        }
+                        self.drivers.wire_drivers.insert_first(wire, drivers);
+                    }
+
+                    if let Some(process) = process {
                         self.processes.push(process);
                     }
 
@@ -277,6 +293,10 @@ impl BodyElaborationState<'_, '_> {
                     // declare register that shadows the outer port, which is exactly what we want
                     match self.elaborate_module_declaration_reg_out_port(decl) {
                         Ok((port, reg_init)) => {
+                            let mut port_drivers = IndexMap::new();
+                            port_drivers.insert_first(Driver::OutputPortConnectionToReg, decl.span);
+                            self.drivers.output_port_drivers.insert_first(port, port_drivers);
+                            self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                             self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                             self.port_register_connections.insert_first(port, reg_init.reg);
 
@@ -297,13 +317,13 @@ impl BodyElaborationState<'_, '_> {
         }
     }
 
-    fn second_pass_processes(&mut self, body: &Block<ModuleStatement>) {
+    fn pass_1_processes(&mut self, body: &Block<ModuleStatement>) {
         let state = &mut self.state;
         let scope_body = self.scope_body;
         let diags = state.diags;
 
         let Block { span: _, statements } = body;
-        for stmt in statements {
+        for (statement_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // declarations, already handled
                 ModuleStatementKind::ConstDeclaration(_) => {}
@@ -316,9 +336,13 @@ impl BodyElaborationState<'_, '_> {
 
                     let block_domain = BlockDomain::Combinatorial;
                     let mut ir_locals = Arena::default();
-                    let ir_block = state.elaborate_ir_block(&mut ir_locals, &block_domain, scope_body, block);
+                    let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
+                        self.drivers.report_assignment(diags, Driver::CombinatorialBlock(statement_index), target)
+                    };
+                    let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, scope_body, block);
+
                     let ir_process = ir_block.map(|block| {
-                        let ir_body = IrProcessBody { locals: ir_locals, block };
+                        let ir_body = IrCombinatorialProcess { locals: ir_locals, block };
                         IrProcess::Combinatorial(ir_body)
                     });
                     self.processes.push(ir_process);
@@ -339,23 +363,180 @@ impl BodyElaborationState<'_, '_> {
 
                         let block_domain = Spanned {
                             span: span_keyword.join(domain.span),
-                            inner: domain.inner,
+                            inner: domain.inner.clone(),
                         };
                         let block_domain = BlockDomain::Clocked(block_domain);
+                        let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
+                            self.drivers.report_assignment(diags, Driver::ClockedBlock(statement_index), target)
+                        };
+                        let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, scope_body, block)?;
 
-                        state.elaborate_ir_block(&mut ir_locals, &block_domain, scope_body, block)
-                            .map(|block| {
-                                let ir_body = IrProcessBody { locals: ir_locals, block };
-                                IrProcess::Clocked(ir_domain, ir_body)
-                            })
+                        let ir_process = IrClockedProcess {
+                            locals: ir_locals,
+                            domain: ir_domain,
+                            on_clock: ir_block,
+                            // will be filled in later, during driver checking
+                            on_reset: IrBlock { statements: vec![] },
+                        };
+                        Ok(IrProcess::Clocked(ir_process))
                     });
+
+                    let process_index = self.processes.len();
                     self.processes.push(ir_process);
+                    self.clocked_block_statement_index_to_process_index.insert_first(statement_index, process_index);
                 }
                 ModuleStatementKind::Instance(_) => {
                     let e = diags.report_todo(stmt.span, "module instance");
                     self.processes.push(Err(e));
                 }
             }
+        }
+    }
+
+    fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
+        // check exactly one valid driver for each signal
+        // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
+
+        let Drivers { output_port_drivers, reg_drivers, wire_drivers } =
+            std::mem::take(&mut self.drivers);
+        let mut any_err = Ok(());
+
+        // wire-like signals, just check
+        for (&port, drivers) in &output_port_drivers {
+            any_err = any_err.and(self.check_drivers_for_port_or_wire("port", self.state.ports[port].id.span, drivers));
+        }
+        for (&wire, drivers) in &wire_drivers {
+            any_err = any_err.and(self.check_drivers_for_port_or_wire("wire", self.state.wires[wire].id.span(), drivers));
+        }
+
+        // registers: check and collect resets
+        for (&reg, drivers) in &reg_drivers {
+            let decl_span = self.state.registers[reg].id.span();
+
+            any_err = any_err.and(self.check_drivers_for_reg(decl_span, drivers));
+
+            // TODO allow zero drivers for registers, just create a dummy process for the reset value?
+            match self.check_exactly_one_driver("register", self.state.registers[reg].id.span(), drivers) {
+                Err(e) => any_err = Err(e),
+                Ok(driver) => any_err = any_err.and(self.pull_register_init_into_process(reg, driver)),
+            }
+        }
+
+        // put drivers back
+        assert_eq!(self.drivers, Drivers::default());
+        self.drivers = Drivers { output_port_drivers, reg_drivers, wire_drivers };
+
+        any_err
+    }
+
+    fn pull_register_init_into_process(&mut self, reg: Register, driver: Driver) -> Result<(), ErrorGuaranteed> {
+        let diags = self.state.diags;
+        let reg_info = &self.state.registers[reg];
+
+        if let Driver::ClockedBlock(stmt_index) = driver {
+            if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
+                if let IrProcess::Clocked(process) = self.processes[process_index].as_ref_mut_ok()? {
+                    if let Some(init) = self.register_initial_values.get(&reg) {
+                        let init_span = init.span;
+                        let init = init.inner.as_ref_ok()?;
+
+                        // TODO fix duplication with lowering in block
+                        let init_ir = match init.as_hardware_value() {
+                            HardwareValueResult::Success(v) => Some(v),
+                            HardwareValueResult::Undefined => None,
+                            HardwareValueResult::PartiallyUndefined => {
+                                return Err(diags.report_todo(init_span, "partially undefined register reset value"))
+                            }
+                            HardwareValueResult::Unrepresentable => {
+                                // TODO fix this duplication
+                                let reason = "compile time value fits in hardware type but is not convertible to hardware value";
+                                return Err(diags.report_internal_error(init_span, reason))
+                            }
+                        };
+
+                        if let Some(init_ir) = init_ir {
+                            process.on_reset.statements.push(IrStatement::Assign(
+                                IrAssignmentTarget::Register(reg_info.ir),
+                                init_ir,
+                            ));
+                        }
+                        return Ok(())
+                    }
+                }
+            }
+        }
+
+        Err(diags.report_internal_error(reg_info.id.span(), "failure while pulling reset value into clocked process"))
+    }
+
+    fn check_drivers_for_port_or_wire(&self, kind: &str, decl_span: Span, drivers: &IndexMap<Driver, Span>) -> Result<(), ErrorGuaranteed> {
+        let mut any_err = Ok(());
+
+        for (&driver, &span) in drivers {
+            match driver.kind() {
+                DriverKind::ClockedBlock => {
+                    let diag = Diagnostic::new(format!("{kind} cannot be driven by clocked block"))
+                        .add_error(span, "driven incorrectly here")
+                        .add_info(decl_span, "declared here")
+                        .footer(Level::Help, format!("either drive the {kind} from a combinatorial block or turn it into a register"))
+                        .finish();
+                    any_err = Err(self.state.diags.report(diag));
+                }
+                DriverKind::WiredConnection => {
+                    // correct, do nothing
+                }
+            }
+        }
+
+        any_err = any_err.and(self.check_exactly_one_driver(kind, decl_span, drivers).map(|_| ()));
+
+        any_err
+    }
+
+    fn check_drivers_for_reg(&self, decl_span: Span, drivers: &IndexMap<Driver, Span>) -> Result<(), ErrorGuaranteed> {
+        let mut any_err = Ok(());
+
+        for (&driver, &span) in drivers {
+            match driver.kind() {
+                DriverKind::ClockedBlock => {
+                    // correct, do nothing
+                }
+                DriverKind::WiredConnection => {
+                    let diag = Diagnostic::new("register can only be driven by clocked block")
+                        .add_error(span, "driven incorrectly here")
+                        .add_info(decl_span, "declared here")
+                        .footer(Level::Help, "drive the register from a clocked block or turn it into a wire")
+                        .finish();
+                    any_err = Err(self.state.diags.report(diag));
+                }
+            }
+        }
+
+        any_err
+    }
+
+    fn check_exactly_one_driver(&self, kind: &str, decl_span: Span, drivers: &IndexMap<Driver, Span>) -> Result<Driver, ErrorGuaranteed> {
+        match drivers.len() {
+            0 => {
+                let diag = Diagnostic::new(format!("{kind} has no driver"))
+                    .add_error(decl_span, "declared here")
+                    .finish();
+                Err(self.state.diags.report(diag))
+            }
+            1 => {
+                let (&driver, _) = drivers.iter().single().unwrap();
+                Ok(driver)
+            }
+            _ => {
+                let mut diag = Diagnostic::new(format!("{kind} has multiple drivers"));
+                for (_, &span) in drivers {
+                    diag = diag.add_error(span, "driven here");
+                }
+                let diag = diag
+                    .add_info(decl_span, "declared here")
+                    .finish();
+                Err(self.state.diags.report(diag))
+            },
         }
     }
 
@@ -435,8 +616,8 @@ impl BodyElaborationState<'_, '_> {
             ir_statements.push(Ok(IrStatement::Assign(target, source)));
 
             let ir_statements = ir_statements.into_iter().try_collect()?;
-            let ir_body = IrProcessBody { locals: ir_locals, block: IrBlock { statements: ir_statements } };
-            let ir_process = IrProcess::Combinatorial(ir_body);
+            let ir_process = IrCombinatorialProcess { locals: ir_locals, block: IrBlock { statements: ir_statements } };
+            let ir_process = IrProcess::Combinatorial(ir_process);
 
             Ok(ir_process)
         }).transpose()?;
@@ -468,6 +649,7 @@ impl BodyElaborationState<'_, '_> {
             state.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned)?;
             Ok(init)
         });
+        let init = Spanned { span: init_span, inner: init };
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
@@ -489,6 +671,7 @@ impl BodyElaborationState<'_, '_> {
         let scope_ports = self.scope_ports;
 
         let RegOutPortMarker { span: _, id, init } = decl;
+        let init_span = init.span;
 
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
         let port = state.scopes[scope_ports].find_immediate_str(state.diags, &id.string, Visibility::Private)?;
@@ -542,6 +725,7 @@ impl BodyElaborationState<'_, '_> {
             state.check_type_contains_compile_value(decl.span, ty_spanned, init.as_ref())?;
             Ok(init.inner)
         });
+        let init = Spanned { span: init_span, inner: init };
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
@@ -561,5 +745,67 @@ impl BodyElaborationState<'_, '_> {
 #[derive(Debug)]
 struct RegisterInit {
     reg: Register,
-    init: Result<CompileValue, ErrorGuaranteed>,
+    init: Spanned<Result<CompileValue, ErrorGuaranteed>>,
+}
+
+/// The usize fields are here to keep different drivers of the same type separate for Eq and Hash,
+/// so we can correctly determining whether there are multiple drivers.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Driver {
+    // wire-like
+    WireDeclaration,
+    OutputPortConnectionToReg,
+    InstancePortConnection(usize),
+    CombinatorialBlock(usize),
+
+    // register-like
+    ClockedBlock(usize),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum DriverKind {
+    ClockedBlock,
+    WiredConnection,
+}
+
+impl Driver {
+    fn kind(&self) -> DriverKind {
+        match self {
+            Driver::WireDeclaration | Driver::CombinatorialBlock(_) |
+            Driver::InstancePortConnection(_) | Driver::OutputPortConnectionToReg =>
+                DriverKind::WiredConnection,
+            Driver::ClockedBlock(_) =>
+                DriverKind::ClockedBlock,
+        }
+    }
+}
+
+#[derive(Default, Debug, Eq, PartialEq)]
+struct Drivers {
+    // For each signal, for each driver, the first span.
+    // This span will be used in error messages in case there are multiple drivers for the same signal.
+    output_port_drivers: IndexMap<Port, IndexMap<Driver, Span>>,
+    reg_drivers: IndexMap<Register, IndexMap<Driver, Span>>,
+    wire_drivers: IndexMap<Wire, IndexMap<Driver, Span>>,
+}
+
+impl Drivers {
+    pub fn report_assignment(&mut self, diags: &Diagnostics, driver: Driver, target: Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed> {
+        fn record<T: Hash + Eq>(diags: &Diagnostics, map: &mut IndexMap<T, IndexMap<Driver, Span>>, driver: Driver, target: T, target_span: Span) -> Result<(), ErrorGuaranteed> {
+            map.get_mut(&target)
+                .ok_or_else(|| diags.report_internal_error(target_span, "failed to record driver, target not yet mapped"))?
+                .entry(driver)
+                .or_insert(target_span);
+            Ok(())
+        }
+
+        match target.inner {
+            &AssignmentTarget::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
+            &AssignmentTarget::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
+            &AssignmentTarget::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
+            &AssignmentTarget::Variable(_) => {
+                Err(diags.report_todo(target.span, "variable assignment"))
+            }
+        }
+    }
 }

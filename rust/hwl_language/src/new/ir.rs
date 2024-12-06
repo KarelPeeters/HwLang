@@ -63,18 +63,26 @@ pub struct IrVariableInfo {
 
 #[derive(Debug)]
 pub enum IrProcess {
-    Clocked(SyncDomain<IrExpression>, IrProcessBody),
-    Combinatorial(IrProcessBody),
+    Clocked(IrClockedProcess),
+    Combinatorial(IrCombinatorialProcess),
 }
 
 /// The execution/memory model is:
-/// * all writes are immediately visible to future reads in the current block
+/// * all writes are immediately visible to later reads in the current block
 /// * writes only become visible to other blocks once all blocks (recursively) triggered by the current event
-/// have fully finished running
+///   have fully finished running
 ///
 /// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug)]
-pub struct IrProcessBody {
+pub struct IrClockedProcess {
+    pub domain: SyncDomain<IrExpression>,
+    pub locals: IrLocals,
+    pub on_clock: IrBlock,
+    pub on_reset: IrBlock,
+}
+
+#[derive(Debug)]
+pub struct IrCombinatorialProcess {
     pub locals: IrLocals,
     pub block: IrBlock,
 }

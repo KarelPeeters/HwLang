@@ -22,6 +22,9 @@ pub module top ports(
     clocked(clk, rst) {
         s = !s;
         y = s;
+    }
+
+    combinatorial {
         w0 = false;
     }
 
