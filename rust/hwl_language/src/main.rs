@@ -7,6 +7,7 @@ use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagn
 use hwl_language::data::parsed::ParsedDatabase;
 use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::new::compile::compile;
+use hwl_language::new::lower_verilog::lower;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
 
@@ -44,8 +45,8 @@ fn main() {
     // run compilation
     let diags = Diagnostics::new_with_handler(handler);
     let parsed = ParsedDatabase::new(&diags, &source);
-    let ir_design = compile(&diags, &source, &parsed);
-    // TODO lower to verilog
+    let compiled = compile(&diags, &source, &parsed);
+    let lowered = lower(&diags, &source, &parsed, &compiled);
 
     // print diagnostics
     let diagnostics = diags.finish();
@@ -58,17 +59,16 @@ fn main() {
     }
 
     // print result
-    // TODO print verilog again
-    println!("{:?}", ir_design);
-    // let LoweredDatabase { top_module_name, verilog_source, module_names: _ } = lowered;
-    // println!("top module name: {:?}", top_module_name);
-    // println!("verilog source:");
-    // println!("----------------------------------------");
-    // print!("{}", verilog_source);
-    // if !verilog_source.ends_with("\n") {
-    //     println!();
-    // }
-    // println!("----------------------------------------");
+    if let Ok(lowered) = lowered {
+        println!("top module name: {:?}", lowered.top_module_name);
+        println!("verilog source:");
+        println!("----------------------------------------");
+        print!("{}", lowered.verilog_source);
+        if !lowered.verilog_source.ends_with("\n") {
+            println!();
+        }
+        println!("----------------------------------------");
+    }
 
     if any_error {
         std::process::exit(1);

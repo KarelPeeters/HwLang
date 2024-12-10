@@ -160,10 +160,7 @@ impl HardwareType {
         match self {
             HardwareType::Clock => BigUint::one(),
             HardwareType::Bool => BigUint::one(),
-            HardwareType::Int(range) => {
-                let ClosedIntRange { start_inc, end_inc } = range;
-                IntRepresentation::for_range(start_inc.clone()..=end_inc.clone()).bits
-            }
+            HardwareType::Int(range) => IntRepresentation::for_range(range).width,
             HardwareType::Array(inner, len) => inner.bit_width() * len,
         }
     }

@@ -7,7 +7,7 @@ use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{Block, ClockedBlock, CombinatorialBlock, DomainKind, GenericParameter, MaybeIdentifier, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration};
+use crate::syntax::ast::{Block, ClockedBlock, CombinatorialBlock, DomainKind, GenericParameter, Identifier, MaybeIdentifier, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind, PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::arena::Arena;
@@ -40,24 +40,32 @@ struct BodyElaborationState<'a, 'b> {
 impl CompileState<'_> {
     pub fn elaborate_module_new(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ModuleElaborationInfo { item, args } = self.elaborated_modules[module_elaboration].clone();
-        let &ast::ItemDefModule { span: def_span, vis: _, id: _, ref params, ref ports, ref body } = &self.parsed[item];
+        let &ast::ItemDefModule { span: def_span, vis: _, id: ref def_id, ref params, ref ports, ref body } = &self.parsed[item];
         let scope_file = self.file_scope(item.file())?;
 
-        let scope_params = self.elaborate_module_generics(def_span, scope_file, params, args)?;
+        let (scope_params, debug_info_generic_args) = self.elaborate_module_generics(def_span, scope_file, params, args)?;
         let (scope_ports, ir_ports) = self.elaborate_module_ports(def_span, scope_params, ports);
-        self.elaborate_module_body(ir_ports, scope_ports, body)
+        self.elaborate_module_body(def_id, debug_info_generic_args, ir_ports, scope_ports, body)
     }
 
-    fn elaborate_module_generics(&mut self, def_span: Span, file_scope: Scope, params: &Option<Spanned<Vec<GenericParameter>>>, args: Option<Vec<CompileValue>>) -> Result<Scope, ErrorGuaranteed> {
+    fn elaborate_module_generics(
+        &mut self,
+        def_span: Span,
+        file_scope: Scope,
+        params: &Option<Spanned<Vec<GenericParameter>>>,
+        args: Option<Vec<CompileValue>>,
+    ) -> Result<(Scope, Option<Vec<(Identifier, CompileValue)>>), ErrorGuaranteed> {
         let diags = self.diags;
         let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
 
-        match (params, args) {
-            (None, None) => {}
+        let debug_info_generic_args = match (params, args) {
+            (None, None) => None,
             (Some(params), Some(args)) => {
                 if params.inner.len() != args.len() {
                     throw!(diags.report_internal_error(params.span, "mismatched generic argument count"));
                 }
+
+                let mut debug_info_generic_args = vec![];
 
                 for (param, arg) in zip_eq(&params.inner, args) {
                     let param_ty = self.eval_expression_as_ty(params_scope, &param.ty);
@@ -66,7 +74,7 @@ impl CompileState<'_> {
                         if param_ty.contains_type(&arg.ty()) {
                             let param = self.parameters.push(ConstantInfo {
                                 id: MaybeIdentifier::Identifier(param.id.clone()),
-                                value: arg,
+                                value: arg.clone(),
                             });
                             Ok(ScopedEntry::Direct(NamedValue::Parameter(param)))
                         } else {
@@ -83,12 +91,15 @@ impl CompileState<'_> {
                     });
 
                     self.scopes[params_scope].declare(diags, &param.id, entry, Visibility::Private);
+                    debug_info_generic_args.push((param.id.clone(), arg));
                 }
+
+                Some(debug_info_generic_args)
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
         };
 
-        Ok(params_scope)
+        Ok((params_scope, debug_info_generic_args))
     }
 
     fn elaborate_module_ports(
@@ -124,9 +135,11 @@ impl CompileState<'_> {
                     // build entry
                     let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
                         let ir_port = ir_ports.push(IrPortInfo {
-                            name: id.string.clone(),
                             direction: direction.inner,
                             ty: ty.inner.to_ir(),
+                            debug_info_id: id.clone(),
+                            debug_info_ty: ty.inner.clone(),
+                            debug_info_domain: domain.inner.to_diagnostic_string(self)
                         });
                         let port = self.ports.push(PortInfo {
                             id: id.clone(),
@@ -158,9 +171,11 @@ impl CompileState<'_> {
                         // build entry
                         let entry = result_pair(domain.as_ref_ok(), ty).and_then(|(domain, ty)| {
                             let ir_port = ir_ports.push(IrPortInfo {
-                                name: id.string.clone(),
                                 direction: direction.inner,
                                 ty: ty.inner.to_ir(),
+                                debug_info_id: id.clone(),
+                                debug_info_ty: ty.inner.clone(),
+                                debug_info_domain: domain.inner.to_diagnostic_string(self),
                             });
                             let port = self.ports.push(PortInfo {
                                 id: id.clone(),
@@ -183,6 +198,8 @@ impl CompileState<'_> {
 
     fn elaborate_module_body(
         &mut self,
+        def_id: &Identifier,
+        debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         scope_ports: Scope,
         body: &Block<ModuleStatement>,
@@ -223,6 +240,8 @@ impl CompileState<'_> {
             registers: state.ir_registers,
             wires: state.ir_wires,
             processes,
+            debug_info_id: def_id.clone(),
+            debug_info_generic_args,
         })
     }
 
@@ -450,7 +469,7 @@ impl BodyElaborationState<'_, '_> {
                             HardwareValueResult::Unrepresentable => {
                                 // TODO fix this duplication
                                 let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                                return Err(diags.report_internal_error(init_span, reason))
+                                return Err(diags.report_internal_error(init_span, reason));
                             }
                         };
 
@@ -460,7 +479,7 @@ impl BodyElaborationState<'_, '_> {
                                 init_ir,
                             ));
                         }
-                        return Ok(())
+                        return Ok(());
                     }
                 }
             }
@@ -536,7 +555,7 @@ impl BodyElaborationState<'_, '_> {
                     .add_info(decl_span, "declared here")
                     .finish();
                 Err(self.state.diags.report(diag))
-            },
+            }
         }
     }
 
@@ -596,8 +615,8 @@ impl BodyElaborationState<'_, '_> {
 
         // build wire
         let ir_wire = self.ir_wires.push(IrWireInfo {
-            debug_name: id.string().map(String::from),
             ty: ty.to_ir(),
+            debug_info_id: id.clone(),
         });
         let wire = state.wires.push(WireInfo {
             id: id.clone(),
@@ -653,8 +672,8 @@ impl BodyElaborationState<'_, '_> {
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            debug_name: id.string().map(String::from),
             ty: ty.to_ir(),
+            debug_info_id: id.clone(),
         });
         let reg = state.registers.push(RegisterInfo {
             id: id.clone(),
@@ -729,8 +748,8 @@ impl BodyElaborationState<'_, '_> {
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            debug_name: Some(id.string.to_string()),
             ty: port_info.ty.inner.to_ir(),
+            debug_info_id: MaybeIdentifier::Identifier(id.clone()),
         });
         let reg = state.registers.push(RegisterInfo {
             id: MaybeIdentifier::Identifier(id.clone()),

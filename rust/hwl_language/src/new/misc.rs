@@ -1,5 +1,5 @@
 use crate::data::parsed::AstRefItem;
-use crate::new::compile::{Port, Register, Wire};
+use crate::new::compile::{CompileState, Port, Register, Wire};
 use crate::new::value::NamedValue;
 use crate::syntax::ast::{DomainKind, SyncDomain};
 
@@ -37,7 +37,7 @@ pub enum ValueDomain<V = DomainSignal> {
 
 impl ValueDomain {
     pub fn join(&self, other: &Self) -> Self {
-        // expand clock equality
+        // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
             (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) =>
                 other.clone(),
@@ -61,6 +61,30 @@ impl ValueDomain {
         match domain {
             PortDomain::Clock => ValueDomain::Clock,
             PortDomain::Kind(kind) => ValueDomain::from_domain_kind(kind),
+        }
+    }
+}
+
+impl DomainSignal {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        match self {
+            &DomainSignal::Port(port) => s.ports[port].id.string.clone(),
+            &DomainSignal::Wire(wire) => s.wires[wire].id.string().unwrap_or("_wire").to_owned(),
+            &DomainSignal::Register(reg) => s.registers[reg].id.string().unwrap_or("_reg").to_owned(),
+            DomainSignal::BoolNot(x) => format!("!({})", x.to_diagnostic_string(s)),
+        }
+    }
+}
+
+impl PortDomain<DomainSignal> {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        match self {
+            PortDomain::Clock => "clock".to_owned(),
+            PortDomain::Kind(kind) => match kind {
+                DomainKind::Async => "async".to_owned(),
+                DomainKind::Sync(sync) =>
+                    format!("sync({}, {})", sync.clock.to_diagnostic_string(s), sync.reset.to_diagnostic_string(s)),
+            },
         }
     }
 }

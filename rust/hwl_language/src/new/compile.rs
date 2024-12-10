@@ -2,7 +2,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::ir::{IrDesign, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
+use crate::new::ir::{IrDatabase, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::CompileValue;
@@ -24,7 +24,7 @@ use itertools::{enumerate, Itertools};
 //   * type-checking-only generic instantiations of modules
 //   * type-check all modules without generics automatically
 //   * type-check modules with generics partially
-pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> IrDesign {
+pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> IrDatabase {
     // populate file scopes
     let mut map_file_scopes = IndexMap::new();
     let mut scopes = Scopes::default();
@@ -111,7 +111,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
 
     // return result
     assert!(state.elaboration_stack.is_empty());
-    IrDesign {
+    IrDatabase {
         top_module,
         modules: state.ir_modules,
     }

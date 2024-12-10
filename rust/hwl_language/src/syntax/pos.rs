@@ -55,6 +55,10 @@ impl Span {
         Self::new(at, at)
     }
 
+    pub fn single_at(at: Pos) -> Self {
+        Self::new(at, Pos { file: at.file, byte: at.byte })
+    }
+
     pub fn contains(self, other: Span) -> bool {
         assert_eq!(self.start.file, other.start.file);
         self.start.byte <= other.start.byte && other.end.byte <= self.end.byte

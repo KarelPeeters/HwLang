@@ -1,13 +1,14 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::types::{ClosedIntRange, Type};
+use crate::new::types::{ClosedIntRange, HardwareType, Type};
+use crate::new::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{PortDirection, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
 
-// Variant of `Type` that can only represent types that are valid in hardware.
+/// Variant of `Type` that can only represent types that are valid in hardware.
 #[derive(Debug)]
 pub enum IrType {
     Bool,
@@ -16,9 +17,9 @@ pub enum IrType {
 }
 
 #[derive(Debug)]
-pub struct IrDesign {
-    pub top_module: Result<IrModule, ErrorGuaranteed>,
+pub struct IrDatabase {
     pub modules: Arena<IrModule, IrModuleInfo>,
+    pub top_module: Result<IrModule, ErrorGuaranteed>,
 }
 
 new_index_type!(pub IrModule);
@@ -34,31 +35,47 @@ pub struct IrModuleInfo {
     pub wires: Arena<IrWire, IrWireInfo>,
 
     pub processes: Vec<IrProcess>,
+
+    pub debug_info_id: Identifier,
+    pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
+}
+
+impl IrModuleInfo {
+    pub fn instantiated_submodules(&self) -> Vec<IrModule> {
+        // TODO fill in once instantiations are implemented
+        vec![]
+    }
 }
 
 #[derive(Debug)]
 pub struct IrPortInfo {
-    pub name: String,
     pub direction: PortDirection,
     pub ty: IrType,
+
+    pub debug_info_id: Identifier,
+    pub debug_info_ty: HardwareType,
+    pub debug_info_domain: String,
 }
 
 #[derive(Debug)]
 pub struct IrRegisterInfo {
-    pub debug_name: Option<String>,
     pub ty: IrType,
+
+    pub debug_info_id: MaybeIdentifier,
 }
 
 #[derive(Debug)]
 pub struct IrWireInfo {
-    pub debug_name: Option<String>,
     pub ty: IrType,
+
+    pub debug_info_id: MaybeIdentifier,
 }
 
 #[derive(Debug)]
 pub struct IrVariableInfo {
-    pub debug_name: Option<String>,
     pub ty: IrType,
+
+    pub debug_info_id: MaybeIdentifier,
 }
 
 #[derive(Debug)]
@@ -151,11 +168,30 @@ impl IrType {
     pub fn bit_width(&self) -> BigUint {
         match self {
             IrType::Bool => BigUint::one(),
-            IrType::Int(range) => {
-                let ClosedIntRange { start_inc, end_inc } = range;
-                IntRepresentation::for_range(start_inc.clone()..=end_inc.clone()).bits
-            }
+            IrType::Int(range) => IntRepresentation::for_range(range).width,
             IrType::Array(inner, len) => inner.bit_width() * len,
+        }
+    }
+}
+
+impl IrExpression {
+    pub fn to_diagnostic_string(&self, m: &IrModuleInfo) -> String {
+        match self {
+            IrExpression::BoolNot(x) =>
+                format!("!({})", x.to_diagnostic_string(m)),
+
+            IrExpression::Bool(x) => x.to_string(),
+            IrExpression::Int(x) => x.to_string(),
+            IrExpression::Array(x) => {
+                let inner = x.iter().map(|x| x.to_diagnostic_string(m)).collect::<Vec<_>>().join(", ");
+                format!("[{inner}]")
+            }
+            &IrExpression::Port(x) => m.ports[x].debug_info_id.string.clone(),
+            &IrExpression::Wire(x) => m.wires[x].debug_info_id.string().unwrap_or("_wire").to_owned(),
+            &IrExpression::Register(x) => m.registers[x].debug_info_id.string().unwrap_or("_register").to_owned(),
+
+            // TODO support printing variables with their real names if in a context where they exist
+            &IrExpression::Variable(x) => "_variable".to_owned(),
         }
     }
 }
