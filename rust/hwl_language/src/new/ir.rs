@@ -2,7 +2,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::new::types::{ClosedIntRange, HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
@@ -34,7 +34,7 @@ pub struct IrModuleInfo {
     pub registers: Arena<IrRegister, IrRegisterInfo>,
     pub wires: Arena<IrWire, IrWireInfo>,
 
-    pub processes: Vec<IrProcess>,
+    pub processes: Vec<Spanned<IrProcess>>,
 
     pub debug_info_id: Identifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
@@ -62,6 +62,8 @@ pub struct IrRegisterInfo {
     pub ty: IrType,
 
     pub debug_info_id: MaybeIdentifier,
+    pub debug_info_ty: HardwareType,
+    pub debug_info_domain: String,
 }
 
 #[derive(Debug)]
@@ -69,6 +71,8 @@ pub struct IrWireInfo {
     pub ty: IrType,
 
     pub debug_info_id: MaybeIdentifier,
+    pub debug_info_ty: HardwareType,
+    pub debug_info_domain: String,
 }
 
 #[derive(Debug)]
@@ -92,22 +96,22 @@ pub enum IrProcess {
 /// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug)]
 pub struct IrClockedProcess {
-    pub domain: SyncDomain<IrExpression>,
-    pub locals: IrLocals,
+    pub domain: Spanned<SyncDomain<IrExpression>>,
+    pub locals: IrVariables,
     pub on_clock: IrBlock,
     pub on_reset: IrBlock,
 }
 
 #[derive(Debug)]
 pub struct IrCombinatorialProcess {
-    pub locals: IrLocals,
+    pub locals: IrVariables,
     pub block: IrBlock,
 }
 
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
 pub type IrWires = Arena<IrWire, IrWireInfo>;
 pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;
-pub type IrLocals = Arena<IrVariable, IrVariableInfo>;
+pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
 
 #[derive(Debug)]
 pub enum IrSignal {
@@ -120,7 +124,7 @@ pub enum IrSignal {
 
 #[derive(Debug)]
 pub struct IrBlock {
-    pub statements: Vec<IrStatement>,
+    pub statements: Vec<Spanned<IrStatement>>,
 }
 
 #[derive(Debug)]
@@ -146,7 +150,6 @@ pub enum IrExpression {
     // constants
     Bool(bool),
     Int(BigInt),
-    Array(Vec<IrExpression>),
     // "signals"
     Port(IrPort),
     Wire(IrWire),
@@ -154,6 +157,7 @@ pub enum IrExpression {
     Variable(IrVariable),
     // actual expressions
     BoolNot(Box<IrExpression>),
+    Array(Vec<IrExpression>),
 }
 
 impl IrType {
@@ -187,8 +191,8 @@ impl IrExpression {
                 format!("[{inner}]")
             }
             &IrExpression::Port(x) => m.ports[x].debug_info_id.string.clone(),
-            &IrExpression::Wire(x) => m.wires[x].debug_info_id.string().unwrap_or("_wire").to_owned(),
-            &IrExpression::Register(x) => m.registers[x].debug_info_id.string().unwrap_or("_register").to_owned(),
+            &IrExpression::Wire(x) => m.wires[x].debug_info_id.string().to_owned(),
+            &IrExpression::Register(x) => m.registers[x].debug_info_id.string().to_owned(),
 
             // TODO support printing variables with their real names if in a context where they exist
             &IrExpression::Variable(x) => "_variable".to_owned(),

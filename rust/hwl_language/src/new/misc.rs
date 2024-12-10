@@ -69,8 +69,8 @@ impl DomainSignal {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         match self {
             &DomainSignal::Port(port) => s.ports[port].id.string.clone(),
-            &DomainSignal::Wire(wire) => s.wires[wire].id.string().unwrap_or("_wire").to_owned(),
-            &DomainSignal::Register(reg) => s.registers[reg].id.string().unwrap_or("_reg").to_owned(),
+            &DomainSignal::Wire(wire) => s.wires[wire].id.string().to_owned(),
+            &DomainSignal::Register(reg) => s.registers[reg].id.string().to_owned(),
             DomainSignal::BoolNot(x) => format!("!({})", x.to_diagnostic_string(s)),
         }
     }
@@ -80,11 +80,22 @@ impl PortDomain<DomainSignal> {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         match self {
             PortDomain::Clock => "clock".to_owned(),
-            PortDomain::Kind(kind) => match kind {
-                DomainKind::Async => "async".to_owned(),
-                DomainKind::Sync(sync) =>
-                    format!("sync({}, {})", sync.clock.to_diagnostic_string(s), sync.reset.to_diagnostic_string(s)),
-            },
+            PortDomain::Kind(kind) => kind.to_diagnostic_string(s),
         }
+    }
+}
+
+impl DomainKind<DomainSignal> {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        match self {
+            DomainKind::Async => "async".to_owned(),
+            DomainKind::Sync(sync) => sync.to_diagnostic_string(s),
+        }
+    }
+}
+
+impl SyncDomain<DomainSignal> {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        format!("sync({}, {})", self.clock.to_diagnostic_string(s), self.reset.to_diagnostic_string(s))
     }
 }

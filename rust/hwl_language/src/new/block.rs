@@ -2,7 +2,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::{Scope, Visibility};
 use crate::new::compile::CompileState;
 use crate::new::expression::ExpressionContext;
-use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrLocals, IrStatement};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrStatement, IrVariables};
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{AssignmentTarget, HardwareValueResult, MaybeCompile, NamedValue};
@@ -15,8 +15,8 @@ use itertools::Itertools;
 // TODO move
 // TODO create some common ir process builder
 pub struct IrContext<'b> {
-    ir_locals: &'b mut IrLocals,
-    ir_statements: &'b mut Vec<Result<IrStatement, ErrorGuaranteed>>,
+    ir_locals: &'b mut IrVariables,
+    ir_statements: &'b mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
 }
 
 impl ExpressionContext for IrContext<'_> {
@@ -89,7 +89,7 @@ pub enum BlockDomain {
 
 impl CompileState<'_> {
     // TODO move
-    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrLocals, ir_statements: &mut Vec<Result<IrStatement, ErrorGuaranteed>>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrVariables, ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>, scope: Scope, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let mut ctx = IrContext { ir_locals, ir_statements };
         self.eval_expression(&mut ctx, scope, value)
     }
@@ -102,7 +102,7 @@ impl CompileState<'_> {
     pub fn elaborate_ir_block(
         &mut self,
         report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
-        ir_locals: &mut IrLocals,
+        ir_locals: &mut IrVariables,
         block_domain: &BlockDomain,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
@@ -113,6 +113,7 @@ impl CompileState<'_> {
         let mut ir_statements = vec![];
 
         for stmt in statements {
+            let stmt_span = stmt.span;
             match &stmt.inner {
                 BlockStatementKind::ConstDeclaration(_) => throw!(self.diags.report_todo(stmt.span, "statement kind ConstDeclaration")),
                 BlockStatementKind::VariableDeclaration(_) => throw!(self.diags.report_todo(stmt.span, "statement kind VariableDeclaration")),
@@ -212,7 +213,7 @@ impl CompileState<'_> {
                         report_assignment(Spanned { span: target_span, inner: &target })?;
                         Ok(IrStatement::Assign(ir_target, ir_value))
                     });
-                    ir_statements.push(stmt);
+                    ir_statements.push(stmt.map(|stmt| Spanned { span: stmt_span, inner: stmt }));
                 }
                 BlockStatementKind::Expression(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Expression")),
                 BlockStatementKind::Block(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Block")),

@@ -623,10 +623,10 @@ impl MaybeIdentifier {
         }
     }
 
-    pub fn string(&self) -> Option<&str> {
+    pub fn string(&self) -> &str {
         match self {
-            MaybeIdentifier::Dummy(_span) => None,
-            MaybeIdentifier::Identifier(id) => Some(&id.string),
+            MaybeIdentifier::Dummy(_span) => "_",
+            MaybeIdentifier::Identifier(id) => &id.string,
         }
     }
 }

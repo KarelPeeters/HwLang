@@ -130,8 +130,8 @@ impl CompileState<'_> {
     fn domain_signal_to_diagnostic_string(&self, signal: &DomainSignal) -> String {
         match signal {
             &DomainSignal::Port(port) => self.ports[port].id.string.clone(),
-            &DomainSignal::Wire(wire) => self.wires[wire].id.string().unwrap_or("_").to_string(),
-            &DomainSignal::Register(reg) => self.registers[reg].id.string().unwrap_or("_").to_string(),
+            &DomainSignal::Wire(wire) => self.wires[wire].id.string().to_string(),
+            &DomainSignal::Register(reg) => self.registers[reg].id.string().to_string(),
             DomainSignal::BoolNot(signal) => format!("!{}", self.domain_signal_to_diagnostic_string(signal)),
         }
     }

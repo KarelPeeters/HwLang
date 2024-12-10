@@ -1,11 +1,13 @@
 use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::new::ir::{IrDatabase, IrModule, IrModuleInfo, IrPortInfo, IrType};
-use crate::syntax::ast::{Identifier, PortDirection};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrWire, IrWireInfo};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
+use crate::util::ResultExt;
 use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
 use itertools::enumerate;
@@ -65,7 +67,7 @@ struct LoweredNameScope {
 
 impl LoweredNameScope {
     pub fn exact_for_new_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
-        check_identifier_valid(diags, id)?;
+        check_identifier_valid(diags, Spanned { span: id.span, inner: &id.string })?;
 
         if !self.used.insert(id.string.clone()) {
             throw!(diags.report_internal_error(id.span, format!("lowered identifier `{}` already used its scope", id.string)))
@@ -74,27 +76,36 @@ impl LoweredNameScope {
         Ok(LoweredName(id.string.clone()))
     }
 
-    pub fn unique_for_new_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
-        check_identifier_valid(diags, id)?;
+    pub fn make_unique_maybe_id(&mut self, diags: &Diagnostics, id: &MaybeIdentifier) -> Result<LoweredName, ErrorGuaranteed> {
+        self.make_unique_str(diags, id.span(), id.string())
+    }
 
-        if self.used.insert(id.string.clone()) {
-            return Ok(LoweredName(id.string.clone()));
+    pub fn make_unique_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
+        self.make_unique_str(diags, id.span, &id.string)
+    }
+
+    pub fn make_unique_str(&mut self, diags: &Diagnostics, span: Span, string: &str) -> Result<LoweredName, ErrorGuaranteed> {
+        check_identifier_valid(diags, Spanned { span, inner: string })?;
+
+        if self.used.insert(string.to_owned()) {
+            return Ok(LoweredName(string.to_owned()));
         }
 
+        // TODO speed this up?
         for i in 0u32.. {
-            let suffixed = format!("{}_{}", id.string, i);
+            let suffixed = format!("{}_{}", string, i);
             if self.used.insert(suffixed.clone()) {
                 return Ok(LoweredName(suffixed));
             }
         }
 
-        throw!(diags.report_internal_error(id.span, format!("failed to generate unique lowered identifier for `{}`", id.string)))
+        throw!(diags.report_internal_error(span, format!("failed to generate unique lowered identifier for `{}`", string)))
     }
 }
 
 // TODO replace with name mangling that forces everything to be valid
-fn check_identifier_valid(diags: &Diagnostics, id: &Identifier) -> Result<(), ErrorGuaranteed> {
-    let s = &id.string;
+fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> Result<(), ErrorGuaranteed> {
+    let s = id.inner;
 
     if s.len() == 0 {
         throw!(diags.report_simple("invalid verilog identifier: identifier cannot be empty", id.span, "identifier used here"))
@@ -115,6 +126,14 @@ fn check_identifier_valid(diags: &Diagnostics, id: &Identifier) -> Result<(), Er
 /// Indentation used in the generated code.
 const I: &str = "    ";
 
+#[derive(Debug, Copy, Clone)]
+struct NameMap<'a> {
+    ports: &'a IndexMap<IrPort, LoweredName>,
+    registers: &'a IndexMap<IrRegister, LoweredName>,
+    wires: &'a IndexMap<IrWire, LoweredName>,
+    variables: &'a IndexMap<IrVariable, LoweredName>,
+}
+
 // TODO write straight into a single string buffer instead of repeated concatenation
 fn lower_module(
     diags: &Diagnostics,
@@ -131,9 +150,7 @@ fn lower_module(
 
     let module_info = &compiled.modules[module];
     let IrModuleInfo { debug_info_id, debug_info_generic_args, ports, registers, wires, processes } = module_info;
-    let module_name = top_name_scope.unique_for_new_id(diags, debug_info_id)?;
-
-    let mut module_name_scope = LoweredNameScope::default();
+    let module_name = top_name_scope.make_unique_id(diags, debug_info_id)?;
 
     swriteln!(f, "// module {}", debug_info_id.string);
     swriteln!(f, "//   defined in \"{}\"", source[debug_info_id.span.start.file].path_raw);
@@ -145,7 +162,35 @@ fn lower_module(
         }
     }
 
-    swrite!(f, "module {} (", module_name);
+    let mut module_name_scope = LoweredNameScope::default();
+
+    swrite!(f, "module {}(", module_name);
+    let port_name_map = lower_module_ports(diags, ports, &mut module_name_scope, f)?;
+    swriteln!(f, ");");
+
+    let mut newline = NewlineGenerator::new();
+    let (reg_name_map, wire_name_map) =
+        lower_module_signals(diags, &mut module_name_scope, registers, wires, &mut newline, f)?;
+
+    lower_module_statements(
+        diags,
+        &mut module_name_scope,
+        &port_name_map,
+        &reg_name_map,
+        &wire_name_map,
+        registers,
+        wires,
+        processes,
+        &mut newline,
+        f,
+    )?;
+
+    swriteln!(f, "endmodule");
+
+    Ok(module_name)
+}
+
+fn lower_module_ports(diags: &Diagnostics, ports: &Arena<IrPort, IrPortInfo>, module_name_scope: &mut LoweredNameScope, f: &mut String) -> Result<IndexMap<IrPort, LoweredName>, ErrorGuaranteed> {
     let mut port_lines = vec![];
     let mut port_name_map = IndexMap::new();
     let mut last_actual_port_index = None;
@@ -157,8 +202,8 @@ fn lower_module(
         let lower_name = module_name_scope.exact_for_new_id(diags, debug_info_id)?;
         let port_ty = VerilogType::from_ir_ty(diags, debug_info_id.span, ty)?;
 
-        let ty_str = port_ty.to_prefix_str();
-        let (is_actual_port, ty_str) = match ty_str.as_ref().map(|s| s.as_str()) {
+        let ty_prefix_str = port_ty.to_prefix_str();
+        let (is_actual_port, ty_str) = match ty_prefix_str.as_ref().map(|s| s.as_str()) {
             Ok(ty_str) => (true, ty_str),
             Err(ZeroWidth) => (false, "[empty]"),
         };
@@ -190,15 +235,325 @@ fn lower_module(
     }
 
     if ports.len() > 0 {
-        swrite!(f, "\n");
+        swriteln!(f);
     }
-    swriteln!(f, ");");
 
-    // TODO body
+    Ok(port_name_map)
+}
 
-    swriteln!(f, "endmodule");
+fn lower_module_signals(diags: &Diagnostics, module_name_scope: &mut LoweredNameScope, registers: &Arena<IrRegister, IrRegisterInfo>, wires: &Arena<IrWire, IrWireInfo>, newline: &mut NewlineGenerator, f: &mut String) -> Result<(IndexMap<IrRegister, LoweredName>, IndexMap<IrWire, LoweredName>), ErrorGuaranteed> {
+    let mut reg_name_map = IndexMap::new();
+    let mut wire_name_map = IndexMap::new();
 
-    Ok(module_name)
+    for (register, register_info) in registers {
+        newline.before_item(f);
+
+        let IrRegisterInfo { ty, debug_info_id, debug_info_ty, debug_info_domain } = register_info;
+        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
+            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
+            Err(ZeroWidth) => ("// ", "[empty]"),
+        };
+
+        let name_debug_str = &debug_info_id.string();
+        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
+
+        swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // reg {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        reg_name_map.insert_first(register, name);
+    }
+
+    newline.start_new_block();
+
+    for (wire, wire_info) in wires {
+        newline.before_item(f);
+
+        let IrWireInfo { ty, debug_info_id, debug_info_ty, debug_info_domain } = &wire_info;
+        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
+            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
+            Err(ZeroWidth) => ("// ", "[empty]"),
+        };
+
+        let name_debug_str = &debug_info_id.string();
+        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
+
+        swriteln!(f, "{I}{prefix_str}wire {ty_prefix_str}{name}; // wire {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        wire_name_map.insert_first(wire, name);
+    }
+    Ok((reg_name_map, wire_name_map))
+}
+
+fn lower_module_statements(
+    diags: &Diagnostics,
+    module_name_scope: &mut LoweredNameScope,
+    port_name_map: &IndexMap<IrPort, LoweredName>,
+    reg_name_map: &IndexMap<IrRegister, LoweredName>,
+    wire_name_map: &IndexMap<IrWire, LoweredName>,
+    registers: &Arena<IrRegister, IrRegisterInfo>,
+    wires: &Arena<IrWire, IrWireInfo>,
+    processes: &[Spanned<IrProcess>],
+    newline: &mut NewlineGenerator,
+    f: &mut String,
+) -> Result<(), ErrorGuaranteed> {
+    // TODO implement blocked assignment transformation again
+    for process in processes {
+        newline.start_new_block();
+        newline.before_item(f);
+
+        let mut newline = NewlineGenerator::new();
+
+        let process_span = process.span;
+        match &process.inner {
+            IrProcess::Combinatorial(process) => {
+                let IrCombinatorialProcess { locals, block } = process;
+
+                // TODO declare locals
+                if locals.len() > 0 {
+                    throw!(diags.report_todo(process_span, "local variables"))
+                }
+
+                let name_map = NameMap {
+                    ports: port_name_map,
+                    registers: reg_name_map,
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+
+                swriteln!(f, "{I}always @(*) begin");
+                lower_block(diags, name_map, block, f, Indent::new(2))?;
+                swriteln!(f, "{I}end");
+            }
+            IrProcess::Clocked(process) => {
+                let IrClockedProcess { domain, locals, on_clock, on_reset } = process;
+
+                let outer_name_map = NameMap {
+                    ports: port_name_map,
+                    registers: reg_name_map,
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+
+                let SyncDomain { clock, reset } = &domain.inner;
+                let clock_edge = lower_edge_to_str(diags, outer_name_map, domain.span, clock)?;
+                let reset_edge = lower_edge_to_str(diags, outer_name_map, domain.span, reset)?;
+                swriteln!(f, "{I}always @({} {}, {} {}) begin", clock_edge.edge, clock_edge.value, reset_edge.edge, reset_edge.value);
+
+                let mut written_regs = HashSet::new();
+                collect_written_registers(on_clock, &mut written_regs);
+                collect_written_registers(on_reset, &mut written_regs);
+
+                let shadowing_reg_name_map = lower_shadow_registers(
+                    diags,
+                    module_name_scope,
+                    reg_name_map,
+                    &registers,
+                    &mut written_regs,
+                    f,
+                    &mut newline,
+                )?;
+
+                // TODO declare locals
+                if locals.len() > 0 {
+                    throw!(diags.report_todo(process_span, "local variables"))
+                }
+
+                // populate shadow registers
+                newline.start_new_block();
+                for (&reg, shadow_name) in &shadowing_reg_name_map {
+                    newline.before_item(f);
+                    let orig_name = reg_name_map.get(&reg).unwrap();
+                    swriteln!(f, "{I}{I}{shadow_name} = {orig_name};");
+                }
+
+                let inner_name_map = NameMap {
+                    ports: port_name_map,
+                    registers: &shadowing_reg_name_map,
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+
+                // main reset/clock structure
+                newline.start_new_block();
+                newline.before_item(f);
+                swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
+                lower_block(diags, inner_name_map, on_reset, f, Indent::new(3))?;
+                swriteln!(f, "{I}{I}end else begin");
+                lower_block(diags, inner_name_map, on_clock, f, Indent::new(3))?;
+                swriteln!(f, "{I}{I}end");
+
+                // commit shadow writes
+                newline.start_new_block();
+
+                for (&reg, shadow_name) in &shadowing_reg_name_map {
+                    newline.before_item(f);
+                    let orig_name = reg_name_map.get(&reg).unwrap();
+                    swriteln!(f, "{I}{I}{orig_name} <= {shadow_name};");
+                }
+
+                swriteln!(f, "{I}end");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn lower_shadow_registers(
+    diags: &Diagnostics,
+    module_name_scope: &mut LoweredNameScope,
+    reg_name_map: &IndexMap<IrRegister, LoweredName>,
+    registers: &Arena<IrRegister, IrRegisterInfo>,
+    written_regs: &HashSet<IrRegister>,
+    f: &mut String,
+    newline: &mut NewlineGenerator,
+) -> Result<IndexMap<IrRegister, LoweredName>, ErrorGuaranteed> {
+    let mut shadowing_reg_name_map = IndexMap::new();
+
+    newline.start_new_block();
+
+    for reg in registers.keys() {
+        let mapped = if written_regs.contains(&reg) {
+            let register_info = &registers[reg];
+            let ty = VerilogType::from_ir_ty(diags, register_info.debug_info_id.span(), &register_info.ty)?;
+
+            let register_name = register_info.debug_info_id.string();
+            let shadow_name = module_name_scope.make_unique_str(
+                diags,
+                register_info.debug_info_id.span(),
+                &format!("shadow_{}", register_name),
+            )?;
+
+            match ty.to_prefix_str() {
+                Ok(ty_prefix_str) => {
+                    newline.before_item(f);
+                    swriteln!(f, "{I}{I}reg {ty_prefix_str}{shadow_name};");
+                }
+                Err(ZeroWidth) => {
+                    // don't declare shadows for zero-width registers
+                }
+            }
+
+            shadow_name
+        } else {
+            reg_name_map.get(&reg).unwrap().clone()
+        };
+
+        shadowing_reg_name_map.insert_first(reg, mapped);
+    }
+
+    Ok(shadowing_reg_name_map)
+}
+
+fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) {
+    let IrBlock { statements } = block;
+
+    for stmt in statements {
+        match &stmt.inner {
+            IrStatement::Assign(target, _) => {
+                match target {
+                    &IrAssignmentTarget::Register(reg) => { result.insert(reg); }
+                    IrAssignmentTarget::Wire(_) | IrAssignmentTarget::Port(_) | IrAssignmentTarget::Variable(_) => {}
+                }
+            }
+        }
+    }
+}
+
+fn lower_block(
+    diag: &Diagnostics,
+    name_map: NameMap,
+    block: &IrBlock,
+    f: &mut String,
+    indent: Indent,
+) -> Result<(), ErrorGuaranteed> {
+    let IrBlock { statements } = block;
+
+    for stmt in statements {
+        match &stmt.inner {
+            IrStatement::Assign(target, source) => {
+                let target = match target {
+                    &IrAssignmentTarget::Port(port) => name_map.ports.get(&port).unwrap(),
+                    &IrAssignmentTarget::Wire(wire) => name_map.wires.get(&wire).unwrap(),
+                    &IrAssignmentTarget::Register(reg) => name_map.registers.get(&reg).unwrap(),
+                    &IrAssignmentTarget::Variable(var) => name_map.variables.get(&var).unwrap(),
+                };
+
+                swrite!(f, "{indent}{target} = ");
+                lower_expression(diag, name_map, stmt.span, source, f)?;
+                swriteln!(f, ";");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// TODO allow this to use intermediate variables
+// TODO IrExpressions should have clear types at every point, ints and arrays are now unclear
+fn lower_expression(
+    diags: &Diagnostics,
+    name_map: NameMap,
+    span: Span,
+    expr: &IrExpression,
+    f: &mut String,
+) -> Result<(), ErrorGuaranteed> {
+    match expr {
+        &IrExpression::Bool(x) => swrite!(f, "{}", x as u8),
+        IrExpression::Int(x) => swrite!(f, "{}", x),
+
+        &IrExpression::Port(port) => swrite!(f, "{}", name_map.ports.get(&port).unwrap()),
+        &IrExpression::Wire(wire) => swrite!(f, "{}", name_map.wires.get(&wire).unwrap()),
+        &IrExpression::Register(reg) => swrite!(f, "{}", name_map.registers.get(&reg).unwrap()),
+        &IrExpression::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
+
+        IrExpression::Array(_) => throw!(diags.report_todo(span, "lower array expressions")),
+        IrExpression::BoolNot(inner) => {
+            swrite!(f, "(!");
+            lower_expression(diags, name_map, span, inner, f)?;
+            swrite!(f, ")");
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct EdgeString {
+    edge: &'static str,
+    if_prefix: &'static str,
+    value: String,
+}
+
+fn lower_edge_to_str(
+    diags: &Diagnostics,
+    name_map: NameMap,
+    span: Span,
+    expr: &IrExpression,
+) -> Result<EdgeString, ErrorGuaranteed> {
+    // unwrap not layers, their parity will determine the edge
+    let mut not_count: u32 = 0;
+    let mut curr = expr;
+    while let IrExpression::BoolNot(inner) = curr {
+        not_count += 1;
+        curr = inner;
+    }
+
+    let (edge, if_prefix) = if not_count % 2 == 0 {
+        ("posedge", "")
+    } else {
+        ("negedge", "!")
+    };
+
+    // lower expression
+    let mut s = String::new();
+    let f = &mut s;
+    lower_expression(diags, name_map, span, curr, f)?;
+
+    Ok(EdgeString { edge, if_prefix, value: s })
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -281,6 +636,7 @@ struct NewlineGenerator {
     any_curr: bool,
 }
 
+// TODO rename these functions to make more sense, and create a function for the combination of both
 impl NewlineGenerator {
     pub fn new() -> Self {
         Self {

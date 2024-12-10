@@ -2,7 +2,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::BlockDomain;
 use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
-use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrLocals, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrWire, IrWireInfo};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
@@ -34,7 +34,7 @@ struct BodyElaborationState<'a, 'b> {
     port_register_connections: IndexMap<Port, Register>,
 
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    processes: Vec<Result<IrProcess, ErrorGuaranteed>>,
+    processes: Vec<Result<Spanned<IrProcess>, ErrorGuaranteed>>,
 }
 
 impl CompileState<'_> {
@@ -302,7 +302,7 @@ impl BodyElaborationState<'_, '_> {
                     }
 
                     if let Some(process) = process {
-                        self.processes.push(process);
+                        self.processes.push(process.map(|p| Spanned { span: decl.span, inner: p }));
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
@@ -364,7 +364,7 @@ impl BodyElaborationState<'_, '_> {
                         let ir_body = IrCombinatorialProcess { locals: ir_locals, block };
                         IrProcess::Combinatorial(ir_body)
                     });
-                    self.processes.push(ir_process);
+                    self.processes.push(ir_process.map(|p| Spanned { span: block.span, inner: p }));
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
                     let &ClockedBlock { span: _, span_keyword, ref domain, ref block } = block;
@@ -392,7 +392,7 @@ impl BodyElaborationState<'_, '_> {
 
                         let ir_process = IrClockedProcess {
                             locals: ir_locals,
-                            domain: ir_domain,
+                            domain: Spanned { span: domain.span, inner: ir_domain },
                             on_clock: ir_block,
                             // will be filled in later, during driver checking
                             on_reset: IrBlock { statements: vec![] },
@@ -401,7 +401,7 @@ impl BodyElaborationState<'_, '_> {
                     });
 
                     let process_index = self.processes.len();
-                    self.processes.push(ir_process);
+                    self.processes.push(ir_process.map(|p| Spanned { span: block.span, inner: p }));
                     self.clocked_block_statement_index_to_process_index.insert_first(statement_index, process_index);
                 }
                 ModuleStatementKind::Instance(_) => {
@@ -454,7 +454,7 @@ impl BodyElaborationState<'_, '_> {
 
         if let Driver::ClockedBlock(stmt_index) = driver {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
-                if let IrProcess::Clocked(process) = self.processes[process_index].as_ref_mut_ok()? {
+                if let IrProcess::Clocked(process) = &mut self.processes[process_index].as_ref_mut_ok()?.inner {
                     if let Some(init) = self.register_initial_values.get(&reg) {
                         let init_span = init.span;
                         let init = init.inner.as_ref_ok()?;
@@ -474,10 +474,11 @@ impl BodyElaborationState<'_, '_> {
                         };
 
                         if let Some(init_ir) = init_ir {
-                            process.on_reset.statements.push(IrStatement::Assign(
+                            let stmt = IrStatement::Assign(
                                 IrAssignmentTarget::Register(reg_info.ir),
                                 init_ir,
-                            ));
+                            );
+                            process.on_reset.statements.push(Spanned { span: init_span, inner: stmt });
                         }
                         return Ok(());
                     }
@@ -574,7 +575,7 @@ impl BodyElaborationState<'_, '_> {
             .transpose();
         let ty = state.eval_expression_as_ty_hardware(scope_body, ty, "wire");
 
-        let mut ir_locals = IrLocals::default();
+        let mut ir_locals = IrVariables::default();
         let mut ir_statements = vec![];
         let value = value.as_ref()
             .map(|value| {
@@ -617,6 +618,8 @@ impl BodyElaborationState<'_, '_> {
         let ir_wire = self.ir_wires.push(IrWireInfo {
             ty: ty.to_ir(),
             debug_info_id: id.clone(),
+            debug_info_ty: ty.clone(),
+            debug_info_domain: domain.inner.to_diagnostic_string(state)
         });
         let wire = state.wires.push(WireInfo {
             id: id.clone(),
@@ -632,7 +635,8 @@ impl BodyElaborationState<'_, '_> {
                 MaybeCompile::Compile(_) => throw!(diags.report_todo(value.span, "compile-time wire value")),
                 MaybeCompile::Other(v) => v.expr,
             };
-            ir_statements.push(Ok(IrStatement::Assign(target, source)));
+            let stmt = IrStatement::Assign(target, source);
+            ir_statements.push(Ok(Spanned { span: value.span, inner: stmt }));
 
             let ir_statements = ir_statements.into_iter().try_collect()?;
             let ir_process = IrCombinatorialProcess { locals: ir_locals, block: IrBlock { statements: ir_statements } };
@@ -674,6 +678,8 @@ impl BodyElaborationState<'_, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: ty.to_ir(),
             debug_info_id: id.clone(),
+            debug_info_ty: ty.clone(),
+            debug_info_domain: sync.to_diagnostic_string(state),
         });
         let reg = state.registers.push(RegisterInfo {
             id: id.clone(),
@@ -750,6 +756,8 @@ impl BodyElaborationState<'_, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: port_info.ty.inner.to_ir(),
             debug_info_id: MaybeIdentifier::Identifier(id.clone()),
+            debug_info_ty: port_info.ty.inner.clone(),
+            debug_info_domain: domain.to_diagnostic_string(state),
         });
         let reg = state.registers.push(RegisterInfo {
             id: MaybeIdentifier::Identifier(id.clone()),
