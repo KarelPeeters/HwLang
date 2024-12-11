@@ -107,7 +107,7 @@ impl CompileState<'_> {
             let target_str = self.value_domain_to_diagnostic_string(&target.inner);
             let source_str = self.value_domain_to_diagnostic_string(source.inner);
             let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
-                .add_error(assignment_span, "invalid assignment here")
+                .add_error(assignment_span, "invalid domain crossing here")
                 .add_info(target.span, format!("target domain is {target_str}"))
                 .add_info(source.span, format!("source domain is {source_str}"))
                 .footer(Level::Info, required_reason)

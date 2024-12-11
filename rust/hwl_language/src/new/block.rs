@@ -236,8 +236,6 @@ impl CompileState<'_> {
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement { initial_if, else_ifs, final_else } = stmt_if;
 
-                    // TODO count if condition as a read of the value for domain purposes
-
                     // TODO avoid allocation here
                     let mut all_ifs = vec![];
                     all_ifs.push(initial_if);
@@ -327,6 +325,19 @@ impl CompileState<'_> {
                 let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval.ty.as_type() };
                 self.check_type_contains_type(cond.span, ty_bool, cond_eval_spanned)?;
 
+                // check condition domain
+                // TODO extract this to a common function?
+                let check_cond_domain = match block_domain {
+                    BlockDomain::Combinatorial => Ok(()),
+                    BlockDomain::Clocked(block_domain) => {
+                        let cond_domain = Spanned { span: cond.span, inner: &cond_eval.domain };
+                        let block_domain = block_domain
+                            .as_ref()
+                            .map_inner(|d| ValueDomain::Sync(d.clone()));
+                        self.check_valid_domain_crossing(cond.span, block_domain.as_ref(), cond_domain, "condition used in clocked block")
+                    }
+                };
+
                 // record condition domain
                 let cond_domain = Spanned { span: cond.span, inner: cond_eval.domain };
                 let (block_ir, else_ir) = condition_domains.with_pushed(cond_domain, |condition_domains| {
@@ -336,6 +347,8 @@ impl CompileState<'_> {
 
                     Ok((block_ir, else_ir))
                 })?;
+
+                check_cond_domain?;
 
                 let initial_if = IfCondBlockPair {
                     span: cond.span,
