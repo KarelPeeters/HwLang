@@ -226,8 +226,12 @@ impl CompileState<'_> {
         state.pass_0_declarations(body);
         state.pass_1_processes(body);
 
+        // stop if any errors have happened so far, we don't want redundant errors about drivers
+        for p in &state.processes {
+            p.as_ref_ok()?;
+        }
+
         // check driver validness
-        // TODO skip if any bad enough errors happened before?
         // TODO more checking: combinatorial blocks can't read values they will later write,
         //   unless they have already written them
         state.pass_2_check_drivers_and_populate_resets()?;
@@ -595,7 +599,7 @@ impl BodyElaborationState<'_, '_> {
             let (err_ty, value_domain) = match &value.inner {
                 MaybeCompile::Compile(c) => {
                     let value_spanned = Spanned { span: value.span, inner: c };
-                    let err_ty = state.check_type_contains_compile_value(decl.span, ty_spanned, value_spanned);
+                    let err_ty = state.check_type_contains_compile_value(decl.span, ty_spanned, value_spanned, true);
                     (err_ty, &ValueDomain::CompileTime)
                 }
                 MaybeCompile::Other(v) => {
@@ -669,7 +673,7 @@ impl BodyElaborationState<'_, '_> {
         let init = init.and_then(|init| {
             let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
             let init_spanned = Spanned { span: init_span, inner: &init };
-            state.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned)?;
+            state.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned, true)?;
             Ok(init)
         });
         let init = Spanned { span: init_span, inner: init };
@@ -747,7 +751,7 @@ impl BodyElaborationState<'_, '_> {
         // check type
         let init = init.and_then(|init| {
             let ty_spanned = Spanned { span: port_info.ty.span, inner: &port_info.ty.inner.as_type() };
-            state.check_type_contains_compile_value(decl.span, ty_spanned, init.as_ref())?;
+            state.check_type_contains_compile_value(decl.span, ty_spanned, init.as_ref(), true)?;
             Ok(init.inner)
         });
         let init = Spanned { span: init_span, inner: init };

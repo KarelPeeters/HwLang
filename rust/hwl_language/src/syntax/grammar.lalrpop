@@ -245,9 +245,17 @@ BlockStatementKind: BlockStatementKind = {
     // block
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
     // control flow
-    "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
-        => BlockStatementKind::If(IfStatement { cond, then_block, else_if_pairs, else_block }),
-    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<BlockStatement>>
+    <start:@L> "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <end_if:@R>
+    <else_ifs:ElseIfPair*>
+    <final_else:("else" <Block<BlockStatement>>)?> => {
+        BlockStatementKind::If(IfStatement {
+            initial_if: IfCondBlockPair { span: loc.span(start, end_if), cond: cond, block: then_block },
+            else_ifs,
+            final_else
+        })
+    },
+    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")"
+    <body:Block<BlockStatement>>
         => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
     "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { cond, body }),
@@ -255,6 +263,11 @@ BlockStatementKind: BlockStatementKind = {
     "return" <value:BoxExpr?> ";" => BlockStatementKind::Return(value),
     "break" <value:BoxExpr?> ";" => BlockStatementKind::Break(value),
     "continue" ";" => BlockStatementKind::Continue,
+}
+
+ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
+    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
+        => IfCondBlockPair { cond, block, span: loc.span(start, end) },
 }
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
@@ -515,11 +528,6 @@ ExprLevelAtomic: ExpressionKind = {
 //    <start:@L> <steps: Spanned<(<Id> ".")*>> <id: Id> <end:@R>
 //        => Path { span: loc.span(start, end), steps, id }
 //}
-
-ElseIfPair: ElseIfPair = {
-    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
-        => ElseIfPair { cond, block, span: loc.span(start, end) },
-}
 
 // terminals
 Id: Identifier = {

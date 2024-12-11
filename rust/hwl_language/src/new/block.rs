@@ -4,9 +4,9 @@ use crate::new::compile::CompileState;
 use crate::new::expression::ExpressionContext;
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrStatement, IrVariables};
 use crate::new::misc::{DomainSignal, ValueDomain};
-use crate::new::types::HardwareType;
-use crate::new::value::{AssignmentTarget, HardwareValueResult, MaybeCompile, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, Spanned, SyncDomain};
+use crate::new::types::{HardwareType, Type};
+use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::result_pair;
@@ -107,6 +107,8 @@ impl CompileState<'_> {
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> Result<IrBlock, ErrorGuaranteed> {
+        let diags = self.diags;
+
         let Block { span: _, statements } = block;
 
         let scope = self.scopes.new_child(parent_scope, block.span, Visibility::Private);
@@ -115,15 +117,15 @@ impl CompileState<'_> {
         for stmt in statements {
             let stmt_span = stmt.span;
             match &stmt.inner {
-                BlockStatementKind::ConstDeclaration(_) => throw!(self.diags.report_todo(stmt.span, "statement kind ConstDeclaration")),
-                BlockStatementKind::VariableDeclaration(_) => throw!(self.diags.report_todo(stmt.span, "statement kind VariableDeclaration")),
+                BlockStatementKind::ConstDeclaration(_) => throw!(diags.report_todo(stmt.span, "statement kind ConstDeclaration")),
+                BlockStatementKind::VariableDeclaration(_) => throw!(diags.report_todo(stmt.span, "statement kind VariableDeclaration")),
                 BlockStatementKind::Assignment(stmt) => {
                     let Assignment { span: _, op, target, value } = stmt;
                     let target_span = target.span;
                     let value_span = value.span;
 
                     if op.inner.is_some() {
-                        throw!(self.diags.report_todo(stmt.span, "compound assignment"));
+                        throw!(diags.report_todo(stmt.span, "compound assignment"));
                     }
 
                     let target = self.eval_expression_as_assign_target(scope, target);
@@ -140,21 +142,21 @@ impl CompileState<'_> {
                                 let info = &self.ports[port];
                                 let domain = ValueDomain::from_port_domain(info.domain.inner.clone());
                                 (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
-                            },
+                            }
                             AssignmentTarget::Wire(wire) => {
                                 let info = &self.wires[wire];
                                 let domain = ValueDomain::from_domain_kind(info.domain.inner.clone());
                                 (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
-                            },
+                            }
                             AssignmentTarget::Register(reg) => {
                                 let info = &self.registers[reg];
                                 let domain = ValueDomain::Sync(info.domain.inner.clone());
                                 (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
-                            },
+                            }
                             AssignmentTarget::Variable(_) => {
                                 // TODO for variables, (also) do the assignment at compile-time (see above)
-                                throw!(self.diags.report_todo(stmt.span, "assignment to variable"))
-                            },
+                                throw!(diags.report_todo(stmt.span, "assignment to variable"))
+                            }
                         };
 
                         let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
@@ -163,16 +165,16 @@ impl CompileState<'_> {
                         let (value_domain, ir_value) = match value {
                             MaybeCompile::Compile(v) => {
                                 let value_spanned = Spanned { span: value_span, inner: &v };
-                                let ir_value = self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned).and_then(|()| {
+                                let ir_value = self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned, true).and_then(|()| {
                                     match v.as_hardware_value() {
                                         HardwareValueResult::Success(v) =>
                                             Ok(v),
                                         HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined =>
-                                            Err(self.diags.report_simple("undefined can only be used for register initialization", value_span, "value is undefined")),
+                                            Err(diags.report_simple("undefined can only be used for register initialization", value_span, "value is undefined")),
                                         HardwareValueResult::Unrepresentable => {
                                             // TODO fix this duplication
                                             let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                                            Err(self.diags.report_internal_error(value_span, reason))
+                                            Err(diags.report_internal_error(value_span, reason))
                                         }
                                     }
                                 });
@@ -183,7 +185,7 @@ impl CompileState<'_> {
                                 let ir_value = self.check_type_contains_type(stmt.span, target_ty.as_ref(), value_ty.as_ref())
                                     .map(|()| v.expr);
                                 (v.domain, ir_value)
-                            },
+                            }
                         };
 
                         // check domains
@@ -213,16 +215,45 @@ impl CompileState<'_> {
                         report_assignment(Spanned { span: target_span, inner: &target })?;
                         Ok(IrStatement::Assign(ir_target, ir_value))
                     });
+
                     ir_statements.push(stmt.map(|stmt| Spanned { span: stmt_span, inner: stmt }));
                 }
-                BlockStatementKind::Expression(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Expression")),
-                BlockStatementKind::Block(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Block")),
-                BlockStatementKind::If(_) => throw!(self.diags.report_todo(stmt.span, "statement kind If")),
-                BlockStatementKind::While(_) => throw!(self.diags.report_todo(stmt.span, "statement kind While")),
-                BlockStatementKind::For(_) => throw!(self.diags.report_todo(stmt.span, "statement kind For")),
-                BlockStatementKind::Return(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Return")),
-                BlockStatementKind::Break(_) => throw!(self.diags.report_todo(stmt.span, "statement kind Break")),
-                BlockStatementKind::Continue => throw!(self.diags.report_todo(stmt.span, "statement kind Continue")),
+                BlockStatementKind::Expression(_) => throw!(diags.report_todo(stmt.span, "statement kind Expression")),
+                BlockStatementKind::Block(inner) => {
+                    let inner_block = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, inner)?;
+                    ir_statements.push(Ok(Spanned { span: stmt.span, inner: IrStatement::Block(inner_block) }));
+                }
+                BlockStatementKind::If(stmt_if) => {
+                    let IfStatement { initial_if, else_ifs, final_else } = stmt_if;
+
+                    // TODO count if condition as a read of the value for domain purposes
+                    // TODO include in the merged domain for combinatorial assignments
+                    //    implementation idea: the current block should include the join of all conditions
+                    //                         as a merged-in domain
+
+                    // TODO avoid allocation here
+                    let mut all_ifs = vec![];
+                    all_ifs.push(initial_if);
+                    all_ifs.extend(else_ifs.iter());
+
+                    let stmt_ir = self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, &mut ir_statements, &all_ifs, final_else)?;
+                    match stmt_ir {
+                        LoweredIf::Nothing => {}
+                        LoweredIf::SingleBlock(block) => {
+                            let stmt_ir = IrStatement::Block(block);
+                            ir_statements.push(Ok(Spanned { span: stmt.span, inner: stmt_ir }));
+                        }
+                        LoweredIf::IfStatement(if_stmt) => {
+                            let stmt_ir = IrStatement::If(if_stmt);
+                            ir_statements.push(Ok(Spanned { span: stmt.span, inner: stmt_ir }));
+                        }
+                    }
+                }
+                BlockStatementKind::While(_) => throw!(diags.report_todo(stmt.span, "statement kind While")),
+                BlockStatementKind::For(_) => throw!(diags.report_todo(stmt.span, "statement kind For")),
+                BlockStatementKind::Return(_) => throw!(diags.report_todo(stmt.span, "statement kind Return")),
+                BlockStatementKind::Break(_) => throw!(diags.report_todo(stmt.span, "statement kind Break")),
+                BlockStatementKind::Continue => throw!(diags.report_todo(stmt.span, "statement kind Continue")),
             };
         }
 
@@ -231,4 +262,112 @@ impl CompileState<'_> {
         };
         Ok(result)
     }
+
+    fn elaborate_if_statement(
+        &mut self,
+        report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
+        block_domain: &BlockDomain,
+        ir_locals: &mut IrVariables,
+        scope: Scope,
+        ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
+        ifs: &[&IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
+        final_else: &Option<Block<BlockStatement>>,
+    ) -> Result<LoweredIf, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let (initial_if, remaining_ifs) = match ifs.split_first() {
+            Some(p) => p,
+            None => {
+                return match final_else {
+                    None => Ok(LoweredIf::Nothing),
+                    Some(final_else) => {
+                        let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, final_else)?;
+                        Ok(LoweredIf::SingleBlock(block_ir))
+                    }
+                };
+            }
+        };
+
+        let IfCondBlockPair { span: _, cond, block } = initial_if;
+        let cond_eval = self.eval_expression_as_ir(ir_locals, ir_statements, scope, cond)?;
+
+        match cond_eval {
+            // evaluate the if at compile-time
+            MaybeCompile::Compile(cond_eval) => {
+                // check type and extract inner
+                let ty_bool = Spanned { span: cond.span, inner: &Type::Bool };
+                let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval };
+                self.check_type_contains_compile_value(cond.span, ty_bool, cond_eval_spanned, false)?;
+
+                let cond_eval = match cond_eval {
+                    CompileValue::Bool(b) => b,
+                    _ => throw!(diags.report_internal_error(cond.span, "expected bool value")),
+                };
+
+                // only visit the selected branch
+                if cond_eval {
+                    let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, block)?;
+                    Ok(LoweredIf::SingleBlock(block_ir))
+                } else {
+                    self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, ir_statements, remaining_ifs, final_else)
+                }
+            }
+            // evaluate the if at runtime, generate the IR
+            MaybeCompile::Other(cond_eval) => {
+                // check type
+                let ty_bool = Spanned { span: cond.span, inner: &Type::Bool };
+                let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval.ty.as_type() };
+                self.check_type_contains_type(cond.span, ty_bool, cond_eval_spanned)?;
+
+                // lower both branches
+                let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, block)?;
+                let else_ir = self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, ir_statements, remaining_ifs, final_else)?;
+
+                let initial_if = IfCondBlockPair {
+                    span: cond.span,
+                    cond: cond_eval.expr,
+                    block: block_ir,
+                };
+
+                let stmt = match else_ir {
+                    LoweredIf::Nothing => {
+                        // new simple if statement without any else-s
+                        IfStatement {
+                            initial_if,
+                            else_ifs: vec![],
+                            final_else: None,
+                        }
+                    }
+                    LoweredIf::SingleBlock(else_ir) => {
+                        // new simple if statement with opaque else
+                        IfStatement {
+                            initial_if,
+                            else_ifs: vec![],
+                            final_else: Some(else_ir),
+                        }
+                    }
+                    LoweredIf::IfStatement(else_if_stmt) => {
+                        // merge into a single bigger if statement
+                        let IfStatement { initial_if: else_initial_if, else_ifs: mut combined_else_ifs, final_else } = else_if_stmt;
+                        combined_else_ifs.insert(0, else_initial_if);
+
+                        IfStatement {
+                            initial_if,
+                            else_ifs: combined_else_ifs,
+                            final_else,
+                        }
+                    }
+                };
+
+                Ok(LoweredIf::IfStatement(stmt))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum LoweredIf {
+    Nothing,
+    SingleBlock(IrBlock),
+    IfStatement(IfStatement<IrExpression, IrBlock>),
 }

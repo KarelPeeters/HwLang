@@ -35,7 +35,7 @@ impl CompileState<'_> {
         // check type
         if let Some(ty) = ty {
             let value_eval_spanned = Spanned { span: value.span, inner: &value_eval };
-            self.check_type_contains_compile_value(decl.span, ty.as_ref(), value_eval_spanned)?;
+            self.check_type_contains_compile_value(decl.span, ty.as_ref(), value_eval_spanned, true)?;
         };
 
         Ok(value_eval)

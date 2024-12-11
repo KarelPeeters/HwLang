@@ -264,7 +264,7 @@ pub enum BlockStatementKind {
 
     // control flow
     Block(Block<BlockStatement>),
-    If(IfStatement),
+    If(IfStatement<Box<Expression>, Block<BlockStatement>>),
     While(WhileStatement),
     For(ForStatement),
     // control flow terminators
@@ -276,18 +276,17 @@ pub enum BlockStatementKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct IfStatement {
-    pub cond: Box<Expression>,
-    pub then_block: Block<BlockStatement>,
-    pub else_if_pairs: Vec<ElseIfPair>,
-    pub else_block: Option<Block<BlockStatement>>,
+pub struct IfStatement<C, B> {
+    pub initial_if: IfCondBlockPair<C, B>,
+    pub else_ifs: Vec<IfCondBlockPair<C, B>>,
+    pub final_else: Option<B>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ElseIfPair {
+pub struct IfCondBlockPair<C, B> {
     pub span: Span,
-    pub cond: Box<Expression>,
-    pub block: Block<BlockStatement>,
+    pub cond: C,
+    pub block: B,
 }
 
 #[derive(Debug, Clone)]

@@ -42,8 +42,11 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn check_type_contains_compile_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&CompileValue>) -> Result<(), ErrorGuaranteed> {
-        if target_ty.inner.contains_type(&value.inner.ty()) {
+    pub fn check_type_contains_compile_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&CompileValue>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
+        let ty_contains_value = target_ty.inner.contains_type(&value.inner.ty());
+        let value_is_undefined = matches!(value.inner, CompileValue::Undefined);
+
+        if ty_contains_value && (accept_undefined || !value_is_undefined) {
             Ok(())
         } else {
             let diag = Diagnostic::new("value does not fit in type")

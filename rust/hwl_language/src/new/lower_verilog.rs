@@ -2,7 +2,7 @@ use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrWire, IrWireInfo};
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
@@ -145,6 +145,12 @@ fn lower_module(
     module: IrModule,
     f: &mut String,
 ) -> Result<LoweredName, ErrorGuaranteed> {
+    let _ = parsed;
+
+    if let Some(lowered) = module_map.get(&module) {
+        return Ok(lowered.clone());
+    }
+    
     // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
     //   or maybe verilog has separate namespaces, then it's fine
 
@@ -179,7 +185,6 @@ fn lower_module(
         &reg_name_map,
         &wire_name_map,
         registers,
-        wires,
         processes,
         &mut newline,
         f,
@@ -187,6 +192,7 @@ fn lower_module(
 
     swriteln!(f, "endmodule");
 
+    module_map.insert_first(module, module_name.clone());
     Ok(module_name)
 }
 
@@ -294,7 +300,6 @@ fn lower_module_statements(
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
     wire_name_map: &IndexMap<IrWire, LoweredName>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    wires: &Arena<IrWire, IrWireInfo>,
     processes: &[Spanned<IrProcess>],
     newline: &mut NewlineGenerator,
     f: &mut String,
@@ -459,6 +464,20 @@ fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) 
                     IrAssignmentTarget::Wire(_) | IrAssignmentTarget::Port(_) | IrAssignmentTarget::Variable(_) => {}
                 }
             }
+            IrStatement::Block(inner) => {
+                collect_written_registers(inner, result);
+            }
+            IrStatement::If(stmt) => {
+                let IfStatement { initial_if, else_ifs, final_else } = stmt;
+
+                collect_written_registers(&initial_if.block, result);
+                for else_if in else_ifs {
+                    collect_written_registers(&else_if.block, result);
+                }
+                if let Some(final_else) = final_else {
+                    collect_written_registers(final_else, result);
+                }
+            }
         }
     }
 }
@@ -485,6 +504,36 @@ fn lower_block(
                 swrite!(f, "{indent}{target} = ");
                 lower_expression(diag, name_map, stmt.span, source, f)?;
                 swriteln!(f, ";");
+            }
+            IrStatement::Block(inner) => {
+                swriteln!(f, "{indent}begin");
+                lower_block(diag, name_map, inner, f, indent.nest())?;
+                swriteln!(f, "{indent}end");
+            }
+            IrStatement::If(IfStatement { initial_if, else_ifs, final_else }) => {
+                let write_if = |f: &mut String, pair: &IfCondBlockPair<IrExpression, IrBlock>| {
+                    swrite!(f, "if (");
+                    lower_expression(diag, name_map, stmt.span, &pair.cond, f)?;
+                    swriteln!(f, ") begin");
+                    lower_block(diag, name_map, &pair.block, f, indent.nest())?;
+                    swrite!(f, "{indent}end");
+                    Ok(())
+                };
+
+                swrite!(f, "{indent}");
+                write_if(f, initial_if)?;
+                for else_if in else_ifs {
+                    swrite!(f, " else ");
+                    write_if(f, else_if)?;
+                }
+
+                if let Some(final_else) = final_else {
+                    swriteln!(f, " else begin");
+                    lower_block(diag, name_map, final_else, f, indent.nest())?;
+                    swrite!(f, "{indent}end");
+                }
+
+                swriteln!(f);
             }
         }
     }
@@ -656,16 +705,6 @@ impl NewlineGenerator {
         }
         self.any_curr = true;
     }
-}
-
-fn diag_u64_to_u32(diags: &Diagnostics, span: Span, value: u64, message: &str) -> Result<u32, ErrorGuaranteed> {
-    value.try_into().map_err(|_| {
-        diags.report_simple(
-            format!("{message}: overflow when converting {value} to u32"),
-            span,
-            "used here",
-        )
-    })
 }
 
 fn diag_big_int_to_u32(diags: &Diagnostics, span: Span, value: &BigInt, message: &str) -> Result<u32, ErrorGuaranteed> {

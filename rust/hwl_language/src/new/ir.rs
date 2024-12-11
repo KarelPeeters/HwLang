@@ -2,7 +2,7 @@ use crate::data::diagnostic::ErrorGuaranteed;
 use crate::new::types::{ClosedIntRange, HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
@@ -130,11 +130,9 @@ pub struct IrBlock {
 #[derive(Debug)]
 pub enum IrStatement {
     Assign(IrAssignmentTarget, IrExpression),
-    // If(IrExpression, IrBlock, IrBlock),
-    // While(IrExpression, IrBlock),
-    // Break,
-    // Continue,
-    // Return(IrExpression),
+
+    Block(IrBlock),
+    If(IfStatement<IrExpression, IrBlock>),
 }
 
 #[derive(Debug)]
@@ -195,7 +193,7 @@ impl IrExpression {
             &IrExpression::Register(x) => m.registers[x].debug_info_id.string().to_owned(),
 
             // TODO support printing variables with their real names if in a context where they exist
-            &IrExpression::Variable(x) => "_variable".to_owned(),
+            &IrExpression::Variable(_) => "_variable".to_owned(),
         }
     }
 }
