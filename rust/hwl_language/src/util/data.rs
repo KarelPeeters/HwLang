@@ -27,6 +27,8 @@ where
 
 pub trait VecExt<T> {
     fn single(self) -> Option<T>;
+
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
 }
 
 impl<T> VecExt<T> for Vec<T> {
@@ -36,5 +38,12 @@ impl<T> VecExt<T> for Vec<T> {
         } else {
             None
         }
+    }
+
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.push(v);
+        let result = f(self);
+        assert!(self.pop().is_some());
+        result
     }
 }

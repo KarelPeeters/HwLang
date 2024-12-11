@@ -6,6 +6,7 @@ use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
+use annotate_snippets::Level;
 
 impl CompileState<'_> {
     pub fn type_of_expression_value(&self, value: &MaybeCompile<NamedValue>) -> Type {
@@ -71,7 +72,7 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn check_valid_domain_crossing(&self, assignment_span: Span, target: Spanned<&ValueDomain>, source: Spanned<&ValueDomain>) -> Result<(), ErrorGuaranteed> {
+    pub fn check_valid_domain_crossing(&self, assignment_span: Span, target: Spanned<&ValueDomain>, source: Spanned<&ValueDomain>, required_reason: &str) -> Result<(), ErrorGuaranteed> {
         let valid = match (target.inner, source.inner) {
             // clock only clock, and even that is not yet supported
             (ValueDomain::Clock, ValueDomain::Clock) =>
@@ -102,13 +103,14 @@ impl CompileState<'_> {
             }
         };
 
-        valid.map_err(|reason| {
+        valid.map_err(|invalid_reason| {
             let target_str = self.value_domain_to_diagnostic_string(&target.inner);
             let source_str = self.value_domain_to_diagnostic_string(source.inner);
-            let diag = Diagnostic::new(format!("invalid domain crossing: {reason}"))
+            let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
                 .add_error(assignment_span, "invalid assignment here")
                 .add_info(target.span, format!("target domain is {target_str}"))
                 .add_info(source.span, format!("source domain is {source_str}"))
+                .footer(Level::Info, required_reason)
                 .finish();
             self.diags.report(diag)
         })

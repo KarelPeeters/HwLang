@@ -9,6 +9,7 @@ use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, May
 use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::data::VecExt;
 use crate::util::result_pair;
 use itertools::Itertools;
 
@@ -104,6 +105,7 @@ impl CompileState<'_> {
         report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
         ir_locals: &mut IrVariables,
         block_domain: &BlockDomain,
+        condition_domains: &mut Vec<Spanned<ValueDomain>>,
         parent_scope: Scope,
         block: &Block<BlockStatement>,
     ) -> Result<IrBlock, ErrorGuaranteed> {
@@ -135,6 +137,7 @@ impl CompileState<'_> {
                     };
                     let value = self.eval_expression(&mut ctx, scope, value);
 
+                    let condition_domains = &*condition_domains;
                     let stmt = result_pair(target, value).and_then(|(target, value)| {
                         // TODO extract this to a function
                         let (target_ty, target_domain, ir_target) = match target {
@@ -195,15 +198,22 @@ impl CompileState<'_> {
 
                         let check_domains = match block_domain {
                             BlockDomain::Combinatorial => {
-                                self.check_valid_domain_crossing(stmt.span, target_domain, value_domain)
+                                let mut check = self.check_valid_domain_crossing(stmt.span, target_domain, value_domain, "value to target in combinatorial block");
+
+                                for condition_domain in condition_domains {
+                                    let c = self.check_valid_domain_crossing(stmt.span, target_domain, condition_domain.as_ref(), "condition to target in combinatorial block");
+                                    check = check.and(c);
+                                }
+
+                                check
                             }
                             BlockDomain::Clocked(block_domain) => {
                                 let block_domain = block_domain
                                     .as_ref()
                                     .map_inner(|d| ValueDomain::Sync(d.clone()));
 
-                                let check_target_domain = self.check_valid_domain_crossing(stmt.span, target_domain, block_domain.as_ref());
-                                let check_value_domain = self.check_valid_domain_crossing(stmt.span, block_domain.as_ref(), value_domain);
+                                let check_target_domain = self.check_valid_domain_crossing(stmt.span, target_domain, block_domain.as_ref(), "clocked block to target");
+                                let check_value_domain = self.check_valid_domain_crossing(stmt.span, block_domain.as_ref(), value_domain, "value to clocked block");
 
                                 check_target_domain.and(check_value_domain)
                             }
@@ -220,23 +230,20 @@ impl CompileState<'_> {
                 }
                 BlockStatementKind::Expression(_) => throw!(diags.report_todo(stmt.span, "statement kind Expression")),
                 BlockStatementKind::Block(inner) => {
-                    let inner_block = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, inner)?;
+                    let inner_block = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, condition_domains, scope, inner)?;
                     ir_statements.push(Ok(Spanned { span: stmt.span, inner: IrStatement::Block(inner_block) }));
                 }
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement { initial_if, else_ifs, final_else } = stmt_if;
 
                     // TODO count if condition as a read of the value for domain purposes
-                    // TODO include in the merged domain for combinatorial assignments
-                    //    implementation idea: the current block should include the join of all conditions
-                    //                         as a merged-in domain
 
                     // TODO avoid allocation here
                     let mut all_ifs = vec![];
                     all_ifs.push(initial_if);
                     all_ifs.extend(else_ifs.iter());
 
-                    let stmt_ir = self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, &mut ir_statements, &all_ifs, final_else)?;
+                    let stmt_ir = self.elaborate_if_statement(report_assignment, block_domain, condition_domains, ir_locals, scope, &mut ir_statements, &all_ifs, final_else)?;
                     match stmt_ir {
                         LoweredIf::Nothing => {}
                         LoweredIf::SingleBlock(block) => {
@@ -267,6 +274,7 @@ impl CompileState<'_> {
         &mut self,
         report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
         block_domain: &BlockDomain,
+        condition_domains: &mut Vec<Spanned<ValueDomain>>,
         ir_locals: &mut IrVariables,
         scope: Scope,
         ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
@@ -281,7 +289,7 @@ impl CompileState<'_> {
                 return match final_else {
                     None => Ok(LoweredIf::Nothing),
                     Some(final_else) => {
-                        let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, final_else)?;
+                        let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, condition_domains, scope, final_else)?;
                         Ok(LoweredIf::SingleBlock(block_ir))
                     }
                 };
@@ -306,10 +314,10 @@ impl CompileState<'_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, block)?;
+                    let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, condition_domains, scope, block)?;
                     Ok(LoweredIf::SingleBlock(block_ir))
                 } else {
-                    self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, ir_statements, remaining_ifs, final_else)
+                    self.elaborate_if_statement(report_assignment, block_domain, condition_domains, ir_locals, scope, ir_statements, remaining_ifs, final_else)
                 }
             }
             // evaluate the if at runtime, generate the IR
@@ -319,9 +327,15 @@ impl CompileState<'_> {
                 let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval.ty.as_type() };
                 self.check_type_contains_type(cond.span, ty_bool, cond_eval_spanned)?;
 
-                // lower both branches
-                let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, scope, block)?;
-                let else_ir = self.elaborate_if_statement(report_assignment, block_domain, ir_locals, scope, ir_statements, remaining_ifs, final_else)?;
+                // record condition domain
+                let cond_domain = Spanned { span: cond.span, inner: cond_eval.domain };
+                let (block_ir, else_ir) = condition_domains.with_pushed(cond_domain, |condition_domains| {
+                    // lower both branches
+                    let block_ir = self.elaborate_ir_block(report_assignment, ir_locals, block_domain, condition_domains, scope, block)?;
+                    let else_ir = self.elaborate_if_statement(report_assignment, block_domain, condition_domains, ir_locals, scope, ir_statements, remaining_ifs, final_else)?;
+
+                    Ok((block_ir, else_ir))
+                })?;
 
                 let initial_if = IfCondBlockPair {
                     span: cond.span,

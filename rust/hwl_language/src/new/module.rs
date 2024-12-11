@@ -362,7 +362,10 @@ impl BodyElaborationState<'_, '_> {
                     let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
                         self.drivers.report_assignment(diags, Driver::CombinatorialBlock(statement_index), target)
                     };
-                    let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, scope_body, block);
+
+                    let mut condition_domains = vec![];
+                    let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, &mut condition_domains, scope_body, block);
+                    assert!(condition_domains.is_empty());
 
                     let ir_process = ir_block.map(|block| {
                         let ir_body = IrCombinatorialProcess { locals: ir_locals, block };
@@ -392,7 +395,11 @@ impl BodyElaborationState<'_, '_> {
                         let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
                             self.drivers.report_assignment(diags, Driver::ClockedBlock(statement_index), target)
                         };
-                        let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, scope_body, block)?;
+
+                        let mut condition_domains = vec![];
+                        let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, &mut condition_domains, scope_body, block)?;
+                        assert!(condition_domains.is_empty());
+
 
                         let ir_process = IrClockedProcess {
                             locals: ir_locals,
@@ -612,7 +619,7 @@ impl BodyElaborationState<'_, '_> {
             // check domain
             let domain = domain.clone().map_inner(|d| ValueDomain::from_domain_kind(d));
             let value_domain_spanned = Spanned { span: value.span, inner: value_domain };
-            let err_domain = state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned);
+            let err_domain = state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
 
             err_ty?;
             err_domain?;
