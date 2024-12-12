@@ -1,6 +1,7 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::front::scope::{Scope, Visibility};
+use crate::new::check::check_type_contains_compile_value;
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry, ModuleElaborationInfo};
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::misc::ScopedEntry;
@@ -36,7 +37,7 @@ impl CompileState<'_> {
         // check type
         if let Some(ty) = ty {
             let value_eval_spanned = Spanned { span: value.span, inner: &value_eval };
-            self.check_type_contains_compile_value(decl.span, ty.as_ref(), value_eval_spanned, true)?;
+            check_type_contains_compile_value(self.diags, decl.span, ty.as_ref(), value_eval_spanned, true)?;
         };
 
         Ok(value_eval)

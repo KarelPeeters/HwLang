@@ -1,6 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::BlockDomain;
+use crate::new::check::{check_type_contains_compile_value, check_type_contains_value};
 use crate::new::compile::{CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
@@ -139,7 +140,7 @@ impl CompileState<'_> {
                             ty: ty.inner.to_ir(),
                             debug_info_id: id.clone(),
                             debug_info_ty: ty.inner.clone(),
-                            debug_info_domain: domain.inner.to_diagnostic_string(self)
+                            debug_info_domain: domain.inner.to_diagnostic_string(self),
                         });
                         let port = self.ports.push(PortInfo {
                             id: id.clone(),
@@ -392,7 +393,6 @@ impl BodyElaborationState<'_, '_> {
                         let ir_block = state.elaborate_ir_block(&mut report_assignment, &mut ir_locals, &block_domain, &mut condition_domains, scope_body, block)?;
                         assert!(condition_domains.is_empty());
 
-
                         let ir_process = IrClockedProcess {
                             locals: ir_locals,
                             domain: Spanned { span: domain.span, inner: ir_domain },
@@ -595,7 +595,7 @@ impl BodyElaborationState<'_, '_> {
             let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
 
             // check type
-            let check_ty = state.check_type_contains_value(decl.span, ty_spanned, value.as_ref(), true);
+            let check_ty = check_type_contains_value(diags, decl.span, ty_spanned, value.as_ref(), true);
 
             // check domain
             let value_domain = value.inner.domain();
@@ -612,7 +612,7 @@ impl BodyElaborationState<'_, '_> {
             ty: ty.to_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.clone(),
-            debug_info_domain: domain.inner.to_diagnostic_string(state)
+            debug_info_domain: domain.inner.to_diagnostic_string(state),
         });
         let wire = state.wires.push(WireInfo {
             id: id.clone(),
@@ -643,6 +643,7 @@ impl BodyElaborationState<'_, '_> {
 
     fn elaborate_module_declaration_reg(&mut self, decl: &RegDeclaration) -> Result<RegisterInit, ErrorGuaranteed> {
         let state = &mut self.state;
+        let diags = state.diags;
         let scope_body = self.scope_body;
 
         let RegDeclaration { span: _, id, sync, ty, init } = decl;
@@ -662,7 +663,7 @@ impl BodyElaborationState<'_, '_> {
         let init = init.and_then(|init| {
             let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
             let init_spanned = Spanned { span: init_span, inner: &init };
-            state.check_type_contains_compile_value(decl.span, ty_spanned, init_spanned, true)?;
+            check_type_contains_compile_value(diags, decl.span, ty_spanned, init_spanned, true)?;
             Ok(init)
         });
         let init = Spanned { span: init_span, inner: init };
@@ -685,6 +686,7 @@ impl BodyElaborationState<'_, '_> {
 
     fn elaborate_module_declaration_reg_out_port(&mut self, decl: &RegOutPortMarker) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
         let state = &mut self.state;
+        let diags = state.diags;
         let scope_body = self.scope_body;
         let scope_ports = self.scope_ports;
 
@@ -692,10 +694,10 @@ impl BodyElaborationState<'_, '_> {
         let init_span = init.span;
 
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
-        let port = state.scopes[scope_ports].find_immediate_str(state.diags, &id.string, Visibility::Private)?;
+        let port = state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
         let port = match port.value {
             &ScopedEntry::Direct(NamedValue::Port(port)) => Ok(port),
-            _ => Err(state.diags.report_internal_error(id.span, "found non-port in port scope")),
+            _ => Err(diags.report_internal_error(id.span, "found non-port in port scope")),
         };
 
         let init = state.eval_expression_as_compile(scope_body, init, "register reset value")
@@ -712,7 +714,7 @@ impl BodyElaborationState<'_, '_> {
                     .add_error(id.span, "port marked as register here")
                     .add_info(port_info.direction.span, "port declared as input here")
                     .finish();
-                direction_err = Err(state.diags.report(diag))
+                direction_err = Err(diags.report(diag))
             }
             PortDirection::Output => {}
         }
@@ -731,7 +733,7 @@ impl BodyElaborationState<'_, '_> {
                     .add_error(id.span, "port marked as register here")
                     .add_info(port_info.domain.span, format!("port declared as {actual} here"))
                     .finish();
-                return Err(state.diags.report(diag));
+                return Err(diags.report(diag));
             }
         };
 
@@ -740,7 +742,7 @@ impl BodyElaborationState<'_, '_> {
         // check type
         let init = init.and_then(|init| {
             let ty_spanned = Spanned { span: port_info.ty.span, inner: &port_info.ty.inner.as_type() };
-            state.check_type_contains_compile_value(decl.span, ty_spanned, init.as_ref(), true)?;
+            check_type_contains_compile_value(diags, decl.span, ty_spanned, init.as_ref(), true)?;
             Ok(init.inner)
         });
         let init = Spanned { span: init_span, inner: init };

@@ -1,4 +1,4 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ValueDomain};
@@ -10,49 +10,6 @@ use crate::throw;
 use annotate_snippets::Level;
 
 impl CompileState<'_> {
-    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&MaybeCompile<TypedIrExpression>>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
-        match value.inner {
-            MaybeCompile::Compile(value_inner) => {
-                let value = Spanned { span: value.span, inner: value_inner };
-                self.check_type_contains_compile_value(assignment_span, target_ty, value, accept_undefined)
-            }
-            MaybeCompile::Other(value_inner) => {
-                let ty = Spanned { span: value.span, inner: &value_inner.ty.as_type() };
-                self.check_type_contains_type(assignment_span, target_ty, ty)
-            }
-        }
-    }
-
-    pub fn check_type_contains_compile_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&CompileValue>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
-        let ty_contains_value = target_ty.inner.contains_type(&value.inner.ty());
-        let value_is_undefined = matches!(value.inner, CompileValue::Undefined);
-
-        if ty_contains_value && (accept_undefined || !value_is_undefined) {
-            Ok(())
-        } else {
-            let diag = Diagnostic::new("value does not fit in type")
-                .add_error(assignment_span, "invalid assignment here")
-                .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))
-                .add_info(value.span, format!("source value `{}` defined here", value.inner.to_diagnostic_string()))
-                .finish();
-            Err(self.diags.report(diag))
-        }
-    }
-
-    pub fn check_type_contains_type(&self, assignment_span: Span, target_ty: Spanned<&Type>, source_ty: Spanned<&Type>) -> Result<(), ErrorGuaranteed> {
-        if target_ty.inner.contains_type(&source_ty.inner) {
-            Ok(())
-        } else {
-            // TODO unify diagnostics? right now this one refers to types, even though it can also highlight values
-            let diag = Diagnostic::new("type does not fit in type")
-                .add_error(assignment_span, "invalid assignment here")
-                .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))
-                .add_info(source_ty.span, format!("source type `{}` defined here", source_ty.inner.to_diagnostic_string()))
-                .finish();
-            Err(self.diags.report(diag))
-        }
-    }
-
     pub fn check_valid_domain_crossing(&self, assignment_span: Span, target: Spanned<&ValueDomain>, source: Spanned<&ValueDomain>, required_reason: &str) -> Result<(), ErrorGuaranteed> {
         let valid = match (target.inner, source.inner) {
             // clock only clock, and even that is not yet supported
@@ -120,5 +77,48 @@ impl CompileState<'_> {
             &DomainSignal::Register(reg) => self.registers[reg].id.string().to_string(),
             DomainSignal::BoolNot(signal) => format!("!{}", self.domain_signal_to_diagnostic_string(signal)),
         }
+    }
+}
+
+pub fn check_type_contains_value(diags: &Diagnostics, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&MaybeCompile<TypedIrExpression>>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
+    match value.inner {
+        MaybeCompile::Compile(value_inner) => {
+            let value = Spanned { span: value.span, inner: value_inner };
+            check_type_contains_compile_value(diags, assignment_span, target_ty, value, accept_undefined)
+        }
+        MaybeCompile::Other(value_inner) => {
+            let ty = Spanned { span: value.span, inner: &value_inner.ty.as_type() };
+            check_type_contains_type(diags, assignment_span, target_ty, ty)
+        }
+    }
+}
+
+pub fn check_type_contains_compile_value(diags: &Diagnostics, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&CompileValue>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
+    let ty_contains_value = target_ty.inner.contains_type(&value.inner.ty());
+    let value_is_undefined = matches!(value.inner, CompileValue::Undefined);
+
+    if ty_contains_value && (accept_undefined || !value_is_undefined) {
+        Ok(())
+    } else {
+        let diag = Diagnostic::new("value does not fit in type")
+            .add_error(assignment_span, "invalid assignment here")
+            .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))
+            .add_info(value.span, format!("source value `{}` defined here", value.inner.to_diagnostic_string()))
+            .finish();
+        Err(diags.report(diag))
+    }
+}
+
+pub fn check_type_contains_type(diags: &Diagnostics, assignment_span: Span, target_ty: Spanned<&Type>, source_ty: Spanned<&Type>) -> Result<(), ErrorGuaranteed> {
+    if target_ty.inner.contains_type(&source_ty.inner) {
+        Ok(())
+    } else {
+        // TODO unify diagnostics? right now this one refers to types, even though it can also highlight values
+        let diag = Diagnostic::new("type does not fit in type")
+            .add_error(assignment_span, "invalid assignment here")
+            .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))
+            .add_info(source_ty.span, format!("source type `{}` defined here", source_ty.inner.to_diagnostic_string()))
+            .finish();
+        Err(diags.report(diag))
     }
 }

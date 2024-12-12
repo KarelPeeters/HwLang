@@ -1,7 +1,7 @@
 use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
-use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrWire, IrWireInfo};
+use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo};
 use crate::syntax::ast::{Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
@@ -316,16 +316,13 @@ fn lower_module_statements(
             IrProcess::Combinatorial(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 
-                // TODO declare locals
-                if locals.len() > 0 {
-                    throw!(diags.report_todo(process_span, "local variables"))
-                }
+                let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
 
                 let name_map = NameMap {
                     ports: port_name_map,
                     registers: reg_name_map,
                     wires: wire_name_map,
-                    variables: &IndexMap::new(),
+                    variables: &variables,
                 };
 
                 swriteln!(f, "{I}always @(*) begin");
@@ -351,6 +348,7 @@ fn lower_module_statements(
                 collect_written_registers(on_clock, &mut written_regs);
                 collect_written_registers(on_reset, &mut written_regs);
 
+
                 let shadowing_reg_name_map = lower_shadow_registers(
                     diags,
                     module_name_scope,
@@ -361,10 +359,7 @@ fn lower_module_statements(
                     &mut newline,
                 )?;
 
-                // TODO declare locals
-                if locals.len() > 0 {
-                    throw!(diags.report_todo(process_span, "local variables"))
-                }
+                let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
 
                 // populate shadow registers
                 newline.start_new_block();
@@ -378,7 +373,7 @@ fn lower_module_statements(
                     ports: port_name_map,
                     registers: &shadowing_reg_name_map,
                     wires: wire_name_map,
-                    variables: &IndexMap::new(),
+                    variables: &variables,
                 };
 
                 // main reset/clock structure
@@ -405,6 +400,36 @@ fn lower_module_statements(
     }
 
     Ok(())
+}
+
+fn declare_locals(
+    diags: &Diagnostics,
+    module_name_scope: &mut LoweredNameScope,
+    locals: &IrVariables,
+    f: &mut String,
+    newline: &mut NewlineGenerator,
+) -> Result<IndexMap<IrVariable, LoweredName>, ErrorGuaranteed> {
+    newline.start_new_block();
+
+    let mut result = IndexMap::new();
+
+    for (variable, variable_info) in locals {
+        newline.before_item(f);
+
+        let IrVariableInfo { ty, debug_info_id } = variable_info;
+        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
+            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
+            Err(ZeroWidth) => ("// ", "[empty]"),
+        };
+
+        swriteln!(f, "{I}{I}{prefix_str}reg {ty_prefix_str}{name};");
+        result.insert_first(variable, name);
+    }
+
+    Ok(result)
 }
 
 fn lower_shadow_registers(
