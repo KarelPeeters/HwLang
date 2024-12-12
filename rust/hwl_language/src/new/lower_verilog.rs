@@ -2,6 +2,7 @@ use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo};
+use crate::new::types::HardwareType;
 use crate::syntax::ast::{Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
@@ -248,48 +249,43 @@ fn lower_module_ports(diags: &Diagnostics, ports: &Arena<IrPort, IrPortInfo>, mo
 }
 
 fn lower_module_signals(diags: &Diagnostics, module_name_scope: &mut LoweredNameScope, registers: &Arena<IrRegister, IrRegisterInfo>, wires: &Arena<IrWire, IrWireInfo>, newline: &mut NewlineGenerator, f: &mut String) -> Result<(IndexMap<IrRegister, LoweredName>, IndexMap<IrWire, LoweredName>), ErrorGuaranteed> {
+    let mut lower_signal = |signal_type, ty, debug_info_id, debug_info_ty: &HardwareType, debug_info_domain, f: &mut String| {
+        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
+            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
+            Err(ZeroWidth) => ("// ", "[empty]"),
+        };
+
+        let name_debug_str = &debug_info_id.string();
+        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
+
+        // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
+        swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // {signal_type} {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        Ok(name)
+    };
+
     let mut reg_name_map = IndexMap::new();
     let mut wire_name_map = IndexMap::new();
 
+    newline.start_new_block();
     for (register, register_info) in registers {
         newline.before_item(f);
 
         let IrRegisterInfo { ty, debug_info_id, debug_info_ty, debug_info_domain } = register_info;
-        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
-
-        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
-        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
-            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
-            Err(ZeroWidth) => ("// ", "[empty]"),
-        };
-
-        let name_debug_str = &debug_info_id.string();
-        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
-
-        swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // reg {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        let name = lower_signal("reg", ty, debug_info_id, debug_info_ty, debug_info_domain, f)?;
         reg_name_map.insert_first(register, name);
     }
 
     newline.start_new_block();
-
     for (wire, wire_info) in wires {
         newline.before_item(f);
 
         let IrWireInfo { ty, debug_info_id, debug_info_ty, debug_info_domain } = &wire_info;
-        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
-
-        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
-        let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
-            Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
-            Err(ZeroWidth) => ("// ", "[empty]"),
-        };
-
-        let name_debug_str = &debug_info_id.string();
-        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
-
-        swriteln!(f, "{I}{prefix_str}wire {ty_prefix_str}{name}; // wire {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        let name = lower_signal("wire", ty, debug_info_id, debug_info_ty, debug_info_domain, f)?;
         wire_name_map.insert_first(wire, name);
     }
+
     Ok((reg_name_map, wire_name_map))
 }
 
@@ -311,7 +307,6 @@ fn lower_module_statements(
 
         let mut newline = NewlineGenerator::new();
 
-        let process_span = process.span;
         match &process.inner {
             IrProcess::Combinatorial(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
