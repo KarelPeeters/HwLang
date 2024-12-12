@@ -1,6 +1,8 @@
+use crate::new::block::TypedIrExpression;
 use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::{IrExpression, IrModule};
+use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
 use num_bigint::{BigInt, BigUint};
 
@@ -137,6 +139,15 @@ impl CompileValue {
             // TODO module item name and generic args?
             CompileValue::Module(_) => "module".to_string(),
             CompileValue::Function(_) => "function".to_string(),
+        }
+    }
+}
+
+impl MaybeCompile<TypedIrExpression> {
+    pub fn domain(&self) -> &ValueDomain {
+        match self {
+            MaybeCompile::Compile(_) => &ValueDomain::CompileTime,
+            MaybeCompile::Other(value) => &value.domain,
         }
     }
 }

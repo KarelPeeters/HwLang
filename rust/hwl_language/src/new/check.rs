@@ -1,45 +1,25 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ValueDomain};
 use crate::new::types::Type;
-use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::new::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use annotate_snippets::Level;
 
 impl CompileState<'_> {
-    pub fn type_of_expression_value(&self, value: &MaybeCompile<NamedValue>) -> Type {
-        match value {
-            MaybeCompile::Compile(c) => c.ty(),
-            &MaybeCompile::Other(n) => self.type_of_named_value(n),
-        }
-    }
-
-    // TODO this function is a bit weird, usually you'd just ask the type _after_ context evaluation
-    pub fn type_of_named_value(&self, value: NamedValue) -> Type {
-        match value {
-            NamedValue::Constant(cst) => self.constants[cst].value.ty(),
-            NamedValue::Parameter(param) => self.parameters[param].value.ty(),
-            // TODO for compile-time variables, just look at the value itself
-            NamedValue::Variable(var) => self.variables[var].ty.clone(),
-            NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
-            NamedValue::Wire(wire) => self.wires[wire].ty.inner.as_type(),
-            NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
-        }
-    }
-
-    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&MaybeCompile<NamedValue>>) -> Result<(), ErrorGuaranteed> {
-        let value_ty = self.type_of_expression_value(&value.inner);
-        if target_ty.inner.contains_type(&value_ty) {
-            Ok(())
-        } else {
-            let diag = Diagnostic::new("value does not fit in type")
-                .add_error(assignment_span, "invalid assignment here")
-                .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))
-                .add_info(value.span, format!("source value with type `{}` defined here", value_ty.to_diagnostic_string()))
-                .finish();
-            Err(self.diags.report(diag))
+    pub fn check_type_contains_value(&self, assignment_span: Span, target_ty: Spanned<&Type>, value: Spanned<&MaybeCompile<TypedIrExpression>>, accept_undefined: bool) -> Result<(), ErrorGuaranteed> {
+        match value.inner {
+            MaybeCompile::Compile(value_inner) => {
+                let value = Spanned { span: value.span, inner: value_inner };
+                self.check_type_contains_compile_value(assignment_span, target_ty, value, accept_undefined)
+            }
+            MaybeCompile::Other(value_inner) => {
+                let ty = Spanned { span: value.span, inner: &value_inner.ty.as_type() };
+                self.check_type_contains_type(assignment_span, target_ty, ty)
+            }
         }
     }
 
@@ -63,6 +43,7 @@ impl CompileState<'_> {
         if target_ty.inner.contains_type(&source_ty.inner) {
             Ok(())
         } else {
+            // TODO unify diagnostics? right now this one refers to types, even though it can also highlight values
             let diag = Diagnostic::new("type does not fit in type")
                 .add_error(assignment_span, "invalid assignment here")
                 .add_info(target_ty.span, format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()))

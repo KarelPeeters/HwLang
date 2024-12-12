@@ -271,15 +271,7 @@ impl BodyElaborationState<'_, '_> {
             match &stmt.inner {
                 // declarations
                 ModuleStatementKind::ConstDeclaration(decl) => {
-                    let entry = self.state.const_eval_and_check(self.scope_body, decl)
-                        .map(|value| {
-                            let cst = self.state.constants.push(ConstantInfo {
-                                id: decl.id.clone(),
-                                value,
-                            });
-                            ScopedEntry::Direct(NamedValue::Constant(cst))
-                        });
-                    self.state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    self.state.const_eval_and_declare(scope_body, decl);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.elaborate_module_declaration_reg(decl);
@@ -602,27 +594,17 @@ impl BodyElaborationState<'_, '_> {
         if let Some(value) = &value {
             let ty_spanned = Spanned { span: ty_span, inner: &ty.as_type() };
 
-            // check type and get domain
-            let (err_ty, value_domain) = match &value.inner {
-                MaybeCompile::Compile(c) => {
-                    let value_spanned = Spanned { span: value.span, inner: c };
-                    let err_ty = state.check_type_contains_compile_value(decl.span, ty_spanned, value_spanned, true);
-                    (err_ty, &ValueDomain::CompileTime)
-                }
-                MaybeCompile::Other(v) => {
-                    let value_ty_spanned = Spanned { span: value.span, inner: &v.ty.as_type() };
-                    let err_ty = state.check_type_contains_type(decl.span, ty_spanned, value_ty_spanned);
-                    (err_ty, &v.domain)
-                }
-            };
+            // check type
+            let check_ty = state.check_type_contains_value(decl.span, ty_spanned, value.as_ref(), true);
 
             // check domain
-            let domain = domain.clone().map_inner(|d| ValueDomain::from_domain_kind(d));
+            let value_domain = value.inner.domain();
             let value_domain_spanned = Spanned { span: value.span, inner: value_domain };
-            let err_domain = state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
+            let target_domain = domain.clone().map_inner(|d| ValueDomain::from_domain_kind(d));
+            let check_domain = state.check_valid_domain_crossing(decl.span, target_domain.as_ref(), value_domain_spanned, "value to wire");
 
-            err_ty?;
-            err_domain?;
+            check_ty?;
+            check_domain?;
         }
 
         // build wire

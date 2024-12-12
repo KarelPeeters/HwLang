@@ -1,12 +1,12 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::front::scope::{Scope, Visibility};
-use crate::new::compile::CompileState;
+use crate::new::compile::{CompileState, VariableInfo};
 use crate::new::expression::ExpressionContext;
 use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrStatement, IrVariables};
-use crate::new::misc::{DomainSignal, ValueDomain};
+use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned, SyncDomain};
+use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned, SyncDomain, VariableDeclaration};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::data::VecExt;
@@ -24,14 +24,15 @@ impl ExpressionContext for IrContext<'_> {
     type T = TypedIrExpression;
 
     // TODO reduce the duplication here, const and param will always be evaluated exactly like this, right?
-    fn eval_named(&mut self, s: &CompileState, span_use: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+    fn eval_named(&mut self, s: &CompileState, _: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         match named {
             NamedValue::Constant(cst) =>
                 Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
             NamedValue::Parameter(param) =>
                 Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
-            NamedValue::Variable(_) =>
-                Err(s.diags.report_todo(span_use, "eval variable in IrContext")),
+            NamedValue::Variable(v) => {
+                Ok(s.variables[v].current_value.clone())
+            }
             NamedValue::Port(port) => {
                 let port_info = &s.ports[port];
                 let expr = TypedIrExpression {
@@ -119,8 +120,40 @@ impl CompileState<'_> {
         for stmt in statements {
             let stmt_span = stmt.span;
             match &stmt.inner {
-                BlockStatementKind::ConstDeclaration(_) => throw!(diags.report_todo(stmt.span, "statement kind ConstDeclaration")),
-                BlockStatementKind::VariableDeclaration(_) => throw!(diags.report_todo(stmt.span, "statement kind VariableDeclaration")),
+                BlockStatementKind::ConstDeclaration(decl) => {
+                    self.const_eval_and_declare(scope, decl)
+                }
+                BlockStatementKind::VariableDeclaration(decl) => {
+                    let VariableDeclaration { span: _, mutable, id, ty, init } = decl;
+                    let mutable = *mutable;
+                    let init_span = init.span;
+
+                    let ty = ty.as_ref()
+                        .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, ty)? }))
+                        .transpose();
+                    let init = self.eval_expression_as_ir(ir_locals, &mut ir_statements, scope, init);
+
+                    // check init fits in type
+                    let entry = result_pair(ty, init).and_then(|(ty, init)| {
+                        // check init fits in type
+                        if let Some(ty) = &ty {
+                            let init_spanned = Spanned { span: init_span, inner: &init };
+                            self.check_type_contains_value(stmt.span, ty.as_ref(), init_spanned, true)?;
+                        }
+
+                        // build variable
+                        let info = VariableInfo {
+                            id: id.clone(),
+                            mutable,
+                            ty,
+                            current_value: init,
+                        };
+                        let variable = self.variables.push(info);
+                        Ok(ScopedEntry::Direct(NamedValue::Variable(variable)))
+                    });
+
+                    self.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
+                }
                 BlockStatementKind::Assignment(stmt) => {
                     let Assignment { span: _, op, target, value } = stmt;
                     let target_span = target.span;
@@ -163,31 +196,27 @@ impl CompileState<'_> {
                         };
 
                         let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
+                        let value_spanned = Spanned { span: value_span, inner: &value };
+                        let check_ty = self.check_type_contains_value(stmt.span, target_ty.as_ref(), value_spanned, true);
 
                         // check type and convert to value
                         let (value_domain, ir_value) = match value {
                             MaybeCompile::Compile(v) => {
-                                let value_spanned = Spanned { span: value_span, inner: &v };
-                                let ir_value = self.check_type_contains_compile_value(stmt.span, target_ty.as_ref(), value_spanned, true).and_then(|()| {
-                                    match v.as_hardware_value() {
-                                        HardwareValueResult::Success(v) =>
-                                            Ok(v),
-                                        HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined =>
-                                            Err(diags.report_simple("undefined can only be used for register initialization", value_span, "value is undefined")),
-                                        HardwareValueResult::Unrepresentable => {
-                                            // TODO fix this duplication
-                                            let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                                            Err(diags.report_internal_error(value_span, reason))
-                                        }
+                                let ir_value = match v.as_hardware_value() {
+                                    HardwareValueResult::Success(v) =>
+                                        Ok(v),
+                                    HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined =>
+                                        Err(diags.report_simple("undefined can only be used for register initialization", value_span, "value is undefined")),
+                                    HardwareValueResult::Unrepresentable => {
+                                        // TODO fix this duplication
+                                        let reason = "compile time value fits in hardware type but is not convertible to hardware value";
+                                        Err(diags.report_internal_error(value_span, reason))
                                     }
-                                });
+                                };
                                 (ValueDomain::CompileTime, ir_value)
                             }
                             MaybeCompile::Other(v) => {
-                                let value_ty = Spanned { span: value_span, inner: v.ty.as_type() };
-                                let ir_value = self.check_type_contains_type(stmt.span, target_ty.as_ref(), value_ty.as_ref())
-                                    .map(|()| v.expr);
-                                (v.domain, ir_value)
+                                (v.domain, Ok(v.expr))
                             }
                         };
 
@@ -221,6 +250,7 @@ impl CompileState<'_> {
 
                         let ir_value = ir_value?;
                         check_domains?;
+                        check_ty?;
 
                         report_assignment(Spanned { span: target_span, inner: &target })?;
                         Ok(IrStatement::Assign(ir_target, ir_value))
@@ -297,14 +327,13 @@ impl CompileState<'_> {
         let IfCondBlockPair { span: _, cond, block } = initial_if;
         let cond_eval = self.eval_expression_as_ir(ir_locals, ir_statements, scope, cond)?;
 
+        let ty_bool = Spanned { span: cond.span, inner: &Type::Bool };
+        let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval };
+        self.check_type_contains_value(cond.span, ty_bool, cond_eval_spanned, false)?;
+
         match cond_eval {
             // evaluate the if at compile-time
             MaybeCompile::Compile(cond_eval) => {
-                // check type and extract inner
-                let ty_bool = Spanned { span: cond.span, inner: &Type::Bool };
-                let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval };
-                self.check_type_contains_compile_value(cond.span, ty_bool, cond_eval_spanned, false)?;
-
                 let cond_eval = match cond_eval {
                     CompileValue::Bool(b) => b,
                     _ => throw!(diags.report_internal_error(cond.span, "expected bool value")),
@@ -320,11 +349,6 @@ impl CompileState<'_> {
             }
             // evaluate the if at runtime, generate the IR
             MaybeCompile::Other(cond_eval) => {
-                // check type
-                let ty_bool = Spanned { span: cond.span, inner: &Type::Bool };
-                let cond_eval_spanned = Spanned { span: cond.span, inner: &cond_eval.ty.as_type() };
-                self.check_type_contains_type(cond.span, ty_bool, cond_eval_spanned)?;
-
                 // check condition domain
                 // TODO extract this to a common function?
                 let check_cond_domain = match block_domain {

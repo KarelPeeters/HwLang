@@ -1,9 +1,10 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::{AstRefItem, AstRefModule};
-use crate::front::scope::Scope;
-use crate::new::compile::{CompileState, ElaborationStackEntry, ModuleElaborationInfo};
+use crate::front::scope::{Scope, Visibility};
+use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry, ModuleElaborationInfo};
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
-use crate::new::value::CompileValue;
+use crate::new::misc::ScopedEntry;
+use crate::new::value::{CompileValue, NamedValue};
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType, Spanned};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
@@ -22,7 +23,7 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn const_eval_and_check<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn const_eval<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
         let ConstDeclaration { span: _, vis: _, id: _, ty, value } = decl;
 
         let ty = ty.as_ref()
@@ -41,6 +42,18 @@ impl CompileState<'_> {
         Ok(value_eval)
     }
 
+    pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
+        let entry = self.const_eval(scope, decl)
+            .map(|value| {
+                let cst = self.constants.push(ConstantInfo {
+                    id: decl.id.clone(),
+                    value,
+                });
+                ScopedEntry::Direct(NamedValue::Constant(cst))
+            });
+        self.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
+    }
+
     fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
         let file_scope = self.file_scope(item.file())?;
@@ -53,7 +66,7 @@ impl CompileState<'_> {
                     "import items should have been resolved in a separate pass already",
                 ))
             }
-            Item::Const(item_inner) => self.const_eval_and_check(file_scope, item_inner),
+            Item::Const(item_inner) => self.const_eval(file_scope, item_inner),
             Item::Type(item_inner) => {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item_inner;
                 match params {

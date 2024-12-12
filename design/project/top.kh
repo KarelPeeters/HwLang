@@ -20,8 +20,13 @@ pub module top ports(
     wire w1: sync(clk, rst) bool = y;
 
     clocked(clk, rst) {
-        if (w0) {
-            s = false;
+        var v = false;
+        v = s;
+
+        if (v) {
+            s = !s;
+        } else {
+            s = s;
         }
 
         s = !s;
