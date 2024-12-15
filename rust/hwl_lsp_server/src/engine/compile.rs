@@ -6,8 +6,10 @@ use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
 use hwl_language::data::diagnostic::{Annotation, Diagnostic, Diagnostics};
+use hwl_language::data::parsed::ParsedDatabase;
 use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
-use hwl_language::front::driver::compile;
+use hwl_language::new::compile::compile;
+use hwl_language::new::lower_verilog::lower;
 use hwl_language::syntax::pos::FileId;
 use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
@@ -30,15 +32,16 @@ impl ServerState {
                 ))),
             };
 
-            let diagnostics = Diagnostics::new();
-
             self.log("source database built, compiling");
-            let _compiled_database = compile(&diagnostics, &source);
+            let diags = Diagnostics::new();
+            let parsed = ParsedDatabase::new(&diags, &source);
+            let compiled = compile(&diags, &source, &parsed);
+            let _ = lower(&diags, &source, &parsed, &compiled);
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI
             let mut diagnostics_per_uri: IndexMap<Uri, Vec<lsp_types::Diagnostic>> = IndexMap::new();
-            for diagnostic in diagnostics.finish() {
+            for diagnostic in diags.finish() {
                 let (uri, diag) =
                     diagnostic_to_lsp(self.settings.position_encoding, &source, &abs_path_map, diagnostic)
                         .map_err(|e| OrSendError::Error(e.into()))?;

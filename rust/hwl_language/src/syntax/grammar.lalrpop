@@ -506,6 +506,8 @@ ExprLevelAtomic: ExpressionKind = {
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),
+    // type
+    "type" => ExpressionKind::Type,
     "_" => ExpressionKind::Dummy,
     // literals
     "true" => ExpressionKind::BoolLiteral(true),

@@ -56,6 +56,7 @@ pub enum HandleMessageOutcome {
 impl ServerState {
     pub fn new(settings: Settings, sender: ServerSender) -> Self {
         // TODO support multiple workspaces through a list of VFSs instead of just a single one
+        #[allow(deprecated)]
         let vfs = VirtualFileSystemWrapper::new(settings.initialize_params.root_uri.clone().unwrap());
 
         Self {

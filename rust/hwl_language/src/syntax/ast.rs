@@ -386,6 +386,7 @@ pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
     Undefined,
+    Type,
 
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.

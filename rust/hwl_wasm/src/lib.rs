@@ -1,9 +1,9 @@
-use hwl_language::back::core::lower;
 use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::data::lowered::LoweredDatabase;
+use hwl_language::data::parsed::ParsedDatabase;
 use hwl_language::data::source::FilePath;
 use hwl_language::data::source::SourceDatabase;
-use hwl_language::front::driver::compile;
+use hwl_language::new::compile::compile;
+use hwl_language::new::lower_verilog::lower;
 use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
@@ -42,26 +42,27 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src)
         .unwrap();
 
-    let diag = Diagnostics::new();
-    let (parsed, mut compiled) = compile(&diag, &source);
-    let LoweredDatabase {
-        top_module_name,
-        verilog_source,
-        module_names: _,
-    } = lower(&diag, &source, &parsed, &mut compiled);
+    let diags = Diagnostics::new();
+    let parsed = ParsedDatabase::new(&diags, &source);
+    let compiled = compile(&diags, &source, &parsed);
+    let lowered = lower(&diags, &source, &parsed, &compiled);
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();
-    let diagnostics_ansi = diag
+    let diagnostics_ansi = diags
         .finish()
         .into_iter()
         .map(|d| d.to_string(&source, diag_settings))
         .join("\n\n");
 
-    let _ = top_module_name;
+    let lowered_verilog = match lowered {
+        Ok(lowered) => lowered.verilog_source,
+        Err(_) => "/* error */".to_string(),
+    };
+
     CompileAndLowerResult {
         diagnostics_ansi,
-        lowered_verilog: verilog_source,
+        lowered_verilog,
     }
 }
 

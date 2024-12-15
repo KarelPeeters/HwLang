@@ -121,6 +121,7 @@ impl CompileState<'_> {
         match &expr.inner {
             ExpressionKind::Dummy => Err(self.diags.report_todo(expr.span, "expr kind Dummy")),
             ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
+            ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
             ExpressionKind::Wrapped(inner) => self.eval_expression(ctx, scope, vars, inner),
             ExpressionKind::Id(id) => {
                 let eval = self.eval_id(scope, id)?;

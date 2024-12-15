@@ -22,6 +22,8 @@ use itertools::Itertools;
 
 // TODO move
 // TODO create some common ir process builder
+// TODO remove lint waive
+#[allow(dead_code)]
 pub struct IrContext<'b> {
     ir_locals: &'b mut IrVariables,
     ir_statements: &'b mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
