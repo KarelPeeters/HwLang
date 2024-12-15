@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "egg_experiment",
     "hwl_language",
     "hwl_lsp_server",
     "hwl_wasm",
