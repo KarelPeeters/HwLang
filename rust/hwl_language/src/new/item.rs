@@ -1,6 +1,7 @@
 use crate::data::diagnostic::ErrorGuaranteed;
 use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::front::scope::{Scope, Visibility};
+use crate::new::block::VariableValues;
 use crate::new::check::check_type_contains_compile_value;
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry, ModuleElaborationInfo};
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
@@ -26,12 +27,13 @@ impl CompileState<'_> {
 
     pub fn const_eval<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
         let ConstDeclaration { span: _, vis: _, id: _, ty, value } = decl;
+        let vars = VariableValues::new_no_vars();
 
         let ty = ty.as_ref()
-            .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, ty)? }))
+            .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, &vars, ty)? }))
             .transpose();
 
-        let value_eval = self.eval_expression_as_compile(scope, value, "const value")?;
+        let value_eval = self.eval_expression_as_compile(scope, &vars, value, "const value")?;
         let ty = ty?;
 
         // check type
@@ -71,7 +73,11 @@ impl CompileState<'_> {
             Item::Type(item_inner) => {
                 let ItemDefType { span: _, vis: _, id: _, params, inner } = item_inner;
                 match params {
-                    None => Ok(CompileValue::Type(self.eval_expression_as_ty(file_scope, inner)?)),
+                    None => {
+                        let vars = VariableValues::new_no_vars();
+                        let ty = self.eval_expression_as_ty(file_scope, &vars, inner)?;
+                        Ok(CompileValue::Type(ty))
+                    },
                     Some(params) => {
                         let func = FunctionValue {
                             outer_scope: file_scope.clone(),

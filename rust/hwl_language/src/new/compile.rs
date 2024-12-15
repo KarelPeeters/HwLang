@@ -2,11 +2,10 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::block::TypedIrExpression;
 use crate::new::ir::{IrDatabase, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry};
 use crate::new::types::{HardwareType, Type};
-use crate::new::value::{CompileValue, MaybeCompile};
+use crate::new::value::CompileValue;
 use crate::syntax::ast;
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
@@ -180,7 +179,6 @@ pub struct VariableInfo {
     pub id: MaybeIdentifier,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
-    pub current_value: MaybeCompile<TypedIrExpression>, 
 }
 
 #[derive(Debug)]

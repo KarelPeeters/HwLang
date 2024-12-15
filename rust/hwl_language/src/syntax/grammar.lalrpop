@@ -277,7 +277,7 @@ ConstDeclaration<V>: ConstDeclaration<V> = {
 }
 
 VariableDeclaration: VariableDeclaration = {
-    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> "=" <init:BoxExpr> ";" <end:@R> => {
+    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":"<BoxExpr>)?> <init: ("="<BoxExpr>)?> ";" <end:@R> => {
         VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) }
     },
 }

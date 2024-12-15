@@ -26,7 +26,7 @@ pub enum PortDomain<V> {
     Kind(DomainKind<V>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = DomainSignal> {
     CompileTime,
     Clock,

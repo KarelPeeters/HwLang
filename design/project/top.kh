@@ -17,29 +17,33 @@ pub module top ports(
     reg s: sync(clk, rst) bool = undefined;
     reg out y = false;
     wire w0: async bool;
-    wire w1: sync(clk, rst) bool = y;
+    wire w1: sync(clk, rst) bool;
 
     clocked(clk, rst) {
-        var v = false;
-        v = s;
-
-        if (v) {
-            s = !s;
+        var next: bool;
+        if (s) {
+            next = !s;
         } else {
-            s = s;
+            next = s;
         }
+        s = next;
 
-        s = !s;
-        y = s;
+        y = false;
+    }
+
+    combinatorial {
+        var next: bool;
+        if (s) {
+            next = !s/*w0*/;
+        } else {
+            next = s;
+        }
+        w1 = next;
     }
 
     combinatorial {
         w0 = false;
     }
-
-//    combinatorial {
-//        s = w0;
-//    }
 
 //    instance spi_master generics(packet_length=8) ports(
 //        .clk(clk),

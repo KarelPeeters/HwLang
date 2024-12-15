@@ -151,7 +151,7 @@ fn lower_module(
     if let Some(lowered) = module_map.get(&module) {
         return Ok(lowered.clone());
     }
-    
+
     // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
     //   or maybe verilog has separate namespaces, then it's fine
 
@@ -311,6 +311,7 @@ fn lower_module_statements(
             IrProcess::Combinatorial(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 
+                swriteln!(f, "{I}always @(*) begin");
                 let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
 
                 let name_map = NameMap {
@@ -320,8 +321,8 @@ fn lower_module_statements(
                     variables: &variables,
                 };
 
-                swriteln!(f, "{I}always @(*) begin");
-                lower_block(diags, name_map, block, f, Indent::new(2))?;
+                newline.start_new_block();
+                lower_block(diags, name_map, block, f, Indent::new(2), &mut newline)?;
                 swriteln!(f, "{I}end");
             }
             IrProcess::Clocked(process) => {
@@ -375,9 +376,9 @@ fn lower_module_statements(
                 newline.start_new_block();
                 newline.before_item(f);
                 swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
-                lower_block(diags, inner_name_map, on_reset, f, Indent::new(3))?;
+                lower_block(diags, inner_name_map, on_reset, f, Indent::new(3), &mut newline)?;
                 swriteln!(f, "{I}{I}end else begin");
-                lower_block(diags, inner_name_map, on_clock, f, Indent::new(3))?;
+                lower_block(diags, inner_name_map, on_clock, f, Indent::new(3), &mut newline)?;
                 swriteln!(f, "{I}{I}end");
 
                 // commit shadow writes
@@ -508,10 +509,13 @@ fn lower_block(
     block: &IrBlock,
     f: &mut String,
     indent: Indent,
+    newline: &mut NewlineGenerator,
 ) -> Result<(), ErrorGuaranteed> {
     let IrBlock { statements } = block;
 
     for stmt in statements {
+        newline.before_item(f);
+
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
                 let target = match target {
@@ -527,15 +531,15 @@ fn lower_block(
             }
             IrStatement::Block(inner) => {
                 swriteln!(f, "{indent}begin");
-                lower_block(diag, name_map, inner, f, indent.nest())?;
+                lower_block(diag, name_map, inner, f, indent.nest(), newline)?;
                 swriteln!(f, "{indent}end");
             }
             IrStatement::If(IfStatement { initial_if, else_ifs, final_else }) => {
-                let write_if = |f: &mut String, pair: &IfCondBlockPair<IrExpression, IrBlock>| {
+                let mut write_if = |f: &mut String, pair: &IfCondBlockPair<IrExpression, IrBlock>| {
                     swrite!(f, "if (");
                     lower_expression(diag, name_map, stmt.span, &pair.cond, f)?;
                     swriteln!(f, ") begin");
-                    lower_block(diag, name_map, &pair.block, f, indent.nest())?;
+                    lower_block(diag, name_map, &pair.block, f, indent.nest(), newline)?;
                     swrite!(f, "{indent}end");
                     Ok(())
                 };
@@ -549,7 +553,7 @@ fn lower_block(
 
                 if let Some(final_else) = final_else {
                     swriteln!(f, " else begin");
-                    lower_block(diag, name_map, final_else, f, indent.nest())?;
+                    lower_block(diag, name_map, final_else, f, indent.nest(), newline)?;
                     swrite!(f, "{indent}end");
                 }
 

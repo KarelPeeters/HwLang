@@ -1,6 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::parsed::AstRefItem;
 use crate::front::scope::{Scope, Visibility};
+use crate::new::block::VariableValues;
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::misc::ScopedEntry;
 use crate::new::value::{CompileValue, NamedValue};
@@ -147,7 +148,7 @@ impl FunctionValue {
             // TODO add execution limits?
             match &self.body {
                 FunctionBody::Type(expr) => {
-                    state.eval_expression_as_compile(scope, expr, "type body")
+                    state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")
                 }
             }
         }).flatten_err()

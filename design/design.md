@@ -31,6 +31,8 @@
 * New RTL languages (see also https://github.com/drom/awesome-hdl)
     * MyHDL
     * Chisel
+  * Veryl https://doc.veryl-lang.org/book/01_introduction.html
+  * Spade https://spade-lang.org/
 * Blog posts:
     * https://www.jandecaluwe.com/hdldesign/counting.html
     * https://www.jandecaluwe.com/hdldesign/signal-assignments.html

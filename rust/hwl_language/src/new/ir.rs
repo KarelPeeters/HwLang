@@ -132,8 +132,10 @@ pub enum IrStatement {
     Assign(IrAssignmentTarget, IrExpression),
 
     Block(IrBlock),
-    If(IfStatement<IrExpression, IrBlock>),
+    If(IrIfStatement),
 }
+
+pub type IrIfStatement = IfStatement<IrExpression, IrBlock, Option<IrBlock>>; 
 
 #[derive(Debug)]
 pub enum IrAssignmentTarget {
@@ -143,7 +145,7 @@ pub enum IrAssignmentTarget {
     Variable(IrVariable),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants
     Bool(bool),

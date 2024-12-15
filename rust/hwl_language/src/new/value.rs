@@ -1,13 +1,15 @@
+use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::{IrExpression, IrModule};
 use crate::new::misc::ValueDomain;
 use crate::new::types::{IntRange, Type};
+use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
 
 // TODO rename
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum MaybeCompile<T> {
     Compile(CompileValue),
     // TODO rename
@@ -94,7 +96,7 @@ impl CompileValue {
                         HardwareValueResult::Success(v) => {
                             all_undefined = false;
                             hardware_values.push(v)
-                        },
+                        }
                         HardwareValueResult::Undefined => {
                             any_undefined = true;
                         }
@@ -148,6 +150,29 @@ impl MaybeCompile<TypedIrExpression> {
         match self {
             MaybeCompile::Compile(_) => &ValueDomain::CompileTime,
             MaybeCompile::Other(value) => &value.domain,
+        }
+    }
+
+    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
+        match self {
+            MaybeCompile::Compile(v) => {
+                match v.as_hardware_value() {
+                    HardwareValueResult::Success(v) => Ok(v),
+                    HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags
+                        .report_simple(
+                            "undefined can only be used for register initialization",
+                            span,
+                            "value is undefined",
+                        )),
+                    HardwareValueResult::Unrepresentable => {
+                        // TODO fix this duplication
+                        let reason =
+                            "compile time value fits in hardware type but is not convertible to hardware value";
+                        Err(diags.report_internal_error(span, reason))
+                    }
+                }
+            }
+            MaybeCompile::Other(v) => Ok(v.expr.clone()),
         }
     }
 }
