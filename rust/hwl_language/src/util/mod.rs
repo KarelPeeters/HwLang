@@ -1,8 +1,8 @@
 pub mod arena;
-pub mod io;
-pub mod iter;
 pub mod data;
 pub mod int;
+pub mod io;
+pub mod iter;
 
 // TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -16,12 +16,14 @@ impl Never {
 
 #[macro_export]
 macro_rules! throw {
-    ($e:expr) => { return Err($e.into()) };
+    ($e:expr) => {
+        return Err($e.into())
+    };
 }
 
 #[macro_export]
 macro_rules! try_opt_result {
-    ($e:expr) => { 
+    ($e:expr) => {
         match $e {
             Some(v) => v,
             None => return Ok(None),
@@ -31,7 +33,7 @@ macro_rules! try_opt_result {
 
 #[macro_export]
 macro_rules! try_inner {
-    ($e:expr) => { 
+    ($e:expr) => {
         match $e {
             Ok(v) => v,
             Err(e) => return Ok(Err(e.into())),

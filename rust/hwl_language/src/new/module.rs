@@ -481,7 +481,10 @@ impl BodyElaborationState<'_, '_> {
                         )?;
 
                         if !condition_domains.is_empty() {
-                            throw!(diags.report_internal_error(stmt.span, "unexpected recorded condition domains in clocked block"));
+                            throw!(diags.report_internal_error(
+                                stmt.span,
+                                "unexpected recorded condition domains in clocked block"
+                            ));
                         }
 
                         let ir_process = IrClockedProcess {
@@ -718,7 +721,8 @@ impl BodyElaborationState<'_, '_> {
         let value = value
             .as_ref()
             .map(|value| {
-                let eval = state.eval_expression_as_ir(&mut ir_locals, &mut ir_statements, scope_body, &no_vars, value)?;
+                let eval =
+                    state.eval_expression_as_ir(&mut ir_locals, &mut ir_statements, scope_body, &no_vars, value)?;
                 Ok(Spanned {
                     span: value.span,
                     inner: eval,

@@ -1,13 +1,13 @@
-pub mod value;
-pub mod types;
-pub mod misc;
 pub mod ir;
 pub mod lower_verilog;
+pub mod misc;
+pub mod types;
+pub mod value;
 
-pub mod compile;
-pub mod check;
-pub mod item;
-pub mod expression;
 pub mod block;
-pub mod module;
+pub mod check;
+pub mod compile;
+pub mod expression;
 pub mod function;
+pub mod item;
+pub mod module;

@@ -135,7 +135,7 @@ pub enum IrStatement {
     If(IrIfStatement),
 }
 
-pub type IrIfStatement = IfStatement<IrExpression, IrBlock, Option<IrBlock>>; 
+pub type IrIfStatement = IfStatement<IrExpression, IrBlock, Option<IrBlock>>;
 
 #[derive(Debug)]
 pub enum IrAssignmentTarget {
@@ -181,13 +181,16 @@ impl IrType {
 impl IrExpression {
     pub fn to_diagnostic_string(&self, m: &IrModuleInfo) -> String {
         match self {
-            IrExpression::BoolNot(x) =>
-                format!("!({})", x.to_diagnostic_string(m)),
+            IrExpression::BoolNot(x) => format!("!({})", x.to_diagnostic_string(m)),
 
             IrExpression::Bool(x) => x.to_string(),
             IrExpression::Int(x) => x.to_string(),
             IrExpression::Array(x) => {
-                let inner = x.iter().map(|x| x.to_diagnostic_string(m)).collect::<Vec<_>>().join(", ");
+                let inner = x
+                    .iter()
+                    .map(|x| x.to_diagnostic_string(m))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("[{inner}]")
             }
             &IrExpression::Port(x) => m.ports[x].debug_info_id.string.clone(),

@@ -42,7 +42,11 @@ pub enum FunctionBody {
 
 // TODO implement call_runtime which generates ir code
 impl FunctionValue {
-    pub fn call_compile_time(&self, state: &mut CompileState, args: Args<CompileValue>) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn call_compile_time(
+        &self,
+        state: &mut CompileState,
+        args: Args<CompileValue>,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = state.diags;
 
         // check params unique
@@ -71,7 +75,11 @@ impl FunctionValue {
         let mut args_passed = IndexMap::new();
 
         for arg in &args.inner {
-            let &Arg { span: arg_span, name: ref arg_name, value: ref arg_value } = arg;
+            let &Arg {
+                span: arg_span,
+                name: ref arg_name,
+                value: ref arg_value,
+            } = arg;
 
             match (first_named_span, arg_name) {
                 (None, None) => {
@@ -92,21 +100,19 @@ impl FunctionValue {
                 (_, Some(name)) => {
                     // named arg
                     match args_passed.get(&name.string) {
-                        None => {
-                            match param_ids.get(name.string.as_str()) {
-                                Some(&param_id) => {
-                                    args_passed.insert(name.string.clone(), (param_id, arg_span, arg_value));
-                                    first_named_span = first_named_span.or(Some(arg_span));
-                                }
-                                None => {
-                                    let diag = Diagnostic::new(format!("unexpected argument `{}`", name.string))
-                                        .add_info(self.params.span, "parameters declared here")
-                                        .add_error(name.span, "unexpected argument")
-                                        .finish();
-                                    return Err(diags.report(diag));
-                                }
+                        None => match param_ids.get(name.string.as_str()) {
+                            Some(&param_id) => {
+                                args_passed.insert(name.string.clone(), (param_id, arg_span, arg_value));
+                                first_named_span = first_named_span.or(Some(arg_span));
                             }
-                        }
+                            None => {
+                                let diag = Diagnostic::new(format!("unexpected argument `{}`", name.string))
+                                    .add_info(self.params.span, "parameters declared here")
+                                    .add_error(name.span, "unexpected argument")
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                        },
                         Some(&(_, prev_span, _)) => {
                             let diag = Diagnostic::new(format!("argument `{}` passed twice", name.string))
                                 .add_info(prev_span, "first passed here")
@@ -128,29 +134,33 @@ impl FunctionValue {
 
         // TODO cache function calls?
         let stack_entry = ElaborationStackEntry::FunctionRun(self.item, args.clone());
-        state.check_compile_loop(stack_entry, |state| {
-            // create temporary scope
-            // TODO discard scope after use?
-            let scope_span = self.params.span.join(self.body_span);
-            let scope = state.scopes.new_child(self.outer_scope, scope_span, Visibility::Private);
+        state
+            .check_compile_loop(stack_entry, |state| {
+                // create temporary scope
+                // TODO discard scope after use?
+                let scope_span = self.params.span.join(self.body_span);
+                let scope = state
+                    .scopes
+                    .new_child(self.outer_scope, scope_span, Visibility::Private);
 
-            // populate scope with args
-            for (id, (param_id, span, value)) in args_passed {
-                let param = state.parameters.push(ConstantInfo {
-                    id: MaybeIdentifier::Identifier(param_id.clone()),
-                    value: value.clone(),
-                });
-                let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
-                state.scopes[scope].declare_already_checked(diags, id, span, Ok(entry))?;
-            }
-
-            // run the body
-            // TODO add execution limits?
-            match &self.body {
-                FunctionBody::Type(expr) => {
-                    state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")
+                // populate scope with args
+                for (id, (param_id, span, value)) in args_passed {
+                    let param = state.parameters.push(ConstantInfo {
+                        id: MaybeIdentifier::Identifier(param_id.clone()),
+                        value: value.clone(),
+                    });
+                    let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
+                    state.scopes[scope].declare_already_checked(diags, id, span, Ok(entry))?;
                 }
-            }
-        }).flatten_err()
+
+                // run the body
+                // TODO add execution limits?
+                match &self.body {
+                    FunctionBody::Type(expr) => {
+                        state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")
+                    }
+                }
+            })
+            .flatten_err()
     }
 }

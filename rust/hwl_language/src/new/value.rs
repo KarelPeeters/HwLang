@@ -70,8 +70,7 @@ impl CompileValue {
             }),
             CompileValue::String(_) => Type::String,
             CompileValue::Array(values) => {
-                let inner = values.iter()
-                    .fold(Type::Undefined, |acc, v| acc.union(&v.ty()));
+                let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty()));
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
             }
             CompileValue::IntRange(_) => Type::Range,
@@ -117,9 +116,11 @@ impl CompileValue {
                     }
                 }
             }
-            CompileValue::Type(_) |
-            CompileValue::String(_) | CompileValue::IntRange(_) |
-            CompileValue::Module(_) | CompileValue::Function(_) => HardwareValueResult::Unrepresentable,
+            CompileValue::Type(_)
+            | CompileValue::String(_)
+            | CompileValue::IntRange(_)
+            | CompileValue::Module(_)
+            | CompileValue::Function(_) => HardwareValueResult::Unrepresentable,
         }
     }
 
@@ -131,7 +132,8 @@ impl CompileValue {
             CompileValue::Int(value) => value.to_string(),
             CompileValue::String(value) => value.clone(),
             CompileValue::Array(values) => {
-                let values = values.iter()
+                let values = values
+                    .iter()
                     .map(|value| value.to_diagnostic_string())
                     .collect::<Vec<_>>()
                     .join(", ");

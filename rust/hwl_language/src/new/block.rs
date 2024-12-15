@@ -3,11 +3,16 @@ use crate::front::scope::{Scope, Visibility};
 use crate::new::check::check_type_contains_value;
 use crate::new::compile::{CompileState, Variable, VariableInfo};
 use crate::new::expression::ExpressionContext;
-use crate::new::ir::{IrAssignmentTarget, IrBlock, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo, IrVariables};
+use crate::new::ir::{
+    IrAssignmentTarget, IrBlock, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo, IrVariables,
+};
 use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
-use crate::syntax::ast::{Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned, SyncDomain, VariableDeclaration};
+use crate::syntax::ast::{
+    Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned,
+    SyncDomain, VariableDeclaration,
+};
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::data::VecExt;
@@ -26,14 +31,18 @@ impl ExpressionContext for IrContext<'_> {
     type T = TypedIrExpression;
 
     // TODO reduce the duplication here, const and param will always be evaluated exactly like this, right?
-    fn eval_named(&mut self, s: &CompileState, vars: &VariableValues, span_use: Span, _: Span, named: NamedValue) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+    fn eval_named(
+        &mut self,
+        s: &CompileState,
+        vars: &VariableValues,
+        span_use: Span,
+        _: Span,
+        named: NamedValue,
+    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         match named {
-            NamedValue::Constant(cst) =>
-                Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
-            NamedValue::Parameter(param) =>
-                Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
-            NamedValue::Variable(v) =>
-                Ok(vars.get(s.diags, span_use, v)?.value.clone()),
+            NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
+            NamedValue::Parameter(param) => Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
+            NamedValue::Variable(v) => Ok(vars.get(s.diags, span_use, v)?.value.clone()),
             NamedValue::Port(port) => {
                 let port_info = &s.ports[port];
                 let expr = TypedIrExpression {
@@ -64,7 +73,12 @@ impl ExpressionContext for IrContext<'_> {
         }
     }
 
-    fn bool_not(&mut self, s: &CompileState, span_use: Span, v: TypedIrExpression) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
+    fn bool_not(
+        &mut self,
+        s: &CompileState,
+        span_use: Span,
+        v: TypedIrExpression,
+    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
         match v.ty {
             HardwareType::Clock | HardwareType::Bool => {}
             _ => return Err(s.diags.report_internal_error(span_use, "unexpected type for bool_not")),
@@ -143,12 +157,9 @@ impl VariableValues {
             .map
             .as_ref()
             .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?;
-        let value = map.get(&var).ok_or_else(|| {
-            diags.report_internal_error(
-                span_use,
-                "variable used here has not been declared",
-            )
-        })?;
+        let value = map
+            .get(&var)
+            .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
 
         match value {
             MaybeAssignedValue::Assigned(value) => Ok(value),
@@ -181,9 +192,7 @@ impl VariableValues {
         value: MaybeAssignedValue,
     ) -> Result<(), ErrorGuaranteed> {
         match &mut self.map {
-            None => {
-                Err(diags.report_internal_error(span_set, "variables are not allowed in this context"))
-            }
+            None => Err(diags.report_internal_error(span_set, "variables are not allowed in this context")),
             Some(map) => {
                 map.insert(var, value);
                 Ok(())
@@ -194,8 +203,18 @@ impl VariableValues {
 
 impl CompileState<'_> {
     // TODO move
-    pub fn eval_expression_as_ir(&mut self, ir_locals: &mut IrVariables, ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>, scope: Scope, vars: &VariableValues, value: &Expression) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        let mut ctx = IrContext { ir_locals, ir_statements };
+    pub fn eval_expression_as_ir(
+        &mut self,
+        ir_locals: &mut IrVariables,
+        ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
+        scope: Scope,
+        vars: &VariableValues,
+        value: &Expression,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let mut ctx = IrContext {
+            ir_locals,
+            ir_statements,
+        };
         self.eval_expression(&mut ctx, scope, vars, value)
     }
 
@@ -219,21 +238,38 @@ impl CompileState<'_> {
         for stmt in statements {
             let stmt_span = stmt.span;
             match &stmt.inner {
-                BlockStatementKind::ConstDeclaration(decl) => {
-                    self.const_eval_and_declare(scope, decl)
-                }
+                BlockStatementKind::ConstDeclaration(decl) => self.const_eval_and_declare(scope, decl),
                 BlockStatementKind::VariableDeclaration(decl) => {
-                    let VariableDeclaration { span: _, mutable, id, ty, init } = decl;
+                    let VariableDeclaration {
+                        span: _,
+                        mutable,
+                        id,
+                        ty,
+                        init,
+                    } = decl;
                     let mutable = *mutable;
 
-                    let ty = ty.as_ref()
-                        .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, &vars, ty)? }))
+                    let ty = ty
+                        .as_ref()
+                        .map(|ty| {
+                            Ok(Spanned {
+                                span: ty.span,
+                                inner: self.eval_expression_as_ty(scope, &vars, ty)?,
+                            })
+                        })
                         .transpose();
-                    let init = init.as_ref().map(|init| {
-                        let init_span = init.span;
-                        let init_eval = self.eval_expression_as_ir(ir_locals, &mut ir_statements, scope, &vars, init)?;
-                        Ok(Spanned { span: init_span, inner: init_eval })
-                    }).transpose();
+                    let init = init
+                        .as_ref()
+                        .map(|init| {
+                            let init_span = init.span;
+                            let init_eval =
+                                self.eval_expression_as_ir(ir_locals, &mut ir_statements, scope, &vars, init)?;
+                            Ok(Spanned {
+                                span: init_span,
+                                inner: init_eval,
+                            })
+                        })
+                        .transpose();
 
                     // check init fits in type
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
@@ -255,12 +291,10 @@ impl CompileState<'_> {
                         // store value
                         let assigned = match init {
                             None => MaybeAssignedValue::NotYetAssigned,
-                            Some(init) => {
-                                MaybeAssignedValue::Assigned(AssignedValue {
-                                    event: AssignmentEvent::SimpleAssignment(decl.span),
-                                    value: init.inner,
-                                })
-                            }
+                            Some(init) => MaybeAssignedValue::Assigned(AssignedValue {
+                                event: AssignmentEvent::SimpleAssignment(decl.span),
+                                value: init.inner,
+                            }),
                         };
                         vars.set(diags, id.span(), variable, assigned)?;
 
@@ -343,12 +377,8 @@ impl CompileState<'_> {
                             next_vars
                         }
                         LoweredIfOutcome::IfStatement(lowered) => {
-                            let (ir_if, next_vars) = self.convert_if_to_ir_by_merging_variables(
-                                vars,
-                                stmt.span,
-                                lowered,
-                                ir_locals,
-                            )?;
+                            let (ir_if, next_vars) =
+                                self.convert_if_to_ir_by_merging_variables(vars, stmt.span, lowered, ir_locals)?;
                             let ir_stmt = IrStatement::If(ir_if);
                             ir_statements.push(Ok(Spanned {
                                 span: stmt.span,
@@ -808,7 +838,14 @@ impl CompileState<'_> {
 
                 // add assignments to all blocks, and join domains
                 let mut joined_domain = ValueDomain::CompileTime;
-                initial_if_block.statements.push(build_merge_store(diags, span_stmt, var, var_ir, &initial_if_vars, &mut joined_domain)?);
+                initial_if_block.statements.push(build_merge_store(
+                    diags,
+                    span_stmt,
+                    var,
+                    var_ir,
+                    &initial_if_vars,
+                    &mut joined_domain,
+                )?);
 
                 for else_if in &mut else_ifs {
                     let IfCondBlockPair {
@@ -816,11 +853,25 @@ impl CompileState<'_> {
                         cond: _,
                         block: (else_if_block, else_if_vars),
                     } = else_if;
-                    else_if_block.statements.push(build_merge_store(diags, span_stmt, var, var_ir, else_if_vars, &mut joined_domain)?)
+                    else_if_block.statements.push(build_merge_store(
+                        diags,
+                        span_stmt,
+                        var,
+                        var_ir,
+                        else_if_vars,
+                        &mut joined_domain,
+                    )?)
                 }
 
                 let final_else_block = final_else_block.get_or_insert_with(|| IrBlock { statements: vec![] });
-                final_else_block.statements.push(build_merge_store(diags, span_stmt, var, var_ir, &final_else_vars, &mut joined_domain)?);
+                final_else_block.statements.push(build_merge_store(
+                    diags,
+                    span_stmt,
+                    var,
+                    var_ir,
+                    &final_else_vars,
+                    &mut joined_domain,
+                )?);
 
                 // return the resulting variable
                 MaybeAssignedValue::Assigned(AssignedValue {
@@ -843,11 +894,22 @@ impl CompileState<'_> {
 
         // return finished if statement
         let stmt = IfStatement {
-            initial_if: IfCondBlockPair { span: initial_if.span, cond: initial_if.cond, block: initial_if_block },
-            else_ifs: else_ifs.into_iter().map(|else_if| {
-                let (else_if_block, _else_if_vars) = else_if.block;
-                IfCondBlockPair { span: else_if.span, cond: else_if.cond, block: else_if_block }
-            }).collect_vec(),
+            initial_if: IfCondBlockPair {
+                span: initial_if.span,
+                cond: initial_if.cond,
+                block: initial_if_block,
+            },
+            else_ifs: else_ifs
+                .into_iter()
+                .map(|else_if| {
+                    let (else_if_block, _else_if_vars) = else_if.block;
+                    IfCondBlockPair {
+                        span: else_if.span,
+                        cond: else_if.cond,
+                        block: else_if_block,
+                    }
+                })
+                .collect_vec(),
             // TODO allow creating new block, just for merging
             final_else: final_else_block,
         };
@@ -898,7 +960,14 @@ fn record_merge_info(
     }
 }
 
-fn build_merge_store(diags: &Diagnostics, span_stmt: Span, var: Variable, var_ir: IrVariable, vars: &VariableValues, domain: &mut ValueDomain) -> Result<Spanned<IrStatement>, ErrorGuaranteed> {
+fn build_merge_store(
+    diags: &Diagnostics,
+    span_stmt: Span,
+    var: Variable,
+    var_ir: IrVariable,
+    vars: &VariableValues,
+    domain: &mut ValueDomain,
+) -> Result<Spanned<IrStatement>, ErrorGuaranteed> {
     // TODO get rid of this "unwrap" match by storing this during infor recording
     let value = match vars.map.as_ref().unwrap().get(&var) {
         Some(MaybeAssignedValue::Assigned(value)) => value,

@@ -12,7 +12,7 @@
 // use crate::{new_index_type, swrite};
 // use indexmap::IndexMap;
 // use num_traits::Signed;
-// 
+//
 // macro_rules! impl_index {
 //     ($arena:ident, $index:ty, $info:ty) => {
 //         impl<S: CompiledStage> std::ops::Index<$index> for CompiledDatabase<S> {
@@ -23,7 +23,7 @@
 //         }
 //     };
 // }
-// 
+//
 // macro_rules! impl_index_mut {
 //     ($arena:ident, $index:ty, $info:ty) => {
 //         impl std::ops::IndexMut<$index> for CompiledDatabase<CompiledStagePartial> {
@@ -33,15 +33,15 @@
 //         }
 //     };
 // }
-// 
+//
 // pub type CompiledDatabasePartial = CompiledDatabase<CompiledStagePartial>;
-// 
+//
 // pub struct CompiledDatabase<S: CompiledStage = CompiledStateFull> {
 //     pub scopes: Scopes<ScopedEntry>,
-// 
+//
 //     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 //     pub items: Arena<Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>>,
-// 
+//
 //     pub generic_type_params: Arena<GenericTypeParameter, GenericTypeParameterInfo>,
 //     pub generic_value_params: Arena<GenericValueParameter, GenericValueParameterInfo>,
 //     pub module_info: IndexMap<Item, ModuleSignatureInfo>,
@@ -52,12 +52,12 @@
 //     pub variables: Arena<Variable, VariableInfo>,
 //     pub constants: Arena<Constant, ConstantInfo>,
 // }
-// 
+//
 // impl_index!(items, Item, ItemInfo<S::ItemInfoSignature, S::ItemInfoBody>);
 // impl_index_mut!(items, Item, ItemInfoPartial);
 // impl_index!(scopes, Scope, ScopeInfo<ScopedEntry>);
 // impl_index_mut!(scopes, Scope, ScopeInfo<ScopedEntry>);
-// 
+//
 // impl_index!(generic_type_params, GenericTypeParameter, GenericTypeParameterInfo);
 // impl_index!(generic_value_params, GenericValueParameter, GenericValueParameterInfo);
 // impl_index!(module_ports, ModulePort, ModulePortInfo);
@@ -65,33 +65,33 @@
 // impl_index!(wires, Wire, WireInfo);
 // impl_index!(variables, Variable, VariableInfo);
 // impl_index!(constants, Constant, ConstantInfo);
-// 
+//
 // impl<S: CompiledStage> std::ops::Index<FileId> for CompiledDatabase<S> {
 //     type Output = Result<FileScopes, ErrorGuaranteed>;
 //     fn index(&self, index: FileId) -> &Self::Output {
 //         self.file_scopes.get(&index).unwrap()
 //     }
 // }
-// 
+//
 // pub trait CompiledStage {
 //     type ItemInfoSignature;
 //     type ItemInfoBody;
 // }
-// 
+//
 // pub struct CompiledStagePartial;
-// 
+//
 // impl CompiledStage for CompiledStagePartial {
 //     type ItemInfoSignature = Option<MaybeConstructor<TypeOrValue>>;
 //     type ItemInfoBody = Option<ItemChecked>;
 // }
-// 
+//
 // pub struct CompiledStateFull;
-// 
+//
 // impl CompiledStage for CompiledStateFull {
 //     type ItemInfoSignature = MaybeConstructor<TypeOrValue>;
 //     type ItemInfoBody = ItemChecked;
 // }
-// 
+//
 // new_index_type!(pub Item);
 // new_index_type!(pub GenericTypeParameter);
 // new_index_type!(pub GenericValueParameter);
@@ -100,23 +100,23 @@
 // new_index_type!(pub Wire);
 // new_index_type!(pub Variable);
 // new_index_type!(pub Constant);
-// 
+//
 // #[derive(Debug)]
 // pub struct FileScopes {
-//     /// The scope that only includes top-level items defined in this file. 
+//     /// The scope that only includes top-level items defined in this file.
 //     pub scope_outer_declare: Scope,
 //     /// Child scope of [scope_declare] that includes all imported items.
 //     pub scope_inner_import: Scope,
 // }
-// 
+//
 // #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 // pub enum GenericParameter {
 //     Type(GenericTypeParameter),
 //     Value(GenericValueParameter),
 // }
-// 
+//
 // pub type ItemInfoPartial = ItemInfo<Option<MaybeConstructor<TypeOrValue>>, Option<ItemChecked>>;
-// 
+//
 // #[derive(Debug)]
 // pub struct ItemInfo<T = MaybeConstructor<TypeOrValue>, B = ItemChecked> {
 //     pub defining_id: MaybeIdentifier,
@@ -124,26 +124,26 @@
 //     pub signature: T,
 //     pub body: B,
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct GenericTypeParameterInfo {
 //     pub defining_item: Item,
 //     pub defining_id: Identifier,
-// 
+//
 //     // TODO type constraints once we add those
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct GenericValueParameterInfo {
 //     pub defining_item: Item,
 //     pub defining_id: Identifier,
 //     pub defining_item_kind: GenericItemKind,
-// 
+//
 //     pub ty: Type,
 //     // TODO it's a bit weird that we're tracking the span here, this should just be part of Type
 //     pub ty_span: Span,
 // }
-// 
+//
 // #[derive(Debug, Copy, Clone)]
 // pub enum GenericItemKind {
 //     Type,
@@ -152,46 +152,46 @@
 //     Module,
 //     Function,
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct FunctionTypeParameterInfo {
 //     pub defining_item: Item,
 //     pub defining_id: Identifier,
-// 
+//
 //     // TODO type constraints
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct FunctionValueParameterInfo {
 //     pub defining_item: Item,
 //     pub defining_id: Identifier,
-// 
+//
 //     pub ty: Type,
 //     // TODO it's a bit weird that we're tracking the span here, this should just be part of Type
 //     pub ty_span: Span,
 // }
-// 
+//
 // // TODO move into ItemInfo?
 // #[derive(Debug)]
 // pub struct FunctionSignatureInfo {
 //     pub scope_inner: Scope,
 //     pub ret_ty: Type,
 // }
-// 
+//
 // // TODO move into ItemInfo?
 // #[derive(Debug)]
 // pub struct ModuleSignatureInfo {
 //     pub scope_ports: Scope,
 //     pub ports: Vec<ModulePort>,
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct ModulePortInfo {
 //     pub ast: ModulePortAstReference,
 //     pub direction: PortDirection,
 //     pub kind: PortKind<DomainKind<Value>, Type>,
 // }
-// 
+//
 // impl PortKind<DomainKind<Value>, Type> {
 //     pub fn ty(&self) -> &Type {
 //         match self {
@@ -200,27 +200,27 @@
 //         }
 //     }
 // }
-// 
+//
 // // TODO should the init value be here or in the module?
 // #[derive(Debug)]
 // pub struct RegisterInfo {
 //     pub defining_item: Item,
 //     pub defining_id: MaybeIdentifier,
-// 
+//
 //     pub domain: SyncDomain<Value>,
 //     pub ty: Type,
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct WireInfo {
 //     pub defining_item: Item,
 //     pub defining_id: MaybeIdentifier,
-// 
+//
 //     pub domain: DomainKind<Value>,
 //     pub ty: Type,
 //     pub has_declaration_value: bool,
 // }
-// 
+//
 // // TODO variables that are assigned to multiple different domains need to get the merged domain,
 // //   but that is not implemented yet. Currently only obvious domains (ie. clocked, function) are set.
 // //   This mostly works fine, except for combinatorial blocks.
@@ -229,18 +229,18 @@
 //     Unknown,
 //     Known(ValueDomain),
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct VariableInfo {
 //     pub defining_id: MaybeIdentifier,
-// 
+//
 //     // TODO is it okay that this type does not get its generics replaced?
 //     pub ty: Type,
 //     pub mutable: bool,
-// 
+//
 //     pub domain: VariableDomain,
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct ConstantInfo {
 //     pub defining_id: MaybeIdentifier,
@@ -248,7 +248,7 @@
 //     pub ty: Type,
 //     pub value: Value,
 // }
-// 
+//
 // /// The result of item body checking.
 // ///
 // /// Typechecking can store any additional information beyond the AST here,
@@ -261,25 +261,25 @@
 //     Function(FunctionChecked),
 //     Error(ErrorGuaranteed),
 // }
-// 
+//
 // #[derive(Debug)]
 // pub struct FunctionChecked {
 //     #[allow(dead_code)]
 //     pub block: LowerBlock,
 // }
-// 
+//
 // impl<S: CompiledStage> CompiledDatabase<S> {
 //     // TODO make sure generic variables are properly disambiguated
 //     // TODO insert this into value_to_readable_str, no point keeping this one separate
 //     pub fn range_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, range: &RangeInfo<Box<Value>>) -> String {
 //         let RangeInfo { ref start_inc, ref end_inc } = *range;
-// 
+//
 //         let start = start_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
 //         let end = end_inc.as_ref().map_or(String::new(), |v| self.value_to_readable_str(source, parsed, v));
-// 
+//
 //         format!("({}..={})", start, end)
 //     }
-// 
+//
 //     // TODO integrate generic parameters properly in the diagnostic, by pointing to them
 //     // TODO include span if there is any ambiguity
 //     pub fn value_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, value: &Value) -> String {
@@ -350,7 +350,7 @@
 //                 self.defining_id_to_readable_string(self[c].defining_id.as_ref()).to_string(),
 //         }
 //     }
-// 
+//
 //     // TODO make sure to always print in disambiguated form
 //     pub fn type_to_readable_str(&self, source: &SourceDatabase, parsed: &ParsedDatabase, ty: &Type) -> String {
 //         match ty {
@@ -371,14 +371,14 @@
 //             Type::Array(inner, n) => {
 //                 let mut indices = String::new();
 //                 let f = &mut indices;
-// 
+//
 //                 swrite!(f, "{}", self.value_to_readable_str(source, parsed, n));
 //                 let mut inner = inner;
 //                 while let Type::Array(next, n_next) = &**inner {
 //                     swrite!(f, ", {}", self.value_to_readable_str(source, parsed, n_next));
 //                     inner = next;
 //                 }
-// 
+//
 //                 let ty_str = self.type_to_readable_str(source, parsed, inner);
 //                 format!("({ty_str}[{indices}])")
 //             }
@@ -393,7 +393,7 @@
 //             Type::Enum(_) => "enum".to_string(),
 //         }
 //     }
-// 
+//
 //     // TODO these interfaces are getting really ugly, create combined database types
 //     pub fn sync_kind_to_readable_string(&self, source: &SourceDatabase, parsed: &ParsedDatabase, sync: &ValueDomain) -> String {
 //         match sync {
@@ -411,7 +411,7 @@
 //             }
 //         }
 //     }
-// 
+//
 //     pub fn defining_id_to_readable_string<'a>(&self, id: MaybeIdentifier<&'a Identifier>) -> &'a str {
 //         id.string().unwrap_or("_")
 //     }

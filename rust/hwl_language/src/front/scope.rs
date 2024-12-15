@@ -56,7 +56,9 @@ pub struct Scopes {
 //   more safe and elegant, but makes "a bunch of nested scopes" like in generic params much slower
 impl Scopes {
     pub fn default() -> Self {
-        Self { arena: Arena::default() }
+        Self {
+            arena: Arena::default(),
+        }
     }
 
     pub fn new_root(&mut self, span: Span) -> Scope {
@@ -86,7 +88,13 @@ impl ScopeInfo {
     /// This function always appears to succeed, errors are instead reported as diagnostics.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'a>(&mut self, diagnostics: &Diagnostics, id: &Identifier, value: Result<ScopedEntry, ErrorGuaranteed>, vis: Visibility) {
+    pub fn declare<'a>(
+        &mut self,
+        diagnostics: &Diagnostics,
+        id: &Identifier,
+        value: Result<ScopedEntry, ErrorGuaranteed>,
+        vis: Visibility,
+    ) {
         if let Some(declared) = self.values.get_mut(&id.string) {
             // get all spans
             let mut spans = match declared {
@@ -107,18 +115,32 @@ impl ScopeInfo {
             spans.push(id.span);
             *declared = DeclaredValue::Multiple { spans, err }
         } else {
-            let declared = DeclaredValue::Once { value, span: id.span, vis };
+            let declared = DeclaredValue::Once {
+                value,
+                span: id.span,
+                vis,
+            };
             self.values.insert_first(id.string.to_owned(), declared);
         }
     }
 
-    pub fn declare_already_checked(&mut self, diagnostics: &Diagnostics, id: String, span: Span, value: Result<ScopedEntry, ErrorGuaranteed>) -> Result<(), ErrorGuaranteed> {
+    pub fn declare_already_checked(
+        &mut self,
+        diagnostics: &Diagnostics,
+        id: String,
+        span: Span,
+        value: Result<ScopedEntry, ErrorGuaranteed>,
+    ) -> Result<(), ErrorGuaranteed> {
         match self.values.entry(id.clone()) {
             Entry::Occupied(_) => {
                 Err(diagnostics.report_internal_error(span, format!("identifier `{}` already declared", id)))
-            },
+            }
             Entry::Vacant(entry) => {
-                entry.insert(DeclaredValue::Once { value, span, vis: Visibility::Private });
+                entry.insert(DeclaredValue::Once {
+                    value,
+                    span,
+                    vis: Visibility::Private,
+                });
                 Ok(())
             }
         }
@@ -132,8 +154,7 @@ impl ScopeInfo {
         vis: Visibility,
     ) {
         match id {
-            ast::MaybeIdentifier::Identifier(id) =>
-                self.declare(diagnostics, id, var, vis),
+            ast::MaybeIdentifier::Identifier(id) => self.declare(diagnostics, id, var, vis),
             ast::MaybeIdentifier::Dummy(_) => {}
         }
     }
@@ -166,10 +187,8 @@ impl ScopeInfo {
         if let Some(declared) = self.values.get(&id.string) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
-                DeclaredValue::Once { ref value, span, vis } =>
-                    (value.as_ref_ok()?, span, vis),
-                DeclaredValue::Multiple { spans: _, err } =>
-                    return Err(err),
+                DeclaredValue::Once { ref value, span, vis } => (value.as_ref_ok()?, span, vis),
+                DeclaredValue::Multiple { spans: _, err } => return Err(err),
             };
 
             // check access
@@ -182,16 +201,28 @@ impl ScopeInfo {
                 diagnostics.report(err);
             }
 
-            Ok(ScopeFound { defining_span: value_span, value })
+            Ok(ScopeFound {
+                defining_span: value_span,
+                value,
+            })
         } else if let Some((parent, parent_vis)) = self.parent {
             // TODO does min access make sense?
-            scopes[parent].find_impl(scopes, diagnostics, id, Visibility::minimum_access(vis, parent_vis), initial_scope_span)
+            scopes[parent].find_impl(
+                scopes,
+                diagnostics,
+                id,
+                Visibility::minimum_access(vis, parent_vis),
+                initial_scope_span,
+            )
         } else {
             // TODO add fuzzy-matched suggestions as info
             // TODO insert identifier into the current scope to suppress downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id.string))
                 .add_error(id.span, "identifier not declared")
-                .add_info(Span::empty_at(initial_scope_span.start), "searched in the scope starting here, and its parents")
+                .add_info(
+                    Span::empty_at(initial_scope_span.start),
+                    "searched in the scope starting here, and its parents",
+                )
                 .finish();
             Err(diagnostics.report(err))
         }
@@ -207,10 +238,8 @@ impl ScopeInfo {
         if let Some(declared) = self.values.get(id) {
             // check declared exactly once
             let (value, value_span, value_vis) = match *declared {
-                DeclaredValue::Once { ref value, span, vis } =>
-                    (value.as_ref_ok()?, span, vis),
-                DeclaredValue::Multiple { spans: _, err } =>
-                    return Err(err),
+                DeclaredValue::Once { ref value, span, vis } => (value.as_ref_ok()?, span, vis),
+                DeclaredValue::Multiple { spans: _, err } => return Err(err),
             };
 
             // check vis
@@ -222,7 +251,10 @@ impl ScopeInfo {
                 return Err(diagnostics.report(err));
             }
 
-            Ok(ScopeFound { defining_span: value_span, value })
+            Ok(ScopeFound {
+                defining_span: value_span,
+                value,
+            })
         } else {
             // TODO insert identifier into the current scope to suppress downstream errors
             let err = Diagnostic::new(format!("undeclared identifier `{}`", id))

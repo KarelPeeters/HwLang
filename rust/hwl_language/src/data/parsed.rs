@@ -19,8 +19,8 @@ impl ParsedDatabase {
 
         for file_id in source.files() {
             let file_info = &source[file_id];
-            let ast = parse_file_content(file_id, &file_info.source)
-                .map_err(|e| diags.report(parse_error_to_diagnostic(e)));
+            let ast =
+                parse_file_content(file_id, &file_info.source).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
             file_ast.insert_first(file_id, ast);
         }
 
@@ -28,7 +28,11 @@ impl ParsedDatabase {
     }
 
     pub fn module_port_ast(&self, port: AstRefModulePort) -> ModulePort {
-        let AstRefModulePort { module, port_item_index, port_in_block_index } = port;
+        let AstRefModulePort {
+            module,
+            port_item_index,
+            port_in_block_index,
+        } = port;
         let module_ast = &self[module];
         let item = &module_ast.ports.inner[port_item_index];
 
@@ -61,17 +65,17 @@ macro_rules! impl_ast_ref_alias {
         pub struct $ref_name {
             item: AstRefItem,
         }
-        
+
         impl $ref_name {
             pub fn new_unchecked(item: AstRefItem) -> Self {
                 Self { item }
             }
-        
+
             pub fn file(self) -> FileId {
                 self.item.file()
             }
         }
-        
+
         impl std::ops::Index<$ref_name> for ParsedDatabase {
             type Output = $ast_path;
             fn index(&self, item: $ref_name) -> &Self::Output {
@@ -103,7 +107,13 @@ pub enum ModulePort<'a> {
 impl FileContent {
     pub fn items_with_ref(&self) -> impl Iterator<Item=(AstRefItem, &ast::Item)> {
         self.items.iter().enumerate().map(move |(i, item)| {
-            (AstRefItem { file: self.span.start.file, file_item_index: i }, item)
+            (
+                AstRefItem {
+                    file: self.span.start.file,
+                    file_item_index: i,
+                },
+                item,
+            )
         })
     }
 }
@@ -119,7 +129,10 @@ impl std::ops::Index<AstRefItem> for ParsedDatabase {
     type Output = ast::Item;
     fn index(&self, item: AstRefItem) -> &Self::Output {
         let AstRefItem { file, file_item_index } = item;
-        let aux = self.file_ast.get(&file).unwrap()
+        let aux = self
+            .file_ast
+            .get(&file)
+            .unwrap()
             .as_ref()
             .expect("the item existing implies that the auxiliary info exists too");
         &aux.items[file_item_index]

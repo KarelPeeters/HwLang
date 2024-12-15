@@ -5,18 +5,31 @@ use fluent_uri::enc::EStr;
 use fluent_uri::HostData;
 use hwl_language::throw;
 use hwl_language::util::io::IoErrorExt;
-use lsp_types::notification::{DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument};
-use lsp_types::{DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
+};
+use lsp_types::{
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Uri,
+    VersionedTextDocumentIdentifier,
+};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 impl NotificationHandler<DidOpenTextDocument> for ServerState {
     fn handle_notification(&mut self, params: DidOpenTextDocumentParams) -> RequestResult<()> {
         let DidOpenTextDocumentParams { text_document } = params;
-        let TextDocumentItem { uri, text, language_id: _, version: _ } = text_document;
+        let TextDocumentItem {
+            uri,
+            text,
+            language_id: _,
+            version: _,
+        } = text_document;
 
         if !self.open_files.insert(uri.clone()) {
-            throw!(RequestError::Invalid(format!("trying to open file {uri:?} which is already open")))
+            throw!(RequestError::Invalid(format!(
+                "trying to open file {uri:?} which is already open"
+            )))
         }
 
         let vfs = self.vfs.inner()?;
@@ -36,7 +49,9 @@ impl NotificationHandler<DidCloseTextDocument> for ServerState {
         let TextDocumentIdentifier { uri } = text_document;
 
         if !self.open_files.remove(&uri) {
-            throw!(RequestError::Invalid(format!("trying to close file {uri:?} which is not open")))
+            throw!(RequestError::Invalid(format!(
+                "trying to close file {uri:?} which is not open"
+            )))
         }
 
         // leave the file content in the VFS
@@ -47,18 +62,29 @@ impl NotificationHandler<DidCloseTextDocument> for ServerState {
 
 impl NotificationHandler<DidChangeTextDocument> for ServerState {
     fn handle_notification(&mut self, params: DidChangeTextDocumentParams) -> RequestResult<()> {
-        let DidChangeTextDocumentParams { text_document, content_changes } = params;
+        let DidChangeTextDocumentParams {
+            text_document,
+            content_changes,
+        } = params;
         let VersionedTextDocumentIdentifier { uri, version: _ } = text_document;
 
         if !self.open_files.contains(&uri) {
-            throw!(RequestError::Invalid(format!("trying to change file {uri:?} which is not open")))
+            throw!(RequestError::Invalid(format!(
+                "trying to change file {uri:?} which is not open"
+            )))
         }
 
         for change in content_changes {
-            let TextDocumentContentChangeEvent { range, range_length, text } = change;
+            let TextDocumentContentChangeEvent {
+                range,
+                range_length,
+                text,
+            } = change;
             assert!(range.is_none() && range_length.is_none());
 
-            self.vfs.inner()?.update(&uri, Content::Text(text))
+            self.vfs
+                .inner()?
+                .update(&uri, Content::Text(text))
                 .expect("file is open so it must exist in the VFS too");
         }
 
@@ -71,7 +97,7 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
         let DidChangeWatchedFilesParams { changes } = params;
 
         let vfs = self.vfs.inner()?;
-        
+
         for change in changes {
             let FileEvent { uri, typ } = change;
             match typ {
@@ -84,14 +110,14 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
                     let path = uri_to_path(&uri)?;
                     let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
                     vfs.update(&uri, Content::Unknown(content)).map_err(VfsError::from)?;
-                },
-                FileChangeType::DELETED => {
-                    match vfs.delete(&uri) {
-                        Ok(()) => {}
-                        Err(e) => throw!(e),
-                    }
                 }
-                _ => throw!(RequestError::Invalid(format!("unknown file change type {typ:?} for uri {uri:?}"))),
+                FileChangeType::DELETED => match vfs.delete(&uri) {
+                    Ok(()) => {}
+                    Err(e) => throw!(e),
+                },
+                _ => throw!(RequestError::Invalid(format!(
+                    "unknown file change type {typ:?} for uri {uri:?}"
+                ))),
             };
         }
 
@@ -144,6 +170,5 @@ pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
         format!("file://{}", path_str)
     };
 
-    Uri::from_str(&uri_str)
-        .map_err(|e| VfsError::FailedToConvertPathToUri(path.to_owned(), uri_str, e))
+    Uri::from_str(&uri_str).map_err(|e| VfsError::FailedToConvertPathToUri(path.to_owned(), uri_str, e))
 }

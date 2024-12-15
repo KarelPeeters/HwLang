@@ -6,7 +6,10 @@ use hwl_language::syntax::pos::{FileId, LineOffsets, Span};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
-use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult, TextDocumentIdentifier};
+use lsp_types::{
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult,
+    TextDocumentIdentifier,
+};
 use strum::IntoEnumIterator;
 
 impl RequestHandler<SemanticTokensFullRequest> for ServerState {
@@ -33,7 +36,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                 Err(e) => {
                     eprintln!("tokenization failed: {e:?}");
                     break;
-                },
+                }
             };
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {
@@ -61,7 +64,10 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             }
         }
 
-        let result = SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: semantic_tokens });
+        let result = SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: semantic_tokens,
+        });
         Ok(Some(result))
     }
 }

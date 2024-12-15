@@ -56,7 +56,13 @@ impl Span {
     }
 
     pub fn single_at(at: Pos) -> Self {
-        Self::new(at, Pos { file: at.file, byte: at.byte })
+        Self::new(
+            at,
+            Pos {
+                file: at.file,
+                byte: at.byte,
+            },
+        )
     }
 
     pub fn contains(self, other: Span) -> bool {
@@ -68,8 +74,14 @@ impl Span {
         assert_eq!(self.start.file, other.start.file);
         let file = self.start.file;
         Span {
-            start: Pos { file, byte: min(self.start.byte, other.start.byte) },
-            end: Pos { file, byte: max(self.end.byte, other.end.byte) },
+            start: Pos {
+                file,
+                byte: min(self.start.byte, other.start.byte),
+            },
+            end: Pos {
+                file,
+                byte: max(self.end.byte, other.end.byte),
+            },
         }
     }
 
@@ -133,14 +145,22 @@ impl Debug for Pos {
 
 impl Debug for PosFull {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("PosFull([{}]:{}:{})", self.file.0, self.line_0 + 1, self.col_0 + 1))
+        f.write_fmt(format_args!(
+            "PosFull([{}]:{}:{})",
+            self.file.0,
+            self.line_0 + 1,
+            self.col_0 + 1
+        ))
     }
 }
 
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         assert_eq!(self.start.file, self.end.file);
-        f.write_fmt(format_args!("Span([{}]:{}..{})", self.start.file.0, self.start.byte, self.end.byte))
+        f.write_fmt(format_args!(
+            "Span([{}]:{}..{})",
+            self.start.file.0, self.start.byte, self.end.byte
+        ))
     }
 }
 
@@ -205,7 +225,7 @@ impl LineOffsets {
 
         LineOffsets {
             total_bytes: src.len(),
-            line_info
+            line_info,
         }
     }
 
@@ -220,13 +240,18 @@ impl LineOffsets {
     pub fn full_span(&self, file: FileId) -> Span {
         Span {
             start: Pos { file, byte: 0 },
-            end: Pos { file, byte: self.total_bytes },
+            end: Pos {
+                file,
+                byte: self.total_bytes,
+            },
         }
     }
 
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
         // OPTIMIZE: maybe cache the last lookup and check its neighborhood first
-        let line_0 = self.line_info.binary_search_by_key(&pos.byte, |info| info.start_byte())
+        let line_0 = self
+            .line_info
+            .binary_search_by_key(&pos.byte, |info| info.start_byte())
             .unwrap_or_else(|next_line_0| next_line_0 - 1);
         let col_0 = pos.byte - self.line_info[line_0].start_byte();
         PosFull {
@@ -250,19 +275,18 @@ impl LineOffsets {
     }
 
     pub fn line_end(&self, line_0: usize, include_terminator: bool) -> usize {
-        self.line_info.get(line_0 + 1)
-            .map_or(self.total_bytes, |info| {
-                if include_terminator {
-                    // range runs until the next line starts
-                    info.start_byte()
-                } else if info.follows_2_char_ending() {
-                    // exclude the two character line ending
-                    info.start_byte() - 2
-                } else {
-                    // exclude the single character line ending
-                    info.start_byte() - 1
-                }
-            })
+        self.line_info.get(line_0 + 1).map_or(self.total_bytes, |info| {
+            if include_terminator {
+                // range runs until the next line starts
+                info.start_byte()
+            } else if info.follows_2_char_ending() {
+                // exclude the two character line ending
+                info.start_byte() - 2
+            } else {
+                // exclude the single character line ending
+                info.start_byte() - 1
+            }
+        })
     }
 
     pub fn line_range(&self, line_0: usize, include_terminator: bool) -> std::ops::Range<usize> {

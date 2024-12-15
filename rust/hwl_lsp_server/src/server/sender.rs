@@ -11,7 +11,7 @@ pub struct ServerSender {
     sender: Sender<Message>,
     next_id: u64,
     request_ids_expecting_null_response: HashSet<String>,
-    pub logger: Logger,    
+    pub logger: Logger,
 }
 
 pub type SendResult<T = ()> = Result<T, SendError<Message>>;

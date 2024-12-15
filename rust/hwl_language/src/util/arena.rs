@@ -100,7 +100,8 @@ impl<K: IndexType, T> Arena<K, T> {
     }
 
     pub fn replace(&mut self, index: K, new_value: T) -> T {
-        self.map.insert(index.idx().i, new_value)
+        self.map
+            .insert(index.idx().i, new_value)
             .unwrap_or_else(|| panic!("Value {:?} not found", index))
     }
 
@@ -125,9 +126,7 @@ impl<K: IndexType, T> Arena<K, T> {
     }
 
     pub fn map_values<U>(self, mut f: impl FnMut(T) -> U) -> Arena<K, U> {
-        let new_map = self.map.into_iter()
-            .map(|(i, v)| (i, f(v)))
-            .collect();
+        let new_map = self.map.into_iter().map(|(i, v)| (i, f(v))).collect();
 
         Arena {
             map: new_map,
@@ -140,21 +139,27 @@ impl<K: IndexType, T> Arena<K, T> {
 impl<K: IndexType, T> Index<K> for Arena<K, T> {
     type Output = T;
     fn index(&self, index: K) -> &Self::Output {
-        self.map.get(&index.idx().i)
+        self.map
+            .get(&index.idx().i)
             .unwrap_or_else(|| panic!("Value {:?} not found", index))
     }
 }
 
 impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
     fn index_mut(&mut self, index: K) -> &mut Self::Output {
-        self.map.get_mut(&index.idx().i)
+        self.map
+            .get_mut(&index.idx().i)
             .unwrap_or_else(|| panic!("Value {:?} not found", index))
     }
 }
 
 impl<K: IndexType, T> Default for Arena<K, T> {
     fn default() -> Self {
-        Self { map: Default::default(), next_index: 0, ph: PhantomData }
+        Self {
+            map: Default::default(),
+            next_index: 0,
+            ph: PhantomData,
+        }
     }
 }
 
@@ -179,7 +184,10 @@ impl<'s, K: IndexType, T> IntoIterator for &'s Arena<K, T> {
     type IntoIter = ArenaIterator<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaIterator { inner: self.map.iter(), ph: PhantomData }
+        ArenaIterator {
+            inner: self.map.iter(),
+            ph: PhantomData,
+        }
     }
 }
 
@@ -188,7 +196,10 @@ impl<'s, K: IndexType, T> IntoIterator for &'s mut Arena<K, T> {
     type IntoIter = ArenaIteratorMut<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaIteratorMut { inner: self.map.iter_mut(), ph: PhantomData }
+        ArenaIteratorMut {
+            inner: self.map.iter_mut(),
+            ph: PhantomData,
+        }
     }
 }
 
@@ -196,8 +207,7 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIterator<'s, K, T> {
     type Item = (K, &'s T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
+        self.inner.next().map(|(&i, v)| (K::new(Idx::new(i)), v))
     }
 }
 
@@ -205,8 +215,7 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorMut<'s, K, T> {
     type Item = (K, &'s mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
+        self.inner.next().map(|(&i, v)| (K::new(Idx::new(i)), v))
     }
 }
 
@@ -250,7 +259,8 @@ impl<K: IndexType, T: Eq + Hash + Clone + Debug> ArenaSet<K, T> {
 impl<K: IndexType, T: Eq + Hash + Clone> Index<K> for ArenaSet<K, T> {
     type Output = T;
     fn index(&self, index: K) -> &Self::Output {
-        self.map_fwd.get(&index.idx().i)
+        self.map_fwd
+            .get(&index.idx().i)
             .unwrap_or_else(|| panic!("Value {:?} not found", index))
     }
 }
@@ -282,7 +292,10 @@ impl<'s, K: IndexType, T: Eq + Hash + Clone> IntoIterator for &'s ArenaSet<K, T>
     type IntoIter = ArenaSetIterator<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaSetIterator { inner: self.map_fwd.iter(), ph: PhantomData }
+        ArenaSetIterator {
+            inner: self.map_fwd.iter(),
+            ph: PhantomData,
+        }
     }
 }
 
@@ -290,8 +303,7 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaSetIterator<'s, K, T> {
     type Item = (K, &'s T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
+        self.inner.next().map(|(&i, v)| (K::new(Idx::new(i)), v))
     }
 }
 
@@ -344,10 +356,7 @@ mod test {
         let ai = arena.push('a');
         let bi = arena.push('b');
 
-        let expected = vec![
-            (ai, &'a'),
-            (bi, &'b'),
-        ];
+        let expected = vec![(ai, &'a'), (bi, &'b')];
         let mut actual: Vec<(TestIdx, &char)> = arena.iter().collect();
         actual.sort_by_key(|x| (x.0).0.i);
 
@@ -360,10 +369,7 @@ mod test {
         let ai = arena.push('a');
         let bi = arena.push('b');
 
-        let expected = vec![
-            (ai, &'a'),
-            (bi, &'b'),
-        ];
+        let expected = vec![(ai, &'a'), (bi, &'b')];
         let mut actual: Vec<(TestIdx, &char)> = arena.iter().collect();
         actual.sort_by_key(|x| (x.0).0.i);
 

@@ -50,7 +50,12 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
                         ast::Visibility::Public(_) => Visibility::Public,
                         ast::Visibility::Private => Visibility::Private,
                     };
-                    local_scope_info.maybe_declare(diags, declaration_info.id, Ok(ScopedEntry::Item(ast_item_ref)), vis);
+                    local_scope_info.maybe_declare(
+                        diags,
+                        declaration_info.id,
+                        Ok(ScopedEntry::Item(ast_item_ref)),
+                        vis,
+                    );
                 }
 
                 match ast_item {
@@ -59,7 +64,10 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
                 }
             }
 
-            FileScopes { scope_outer_declare: scope_declare, scope_inner_import: scope_import }
+            FileScopes {
+                scope_outer_declare: scope_declare,
+                scope_inner_import: scope_import,
+            }
         });
 
         map_file_scopes.insert_first(file, scope);
@@ -71,7 +79,14 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
             let file_ast = parsed[file].as_ref_ok().unwrap();
             for item in &file_ast.items {
                 if let ast::Item::Import(item) = item {
-                    add_import_to_scope(diags, &source, &mut scopes, &map_file_scopes, file_scopes.scope_inner_import, item);
+                    add_import_to_scope(
+                        diags,
+                        &source,
+                        &mut scopes,
+                        &map_file_scopes,
+                        file_scopes.scope_inner_import,
+                        item,
+                    );
                 }
             }
         }
@@ -103,11 +118,13 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
     }
 
     // get the top module (it will always hit the elaboration cache)
-    let top_module = state.find_top_module()
-        .and_then(|top_item| {
-            let elaboration = state.elaborated_modules.push(ModuleElaborationInfo { item: top_item, args: None });
-            state.elaborate_module(elaboration)
+    let top_module = state.find_top_module().and_then(|top_item| {
+        let elaboration = state.elaborated_modules.push(ModuleElaborationInfo {
+            item: top_item,
+            args: None,
         });
+        state.elaborate_module(elaboration)
+    });
 
     // return result
     assert!(state.elaboration_stack.is_empty());
@@ -218,7 +235,11 @@ fn add_import_to_scope(
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
 
-    let ast::ItemImport { span: _, parents, entry } = item;
+    let ast::ItemImport {
+        span: _,
+        parents,
+        entry,
+    } = item;
 
     let parent_scope = find_parent_scope(diags, source, file_scopes, parents);
 
@@ -232,10 +253,10 @@ fn add_import_to_scope(
 
         // TODO allow private visibility into child scopes?
         let entry = parent_scope.and_then(|parent_scope| {
-            scopes[parent_scope].find(&scopes, diags, id, Visibility::Public)
+            scopes[parent_scope]
+                .find(&scopes, diags, id, Visibility::Public)
                 .map(|entry| entry.value.clone())
-        }
-        );
+        });
 
         let target_scope = &mut scopes[target_scope];
         match as_ {
@@ -260,7 +281,12 @@ fn find_parent_scope(
     let parents_span = if parents.inner.is_empty() {
         parents.span
     } else {
-        parents.inner.first().unwrap().span.join(parents.inner.last().unwrap().span)
+        parents
+            .inner
+            .first()
+            .unwrap()
+            .span
+            .join(parents.inner.last().unwrap().span)
     };
 
     for step in &parents.inner {
@@ -291,13 +317,20 @@ fn find_parent_scope(
         }
     };
 
-    file_scopes.get(&file).unwrap().as_ref_ok()
+    file_scopes
+        .get(&file)
+        .unwrap()
+        .as_ref_ok()
         .map(|scopes| scopes.scope_outer_declare)
 }
 
 impl CompileState<'_> {
     // TODO add stack limit
-    pub fn check_compile_loop<T>(&mut self, entry: ElaborationStackEntry, f: impl FnOnce(&mut Self) -> T) -> Result<T, ErrorGuaranteed> {
+    pub fn check_compile_loop<T>(
+        &mut self,
+        entry: ElaborationStackEntry,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, ErrorGuaranteed> {
         if let Some(loop_start) = self.elaboration_stack.iter().position(|x| x == &entry) {
             // report elaboration loop
             let cycle = &self.elaboration_stack[loop_start..];
@@ -322,7 +355,10 @@ impl CompileState<'_> {
                     }
                     &ElaborationStackEntry::FunctionRun(item, _) => {
                         // TODO include args
-                        diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): function run"));
+                        diag = diag.add_error(
+                            self.parsed[item].common_info().span_short,
+                            format!("({i}): function run"),
+                        );
                     }
                 }
             }
@@ -348,15 +384,18 @@ impl CompileState<'_> {
         }
 
         // new elaboration
-        let ir_module = self.check_compile_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
-            s.elaborate_module_new(module_elaboration)
-                .map(|ir_content| s.ir_modules.push(ir_content))
-        }).flatten_err();
+        let ir_module = self
+            .check_compile_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
+                s.elaborate_module_new(module_elaboration)
+                    .map(|ir_content| s.ir_modules.push(ir_content))
+            })
+            .flatten_err();
 
         // put into cache and return
         // this is correct even for errors caused by cycles:
         //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
-        self.elaborated_modules_to_ir.insert_first(module_elaboration, ir_module);
+        self.elaborated_modules_to_ir
+            .insert_first(module_elaboration, ir_module);
 
         ir_module
     }
@@ -364,39 +403,32 @@ impl CompileState<'_> {
     fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
         let diags = self.diags;
 
-        let top_file = self.source[self.source.root_directory].children.get("top")
+        let top_file = self.source[self.source.root_directory]
+            .children
+            .get("top")
             .and_then(|&top_dir| self.source[top_dir].file)
             .ok_or_else(|| {
                 let title = "no top file found, should be called `top` and be in the root directory of the project";
                 diags.report(Diagnostic::new(title).finish())
             })?;
-        let top_file_scope = self.file_scopes.get(&top_file).unwrap().as_ref_ok()?.scope_outer_declare;
+        let top_file_scope = self
+            .file_scopes
+            .get(&top_file)
+            .unwrap()
+            .as_ref_ok()?
+            .scope_outer_declare;
         let top_entry = self[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
 
         match top_entry.value {
-            &ScopedEntry::Item(item) => {
-                match &self.parsed[item] {
-                    ast::Item::Module(module) => {
-                        match &module.params {
-                            None => Ok(AstRefModule::new_unchecked(item)),
-                            Some(_) => {
-                                Err(diags.report_simple(
-                                    "`top` cannot have generic parameters",
-                                    module.id.span,
-                                    "defined here",
-                                ))
-                            }
-                        }
+            &ScopedEntry::Item(item) => match &self.parsed[item] {
+                ast::Item::Module(module) => match &module.params {
+                    None => Ok(AstRefModule::new_unchecked(item)),
+                    Some(_) => {
+                        Err(diags.report_simple("`top` cannot have generic parameters", module.id.span, "defined here"))
                     }
-                    _ => {
-                        Err(diags.report_simple(
-                            "`top` should be a module",
-                            top_entry.defining_span,
-                            "defined here",
-                        ))
-                    }
-                }
-            }
+                },
+                _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
+            },
             ScopedEntry::Direct(_) => {
                 // TODO include "got" string
                 // TODO is this even ever possible? direct should only be inside of scopes
@@ -411,7 +443,9 @@ impl CompileState<'_> {
 
     pub fn file_scope(&self, file: FileId) -> Result<Scope, ErrorGuaranteed> {
         match self.file_scopes.get(&file) {
-            None => Err(self.diags.report_internal_error(self.source[file].offsets.full_span(file), "file scopes not found")),
+            None => Err(self
+                .diags
+                .report_internal_error(self.source[file].offsets.full_span(file), "file scopes not found")),
             Some(Ok(scopes)) => Ok(scopes.scope_inner_import),
             Some(&Err(e)) => Err(e),
         }

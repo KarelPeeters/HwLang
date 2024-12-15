@@ -23,8 +23,14 @@ pub struct LocationBuilder {
 impl LocationBuilder {
     pub fn span(&self, start: usize, end: usize) -> Span {
         Span {
-            start: Pos { file: self.file, byte: start },
-            end: Pos { file: self.file, byte: end },
+            start: Pos {
+                file: self.file,
+                byte: start,
+            },
+            end: Pos {
+                file: self.file,
+                byte: end,
+            },
         }
     }
 }
@@ -42,8 +48,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
     let location_builder = LocationBuilder { file };
 
     // actual parsing
-    let result = grammar::FileContentParser::new()
-        .parse(&location_builder, &src, tokenizer);
+    let result = grammar::FileContentParser::new().parse(&location_builder, &src, tokenizer);
 
     // convert the error back to our own formats
     result.map_err(|e| {

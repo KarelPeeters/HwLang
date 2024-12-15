@@ -250,7 +250,6 @@ pub enum ModuleStatementKind {
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
-
     // TODO control flow (if, for), probably not while/break/continue
     // TODO allow function/type/module(?) definitions in blocks
 }
@@ -271,7 +270,6 @@ pub enum BlockStatementKind {
     Return(Option<Box<Expression>>),
     Break(Option<Box<Expression>>),
     Continue,
-
     // TODO allow function/type definitions in blocks
 }
 
@@ -440,22 +438,32 @@ impl<T> Args<T> {
     pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<U> {
         Args {
             span: self.span,
-            inner: self.inner.iter().map(|arg| Arg {
-                span: arg.span,
-                name: arg.name.clone(),
-                value: f(&arg.value),
-            }).collect(),
+            inner: self
+                .inner
+                .iter()
+                .map(|arg| Arg {
+                    span: arg.span,
+                    name: arg.name.clone(),
+                    value: f(&arg.value),
+                })
+                .collect(),
         }
     }
 
     pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<U>, E> {
         Ok(Args {
             span: self.span,
-            inner: self.inner.into_iter().map(|arg| Ok(Arg {
-                span: arg.span,
-                name: arg.name,
-                value: f(arg.value)?,
-            })).try_collect()?,
+            inner: self
+                .inner
+                .into_iter()
+                .map(|arg| {
+                    Ok(Arg {
+                        span: arg.span,
+                        name: arg.name,
+                        value: f(arg.value)?,
+                    })
+                })
+                .try_collect()?,
         })
     }
 }
@@ -483,7 +491,7 @@ pub struct StructLiteralField {
 pub struct RangeLiteral {
     pub end_inclusive: bool,
     pub start: Option<Box<Expression>>,
-    pub end: Option<Box<Expression>>
+    pub end: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -513,7 +521,7 @@ pub enum MaybeIdentifier<I = Identifier> {
 }
 
 // TODO this is also just a spanned string
-// TODO intern identifiers 
+// TODO intern identifiers
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Identifier {
     pub span: Span,
@@ -591,10 +599,7 @@ impl<T> Spanned<T> {
 
 impl<T, E> Spanned<Result<T, E>> {
     pub fn transpose(self) -> Result<Spanned<T>, E> {
-        self.inner.map(|inner| Spanned {
-            span: self.span,
-            inner,
-        })
+        self.inner.map(|inner| Spanned { span: self.span, inner })
     }
 }
 
@@ -669,22 +674,83 @@ impl Item {
 
     fn info(&self) -> (ItemCommonInfo, Option<ItemDeclarationInfo>) {
         match self {
-            Item::Import(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.span }, None),
-            Item::Const(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span() }, Some(ItemDeclarationInfo { vis: item.vis, id: item.id.as_ref() })),
-            Item::Type(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Struct(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Enum(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Function(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Module(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Interface(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
+            Item::Import(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.span,
+                },
+                None,
+            ),
+            Item::Const(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span(),
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: item.id.as_ref(),
+                }),
+            ),
+            Item::Type(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Struct(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Enum(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Function(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Module(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Interface(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
         }
     }
 }

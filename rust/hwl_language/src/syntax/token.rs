@@ -54,14 +54,17 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn curr_pos(&self) -> Pos {
-        Pos { file: self.file, byte: self.curr_byte }
+        Pos {
+            file: self.file,
+            byte: self.curr_byte,
+        }
     }
 
     fn prefix(&self) -> String {
         self.left.chars().take(ERROR_CONTEXT_LENGTH).collect()
     }
 
-    /// Block comments are handled separately. They're allowed to nest, which means they're not a regular language and 
+    /// Block comments are handled separately. They're allowed to nest, which means they're not a regular language and
     /// they can't be parsed using a Regex engine.
     fn handle_block_comment(&mut self) -> Option<Result<Token<&'s str>, TokenError>> {
         let start = self.curr_pos();
@@ -137,7 +140,10 @@ impl<'s> Iterator for Tokenizer<'s> {
     type Item = Result<Token<&'s str>, TokenError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        assert!(!self.errored, "Cannot continue calling next on tokenizer that returned an error");
+        assert!(
+            !self.errored,
+            "Cannot continue calling next on tokenizer that returned an error"
+        );
         if self.left.is_empty() {
             return None;
         }
@@ -279,7 +285,7 @@ macro_rules! declare_tokens {
                     $(TokenType::$l_token => $l_cat,)*
                 }
             }
-            
+
             pub fn map<T>(self, f: impl FnOnce(S) -> T) -> TokenType<T> {
                 match self {
                     $(TokenType::$c_token(s) => TokenType::$c_token(f(s)),)*
@@ -441,17 +447,13 @@ declare_tokens! {
 impl TokenError {
     pub fn to_diagnostic(self) -> Diagnostic {
         match self {
-            TokenError::InvalidToken { pos, prefix: _ } => {
-                Diagnostic::new("tokenization error")
-                    .add_error(Span::empty_at(pos), "invalid prefix")
-                    .finish()
-            }
-            TokenError::BlockCommentMissingEnd { start, eof } => {
-                Diagnostic::new("block comment missing end")
-                    .add_info(Span::empty_at(start), "block comment started here")
-                    .add_error(Span::empty_at(eof), "end of file reached")
-                    .finish()
-            }
+            TokenError::InvalidToken { pos, prefix: _ } => Diagnostic::new("tokenization error")
+                .add_error(Span::empty_at(pos), "invalid prefix")
+                .finish(),
+            TokenError::BlockCommentMissingEnd { start, eof } => Diagnostic::new("block comment missing end")
+                .add_info(Span::empty_at(start), "block comment started here")
+                .add_error(Span::empty_at(eof), "end of file reached")
+                .finish(),
             TokenError::BlockCommentUnexpectedEnd { pos, prefix: _ } => {
                 Diagnostic::new("unexpected end of block comment")
                     .add_error(Span::empty_at(pos), "end of comment here")
@@ -469,27 +471,45 @@ mod test {
     #[test]
     fn basic_tokenize() {
         let file = FileId::SINGLE;
-        
+
         assert_eq!(Ok(vec![]), tokenize(file, ""));
-        assert_eq!(Ok(vec![Token {
-            ty: TokenType::WhiteSpace("\n"),
-            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 1 } },
-        }]), tokenize(file, "\n"));
+        assert_eq!(
+            Ok(vec![Token {
+                ty: TokenType::WhiteSpace("\n"),
+                span: Span {
+                    start: Pos { file, byte: 0 },
+                    end: Pos { file, byte: 1 }
+                },
+            }]),
+            tokenize(file, "\n")
+        );
         assert!(tokenize(file, "test foo function \"foo\"").is_ok());
     }
 
     #[test]
     fn comment() {
         let file = FileId::SINGLE;
-        assert_eq!(Ok(vec![Token {
-            ty: TokenType::BlockComment("/**/"),
-            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 4 } },
-        }]), tokenize(file, "/**/"));
+        assert_eq!(
+            Ok(vec![Token {
+                ty: TokenType::BlockComment("/**/"),
+                span: Span {
+                    start: Pos { file, byte: 0 },
+                    end: Pos { file, byte: 4 }
+                },
+            }]),
+            tokenize(file, "/**/")
+        );
 
-        assert_eq!(Ok(vec![Token {
-            ty: TokenType::BlockComment("/*/**/*/"),
-            span: Span { start: Pos { file, byte: 0 }, end: Pos { file, byte: 8 } },
-        }]), tokenize(file, "/*/**/*/"));
+        assert_eq!(
+            Ok(vec![Token {
+                ty: TokenType::BlockComment("/*/**/*/"),
+                span: Span {
+                    start: Pos { file, byte: 0 },
+                    end: Pos { file, byte: 8 }
+                },
+            }]),
+            tokenize(file, "/*/**/*/")
+        );
 
         assert!(tokenize(file, "/*/**/").is_err());
     }

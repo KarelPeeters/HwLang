@@ -39,14 +39,12 @@ impl ValueDomain {
     pub fn join(&self, other: &Self) -> Self {
         // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
-            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) =>
-                other.clone(),
-            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right =>
-                ValueDomain::Sync(left.clone()),
+            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other.clone(),
+            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left.clone()),
             _ => ValueDomain::Async,
         }
     }
-    
+
     pub fn from_domain_kind(domain: DomainKind<DomainSignal>) -> Self {
         match domain {
             DomainKind::Async => ValueDomain::Async,
@@ -96,6 +94,10 @@ impl DomainKind<DomainSignal> {
 
 impl SyncDomain<DomainSignal> {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
-        format!("sync({}, {})", self.clock.to_diagnostic_string(s), self.reset.to_diagnostic_string(s))
+        format!(
+            "sync({}, {})",
+            self.clock.to_diagnostic_string(s),
+            self.reset.to_diagnostic_string(s)
+        )
     }
 }

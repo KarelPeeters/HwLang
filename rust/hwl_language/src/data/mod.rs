@@ -1,7 +1,7 @@
-pub mod source;
-pub mod parsed;
 pub mod compiled;
 pub mod lowered;
+pub mod parsed;
+pub mod source;
 
 pub mod diagnostic;
 

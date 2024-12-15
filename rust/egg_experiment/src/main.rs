@@ -1,4 +1,4 @@
-use egg::{Rewrite, SymbolLang, rewrite, Runner};
+use egg::{rewrite, Rewrite, Runner, SymbolLang};
 
 fn main() {
     let mut rules: Vec<Rewrite<SymbolLang, ()>> = vec![];

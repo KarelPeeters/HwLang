@@ -19,7 +19,10 @@ struct Args {
 }
 
 fn main() {
-    let Args { root, print_diagnostics_immediately } = Args::parse();
+    let Args {
+        root,
+        print_diagnostics_immediately,
+    } = Args::parse();
 
     // collect source
     let source = match build_source_database(&root) {
@@ -34,7 +37,9 @@ fn main() {
     let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediately {
         let source_database = source.clone();
         let handler = move |diag: &Diagnostic| {
-            let s = diag.clone().to_string(&source_database, DiagnosticStringSettings::default());
+            let s = diag
+                .clone()
+                .to_string(&source_database, DiagnosticStringSettings::default());
             eprintln!("{}\n", s);
         };
         Some(Box::new(handler))
@@ -90,10 +95,13 @@ fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> 
         stack.push(path.file_stem().unwrap().to_str().unwrap().to_owned());
 
         let source = std::fs::read_to_string(&path).map_err(|e| e.with_path(path.clone()))?;
-        source_database.add_file(FilePath(stack), path.to_str().unwrap().to_owned(), source).unwrap();
+        source_database
+            .add_file(FilePath(stack), path.to_str().unwrap().to_owned(), source)
+            .unwrap();
 
         Ok(())
-    }).unwrap();
+    })
+        .unwrap();
 
     if source_database.len() == 0 {
         println!("Warning: no input files found");

@@ -20,7 +20,10 @@ pub struct IntRepresentation {
 
 impl IntRepresentation {
     pub fn for_range(range: &ClosedIntRange) -> Self {
-        let ClosedIntRange { start_inc: start, end_inc: end } = range;
+        let ClosedIntRange {
+            start_inc: start,
+            end_inc: end,
+        } = range;
         assert!(start <= end, "Range must be valid, got {start}..={end}");
 
         if start == end {
@@ -33,15 +36,8 @@ impl IntRepresentation {
         let (signed, bits) = if start.is_negative() {
             // signed
             // prevent max value underflow
-            let max_value = if end.is_negative() {
-                &BigInt::ZERO
-            } else {
-                end
-            };
-            let max_bits = max(
-                1 + (start + 1u32).bits(),
-                1 + max_value.bits(),
-            );
+            let max_value = if end.is_negative() { &BigInt::ZERO } else { end };
+            let max_bits = max(1 + (start + 1u32).bits(), 1 + max_value.bits());
 
             (Signed::Signed, max_bits)
         } else {
@@ -65,18 +61,17 @@ mod test {
 
     #[track_caller]
     fn test_case(range: Range<i64>, signed: Signed, width: u32) {
-        let expected = IntRepresentation { signed, width: width.into() };
+        let expected = IntRepresentation {
+            signed,
+            width: width.into(),
+        };
         let range = ClosedIntRange {
             start_inc: BigInt::from(range.start),
             end_inc: BigInt::from(range.end) - 1,
         };
         let result = IntRepresentation::for_range(&range);
         println!("range {:?} => {:?}", range, result);
-        assert_eq!(
-            expected,
-            result,
-            "mismatch for range {range:?}"
-        );
+        assert_eq!(expected, result, "mismatch for range {range:?}");
     }
 
     #[test]

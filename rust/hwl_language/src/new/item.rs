@@ -15,9 +15,11 @@ impl CompileState<'_> {
     pub fn eval_item_as_ty_or_value(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
         if !self.items.contains_key(&item) {
-            let result = self.check_compile_loop(ElaborationStackEntry::Item(item), |s| {
-                s.eval_item_as_ty_or_value_new(item)
-            }).unwrap_or_else(|e| Err(e));
+            let result = self
+                .check_compile_loop(ElaborationStackEntry::Item(item), |s| {
+                    s.eval_item_as_ty_or_value_new(item)
+                })
+                .unwrap_or_else(|e| Err(e));
 
             self.items.insert_first(item, result).as_ref_ok()
         } else {
@@ -26,11 +28,23 @@ impl CompileState<'_> {
     }
 
     pub fn const_eval<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
-        let ConstDeclaration { span: _, vis: _, id: _, ty, value } = decl;
+        let ConstDeclaration {
+            span: _,
+            vis: _,
+            id: _,
+            ty,
+            value,
+        } = decl;
         let vars = VariableValues::new_no_vars();
 
-        let ty = ty.as_ref()
-            .map(|ty| Ok(Spanned { span: ty.span, inner: self.eval_expression_as_ty(scope, &vars, ty)? }))
+        let ty = ty
+            .as_ref()
+            .map(|ty| {
+                Ok(Spanned {
+                    span: ty.span,
+                    inner: self.eval_expression_as_ty(scope, &vars, ty)?,
+                })
+            })
             .transpose();
 
         let value_eval = self.eval_expression_as_compile(scope, &vars, value, "const value")?;
@@ -38,7 +52,10 @@ impl CompileState<'_> {
 
         // check type
         if let Some(ty) = ty {
-            let value_eval_spanned = Spanned { span: value.span, inner: &value_eval };
+            let value_eval_spanned = Spanned {
+                span: value.span,
+                inner: &value_eval,
+            };
             check_type_contains_compile_value(self.diags, decl.span, ty.as_ref(), value_eval_spanned, true)?;
         };
 
@@ -46,14 +63,13 @@ impl CompileState<'_> {
     }
 
     pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
-        let entry = self.const_eval(scope, decl)
-            .map(|value| {
-                let cst = self.constants.push(ConstantInfo {
-                    id: decl.id.clone(),
-                    value,
-                });
-                ScopedEntry::Direct(NamedValue::Constant(cst))
+        let entry = self.const_eval(scope, decl).map(|value| {
+            let cst = self.constants.push(ConstantInfo {
+                id: decl.id.clone(),
+                value,
             });
+            ScopedEntry::Direct(NamedValue::Constant(cst))
+        });
         self.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 
@@ -63,21 +79,25 @@ impl CompileState<'_> {
 
         match &self.parsed[item] {
             // imports were already handled in a separate import resolution pass
-            Item::Import(item_inner) => {
-                Err(diags.report_internal_error(
-                    item_inner.span,
-                    "import items should have been resolved in a separate pass already",
-                ))
-            }
+            Item::Import(item_inner) => Err(diags.report_internal_error(
+                item_inner.span,
+                "import items should have been resolved in a separate pass already",
+            )),
             Item::Const(item_inner) => self.const_eval(file_scope, item_inner),
             Item::Type(item_inner) => {
-                let ItemDefType { span: _, vis: _, id: _, params, inner } = item_inner;
+                let ItemDefType {
+                    span: _,
+                    vis: _,
+                    id: _,
+                    params,
+                    inner,
+                } = item_inner;
                 match params {
                     None => {
                         let vars = VariableValues::new_no_vars();
                         let ty = self.eval_expression_as_ty(file_scope, &vars, inner)?;
                         Ok(CompileValue::Type(ty))
-                    },
+                    }
                     Some(params) => {
                         let func = FunctionValue {
                             outer_scope: file_scope.clone(),
@@ -95,7 +115,14 @@ impl CompileState<'_> {
             Item::Enum(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Enum")),
             Item::Function(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Function")),
             Item::Module(item_inner) => {
-                let ItemDefModule { span: _, vis: _, id: _, params, ports: _, body: _ } = item_inner;
+                let ItemDefModule {
+                    span: _,
+                    vis: _,
+                    id: _,
+                    params,
+                    ports: _,
+                    body: _,
+                } = item_inner;
 
                 match params {
                     None => {
@@ -106,12 +133,10 @@ impl CompileState<'_> {
                         let ir_module = self.elaborate_module(elaboration)?;
                         Ok(CompileValue::Module(ir_module))
                     }
-                    Some(_) =>
-                        Err(diags.report_todo(item_inner.span, "visit item kind Module with params")),
+                    Some(_) => Err(diags.report_todo(item_inner.span, "visit item kind Module with params")),
                 }
             }
-            Item::Interface(item) =>
-                Err(diags.report_todo(item.span, "visit item kind Interface")),
+            Item::Interface(item) => Err(diags.report_todo(item.span, "visit item kind Interface")),
         }
     }
 }

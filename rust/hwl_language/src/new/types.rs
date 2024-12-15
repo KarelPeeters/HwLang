@@ -20,7 +20,7 @@ pub enum Type {
     Int(IntRange),
     Array(Box<Type>, BigUint),
     Range,
-    Module, // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces? 
+    Module,   // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
     Function, // TODO make this (optionally) more specific, with arg and return types
 }
 
@@ -62,8 +62,14 @@ impl Type {
 
             // integer
             (Type::Int(a), Type::Int(b)) => {
-                let IntRange { start_inc: a_start, end_inc: a_end } = a;
-                let IntRange { start_inc: b_start, end_inc: b_end } = b;
+                let IntRange {
+                    start_inc: a_start,
+                    end_inc: a_end,
+                } = a;
+                let IntRange {
+                    start_inc: b_start,
+                    end_inc: b_end,
+                } = b;
 
                 let start = match (a_start, b_start) {
                     (Some(a_start), Some(b_start)) => Some(a_start.min(b_start).clone()),
@@ -74,7 +80,10 @@ impl Type {
                     (None, _) | (_, None) => None,
                 };
 
-                Type::Int(IntRange { start_inc: start, end_inc: end })
+                Type::Int(IntRange {
+                    start_inc: start,
+                    end_inc: end,
+                })
             }
 
             // array
@@ -90,8 +99,24 @@ impl Type {
 
             // simple mismatches
             (
-                Type::Type | Type::Clock | Type::Bool | Type::String | Type::Range | Type::Module | Type::Function | Type::Int(_) | Type::Array(_, _),
-                Type::Type | Type::Clock | Type::Bool | Type::String | Type::Range | Type::Module | Type::Function | Type::Int(_) | Type::Array(_, _),
+                Type::Type
+                | Type::Clock
+                | Type::Bool
+                | Type::String
+                | Type::Range
+                | Type::Module
+                | Type::Function
+                | Type::Int(_)
+                | Type::Array(_, _),
+                Type::Type
+                | Type::Clock
+                | Type::Bool
+                | Type::String
+                | Type::Range
+                | Type::Module
+                | Type::Function
+                | Type::Int(_)
+                | Type::Array(_, _),
             ) => Type::Any,
         }
     }
@@ -102,17 +127,14 @@ impl Type {
 
     pub fn as_hardware_type(&self) -> Option<HardwareType> {
         match self {
-            Type::Clock =>
-                Some(HardwareType::Clock),
-            Type::Bool =>
-                Some(HardwareType::Bool),
-            Type::Int(range) =>
-                range.clone().try_into_closed().map(HardwareType::Int),
-            Type::Array(inner, len) =>
-                inner.as_hardware_type().map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
+            Type::Clock => Some(HardwareType::Clock),
+            Type::Bool => Some(HardwareType::Bool),
+            Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int),
+            Type::Array(inner, len) => inner
+                .as_hardware_type()
+                .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
             Type::Type | Type::Any | Type::Undefined => None,
-            Type::String | Type::Range | Type::Module | Type::Function =>
-                None,
+            Type::String | Type::Range | Type::Module | Type::Function => None,
         }
     }
 
