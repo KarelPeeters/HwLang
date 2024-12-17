@@ -1,58 +1,68 @@
-import std.types.[bool, uint, int_range, natural, any];
-
-//import spi_master.spi_master;
-
-// TODO check the signature of all items without generic parameters immediately
-//   for constants that means immediately fully visiting them
-//   eventually, include generic items but just with a "placeholder" value for generic params
-const A: uint = 5;
+import std.types.[
+    bool, int_range, int, uint, natural,
+    int_bits, uint_bits
+];
 
 pub module top ports(
+    clk_a: in clock,
+    clk_b: in clock,
+    rst_a: in async bool,
+    rst_b: in async bool,
+
+    sync(clk_a, !rst_a) {
+        in_a: in bool[4],
+        out_a: out bool[4],
+    },
+    sync(clk_b, !rst_b) {
+        in_b: in bool[4],
+        out_b: out bool[4],
+    },
+
+    async {
+        in_async: in bool[4],
+        out_async: out bool[4],
+
+        in_int_range: in int_range(-3..27),
+        in_int_bits: in int_bits(3),
+        in_uint_bits: in uint_bits(3),
+    }
+) body {
+    const test_pos: int = 8;
+
+    reg pass: sync(clk_a, !rst_a) bool = false;
+    reg out out_a = undefined;
+    clocked(clk_a, !rst_a) {
+        pass = !pass;
+        if (pass) {
+            out_a = in_a;
+        }
+    }
+
+    combinatorial {
+        out_async = in_async;
+    }
+
+    instance child generics(N=4) ports(
+        .clk(clk_b),
+        .rst(!rst_b),
+        .x(in_b),
+        .y(out_b),
+    );
+}
+
+module child generics(N: uint) ports(
     clk: in clock,
     rst: in async bool,
-
-    y: out sync(clk, rst) bool,
+    x: in sync(clk, rst) bool[N],
+    y: out sync(clk, rst) bool[N],
 ) body {
-    const c: bool = false;
-    reg s: sync(clk, rst) bool = undefined;
-    reg out y = false;
-    wire w0: async bool;
-    wire w1: sync(clk, rst) bool;
-
-    clocked(clk, rst) {
-        var next: bool;
-        if (s) {
-            next = !s;
-        } else {
-            next = s;
-        }
-        s = next;
-
-        y = false;
-    }
-
     combinatorial {
-        var next: bool;
-        if (s) {
-            next = !s/*w0*/;
-        } else {
-            next = s;
-        }
-        w1 = next;
+        y = x;
     }
+}
 
-    combinatorial {
-        w0 = false;
-    }
+type type_alias = bool[8, 4];
 
-//    instance spi_master generics(packet_length=8) ports(
-//        .clk(clk),
-//        .rst(rst),
-//        .data(undefined),
-//        .data_valid(false),
-//        .data_ready(),
-//        .sclk(),
-//        .mosi(),
-//        .cs(),
-//    );
+function foo(T: type, x: T) -> T {
+    return x;
 }
