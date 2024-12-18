@@ -3,7 +3,7 @@ use crate::swrite;
 use crate::util::int::IntRepresentation;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -17,7 +17,7 @@ pub enum Type {
     Clock,
     Bool,
     String,
-    Int(IntRange),
+    Int(IncRange<BigInt>),
     Array(Box<Type>, BigUint),
     Range,
     Module,   // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
@@ -28,20 +28,20 @@ pub enum Type {
 pub enum HardwareType {
     Clock,
     Bool,
-    Int(ClosedIntRange),
+    Int(ClosedIncRange<BigInt>),
     Array(Box<HardwareType>, BigUint),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct IntRange {
-    pub start_inc: Option<BigInt>,
-    pub end_inc: Option<BigInt>,
+pub struct IncRange<T> {
+    pub start_inc: Option<T>,
+    pub end_inc: Option<T>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ClosedIntRange {
-    pub start_inc: BigInt,
-    pub end_inc: BigInt,
+pub struct ClosedIncRange<T> {
+    pub start_inc: T,
+    pub end_inc: T,
 }
 
 impl Type {
@@ -62,11 +62,11 @@ impl Type {
 
             // integer
             (Type::Int(a), Type::Int(b)) => {
-                let IntRange {
+                let IncRange {
                     start_inc: a_start,
                     end_inc: a_end,
                 } = a;
-                let IntRange {
+                let IncRange {
                     start_inc: b_start,
                     end_inc: b_end,
                 } = b;
@@ -80,7 +80,7 @@ impl Type {
                     (None, _) | (_, None) => None,
                 };
 
-                Type::Int(IntRange {
+                Type::Int(IncRange {
                     start_inc: start,
                     end_inc: end,
                 })
@@ -197,36 +197,39 @@ impl HardwareType {
     }
 }
 
-impl IntRange {
-    pub fn try_into_closed(self) -> Option<ClosedIntRange> {
-        let IntRange { start_inc, end_inc } = self;
-        Some(ClosedIntRange {
+impl<T> IncRange<T> {
+    pub fn try_into_closed(self) -> Option<ClosedIncRange<T>> {
+        let IncRange { start_inc, end_inc } = self;
+        Some(ClosedIncRange {
             start_inc: start_inc?,
             end_inc: end_inc?,
         })
     }
 }
 
-impl ClosedIntRange {
-    pub fn single(value: &BigInt) -> ClosedIntRange {
-        ClosedIntRange {
+impl<T> ClosedIncRange<T> {
+    pub fn single(value: T) -> ClosedIncRange<T>
+    where
+        T: Clone,
+    {
+        ClosedIncRange {
             start_inc: value.clone(),
-            end_inc: value.clone(),
+            end_inc: value,
         }
     }
 
-    pub fn into_range(self) -> IntRange {
-        let ClosedIntRange { start_inc, end_inc } = self;
-        IntRange {
+    pub fn into_range(self) -> IncRange<T> {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        IncRange {
             start_inc: Some(start_inc),
             end_inc: Some(end_inc),
         }
     }
 }
 
-impl std::fmt::Display for IntRange {
+impl<T: Display> Display for IncRange<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let IntRange { start_inc, end_inc } = self;
+        let IncRange { start_inc, end_inc } = self;
         match (start_inc, end_inc) {
             (None, None) => write!(f, ".."),
             (Some(start_inc), None) => write!(f, "{}..", start_inc),

@@ -167,8 +167,8 @@ pub enum ElaborationStackEntry {
     // TODO better name, is this ItemEvaluation, ItemSignature, ...?
     Item(AstRefItem),
     // TODO better names
-    FunctionCall(Span, Args<CompileValue>),
-    FunctionRun(AstRefItem, Args<CompileValue>),
+    FunctionCall(Span, Args<Option<Identifier>, CompileValue>),
+    FunctionRun(AstRefItem, Args<Option<Identifier>, CompileValue>),
 }
 
 new_index_type!(pub ModuleElaboration);

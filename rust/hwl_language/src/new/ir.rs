@@ -1,5 +1,5 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::types::{ClosedIntRange, HardwareType, Type};
+use crate::new::types::{ClosedIncRange, HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -12,7 +12,7 @@ use num_traits::One;
 #[derive(Debug)]
 pub enum IrType {
     Bool,
-    Int(ClosedIntRange),
+    Int(ClosedIncRange<BigInt>),
     Array(Box<IrType>, BigUint),
 }
 
@@ -157,7 +157,15 @@ pub enum IrExpression {
     Variable(IrVariable),
     // actual expressions
     BoolNot(Box<IrExpression>),
-    Array(Vec<IrExpression>),
+    ArrayLiteral(Vec<IrExpression>),
+    ArrayIndex {
+        base: Box<IrExpression>,
+        index: Box<IrExpression>,
+    },
+    ArraySlice {
+        base: Box<IrExpression>,
+        range: ClosedIncRange<Box<IrExpression>>,
+    },
 }
 
 impl IrType {
@@ -181,11 +189,16 @@ impl IrType {
 impl IrExpression {
     pub fn to_diagnostic_string(&self, m: &IrModuleInfo) -> String {
         match self {
-            IrExpression::BoolNot(x) => format!("!({})", x.to_diagnostic_string(m)),
-
             IrExpression::Bool(x) => x.to_string(),
             IrExpression::Int(x) => x.to_string(),
-            IrExpression::Array(x) => {
+
+            &IrExpression::Port(x) => m.ports[x].debug_info_id.string.clone(),
+            &IrExpression::Wire(x) => m.wires[x].debug_info_id.string().to_owned(),
+            &IrExpression::Register(x) => m.registers[x].debug_info_id.string().to_owned(),
+            // TODO support printing variables with their real names if in a context where they exist
+            &IrExpression::Variable(_) => "_variable".to_owned(),
+
+            IrExpression::ArrayLiteral(x) => {
                 let inner = x
                     .iter()
                     .map(|x| x.to_diagnostic_string(m))
@@ -193,12 +206,19 @@ impl IrExpression {
                     .join(", ");
                 format!("[{inner}]")
             }
-            &IrExpression::Port(x) => m.ports[x].debug_info_id.string.clone(),
-            &IrExpression::Wire(x) => m.wires[x].debug_info_id.string().to_owned(),
-            &IrExpression::Register(x) => m.registers[x].debug_info_id.string().to_owned(),
-
-            // TODO support printing variables with their real names if in a context where they exist
-            &IrExpression::Variable(_) => "_variable".to_owned(),
+            IrExpression::BoolNot(x) => format!("!({})", x.to_diagnostic_string(m)),
+            IrExpression::ArrayIndex { base, index } => {
+                format!("({}[{}])", base.to_diagnostic_string(m), index.to_diagnostic_string(m))
+            }
+            IrExpression::ArraySlice { base, range } => {
+                let ClosedIncRange { start_inc, end_inc } = range;
+                format!(
+                    "({}[{}..{}])",
+                    base.to_diagnostic_string(m),
+                    start_inc.to_diagnostic_string(m),
+                    end_inc.to_diagnostic_string(m)
+                )
+            }
         }
     }
 }

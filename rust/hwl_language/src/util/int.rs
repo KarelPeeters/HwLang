@@ -1,4 +1,4 @@
-use crate::new::types::ClosedIntRange;
+use crate::new::types::ClosedIncRange;
 use num_bigint::{BigInt, BigUint};
 use num_traits::Signed as _;
 use std::cmp::max;
@@ -19,8 +19,8 @@ pub struct IntRepresentation {
 }
 
 impl IntRepresentation {
-    pub fn for_range(range: &ClosedIntRange) -> Self {
-        let ClosedIntRange {
+    pub fn for_range(range: &ClosedIncRange<BigInt>) -> Self {
+        let ClosedIncRange {
             start_inc: start,
             end_inc: end,
         } = range;
@@ -54,7 +54,7 @@ impl IntRepresentation {
 
 #[cfg(test)]
 mod test {
-    use crate::new::types::ClosedIntRange;
+    use crate::new::types::ClosedIncRange;
     use crate::util::int::{IntRepresentation, Signed};
     use num_bigint::BigInt;
     use std::ops::Range;
@@ -65,7 +65,7 @@ mod test {
             signed,
             width: width.into(),
         };
-        let range = ClosedIntRange {
+        let range = ClosedIncRange {
             start_inc: BigInt::from(range.start),
             end_inc: BigInt::from(range.end) - 1,
         };

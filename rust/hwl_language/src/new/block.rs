@@ -75,6 +75,24 @@ impl ExpressionContext for IrContext<'_> {
         }
     }
 
+    fn value_from_compile(&mut self, s: &CompileState, span: Span, v: CompileValue) -> Result<Self::T, ErrorGuaranteed> {
+        let ty = v.ty();
+        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+            s.diags.report_simple(
+                "value is not representable in hardware",
+                span,
+                format!("value `{}` with type `{}` not representable in hardware", v.to_diagnostic_string(), ty.to_diagnostic_string()),
+            )
+        })?;
+        let expr = v.to_ir_expression(s.diags, span)?;
+
+        Ok(TypedIrExpression {
+            ty: ty_hw,
+            domain: ValueDomain::CompileTime,
+            expr,
+        })
+    }
+
     fn bool_not(
         &mut self,
         s: &CompileState,

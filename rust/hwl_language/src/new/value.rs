@@ -4,7 +4,7 @@ use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::{IrExpression, IrModule};
 use crate::new::misc::ValueDomain;
-use crate::new::types::{IntRange, Type};
+use crate::new::types::{IncRange, Type};
 use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
 
@@ -36,7 +36,7 @@ pub enum CompileValue {
     Int(BigInt),
     String(String),
     Array(Vec<CompileValue>),
-    IntRange(IntRange),
+    IntRange(IncRange<BigInt>),
     Module(IrModule),
     Function(FunctionValue),
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
@@ -64,7 +64,7 @@ impl CompileValue {
             CompileValue::Undefined => Type::Undefined,
             CompileValue::Type(_) => Type::Type,
             CompileValue::Bool(_) => Type::Bool,
-            CompileValue::Int(value) => Type::Int(IntRange {
+            CompileValue::Int(value) => Type::Int(IncRange {
                 start_inc: Some(value.clone()),
                 end_inc: Some(value.clone()),
             }),
@@ -108,11 +108,11 @@ impl CompileValue {
                     (true, false) => HardwareValueResult::PartiallyUndefined,
                     (false, false) => {
                         assert_eq!(hardware_values.len(), values.len());
-                        HardwareValueResult::Success(IrExpression::Array(hardware_values))
+                        HardwareValueResult::Success(IrExpression::ArrayLiteral(hardware_values))
                     }
                     (false, true) => {
                         assert!(hardware_values.is_empty());
-                        HardwareValueResult::Success(IrExpression::Array(vec![]))
+                        HardwareValueResult::Success(IrExpression::ArrayLiteral(vec![]))
                     }
                 }
             }
@@ -124,7 +124,26 @@ impl CompileValue {
         }
     }
 
+    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
+        match self.as_hardware_value() {
+            HardwareValueResult::Success(v) => Ok(v),
+            HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags
+                .report_simple(
+                    "undefined can only be used for register initialization",
+                    span,
+                    "value is undefined",
+                )),
+            HardwareValueResult::Unrepresentable => {
+                // TODO fix this duplication
+                let reason =
+                    "compile time value fits in hardware type but is not convertible to hardware value";
+                Err(diags.report_internal_error(span, reason))
+            }
+        }
+    }
+
     pub fn to_diagnostic_string(&self) -> String {
+        // TODO avoid printing diagnostics strings that are very long (eg. large strings, arrays, structs, ...)
         match self {
             CompileValue::Undefined => "undefined".to_string(),
             CompileValue::Type(ty) => ty.to_diagnostic_string(),
@@ -157,23 +176,7 @@ impl MaybeCompile<TypedIrExpression> {
 
     pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
         match self {
-            MaybeCompile::Compile(v) => {
-                match v.as_hardware_value() {
-                    HardwareValueResult::Success(v) => Ok(v),
-                    HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags
-                        .report_simple(
-                            "undefined can only be used for register initialization",
-                            span,
-                            "value is undefined",
-                        )),
-                    HardwareValueResult::Unrepresentable => {
-                        // TODO fix this duplication
-                        let reason =
-                            "compile time value fits in hardware type but is not convertible to hardware value";
-                        Err(diags.report_internal_error(span, reason))
-                    }
-                }
-            }
+            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span),
             MaybeCompile::Other(v) => Ok(v.expr.clone()),
         }
     }

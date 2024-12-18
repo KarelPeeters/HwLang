@@ -423,20 +423,23 @@ pub enum ExpressionKind {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Args<T = Expression> {
+pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
-    pub inner: Vec<Arg<T>>,
+    pub inner: Vec<Arg<N, T>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Arg<T = Expression> {
+pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub span: Span,
-    pub name: Option<Identifier>,
+    pub name: N,
     pub value: T,
 }
 
-impl<T> Args<T> {
-    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<U> {
+impl<N, T> Args<N, T> {
+    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<N, U>
+    where
+        N: Clone,
+    {
         Args {
             span: self.span,
             inner: self
@@ -451,7 +454,7 @@ impl<T> Args<T> {
         }
     }
 
-    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<U>, E> {
+    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<N, U>, E> {
         Ok(Args {
             span: self.span,
             inner: self

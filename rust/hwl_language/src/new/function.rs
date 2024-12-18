@@ -45,7 +45,7 @@ impl FunctionValue {
     pub fn call_compile_time(
         &self,
         state: &mut CompileState,
-        args: Args<CompileValue>,
+        args: Args<Option<Identifier>, CompileValue>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = state.diags;
 
