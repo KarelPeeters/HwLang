@@ -1,7 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{BlockDomain, VariableValues};
-use crate::new::check::{check_type_contains_compile_value, check_type_contains_value};
+use crate::new::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::new::compile::{
     CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire,
     WireInfo,
@@ -716,13 +716,11 @@ impl BodyElaborationState<'_, '_> {
         let no_vars = VariableValues::new_no_vars();
         let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "wire");
 
-        let mut ir_locals = IrVariables::default();
-        let mut ir_statements = vec![];
         let value = value
             .as_ref()
             .map(|value| {
                 let eval =
-                    state.eval_expression_as_ir(&mut ir_locals, &mut ir_statements, scope_body, &no_vars, value)?;
+                    state.eval_expression(scope_body, &no_vars, value)?;
                 Ok(Spanned {
                     span: value.span,
                     inner: eval,
@@ -735,13 +733,9 @@ impl BodyElaborationState<'_, '_> {
         let value = value?;
 
         if let Some(value) = &value {
-            let ty_spanned = Spanned {
-                span: ty_span,
-                inner: &ty.as_type(),
-            };
-
             // check type
-            let check_ty = check_type_contains_value(diags, decl.span, ty_spanned, value.as_ref(), true);
+            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: ty_span };
+            let check_ty = check_type_contains_value(diags, reason, &ty.as_type(), value.as_ref(), true);
 
             // check domain
             let value_domain = value.inner.domain();
@@ -779,6 +773,7 @@ impl BodyElaborationState<'_, '_> {
         });
 
         // build process
+        let mut ir_statements = vec![];
         let process = value
             .map(|value| {
                 let target = IrAssignmentTarget::Wire(ir_wire);
@@ -794,7 +789,7 @@ impl BodyElaborationState<'_, '_> {
 
                 let ir_statements = ir_statements.into_iter().try_collect()?;
                 let ir_process = IrCombinatorialProcess {
-                    locals: ir_locals,
+                    locals: IrVariables::default(),
                     block: IrBlock {
                         statements: ir_statements,
                     },
@@ -835,15 +830,12 @@ impl BodyElaborationState<'_, '_> {
 
         // check type
         let init = init.and_then(|init| {
-            let ty_spanned = Spanned {
-                span: ty_span,
-                inner: &ty.as_type(),
-            };
+            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: ty_span };
             let init_spanned = Spanned {
                 span: init_span,
                 inner: &init,
             };
-            check_type_contains_compile_value(diags, decl.span, ty_spanned, init_spanned, true)?;
+            check_type_contains_compile_value(diags, reason, &ty.as_type(), init_spanned, true)?;
             Ok(init)
         });
         let init = Spanned {
@@ -938,11 +930,8 @@ impl BodyElaborationState<'_, '_> {
 
         // check type
         let init = init.and_then(|init| {
-            let ty_spanned = Spanned {
-                span: port_info.ty.span,
-                inner: &port_info.ty.inner.as_type(),
-            };
-            check_type_contains_compile_value(diags, decl.span, ty_spanned, init.as_ref(), true)?;
+            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: port_info.ty.span };
+            check_type_contains_compile_value(diags, reason, &port_info.ty.inner.as_type(), init.as_ref(), true)?;
             Ok(init.inner)
         });
         let init = Spanned {

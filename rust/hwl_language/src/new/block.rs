@@ -1,8 +1,7 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::check::check_type_contains_value;
+use crate::new::check::{check_type_contains_value, TypeContainsReason};
 use crate::new::compile::{CompileState, Variable, VariableInfo};
-use crate::new::expression::ExpressionContext;
 use crate::new::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo, IrVariables,
 };
@@ -19,97 +18,6 @@ use crate::util::data::VecExt;
 use crate::util::result_pair;
 use indexmap::IndexMap;
 use itertools::Itertools;
-
-// TODO move
-// TODO create some common ir process builder
-// TODO remove lint waive
-#[allow(dead_code)]
-pub struct IrContext<'b> {
-    ir_locals: &'b mut IrVariables,
-    ir_statements: &'b mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
-}
-
-impl ExpressionContext for IrContext<'_> {
-    type T = TypedIrExpression;
-
-    // TODO reduce the duplication here, const and param will always be evaluated exactly like this, right?
-    fn eval_named(
-        &mut self,
-        s: &CompileState,
-        vars: &VariableValues,
-        span_use: Span,
-        _: Span,
-        named: NamedValue,
-    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
-        match named {
-            NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(s.constants[cst].value.clone())),
-            NamedValue::Parameter(param) => Ok(MaybeCompile::Compile(s.parameters[param].value.clone())),
-            NamedValue::Variable(v) => Ok(vars.get(s.diags, span_use, v)?.value.clone()),
-            NamedValue::Port(port) => {
-                let port_info = &s.ports[port];
-                let expr = TypedIrExpression {
-                    ty: port_info.ty.inner.clone(),
-                    domain: ValueDomain::from_port_domain(port_info.domain.inner.clone()),
-                    expr: IrExpression::Port(port_info.ir),
-                };
-                Ok(MaybeCompile::Other(expr))
-            }
-            NamedValue::Wire(wire) => {
-                let wire_info = &s.wires[wire];
-                let expr = TypedIrExpression {
-                    ty: wire_info.ty.inner.clone(),
-                    domain: ValueDomain::from_domain_kind(wire_info.domain.inner.clone()),
-                    expr: IrExpression::Wire(wire_info.ir),
-                };
-                Ok(MaybeCompile::Other(expr))
-            }
-            NamedValue::Register(reg) => {
-                let reg_info = &s.registers[reg];
-                let expr = TypedIrExpression {
-                    ty: reg_info.ty.inner.clone(),
-                    domain: ValueDomain::Sync(reg_info.domain.inner.clone()),
-                    expr: IrExpression::Register(reg_info.ir),
-                };
-                Ok(MaybeCompile::Other(expr))
-            }
-        }
-    }
-
-    fn value_from_compile(&mut self, s: &CompileState, span: Span, v: CompileValue) -> Result<Self::T, ErrorGuaranteed> {
-        let ty = v.ty();
-        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
-            s.diags.report_simple(
-                "value is not representable in hardware",
-                span,
-                format!("value `{}` with type `{}` not representable in hardware", v.to_diagnostic_string(), ty.to_diagnostic_string()),
-            )
-        })?;
-        let expr = v.to_ir_expression(s.diags, span)?;
-
-        Ok(TypedIrExpression {
-            ty: ty_hw,
-            domain: ValueDomain::CompileTime,
-            expr,
-        })
-    }
-
-    fn bool_not(
-        &mut self,
-        s: &CompileState,
-        span_use: Span,
-        v: TypedIrExpression,
-    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
-        match v.ty {
-            HardwareType::Clock | HardwareType::Bool => {}
-            _ => return Err(s.diags.report_internal_error(span_use, "unexpected type for bool_not")),
-        }
-        Ok(MaybeCompile::Other(TypedIrExpression {
-            ty: v.ty,
-            domain: v.domain,
-            expr: IrExpression::BoolNot(Box::new(v.expr)),
-        }))
-    }
-}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TypedIrExpression {
@@ -222,22 +130,6 @@ impl VariableValues {
 }
 
 impl CompileState<'_> {
-    // TODO move
-    pub fn eval_expression_as_ir(
-        &mut self,
-        ir_locals: &mut IrVariables,
-        ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
-        scope: Scope,
-        vars: &VariableValues,
-        value: &Expression,
-    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        let mut ctx = IrContext {
-            ir_locals,
-            ir_statements,
-        };
-        self.eval_expression(&mut ctx, scope, vars, value)
-    }
-
     pub fn elaborate_ir_block(
         &mut self,
         report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
@@ -283,7 +175,7 @@ impl CompileState<'_> {
                         .map(|init| {
                             let init_span = init.span;
                             let init_eval =
-                                self.eval_expression_as_ir(ir_locals, &mut ir_statements, scope, &vars, init)?;
+                                self.eval_expression(scope, &vars, init)?;
                             Ok(Spanned {
                                 span: init_span,
                                 inner: init_eval,
@@ -296,7 +188,11 @@ impl CompileState<'_> {
                         // check init fits in type
                         if let Some(ty) = &ty {
                             if let Some(init) = &init {
-                                check_type_contains_value(diags, stmt.span, ty.as_ref(), init.as_ref(), true)?;
+                                let reason = TypeContainsReason::Assignment {
+                                    span_assignment: stmt.span,
+                                    span_target_ty: ty.span,
+                                };
+                                check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true)?;
                             }
                         }
 
@@ -332,7 +228,6 @@ impl CompileState<'_> {
                         condition_domains,
                         diags,
                         scope,
-                        &mut ir_statements,
                         stmt,
                     );
 
@@ -433,7 +328,6 @@ impl CompileState<'_> {
         condition_domains: &mut Vec<Spanned<ValueDomain>>,
         diags: &Diagnostics,
         scope: Scope,
-        ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
         stmt: &Assignment,
     ) -> Result<Option<IrStatement>, ErrorGuaranteed> {
         let Assignment {
@@ -450,7 +344,7 @@ impl CompileState<'_> {
         }
 
         let target = self.eval_expression_as_assign_target(scope, target);
-        let value = self.eval_expression_as_ir(ir_locals, ir_statements, scope, vars, value);
+        let value = self.eval_expression(scope, vars, value);
 
         let target = target?;
         let value = value?;
@@ -487,11 +381,15 @@ impl CompileState<'_> {
 
                 // check type
                 if let Some(ty) = ty {
+                    let reason = TypeContainsReason::Assignment {
+                        span_assignment: stmt.span,
+                        span_target_ty: ty.span,
+                    };
                     let value_spanned = Spanned {
                         span: value_span,
                         inner: &value,
                     };
-                    check_type_contains_value(diags, stmt.span, ty.as_ref(), value_spanned, true)?;
+                    check_type_contains_value(diags, reason, &ty.inner, value_spanned, true)?;
                 }
 
                 // implement by-value semantics
@@ -528,12 +426,16 @@ impl CompileState<'_> {
         };
 
         // check type
-        let target_ty = target_ty.as_ref().map_inner(|ty| ty.as_type());
+        let reason = TypeContainsReason::Assignment {
+            span_assignment: stmt.span,
+            span_target_ty: target_ty.span,
+        };
+        let target_ty = target_ty.inner.as_type();
         let value_spanned = Spanned {
             span: value_span,
             inner: &value,
         };
-        let check_ty = check_type_contains_value(diags, stmt.span, target_ty.as_ref(), value_spanned, true);
+        let check_ty = check_type_contains_value(diags, reason, &target_ty, value_spanned, true);
 
         // convert to value
         let value_domain = value.domain();
@@ -637,18 +539,15 @@ impl CompileState<'_> {
             }
         };
 
-        let IfCondBlockPair { span: _, cond, block } = initial_if;
-        let cond_eval = self.eval_expression_as_ir(ir_locals, ir_statements, scope, &vars, cond)?;
+        let IfCondBlockPair { span: _, span_if, cond, block } = initial_if;
+        let cond_eval = self.eval_expression(scope, &vars, cond)?;
 
-        let ty_bool = Spanned {
-            span: cond.span,
-            inner: &Type::Bool,
-        };
+        let reason = TypeContainsReason::Operator(*span_if);
         let cond_eval_spanned = Spanned {
             span: cond.span,
             inner: &cond_eval,
         };
-        check_type_contains_value(diags, cond.span, ty_bool, cond_eval_spanned, false)?;
+        check_type_contains_value(diags, reason, &Type::Bool, cond_eval_spanned, false)?;
 
         match cond_eval {
             // evaluate the if at compile-time
@@ -741,6 +640,7 @@ impl CompileState<'_> {
 
                 let initial_if = IfCondBlockPair {
                     span: cond.span,
+                    span_if: *span_if,
                     cond: cond_eval.expr,
                     block: (then_ir, then_vars),
                 };
@@ -809,6 +709,7 @@ impl CompileState<'_> {
         for else_if in &else_ifs {
             let IfCondBlockPair {
                 span: _,
+                span_if: _,
                 cond: _,
                 block: (_else_if_block, else_if_vars),
             } = else_if;
@@ -870,6 +771,7 @@ impl CompileState<'_> {
                 for else_if in &mut else_ifs {
                     let IfCondBlockPair {
                         span: _,
+                        span_if: _,
                         cond: _,
                         block: (else_if_block, else_if_vars),
                     } = else_if;
@@ -916,6 +818,7 @@ impl CompileState<'_> {
         let stmt = IfStatement {
             initial_if: IfCondBlockPair {
                 span: initial_if.span,
+                span_if: initial_if.span_if,
                 cond: initial_if.cond,
                 block: initial_if_block,
             },
@@ -925,6 +828,7 @@ impl CompileState<'_> {
                     let (else_if_block, _else_if_vars) = else_if.block;
                     IfCondBlockPair {
                         span: else_if.span,
+                        span_if: else_if.span_if,
                         cond: else_if.cond,
                         block: else_if_block,
                     }

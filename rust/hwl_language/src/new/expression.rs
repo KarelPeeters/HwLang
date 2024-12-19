@@ -1,108 +1,22 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::VariableValues;
+use crate::new::block::{TypedIrExpression, VariableValues};
+use crate::new::check::{check_type_contains_value, TypeContainsReason};
 use crate::new::compile::{CompileState, ElaborationStackEntry};
+use crate::new::ir::IrExpression;
 use crate::new::misc::{DomainSignal, ScopedEntry};
 use crate::new::types::{HardwareType, IncRange, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,
-    UnaryOp,
+    DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
-use crate::util::{Never, ResultDoubleExt};
+use crate::util::ResultDoubleExt;
 use itertools::Itertools;
 use num_bigint::{BigInt, BigUint};
 use num_traits::ToPrimitive;
 use std::convert::identity;
-
-// TODO rethink this abstraction, and don't overcomplicate things
-//   (look at use cases of eval_expression, split it up if that's simpler)
-pub trait ExpressionContext {
-    type T;
-
-    fn eval_named(
-        &mut self,
-        s: &CompileState,
-        vars: &VariableValues,
-        span_use: Span,
-        span_def: Span,
-        named: NamedValue,
-    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
-
-    fn value_from_compile(&mut self, s: &CompileState, span: Span, v: CompileValue)
-                          -> Result<Self::T, ErrorGuaranteed>;
-
-    fn bool_not(
-        &mut self,
-        s: &CompileState,
-        span_use: Span,
-        inner: Self::T,
-    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed>;
-}
-
-pub struct CompileNamedContext<'s> {
-    pub reason: &'s str,
-}
-
-impl ExpressionContext for CompileNamedContext<'_> {
-    type T = Never;
-
-    fn eval_named(
-        &mut self,
-        s: &CompileState,
-        vars: &VariableValues,
-        span_use: Span,
-        span_def: Span,
-        named: NamedValue,
-    ) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
-        let build_err = |actual: &str| {
-            let diag = Diagnostic::new(format!("{} must be compile-time value", self.reason))
-                .add_error(span_use, format!("got `{}`", actual))
-                .add_info(span_def, "defined here")
-                .finish();
-            s.diags.report(diag)
-        };
-
-        match named {
-            NamedValue::Constant(c) => Ok(MaybeCompile::Compile(s.constants[c].value.clone())),
-            NamedValue::Parameter(p) => Ok(MaybeCompile::Compile(s.parameters[p].value.clone())),
-            NamedValue::Variable(v) => {
-                let assigned = vars.get(s.diags, span_use, v)?;
-                match &assigned.value {
-                    MaybeCompile::Compile(v) => Ok(MaybeCompile::Compile(v.clone())),
-                    MaybeCompile::Other(_) => {
-                        let diag = Diagnostic::new(format!("{} must be compile-time value", self.reason))
-                            .add_error(span_use, "got variable")
-                            .add_info(
-                                assigned.event.span(),
-                                "variable was assigned a non-compile-time value here",
-                            )
-                            .finish();
-                        Err(s.diags.report(diag))
-                    }
-                }
-            }
-            NamedValue::Port(_) => Err(build_err("port")),
-            NamedValue::Wire(_) => Err(build_err("wire")),
-            NamedValue::Register(_) => Err(build_err("register")),
-        }
-    }
-
-    fn value_from_compile(
-        &mut self,
-        s: &CompileState,
-        span: Span,
-        _: CompileValue,
-    ) -> Result<Self::T, ErrorGuaranteed> {
-        Err(s.diags.report_internal_error(span, "general compile values are not allowed in named context"))
-    }
-
-    fn bool_not(&mut self, s: &CompileState, span: Span, _: Self::T) -> Result<MaybeCompile<Self::T>, ErrorGuaranteed> {
-        Err(s.diags.report_internal_error(span, "general expressions are not allowed in named context"))
-    }
-}
 
 impl CompileState<'_> {
     pub fn eval_id(
@@ -122,29 +36,32 @@ impl CompileState<'_> {
         })
     }
 
-    // TODO better handling of scoped, in particular params and variables:
-    //   * params should always be converted to compile-time constants
-    //   * variables should be turned into compile-time constants or ir values depending on the context
-    //   * these need to happen early enough that followup expression can handle them (eg.
-    pub fn eval_expression<C: ExpressionContext>(
+    // TODO return COW to save some allocations?
+    pub fn eval_expression(
         &mut self,
-        ctx: &mut C,
         scope: Scope,
         vars: &VariableValues,
         expr: &Expression,
-    ) -> Result<MaybeCompile<C::T>, ErrorGuaranteed> {
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let diags = self.diags;
 
         match &expr.inner {
             ExpressionKind::Dummy => Err(diags.report_todo(expr.span, "expr kind Dummy")),
             ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
             ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
-            ExpressionKind::Wrapped(inner) => self.eval_expression(ctx, scope, vars, inner),
+            ExpressionKind::Wrapped(inner) => self.eval_expression(scope, vars, inner),
             ExpressionKind::Id(id) => {
                 let eval = self.eval_id(scope, id)?;
                 match eval.inner {
                     MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(c)),
-                    MaybeCompile::Other(value) => ctx.eval_named(self, vars, expr.span, eval.span, value),
+                    MaybeCompile::Other(value) => match value {
+                        NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
+                        NamedValue::Parameter(param) => Ok(MaybeCompile::Compile(self.parameters[param].value.clone())),
+                        NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
+                        NamedValue::Port(port) => Ok(MaybeCompile::Other(self.ports[port].typed_ir_expr())),
+                        NamedValue::Wire(wire) => Ok(MaybeCompile::Other(self.wires[wire].typed_ir_expr())),
+                        NamedValue::Register(reg) => Ok(MaybeCompile::Other(self.registers[reg].typed_ir_expr())),
+                    },
                 }
             }
             ExpressionKind::TypeFunc(_, _) => Err(diags.report_todo(expr.span, "expr kind TypeFunc")),
@@ -227,35 +144,46 @@ impl CompileState<'_> {
                 let range = IncRange { start_inc, end_inc };
                 Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
             }
-            ExpressionKind::UnaryOp(op, inner) => {
-                match op {
-                    UnaryOp::Neg => Err(diags.report_todo(expr.span, "expr kind UnaryOp Neg")),
-                    UnaryOp::Not => {
-                        let inner = self.eval_expression(ctx, scope, vars, inner)?;
+            ExpressionKind::UnaryOp(op, inner) => match op.inner {
+                UnaryOp::Neg => Err(diags.report_todo(expr.span, "expr kind UnaryOp Neg")),
+                UnaryOp::Not => {
+                    let inner_eval = self.eval_expression(scope, vars, inner)?;
 
-                        // TODO unified type checking for this MaybeCompile thing, see all usages of check_type_contains_compile_value
-                        match inner {
-                            MaybeCompile::Compile(c) => match c {
-                                CompileValue::Bool(b) => Ok(MaybeCompile::Compile(CompileValue::Bool(!b))),
-                                _ => {
-                                    Err(diags.report_simple(
-                                        "unary not operator expected boolean",
-                                        expr.span,
-                                        format!("got value `{}`", c.to_diagnostic_string()),
-                                    ))
-                                }
-                            },
-                            MaybeCompile::Other(v) => ctx.bool_not(self, expr.span, v),
+                    let inner_spanned = Spanned {
+                        span: inner.span,
+                        inner: &inner_eval,
+                    };
+                    check_type_contains_value(
+                        diags,
+                        TypeContainsReason::Operator(op.span),
+                        &Type::Bool,
+                        inner_spanned,
+                        false,
+                    )?;
+
+                    match inner_eval {
+                        MaybeCompile::Compile(c) => match c {
+                            CompileValue::Bool(b) => Ok(MaybeCompile::Compile(CompileValue::Bool(!b))),
+                            _ => Err(diags.report_internal_error(expr.span, "expected bool for unary not")),
+                        },
+                        MaybeCompile::Other(v) => {
+                            let result = TypedIrExpression {
+                                ty: HardwareType::Bool,
+                                domain: v.domain,
+                                expr: IrExpression::BoolNot(Box::new(v.expr)),
+                            };
+                            Ok(MaybeCompile::Other(result))
                         }
                     }
                 }
-            }
+            },
             ExpressionKind::BinaryOp(_, _, _) => Err(diags.report_todo(expr.span, "expr kind BinaryOp")),
             ExpressionKind::TernarySelect(_, _, _) => Err(diags.report_todo(expr.span, "expr kind TernarySelect")),
             ExpressionKind::ArrayIndex(base, args) => {
                 // eval base and args
-                let base = self.eval_expression(ctx, scope, vars, base);
-                let args = args.map_inner(|a| self.eval_expression(ctx, scope, vars, a));
+                let base_span = base.span;
+                let base = self.eval_expression(scope, vars, base);
+                let args = args.map_inner(|a| self.eval_expression(scope, vars, a));
 
                 let base = base?;
                 let args = args.try_map_inner(identity)?;
@@ -279,15 +207,13 @@ impl CompileState<'_> {
                                 // declare new array type
                                 CompileValue::Type(base) => {
                                     let dim_len = match index {
-                                        CompileValue::Int(dim_len) => {
-                                            BigUint::try_from(dim_len).map_err(|e| {
-                                                diags.report_simple(
-                                                    "array dimension length cannot be negative",
-                                                    arg.span,
-                                                    format!("got value `{}`", e.into_original()),
-                                                )
-                                            })?
-                                        }
+                                        CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
+                                            diags.report_simple(
+                                                "array dimension length cannot be negative",
+                                                arg.span,
+                                                format!("got value `{}`", e.into_original()),
+                                            )
+                                        })?,
                                         _ => {
                                             return Err(diags.report_simple(
                                                 "array dimension length must be an integer",
@@ -339,7 +265,10 @@ impl CompileState<'_> {
                                             let end = check_valid(&range.end_inc, base.len())?;
 
                                             if start > end {
-                                                return Err(diags.report_internal_error(arg.span, format!("invalid decreasing range `{range:?}`")));
+                                                return Err(diags.report_internal_error(
+                                                    arg.span,
+                                                    format!("invalid decreasing range `{range:?}`"),
+                                                ));
                                             }
 
                                             // TODO avoid clone, both of this slice and of the entire array?
@@ -351,7 +280,7 @@ impl CompileState<'_> {
                                                 arg.span,
                                                 format!("got value `{}`", index.to_diagnostic_string()),
                                             ));
-                                        },
+                                        }
                                     }
                                 }
                                 _ => {
@@ -364,17 +293,11 @@ impl CompileState<'_> {
                             }
                         }
                         (base, index) => {
-                            let base = match base {
-                                MaybeCompile::Compile(base) => ctx.value_from_compile(self, arg.span, base)?,
-                                MaybeCompile::Other(base) => base,
-                            };
-                            let index = match index {
-                                MaybeCompile::Compile(index) => ctx.value_from_compile(self, arg.span, index)?,
-                                MaybeCompile::Other(index) => index,
-                            };
+                            let base = base.to_ir_expression(diags, base_span)?;
+                            let index = index.to_ir_expression(diags, arg.span)?;
 
                             let _ = (base, index);
-                            return Err(diags.report_todo(arg.span, "runtime array indexing"));
+                            return Err(diags.report_todo(arg.span, "runtime array indexing/slicing"));
                         }
                     }
                 }
@@ -460,10 +383,13 @@ impl CompileState<'_> {
         expr: &Expression,
         reason: &str,
     ) -> Result<CompileValue, ErrorGuaranteed> {
-        let mut ctx = CompileNamedContext { reason };
-        match self.eval_expression(&mut ctx, scope, vars, expr)? {
+        match self.eval_expression(scope, vars, expr)? {
             MaybeCompile::Compile(c) => Ok(c),
-            MaybeCompile::Other(never) => never.unreachable(),
+            MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
+                format!("{reason} must be a compile-time value"),
+                expr.span,
+                format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
+            )),
         }
     }
 
@@ -554,7 +480,13 @@ impl CompileState<'_> {
         };
 
         match &expr.inner {
-            ExpressionKind::UnaryOp(UnaryOp::Not, inner) => {
+            ExpressionKind::UnaryOp(
+                Spanned {
+                    span: _,
+                    inner: UnaryOp::Not,
+                },
+                inner,
+            ) => {
                 let inner = self.eval_expression_as_domain_signal(scope, inner)?;
                 Ok(DomainSignal::BoolNot(Box::new(inner)))
             }

@@ -1,4 +1,4 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ValueDomain};
@@ -93,10 +93,38 @@ impl CompileState<'_> {
     }
 }
 
+pub enum TypeContainsReason {
+    Assignment {
+        span_assignment: Span,
+        span_target_ty: Span,
+    },
+    Operator(Span),
+}
+
+impl TypeContainsReason {
+    pub fn add_diag_info(self, diag: DiagnosticBuilder, target_ty: &Type) -> DiagnosticBuilder {
+        match self {
+            TypeContainsReason::Assignment {
+                span_assignment,
+                span_target_ty,
+            } => diag
+                .add_info(span_assignment, "assignment requires type match")
+                .add_info(
+                    span_target_ty,
+                    format!("target type `{}` set here", target_ty.to_diagnostic_string()),
+                ),
+            TypeContainsReason::Operator(span) => diag.add_info(
+                span,
+                format!("operator requires type `{}`", target_ty.to_diagnostic_string()),
+            ),
+        }
+    }
+}
+
 pub fn check_type_contains_value(
     diags: &Diagnostics,
-    assignment_span: Span,
-    target_ty: Spanned<&Type>,
+    reason: TypeContainsReason,
+    target_ty: &Type,
     value: Spanned<&MaybeCompile<TypedIrExpression>>,
     accept_undefined: bool,
 ) -> Result<(), ErrorGuaranteed> {
@@ -106,65 +134,52 @@ pub fn check_type_contains_value(
                 span: value.span,
                 inner: value_inner,
             };
-            check_type_contains_compile_value(diags, assignment_span, target_ty, value, accept_undefined)
+            check_type_contains_compile_value(diags, reason, target_ty, value, accept_undefined)
         }
         MaybeCompile::Other(value_inner) => {
-            let ty = Spanned {
-                span: value.span,
-                inner: &value_inner.ty.as_type(),
-            };
-            check_type_contains_type(diags, assignment_span, target_ty, ty)
+            let value_ty = value_inner.ty.as_type();
+            if target_ty.contains_type(&value_ty) {
+                Ok(())
+            } else {
+                let mut diag = Diagnostic::new("type does not fit in type");
+                diag = reason.add_diag_info(diag, target_ty);
+                let diag = diag
+                    .add_error(
+                        value.span,
+                        format!(
+                            "source value with type `{}` does not fit",
+                            value_ty.to_diagnostic_string()
+                        ),
+                    )
+                    .finish();
+                Err(diags.report(diag))
+            }
         }
     }
 }
 
 pub fn check_type_contains_compile_value(
     diags: &Diagnostics,
-    assignment_span: Span,
-    target_ty: Spanned<&Type>,
+    reason: TypeContainsReason,
+    target_ty: &Type,
     value: Spanned<&CompileValue>,
     accept_undefined: bool,
 ) -> Result<(), ErrorGuaranteed> {
-    let ty_contains_value = target_ty.inner.contains_type(&value.inner.ty());
-    let value_is_undefined = matches!(value.inner, CompileValue::Undefined);
+    let ty_contains_value = target_ty.contains_type(&value.inner.ty());
+    let value_is_undefined = value.inner.contains_undefined();
 
     if ty_contains_value && (accept_undefined || !value_is_undefined) {
         Ok(())
     } else {
-        let diag = Diagnostic::new("value does not fit in type")
-            .add_error(assignment_span, "invalid assignment here")
-            .add_info(
-                target_ty.span,
-                format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()),
-            )
-            .add_info(
+        let mut diag = Diagnostic::new("value does not fit in type");
+        diag = reason.add_diag_info(diag, target_ty);
+        let diag = diag
+            .add_error(
                 value.span,
-                format!("source value `{}` defined here", value.inner.to_diagnostic_string()),
-            )
-            .finish();
-        Err(diags.report(diag))
-    }
-}
-
-pub fn check_type_contains_type(
-    diags: &Diagnostics,
-    assignment_span: Span,
-    target_ty: Spanned<&Type>,
-    source_ty: Spanned<&Type>,
-) -> Result<(), ErrorGuaranteed> {
-    if target_ty.inner.contains_type(&source_ty.inner) {
-        Ok(())
-    } else {
-        // TODO unify diagnostics? right now this one refers to types, even though it can also highlight values
-        let diag = Diagnostic::new("type does not fit in type")
-            .add_error(assignment_span, "invalid assignment here")
-            .add_info(
-                target_ty.span,
-                format!("target type `{}` defined here", target_ty.inner.to_diagnostic_string()),
-            )
-            .add_info(
-                source_ty.span,
-                format!("source type `{}` defined here", source_ty.inner.to_diagnostic_string()),
+                format!(
+                    "source value `{}` here does not fit",
+                    value.inner.to_diagnostic_string()
+                ),
             )
             .finish();
         Err(diags.report(diag))

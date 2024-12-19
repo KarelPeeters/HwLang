@@ -1,6 +1,6 @@
 use crate::syntax::pos::Span;
+use crate::syntax::token::TokenType;
 use itertools::Itertools;
-
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
 #[derive(Debug, Clone)]
@@ -283,6 +283,7 @@ pub struct IfStatement<C, B, E> {
 #[derive(Debug, Clone)]
 pub struct IfCondBlockPair<C, B> {
     pub span: Span,
+    pub span_if: Span,
     pub cond: C,
     pub block: B,
 }
@@ -408,8 +409,8 @@ pub enum ExpressionKind {
     RangeLiteral(RangeLiteral),
 
     // Operations
-    UnaryOp(UnaryOp, Box<Expression>),
-    BinaryOp(BinaryOp, Box<Expression>, Box<Expression>),
+    UnaryOp(Spanned<UnaryOp>, Box<Expression>),
+    BinaryOp(Spanned<BinaryOp>, Box<Expression>, Box<Expression>),
     TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
@@ -533,8 +534,20 @@ pub struct Identifier {
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
-    ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right))
+pub fn build_binary_op(
+    op_span: Spanned<TokenType<&str>>,
+    op: BinaryOp,
+    left: Expression,
+    right: Expression,
+) -> ExpressionKind {
+    ExpressionKind::BinaryOp(
+        Spanned {
+            span: op_span.span,
+            inner: op,
+        },
+        Box::new(left),
+        Box::new(right),
+    )
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

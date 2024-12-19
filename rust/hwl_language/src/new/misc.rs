@@ -61,6 +61,15 @@ impl ValueDomain {
             PortDomain::Kind(kind) => ValueDomain::from_domain_kind(kind),
         }
     }
+
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        match self {
+            ValueDomain::CompileTime => "compile-time".to_owned(),
+            ValueDomain::Clock => "clock".to_owned(),
+            ValueDomain::Async => "async".to_owned(),
+            ValueDomain::Sync(sync) => sync.to_diagnostic_string(s),
+        }
+    }
 }
 
 impl DomainSignal {

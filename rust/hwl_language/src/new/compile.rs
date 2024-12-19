@@ -2,8 +2,9 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::data::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
-use crate::new::ir::{IrDatabase, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
-use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry};
+use crate::new::block::TypedIrExpression;
+use crate::new::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
+use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
@@ -221,6 +222,36 @@ pub struct RegisterInfo {
     pub domain: Spanned<SyncDomain<DomainSignal>>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrRegister,
+}
+
+impl PortInfo {
+    pub fn typed_ir_expr(&self) -> TypedIrExpression {
+        TypedIrExpression {
+            ty: self.ty.inner.clone(),
+            domain: ValueDomain::from_port_domain(self.domain.inner.clone()),
+            expr: IrExpression::Port(self.ir),
+        }
+    }
+}
+
+impl WireInfo {
+    pub fn typed_ir_expr(&self) -> TypedIrExpression {
+        TypedIrExpression {
+            ty: self.ty.inner.clone(),
+            domain: ValueDomain::from_domain_kind(self.domain.inner.clone()),
+            expr: IrExpression::Wire(self.ir),
+        }
+    }
+}
+
+impl RegisterInfo {
+    pub fn typed_ir_expr(&self) -> TypedIrExpression {
+        TypedIrExpression {
+            ty: self.ty.inner.clone(),
+            domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner.clone())),
+            expr: IrExpression::Register(self.ir),
+        }
+    }
 }
 
 fn add_import_to_scope(

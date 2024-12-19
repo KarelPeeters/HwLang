@@ -79,6 +79,20 @@ impl CompileValue {
         }
     }
 
+    pub fn contains_undefined(&self) -> bool {
+        match self {
+            CompileValue::Undefined => true,
+            CompileValue::Array(values) => values.iter().any(|v| v.contains_undefined()),
+            CompileValue::Type(_)
+            | CompileValue::Bool(_)
+            | CompileValue::Int(_)
+            | CompileValue::String(_)
+            | CompileValue::IntRange(_)
+            | CompileValue::Module(_)
+            | CompileValue::Function(_) => false,
+        }
+    }
+
     pub fn as_hardware_value(&self) -> HardwareValueResult {
         match self {
             CompileValue::Undefined => HardwareValueResult::Undefined,
@@ -127,16 +141,14 @@ impl CompileValue {
     pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
         match self.as_hardware_value() {
             HardwareValueResult::Success(v) => Ok(v),
-            HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags
-                .report_simple(
-                    "undefined can only be used for register initialization",
-                    span,
-                    "value is undefined",
-                )),
+            HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags.report_simple(
+                "undefined can only be used for register initialization",
+                span,
+                "value is undefined",
+            )),
             HardwareValueResult::Unrepresentable => {
                 // TODO fix this duplication
-                let reason =
-                    "compile time value fits in hardware type but is not convertible to hardware value";
+                let reason = "compile time value fits in hardware type but is not convertible to hardware value";
                 Err(diags.report_internal_error(span, reason))
             }
         }
