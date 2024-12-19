@@ -157,7 +157,7 @@ impl FunctionValue {
                 // TODO add execution limits?
                 match &self.body {
                     FunctionBody::Type(expr) => {
-                        state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")
+                        Ok(state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")?.inner)
                     }
                 }
             })

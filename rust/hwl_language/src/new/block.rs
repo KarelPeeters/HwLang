@@ -163,24 +163,11 @@ impl CompileState<'_> {
 
                     let ty = ty
                         .as_ref()
-                        .map(|ty| {
-                            Ok(Spanned {
-                                span: ty.span,
-                                inner: self.eval_expression_as_ty(scope, &vars, ty)?,
-                            })
-                        })
+                        .map(|ty| self.eval_expression_as_ty(scope, &vars, ty))
                         .transpose();
                     let init = init
                         .as_ref()
-                        .map(|init| {
-                            let init_span = init.span;
-                            let init_eval =
-                                self.eval_expression(scope, &vars, init)?;
-                            Ok(Spanned {
-                                span: init_span,
-                                inner: init_eval,
-                            })
-                        })
+                        .map(|init| self.eval_expression(scope, &vars, init))
                         .transpose();
 
                     // check init fits in type
@@ -336,9 +323,6 @@ impl CompileState<'_> {
             target,
             value,
         } = stmt;
-        let target_span = target.span;
-        let value_span = value.span;
-
         if op.inner.is_some() {
             throw!(diags.report_todo(stmt.span, "compound assignment"));
         }
@@ -351,7 +335,7 @@ impl CompileState<'_> {
 
         let condition_domains = &*condition_domains;
 
-        let (target_ty, target_domain, ir_target) = match target {
+        let (target_ty, target_domain, ir_target) = match target.inner {
             AssignmentTarget::Port(port) => {
                 let info = &self.ports[port];
                 let domain = ValueDomain::from_port_domain(info.domain.inner.clone());
@@ -373,7 +357,7 @@ impl CompileState<'_> {
                 // check mutable
                 if !*mutable {
                     let diag = Diagnostic::new("assignment to immutable variable")
-                        .add_error(target_span, "variable assigned to here")
+                        .add_error(target.span, "variable assigned to here")
                         .add_info(id.span(), "variable declared as immutable here")
                         .finish();
                     return Err(diags.report(diag));
@@ -385,15 +369,11 @@ impl CompileState<'_> {
                         span_assignment: stmt.span,
                         span_target_ty: ty.span,
                     };
-                    let value_spanned = Spanned {
-                        span: value_span,
-                        inner: &value,
-                    };
-                    check_type_contains_value(diags, reason, &ty.inner, value_spanned, true)?;
+                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true)?;
                 }
 
                 // implement by-value semantics
-                let (ir_statement, stored_value) = match value {
+                let (ir_statement, stored_value) = match value.inner {
                     MaybeCompile::Compile(value) => (None, MaybeCompile::Compile(value)),
                     MaybeCompile::Other(value) => {
                         // store value to an ir variable, to turn this assignment into "by value"
@@ -419,7 +399,7 @@ impl CompileState<'_> {
                     event: AssignmentEvent::SimpleAssignment(stmt.span),
                     value: stored_value,
                 };
-                vars.set(diags, target_span, var, MaybeAssignedValue::Assigned(assigned))?;
+                vars.set(diags, target.span, var, MaybeAssignedValue::Assigned(assigned))?;
 
                 return Ok(ir_statement);
             }
@@ -431,24 +411,20 @@ impl CompileState<'_> {
             span_target_ty: target_ty.span,
         };
         let target_ty = target_ty.inner.as_type();
-        let value_spanned = Spanned {
-            span: value_span,
-            inner: &value,
-        };
-        let check_ty = check_type_contains_value(diags, reason, &target_ty, value_spanned, true);
+        let check_ty = check_type_contains_value(diags, reason, &target_ty, value.as_ref(), true);
 
         // convert to value
-        let value_domain = value.domain();
-        let ir_value = value.to_ir_expression(diags, value_span);
+        let value_domain = value.inner.domain();
+        let ir_value = value.inner.to_ir_expression(diags, value.span);
 
         // check domains
         // TODO better error messages with more explanation
         let target_domain = Spanned {
-            span: target_span,
+            span: target.span,
             inner: &target_domain,
         };
         let value_domain = Spanned {
-            span: value_span,
+            span: value.span,
             inner: value_domain,
         };
 
@@ -497,10 +473,7 @@ impl CompileState<'_> {
         check_domains?;
         check_ty?;
 
-        report_assignment(Spanned {
-            span: target_span,
-            inner: &target,
-        })?;
+        report_assignment(target.as_ref())?;
         Ok(Some(IrStatement::Assign(ir_target, ir_value)))
     }
 
@@ -539,17 +512,18 @@ impl CompileState<'_> {
             }
         };
 
-        let IfCondBlockPair { span: _, span_if, cond, block } = initial_if;
-        let cond_eval = self.eval_expression(scope, &vars, cond)?;
+        let IfCondBlockPair {
+            span: _,
+            span_if,
+            cond,
+            block,
+        } = initial_if;
+        let cond = self.eval_expression(scope, &vars, cond)?;
 
         let reason = TypeContainsReason::Operator(*span_if);
-        let cond_eval_spanned = Spanned {
-            span: cond.span,
-            inner: &cond_eval,
-        };
-        check_type_contains_value(diags, reason, &Type::Bool, cond_eval_spanned, false)?;
+        check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
 
-        match cond_eval {
+        match cond.inner {
             // evaluate the if at compile-time
             MaybeCompile::Compile(cond_eval) => {
                 let cond_eval = match cond_eval {

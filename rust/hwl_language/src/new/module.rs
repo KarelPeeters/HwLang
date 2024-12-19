@@ -41,7 +41,7 @@ struct BodyElaborationState<'a, 'b> {
     ir_registers: Arena<IrRegister, IrRegisterInfo>,
     drivers: Drivers,
 
-    register_initial_values: IndexMap<Register, Spanned<Result<CompileValue, ErrorGuaranteed>>>,
+    register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     port_register_connections: IndexMap<Port, Register>,
 
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
@@ -94,7 +94,7 @@ impl CompileState<'_> {
                     let param_ty = self.eval_expression_as_ty(params_scope, &no_vars, &param.ty);
 
                     let entry = param_ty.and_then(|param_ty| {
-                        if param_ty.contains_type(&arg.ty()) {
+                        if param_ty.inner.contains_type(&arg.ty()) {
                             let param = self.parameters.push(ConstantInfo {
                                 id: MaybeIdentifier::Identifier(param.id.clone()),
                                 value: arg.clone(),
@@ -105,7 +105,7 @@ impl CompileState<'_> {
                                 param.ty.span,
                                 format!(
                                     "invalid generic argument: type `{}` does not contain value `{}`",
-                                    param_ty.to_diagnostic_string(),
+                                    param_ty.inner.to_diagnostic_string(),
                                     arg.to_diagnostic_string()
                                 ),
                             );
@@ -161,15 +161,9 @@ impl CompileState<'_> {
                         PortKind::Normal { domain, ty } => {
                             let no_vars = VariableValues::new_no_vars();
                             (
-                                self.eval_domain(ports_scope, &domain.inner).map(|d| Spanned {
-                                    span: domain.span,
-                                    inner: PortDomain::Kind(d),
-                                }),
-                                self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port")
-                                    .map(|t| Spanned {
-                                        span: ty.span,
-                                        inner: t,
-                                    }),
+                                self.eval_domain(ports_scope, &domain)
+                                    .map(|d| d.map_inner(|d| PortDomain::Kind(d))),
+                                self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port"),
                             )
                         }
                     };
@@ -200,10 +194,9 @@ impl CompileState<'_> {
                     let ModulePortBlock { span: _, domain, ports } = port_item;
 
                     // eval domain
-                    let domain = self.eval_domain(ports_scope, &domain.inner).map(|d| Spanned {
-                        span: domain.span,
-                        inner: PortDomain::Kind(d),
-                    });
+                    let domain = self
+                        .eval_domain(ports_scope, &domain)
+                        .map(|d| d.map_inner(|d| PortDomain::Kind(d)));
 
                     for port in ports {
                         let ModulePortInBlock {
@@ -215,12 +208,7 @@ impl CompileState<'_> {
 
                         // eval ty
                         let no_vars = VariableValues::new_no_vars();
-                        let ty = self
-                            .eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port")
-                            .map(|t| Spanned {
-                                span: ty.span,
-                                inner: t,
-                            });
+                        let ty = self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port");
 
                         // build entry
                         let entry = result_pair(domain.as_ref_ok(), ty).and_then(|(domain, ty)| {
@@ -568,28 +556,27 @@ impl BodyElaborationState<'_, '_> {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
                 if let IrProcess::Clocked(process) = &mut self.processes[process_index].as_ref_mut_ok()?.inner {
                     if let Some(init) = self.register_initial_values.get(&reg) {
-                        let init_span = init.span;
-                        let init = init.inner.as_ref_ok()?;
+                        let init = init.as_ref_ok()?;
 
                         // TODO fix duplication with lowering in block
-                        let init_ir = match init.as_hardware_value() {
+                        let init_ir = match init.inner.as_hardware_value() {
                             HardwareValueResult::Success(v) => Some(v),
                             HardwareValueResult::Undefined => None,
                             HardwareValueResult::PartiallyUndefined => {
-                                return Err(diags.report_todo(init_span, "partially undefined register reset value"))
+                                return Err(diags.report_todo(init.span, "partially undefined register reset value"))
                             }
                             HardwareValueResult::Unrepresentable => {
                                 // TODO fix this duplication
                                 let reason =
                                     "compile time value fits in hardware type but is not convertible to hardware value";
-                                return Err(diags.report_internal_error(init_span, reason));
+                                return Err(diags.report_internal_error(init.span, reason));
                             }
                         };
 
                         if let Some(init_ir) = init_ir {
                             let stmt = IrStatement::Assign(IrAssignmentTarget::Register(reg_info.ir), init_ir);
                             process.on_reset.statements.push(Spanned {
-                                span: init_span,
+                                span: init.span,
                                 inner: stmt,
                             });
                         }
@@ -705,27 +692,16 @@ impl BodyElaborationState<'_, '_> {
             ty,
             value,
         } = decl;
-        let ty_span = ty.span;
 
         // evaluate
         // TODO allow clock wires
-        let domain = sync
-            .as_ref()
-            .map_inner(|sync| state.eval_domain(scope_body, sync))
-            .transpose();
+        let domain = state.eval_domain(scope_body, sync);
         let no_vars = VariableValues::new_no_vars();
         let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "wire");
 
         let value = value
             .as_ref()
-            .map(|value| {
-                let eval =
-                    state.eval_expression(scope_body, &no_vars, value)?;
-                Ok(Spanned {
-                    span: value.span,
-                    inner: eval,
-                })
-            })
+            .map(|value| state.eval_expression(scope_body, &no_vars, value))
             .transpose();
 
         let domain = domain?;
@@ -734,8 +710,11 @@ impl BodyElaborationState<'_, '_> {
 
         if let Some(value) = &value {
             // check type
-            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: ty_span };
-            let check_ty = check_type_contains_value(diags, reason, &ty.as_type(), value.as_ref(), true);
+            let reason = TypeContainsReason::Assignment {
+                span_assignment: decl.span,
+                span_target_ty: ty.span,
+            };
+            let check_ty = check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref(), true);
 
             // check domain
             let value_domain = value.inner.domain();
@@ -757,18 +736,15 @@ impl BodyElaborationState<'_, '_> {
 
         // build wire
         let ir_wire = self.ir_wires.push(IrWireInfo {
-            ty: ty.to_ir(),
+            ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
-            debug_info_ty: ty.clone(),
+            debug_info_ty: ty.inner.clone(),
             debug_info_domain: domain.inner.to_diagnostic_string(state),
         });
         let wire = state.wires.push(WireInfo {
             id: id.clone(),
             domain,
-            ty: Spanned {
-                span: ty_span,
-                inner: ty,
-            },
+            ty,
             ir: ir_wire,
         });
 
@@ -815,13 +791,13 @@ impl BodyElaborationState<'_, '_> {
             ty,
             init,
         } = decl;
-        let sync_span = sync.span;
-        let ty_span = ty.span;
-        let init_span = init.span;
 
         // evaluate
         let no_vars = VariableValues::new_no_vars();
-        let sync = state.eval_domain_sync(scope_body, &sync.inner);
+        let sync = sync
+            .as_ref()
+            .map_inner(|sync| state.eval_domain_sync(scope_body, sync))
+            .transpose();
         let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "register");
         let init = state.eval_expression_as_compile(scope_body, &no_vars, init.as_ref(), "register reset value");
 
@@ -830,39 +806,31 @@ impl BodyElaborationState<'_, '_> {
 
         // check type
         let init = init.and_then(|init| {
-            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: ty_span };
-            let init_spanned = Spanned {
-                span: init_span,
-                inner: &init,
+            let reason = TypeContainsReason::Assignment {
+                span_assignment: decl.span,
+                span_target_ty: ty.span,
             };
-            check_type_contains_compile_value(diags, reason, &ty.as_type(), init_spanned, true)?;
+            check_type_contains_compile_value(diags, reason, &ty.inner.as_type(), init.as_ref(), true)?;
             Ok(init)
         });
-        let init = Spanned {
-            span: init_span,
-            inner: init,
-        };
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            ty: ty.to_ir(),
+            ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
-            debug_info_ty: ty.clone(),
-            debug_info_domain: sync.to_diagnostic_string(state),
+            debug_info_ty: ty.inner.clone(),
+            debug_info_domain: sync.inner.to_diagnostic_string(state),
         });
         let reg = state.registers.push(RegisterInfo {
             id: id.clone(),
-            domain: Spanned {
-                span: sync_span,
-                inner: sync,
-            },
-            ty: Spanned {
-                span: ty_span,
-                inner: ty,
-            },
+            domain: sync,
+            ty,
             ir: ir_reg,
         });
-        Ok(RegisterInit { reg, init })
+        Ok(RegisterInit {
+            reg,
+            init,
+        })
     }
 
     fn elaborate_module_declaration_reg_out_port(
@@ -875,7 +843,6 @@ impl BodyElaborationState<'_, '_> {
         let scope_ports = self.scope_ports;
 
         let RegOutPortMarker { span: _, id, init } = decl;
-        let init_span = init.span;
 
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
         let port = state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
@@ -884,13 +851,11 @@ impl BodyElaborationState<'_, '_> {
             _ => Err(diags.report_internal_error(id.span, "found non-port in port scope")),
         };
 
+        // evaluate init
         let no_vars = VariableValues::new_no_vars();
-        let init = state
-            .eval_expression_as_compile(scope_body, &no_vars, init, "register reset value")
-            .map(|i| Spanned {
-                span: init.span,
-                inner: i,
-            });
+        let init = state.eval_expression_as_compile(scope_body, &no_vars, init, "register reset value");
+
+        let init = init;
         let port = port?;
 
         let port_info = &state.ports[port];
@@ -930,14 +895,13 @@ impl BodyElaborationState<'_, '_> {
 
         // check type
         let init = init.and_then(|init| {
-            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: port_info.ty.span };
+            let reason = TypeContainsReason::Assignment {
+                span_assignment: decl.span,
+                span_target_ty: port_info.ty.span,
+            };
             check_type_contains_compile_value(diags, reason, &port_info.ty.inner.as_type(), init.as_ref(), true)?;
-            Ok(init.inner)
+            Ok(init)
         });
-        let init = Spanned {
-            span: init_span,
-            inner: init,
-        };
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
@@ -962,7 +926,7 @@ impl BodyElaborationState<'_, '_> {
 #[derive(Debug)]
 struct RegisterInit {
     reg: Register,
-    init: Spanned<Result<CompileValue, ErrorGuaranteed>>,
+    init: Result<Spanned<CompileValue>, ErrorGuaranteed>,
 }
 
 /// The usize fields are here to keep different drivers of the same type separate for Eq and Hash,

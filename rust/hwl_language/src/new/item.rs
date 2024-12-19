@@ -7,7 +7,7 @@ use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry, Mod
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::misc::ScopedEntry;
 use crate::new::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType, Spanned};
+use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
@@ -39,28 +39,23 @@ impl CompileState<'_> {
 
         let ty = ty
             .as_ref()
-            .map(|ty| {
-                Ok(Spanned {
-                    span: ty.span,
-                    inner: self.eval_expression_as_ty(scope, &vars, ty)?,
-                })
-            })
+            .map(|ty| self.eval_expression_as_ty(scope, &vars, ty))
             .transpose();
+        let value = self.eval_expression_as_compile(scope, &vars, value, "const value");
 
-        let value_eval = self.eval_expression_as_compile(scope, &vars, value, "const value")?;
         let ty = ty?;
+        let value = value?;
 
         // check type
         if let Some(ty) = ty {
-            let reason = TypeContainsReason::Assignment { span_assignment: decl.span, span_target_ty: ty.span };
-            let value_eval_spanned = Spanned {
-                span: value.span,
-                inner: &value_eval,
+            let reason = TypeContainsReason::Assignment {
+                span_assignment: decl.span,
+                span_target_ty: ty.span,
             };
-            check_type_contains_compile_value(self.diags, reason, &ty.inner, value_eval_spanned, true)?;
+            check_type_contains_compile_value(self.diags, reason, &ty.inner, value.as_ref(), true)?;
         };
 
-        Ok(value_eval)
+        Ok(value.inner)
     }
 
     pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
@@ -97,7 +92,7 @@ impl CompileState<'_> {
                     None => {
                         let vars = VariableValues::new_no_vars();
                         let ty = self.eval_expression_as_ty(file_scope, &vars, inner)?;
-                        Ok(CompileValue::Type(ty))
+                        Ok(CompileValue::Type(ty.inner))
                     }
                     Some(params) => {
                         let func = FunctionValue {
