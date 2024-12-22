@@ -7,10 +7,10 @@ use crate::new::compile::{
     WireInfo,
 };
 use crate::new::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleInfo, IrPort,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrModuleInfo, IrPort,
     IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo,
 };
-use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
+use crate::new::misc::{PortDomain, ScopedEntry, ValueDomain};
 use crate::new::types::HardwareType;
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
@@ -289,16 +289,6 @@ impl CompileState<'_> {
             debug_info_id: def_id.clone(),
             debug_info_generic_args,
         })
-    }
-
-    // TODO move
-    fn domain_signal_to_ir(&self, signal: &DomainSignal) -> IrExpression {
-        match signal {
-            &DomainSignal::Port(port) => IrExpression::Port(self.ports[port].ir),
-            &DomainSignal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
-            &DomainSignal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
-            DomainSignal::BoolNot(inner) => IrExpression::BoolNot(Box::new(self.domain_signal_to_ir(inner))),
-        }
     }
 }
 
@@ -827,10 +817,7 @@ impl BodyElaborationState<'_, '_> {
             ty,
             ir: ir_reg,
         });
-        Ok(RegisterInit {
-            reg,
-            init,
-        })
+        Ok(RegisterInit { reg, init })
     }
 
     fn elaborate_module_declaration_reg_out_port(
