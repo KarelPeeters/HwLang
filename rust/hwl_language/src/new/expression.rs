@@ -61,7 +61,13 @@ impl CompileState<'_> {
                         NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
                         NamedValue::Parameter(param) => Ok(MaybeCompile::Compile(self.parameters[param].value.clone())),
                         NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
-                        NamedValue::Port(port) => Ok(MaybeCompile::Other(self.ports[port].typed_ir_expr())),
+                        NamedValue::Port(port) => {
+                            let port_info = &self.ports[port];
+                            match port_info.direction.inner {
+                                PortDirection::Input => Ok(MaybeCompile::Other(port_info.typed_ir_expr())),
+                                PortDirection::Output => Err(self.diags.report_todo(expr.span, "read back from output port")),
+                            }
+                        },
                         NamedValue::Wire(wire) => Ok(MaybeCompile::Other(self.wires[wire].typed_ir_expr())),
                         NamedValue::Register(reg) => Ok(MaybeCompile::Other(self.registers[reg].typed_ir_expr())),
                     },
