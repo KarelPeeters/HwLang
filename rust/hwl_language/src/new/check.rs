@@ -2,12 +2,13 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, 
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
 use crate::new::misc::{DomainSignal, ValueDomain};
-use crate::new::types::Type;
+use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::new::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use annotate_snippets::Level;
+use num_bigint::BigInt;
 
 impl CompileState<'_> {
     pub fn check_valid_domain_crossing(
@@ -93,6 +94,7 @@ impl CompileState<'_> {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum TypeContainsReason {
     Assignment {
         span_assignment: Span,
@@ -183,5 +185,64 @@ pub fn check_type_contains_compile_value(
             )
             .finish();
         Err(diags.report(diag))
+    }
+}
+
+// TODO reduce boilerplate with a trait?
+pub fn check_type_is_int(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<MaybeCompile<TypedIrExpression>>,
+) -> Result<Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>, ErrorGuaranteed> {
+    check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false)?;
+
+    match value.inner {
+        MaybeCompile::Compile(value_inner) => match value_inner {
+            CompileValue::Int(value_inner) => Ok(Spanned {
+                span: value.span,
+                inner: MaybeCompile::Compile(value_inner),
+            }),
+            _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
+        },
+        MaybeCompile::Other(value_inner) => match value_inner.ty {
+            HardwareType::Int(ty) => Ok(Spanned {
+                span: value.span,
+                inner: MaybeCompile::Other(TypedIrExpression {
+                    ty,
+                    domain: value_inner.domain,
+                    expr: value_inner.expr,
+                }),
+            }),
+            _ => Err(diags.report_internal_error(value.span, "expected int type, should have already been checked")),
+        },
+    }
+}
+
+pub fn check_type_is_bool(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<MaybeCompile<TypedIrExpression>>,
+) -> Result<Spanned<MaybeCompile<TypedIrExpression<()>, bool>>, ErrorGuaranteed> {
+    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false)?;
+
+    match value.inner {
+        MaybeCompile::Compile(value_inner) => match value_inner {
+            CompileValue::Bool(value_inner) => Ok(Spanned {
+                span: value.span,
+                inner: MaybeCompile::Compile(value_inner),
+            }),
+            _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
+        },
+        MaybeCompile::Other(value_inner) => match value_inner.ty {
+            HardwareType::Bool => Ok(Spanned {
+                span: value.span,
+                inner: MaybeCompile::Other(TypedIrExpression {
+                    ty: (),
+                    domain: value_inner.domain,
+                    expr: value_inner.expr,
+                }),
+            }),
+            _ => Err(diags.report_internal_error(value.span, "expected bool type, should have already been checked")),
+        },
     }
 }

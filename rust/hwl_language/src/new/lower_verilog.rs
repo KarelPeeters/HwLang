@@ -689,12 +689,15 @@ fn lower_expression(
         &IrExpression::Register(reg) => swrite!(f, "{}", name_map.registers.get(&reg).unwrap()),
         &IrExpression::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
 
-        IrExpression::ArrayLiteral(_) => throw!(diags.report_todo(span, "lower array literal")),
         IrExpression::BoolNot(inner) => {
             swrite!(f, "(!");
             lower_expression(diags, name_map, span, inner, f)?;
             swrite!(f, ")");
         }
+        IrExpression::BoolBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary bool expression")),
+        IrExpression::IntBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary int expression")),
+
+        IrExpression::ArrayLiteral(_) => throw!(diags.report_todo(span, "lower array literal")),
         IrExpression::ArrayIndex { .. } => throw!(diags.report_todo(span, "lower array index")),
         IrExpression::ArraySlice { .. } => throw!(diags.report_todo(span, "lower array slice")),
     }

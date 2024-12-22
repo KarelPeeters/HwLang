@@ -145,6 +145,7 @@ pub enum IrAssignmentTarget {
     Variable(IrVariable),
 }
 
+// TODO maybe IrExpression should always have explicit types, that would make lowering easier
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants
@@ -157,6 +158,9 @@ pub enum IrExpression {
     Variable(IrVariable),
     // actual expressions
     BoolNot(Box<IrExpression>),
+    BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>),
+    IntBinary(IrIntBinaryOp, Box<IrExpression>, Box<IrExpression>),
+
     ArrayLiteral(Vec<IrExpression>),
     ArrayIndex {
         base: Box<IrExpression>,
@@ -166,6 +170,32 @@ pub enum IrExpression {
         base: Box<IrExpression>,
         range: ClosedIncRange<Box<IrExpression>>,
     },
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IrBoolBinaryOp {
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IrIntBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl IrBoolBinaryOp {
+    pub fn eval(&self, left: bool, right: bool) -> bool {
+        match self {
+            IrBoolBinaryOp::And => left && right,
+            IrBoolBinaryOp::Or => left || right,
+            IrBoolBinaryOp::Xor => left ^ right,
+        }
+    }
 }
 
 impl IrType {
@@ -198,6 +228,26 @@ impl IrExpression {
             // TODO support printing variables with their real names if in a context where they exist
             &IrExpression::Variable(_) => "_variable".to_owned(),
 
+            IrExpression::BoolNot(x) => format!("!({})", x.to_diagnostic_string(m)),
+            IrExpression::BoolBinary(op, left, right) => {
+                let op_str = match op {
+                    IrBoolBinaryOp::And => "&&",
+                    IrBoolBinaryOp::Or => "||",
+                    IrBoolBinaryOp::Xor => "^",
+                };
+                format!("({} {} {})", left.to_diagnostic_string(m), op_str, right.to_diagnostic_string(m))
+            }
+            IrExpression::IntBinary(op, left, right) => {
+                let op_str = match op {
+                    IrIntBinaryOp::Add => "+",
+                    IrIntBinaryOp::Sub => "-",
+                    IrIntBinaryOp::Mul => "*",
+                    IrIntBinaryOp::Div => "/",
+                    IrIntBinaryOp::Mod => "%",
+                };
+                format!("({} {} {})", left.to_diagnostic_string(m), op_str, right.to_diagnostic_string(m))
+            }
+            
             IrExpression::ArrayLiteral(x) => {
                 let inner = x
                     .iter()
@@ -206,7 +256,6 @@ impl IrExpression {
                     .join(", ");
                 format!("[{inner}]")
             }
-            IrExpression::BoolNot(x) => format!("!({})", x.to_diagnostic_string(m)),
             IrExpression::ArrayIndex { base, index } => {
                 format!("({}[{}])", base.to_diagnostic_string(m), index.to_diagnostic_string(m))
             }

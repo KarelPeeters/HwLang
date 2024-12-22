@@ -4,14 +4,15 @@ use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::{IrExpression, IrModule};
 use crate::new::misc::ValueDomain;
-use crate::new::types::{IncRange, Type};
+use crate::new::types::{ClosedIncRange, IncRange, Type};
 use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
 
 // TODO rename
+// TODO just provide both as default args
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MaybeCompile<T> {
-    Compile(CompileValue),
+pub enum MaybeCompile<T, C = CompileValue> {
+    Compile(C),
     // TODO rename
     Other(T),
 }
@@ -138,18 +139,41 @@ impl CompileValue {
         }
     }
 
-    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
+    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<TypedIrExpression, ErrorGuaranteed> {
+        let ty = self.ty();
+        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+            diags.report_simple(
+                "value type must be representable in hardware",
+                span,
+                format!(
+                    "value `{}` with type `{}` is not representable in hardware",
+                    self.to_diagnostic_string(),
+                    ty.to_diagnostic_string()
+                ),
+            )
+        })?;
+
         match self.as_hardware_value() {
-            HardwareValueResult::Success(v) => Ok(v),
+            HardwareValueResult::Success(v) => Ok(TypedIrExpression {
+                ty: ty_hw,
+                domain: ValueDomain::CompileTime,
+                expr: v,
+            }),
             HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags.report_simple(
                 "undefined can only be used for register initialization",
                 span,
                 "value is undefined",
             )),
             HardwareValueResult::Unrepresentable => {
-                // TODO fix this duplication
-                let reason = "compile time value fits in hardware type but is not convertible to hardware value";
-                Err(diags.report_internal_error(span, reason))
+                let reason = "compile time value must be representable in hardware";
+                Err(diags.report_simple(
+                    reason,
+                    span,
+                    format!(
+                        "value `{}` is not representable in hardware",
+                        self.to_diagnostic_string()
+                    ),
+                ))
             }
         }
     }
@@ -186,10 +210,19 @@ impl MaybeCompile<TypedIrExpression> {
         }
     }
 
-    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<IrExpression, ErrorGuaranteed> {
+    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self {
             MaybeCompile::Compile(v) => v.to_ir_expression(diags, span),
-            MaybeCompile::Other(v) => Ok(v.expr.clone()),
+            MaybeCompile::Other(v) => Ok(v.clone()),
+        }
+    }
+}
+
+impl MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt> {
+    pub fn range(&self) -> ClosedIncRange<&BigInt> {
+        match self {
+            MaybeCompile::Compile(v) => ClosedIncRange::single(v),
+            MaybeCompile::Other(v) => v.ty.as_ref(),
         }
     }
 }

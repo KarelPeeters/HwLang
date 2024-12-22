@@ -1,22 +1,25 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{TypedIrExpression, VariableValues};
-use crate::new::check::{check_type_contains_value, TypeContainsReason};
+use crate::new::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
 use crate::new::compile::{CompileState, ElaborationStackEntry};
-use crate::new::ir::IrExpression;
-use crate::new::misc::{DomainSignal, ScopedEntry};
-use crate::new::types::{HardwareType, IncRange, Type};
+use crate::new::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
+use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
+use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain, UnaryOp,
+    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,
+    UnaryOp,
 };
 use crate::syntax::pos::Span;
-use crate::util::ResultDoubleExt;
+use crate::util::{Never, ResultDoubleExt};
 use itertools::Itertools;
 use num_bigint::{BigInt, BigUint};
-use num_traits::ToPrimitive;
+use num_traits::{One, Pow, ToPrimitive};
+use std::cmp::{max, min};
 use std::convert::identity;
+use std::ops::Sub;
 
 impl CompileState<'_> {
     pub fn eval_id(
@@ -147,7 +150,32 @@ impl CompileState<'_> {
                 Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
             }
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
-                UnaryOp::Neg => Err(diags.report_todo(expr.span, "expr kind UnaryOp Neg")),
+                UnaryOp::Neg => {
+                    let operand = self.eval_expression(scope, vars, operand)?;
+                    let operand = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
+
+                    match operand.inner {
+                        MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(CompileValue::Int(-c))),
+                        MaybeCompile::Other(v) => {
+                            let result_range = ClosedIncRange {
+                                start_inc: -v.ty.end_inc,
+                                end_inc: -v.ty.start_inc,
+                            };
+                            let result_expr = IrExpression::IntBinary(
+                                IrIntBinaryOp::Sub,
+                                Box::new(IrExpression::Int(BigInt::ZERO)),
+                                Box::new(v.expr),
+                            );
+
+                            let result = TypedIrExpression {
+                                ty: HardwareType::Int(result_range),
+                                domain: v.domain,
+                                expr: result_expr,
+                            };
+                            Ok(MaybeCompile::Other(result))
+                        }
+                    }
+                }
                 UnaryOp::Not => {
                     let operand = self.eval_expression(scope, vars, operand)?;
 
@@ -175,7 +203,11 @@ impl CompileState<'_> {
                     }
                 }
             },
-            ExpressionKind::BinaryOp(_, _, _) => Err(diags.report_todo(expr.span, "expr kind BinaryOp")),
+            ExpressionKind::BinaryOp(op, left, right) => {
+                let left = self.eval_expression(scope, vars, left);
+                let right = self.eval_expression(scope, vars, right);
+                self.eval_binary_expression(expr.span, op, left?, right?)
+            }
             ExpressionKind::TernarySelect(_, _, _) => Err(diags.report_todo(expr.span, "expr kind TernarySelect")),
             ExpressionKind::ArrayIndex(base, args) => {
                 // eval base and args
@@ -198,24 +230,24 @@ impl CompileState<'_> {
                 let mut curr = base;
                 for arg in args.inner {
                     let curr_span = curr.span;
-                    let curr_inner = match (curr.inner, arg.value.inner) {
-                        (MaybeCompile::Compile(curr), MaybeCompile::Compile(index)) => {
-                            match curr {
+                    let curr_inner = match pair_compile(diags, curr, arg.value)? {
+                        MaybeCompile::Compile((curr, index)) => {
+                            match curr.inner {
                                 // declare new array type
                                 CompileValue::Type(curr) => {
-                                    let dim_len = match index {
+                                    let dim_len = match index.inner {
                                         CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
                                             diags.report_simple(
                                                 "array dimension length cannot be negative",
-                                                arg.span,
+                                                index.span,
                                                 format!("got value `{}`", e.into_original()),
                                             )
                                         })?,
                                         _ => {
                                             return Err(diags.report_simple(
                                                 "array dimension length must be an integer",
-                                                arg.span,
-                                                format!("got value `{}`", index.to_diagnostic_string()),
+                                                index.span,
+                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
                                             ));
                                         }
                                     };
@@ -225,16 +257,16 @@ impl CompileState<'_> {
                                 }
                                 // index into compile-time array
                                 CompileValue::Array(curr) => {
-                                    match index {
-                                        CompileValue::Int(index) => {
+                                    match index.inner {
+                                        CompileValue::Int(index_inner) => {
                                             let valid_range = 0..curr.len();
-                                            let index = index.to_usize()
+                                            let index = index_inner.to_usize()
                                                 .filter(|index| valid_range.contains(&index))
                                                 .ok_or_else(|| {
                                                     diags.report_simple(
                                                         "array index out of bounds",
-                                                        arg.span,
-                                                        format!("got index `{index}`, valid range for this array is `{valid_range:?}`"),
+                                                        index.span,
+                                                        format!("got index `{index_inner}`, valid range for this array is `{valid_range:?}`"),
                                                     )
                                                 })?;
                                             // TODO avoid clone, both of this value and of the entire array?
@@ -251,7 +283,7 @@ impl CompileState<'_> {
                                                         .ok_or_else(|| {
                                                             diags.report_simple(
                                                                 "array slice range out of bounds",
-                                                                arg.span,
+                                                                index.span,
                                                                 format!("got slice range `{range:?}`, valid range for this array is `{valid_range:?}`"),
                                                             )
                                                         })
@@ -263,7 +295,7 @@ impl CompileState<'_> {
 
                                             if start > end {
                                                 return Err(diags.report_internal_error(
-                                                    arg.span,
+                                                    index.span,
                                                     format!("invalid decreasing range `{range:?}`"),
                                                 ));
                                             }
@@ -274,8 +306,8 @@ impl CompileState<'_> {
                                         _ => {
                                             return Err(diags.report_simple(
                                                 "array index must be an integer or an integer range",
-                                                arg.span,
-                                                format!("got value `{}`", index.to_diagnostic_string()),
+                                                index.span,
+                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
                                             ));
                                         }
                                     }
@@ -283,16 +315,13 @@ impl CompileState<'_> {
                                 _ => {
                                     return Err(diags.report_simple(
                                         "array index on invalid target",
-                                        arg.span,
-                                        format!("target `{}` here", curr.to_diagnostic_string()),
+                                        index.span,
+                                        format!("target `{}` here", curr.inner.to_diagnostic_string()),
                                     ));
                                 }
                             }
                         }
-                        (curr, index) => {
-                            let curr = curr.to_ir_expression(diags, curr_span)?;
-                            let index = index.to_ir_expression(diags, arg.span)?;
-
+                        MaybeCompile::Other((curr, index)) => {
                             let _ = (curr, index);
                             return Err(diags.report_todo(arg.span, "runtime array indexing/slicing"));
                         }
@@ -300,7 +329,7 @@ impl CompileState<'_> {
 
                     // TODO this is a bit of sketchy span, but maybe the best we can do
                     curr = Spanned {
-                        span: curr.span.join(arg.span),
+                        span: curr_span.join(arg.span),
                         inner: curr_inner,
                     }
                 }
@@ -350,6 +379,204 @@ impl CompileState<'_> {
         })
     }
 
+    // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
+    fn eval_binary_expression(
+        &mut self,
+        expr_span: Span,
+        op: &Spanned<BinaryOp>,
+        left: Spanned<MaybeCompile<TypedIrExpression>>,
+        right: Spanned<MaybeCompile<TypedIrExpression>>,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let op_reason = TypeContainsReason::Operator(op.span);
+
+        // TODO extract even more common int boilerplate
+        let check_both_int = |left, right| {
+            let left = check_type_is_int(diags, op_reason, left);
+            let right = check_type_is_int(diags, op_reason, right);
+            Ok((left?, right?))
+        };
+        let ir_int_binary =
+            |range, left: Spanned<TypedIrExpression<_>>, right: Spanned<TypedIrExpression<_>>| TypedIrExpression {
+                ty: HardwareType::Int(range),
+                domain: left.inner.domain.join(&right.inner.domain),
+                expr: IrExpression::IntBinary(
+                    IrIntBinaryOp::Add,
+                    Box::new(left.inner.expr),
+                    Box::new(right.inner.expr),
+                ),
+            };
+
+        let impl_bool_op = |left, right, op: IrBoolBinaryOp| {
+            let left = check_type_is_bool(diags, op_reason, left);
+            let right = check_type_is_bool(diags, op_reason, right);
+
+            let left = left?;
+            let right = right?;
+
+            match pair_compile_bool(left, right) {
+                MaybeCompile::Compile((left, right)) => Ok(MaybeCompile::Compile(CompileValue::Bool(
+                    op.eval(left.inner, right.inner),
+                ))),
+                MaybeCompile::Other((left, right)) => {
+                    let result = TypedIrExpression {
+                        ty: HardwareType::Bool,
+                        domain: left.inner.domain.join(&right.inner.domain),
+                        expr: IrExpression::BoolBinary(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
+                    };
+                    Ok(MaybeCompile::Other(result))
+                }
+            }
+        };
+
+        match op.inner {
+            // (int, int)
+            BinaryOp::Add => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner + right.inner)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        let range = ClosedIncRange {
+                            start_inc: &left.inner.ty.start_inc + &right.inner.ty.start_inc,
+                            end_inc: &left.inner.ty.end_inc + &right.inner.ty.end_inc,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                    }
+                }
+            }
+            BinaryOp::Sub => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner - right.inner)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        let range = ClosedIncRange {
+                            start_inc: &left.inner.ty.start_inc - &right.inner.ty.end_inc,
+                            end_inc: &left.inner.ty.end_inc - &right.inner.ty.start_inc,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                    }
+                }
+            }
+            BinaryOp::Mul => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner * right.inner)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        // calculate valid range
+                        let extremes = [
+                            &left.inner.ty.start_inc * &right.inner.ty.start_inc,
+                            &left.inner.ty.start_inc * &right.inner.ty.end_inc,
+                            &left.inner.ty.end_inc * &right.inner.ty.start_inc,
+                            &left.inner.ty.end_inc * &right.inner.ty.end_inc,
+                        ];
+                        let range = ClosedIncRange {
+                            start_inc: extremes.iter().min().unwrap().clone(),
+                            end_inc: extremes.iter().max().unwrap().clone(),
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                    }
+                }
+            }
+            // (int, non-zero int)
+            BinaryOp::Div => Err(diags.report_todo(expr_span, "binary op Div")),
+            BinaryOp::Mod => Err(diags.report_todo(expr_span, "binary op Mod")),
+            // (nonzero int, non-negative int) or (non-negative int, positive int)
+            BinaryOp::Pow => {
+                let (base, exp) = check_both_int(left, right)?;
+
+                let zero = BigInt::ZERO;
+                let base_range = base.inner.range();
+                let exp_range = exp.inner.range();
+
+                // check exp >= 0
+                if exp_range.start_inc < &zero {
+                    let diag = Diagnostic::new("invalid power operation")
+                        .add_error(expr_span, "exponent must be non-negative")
+                        .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+
+                // check not 0 ** 0
+                if base_range.contains(&&zero) && exp_range.contains(&&zero) {
+                    let diag = Diagnostic::new("invalid power operation `0 ** 0`")
+                        .add_error(expr_span, "base and exponent can both be zero")
+                        .add_info(base.span, format!("base range is `{}`", base_range))
+                        .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+
+                match pair_compile_int(base, exp) {
+                    MaybeCompile::Compile((base, exp)) => {
+                        let exp = BigUint::try_from(exp.inner)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp"))?;
+
+                        let result = base.inner.pow(&exp);
+                        Ok(MaybeCompile::Compile(CompileValue::Int(result)))
+                    }
+                    MaybeCompile::Other((base, exp)) => {
+                        let exp_start_inc = BigUint::try_from(&exp.inner.ty.start_inc)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp start"))?;
+                        let exp_end_inc = BigUint::try_from(&exp.inner.ty.end_inc)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp end"))?;
+
+                        let mut result_min = min(
+                            base.inner.ty.start_inc.clone().pow(&exp_start_inc),
+                            base.inner.ty.start_inc.clone().pow(&exp_end_inc),
+                        );
+                        let mut result_max = max(
+                            base.inner.ty.start_inc.clone().pow(&exp_end_inc),
+                            base.inner.ty.end_inc.clone().pow(&exp_end_inc),
+                        );
+
+                        // If base is negative, even/odd powers can cause extremes.
+                        // To guard this, try the next highest exponent too if it exists.
+                        if exp_end_inc > BigUint::ZERO {
+                            let end_exp_sub_one = exp_end_inc.sub(&BigUint::one());
+                            result_min = min(result_min, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
+                            result_max = max(result_max, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
+                        }
+
+                        let range = ClosedIncRange {
+                            start_inc: result_min,
+                            end_inc: result_max,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, base, exp)))
+                    }
+                }
+            }
+            // (bool, bool)
+            BinaryOp::BoolAnd => impl_bool_op(left, right, IrBoolBinaryOp::And),
+            BinaryOp::BoolOr => impl_bool_op(left, right, IrBoolBinaryOp::Or),
+            BinaryOp::BoolXor => impl_bool_op(left, right, IrBoolBinaryOp::Xor),
+            // (T, T)
+            BinaryOp::CmpEq => Err(diags.report_todo(expr_span, "binary op CmpEq")),
+            BinaryOp::CmpNeq => Err(diags.report_todo(expr_span, "binary op CmpNeq")),
+            BinaryOp::CmpLt => Err(diags.report_todo(expr_span, "binary op CmpLt")),
+            BinaryOp::CmpLte => Err(diags.report_todo(expr_span, "binary op CmpLte")),
+            BinaryOp::CmpGt => Err(diags.report_todo(expr_span, "binary op CmpGt")),
+            BinaryOp::CmpGte => Err(diags.report_todo(expr_span, "binary op CmpGte")),
+            // (int, range)
+            BinaryOp::In => Err(diags.report_todo(expr_span, "binary op In")),
+
+            // TODO boolean arrays?
+            BinaryOp::BitAnd => Err(diags.report_todo(expr_span, "binary op BitAnd")),
+            BinaryOp::BitOr => Err(diags.report_todo(expr_span, "binary op BitOr")),
+            BinaryOp::BitXor => Err(diags.report_todo(expr_span, "binary op BitXor")),
+            // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int)
+            BinaryOp::Shl => Err(diags.report_todo(expr_span, "binary op Shl")),
+            BinaryOp::Shr => Err(diags.report_todo(expr_span, "binary op Shr")),
+        }
+    }
+
     // TODO replace builtin+import+prelude with keywords?
     fn eval_builtin(
         &mut self,
@@ -362,7 +589,11 @@ impl CompileState<'_> {
         let args_eval: Vec<CompileValue> = args
             .inner
             .iter()
-            .map(|arg| Ok(self.eval_expression_as_compile(scope, vars, arg, "builtin argument")?.inner))
+            .map(|arg| {
+                Ok(self
+                    .eval_expression_as_compile(scope, vars, arg, "builtin argument")?
+                    .inner)
+            })
             .try_collect()?;
 
         if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
@@ -396,7 +627,10 @@ impl CompileState<'_> {
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
         match self.eval_expression(scope, vars, expr)?.inner {
-            MaybeCompile::Compile(c) => Ok(Spanned { span: expr.span, inner: c }),
+            MaybeCompile::Compile(c) => Ok(Spanned {
+                span: expr.span,
+                inner: c,
+            }),
             MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
@@ -413,7 +647,10 @@ impl CompileState<'_> {
     ) -> Result<Spanned<Type>, ErrorGuaranteed> {
         // TODO unify this message with the one when a normal type-check fails
         match self.eval_expression_as_compile(scope, vars, expr, "type")?.inner {
-            CompileValue::Type(ty) => Ok(Spanned { span: expr.span, inner: ty }),
+            CompileValue::Type(ty) => Ok(Spanned {
+                span: expr.span,
+                inner: ty,
+            }),
             _ => Err(self
                 .diags
                 .report_simple("expected type, got value", expr.span, "got value")),
@@ -435,7 +672,10 @@ impl CompileState<'_> {
                 format!("got `{}`", ty.to_diagnostic_string()),
             )
         })?;
-        Ok(Spanned { span: expr.span, inner: ty_hw })
+        Ok(Spanned {
+            span: expr.span,
+            inner: ty_hw,
+        })
     }
 
     pub fn eval_expression_as_assign_target(
@@ -478,7 +718,10 @@ impl CompileState<'_> {
             _ => Err(build_err("other expression")),
         };
 
-        Ok(Spanned { span: expr.span, inner: result? })
+        Ok(Spanned {
+            span: expr.span,
+            inner: result?,
+        })
     }
 
     pub fn eval_expression_as_domain_signal(
@@ -522,7 +765,10 @@ impl CompileState<'_> {
             _ => Err(diags.report_simple("expected domain signal (port, wire, reg)", expr.span, "got expression")),
         };
 
-        Ok(Spanned { span: expr.span, inner: result? })
+        Ok(Spanned {
+            span: expr.span,
+            inner: result?,
+        })
     }
 
     pub fn eval_domain_sync(
@@ -549,6 +795,113 @@ impl CompileState<'_> {
             DomainKind::Sync(domain) => self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
         };
 
-        Ok(Spanned { span: domain.span, inner: result? })
+        Ok(Spanned {
+            span: domain.span,
+            inner: result?,
+        })
+    }
+}
+
+// TODO reduce boilerplate with a trait?
+fn pair_compile(
+    diags: &Diagnostics,
+    left: Spanned<MaybeCompile<TypedIrExpression>>,
+    right: Spanned<MaybeCompile<TypedIrExpression>>,
+) -> Result<
+    MaybeCompile<
+        (Spanned<TypedIrExpression>, Spanned<TypedIrExpression>),
+        (Spanned<CompileValue>, Spanned<CompileValue>),
+    >,
+    ErrorGuaranteed,
+> {
+    pair_compile_general(left, right, |x| x.inner.to_ir_expression(diags, x.span))
+}
+
+fn pair_compile_int(
+    left: Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>,
+    right: Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>,
+) -> MaybeCompile<
+    (
+        Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
+        Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
+    ),
+    (Spanned<BigInt>, Spanned<BigInt>),
+> {
+    let result = pair_compile_general(left, right, |x| {
+        Result::<_, Never>::Ok(TypedIrExpression {
+            ty: ClosedIncRange::single(x.inner.clone()),
+            domain: ValueDomain::CompileTime,
+            expr: IrExpression::Int(x.inner),
+        })
+    });
+    match result {
+        Ok(result) => result,
+        Err(never) => never.unreachable(),
+    }
+}
+
+fn pair_compile_bool(
+    left: Spanned<MaybeCompile<TypedIrExpression<()>, bool>>,
+    right: Spanned<MaybeCompile<TypedIrExpression<()>, bool>>,
+) -> MaybeCompile<(Spanned<TypedIrExpression<()>>, Spanned<TypedIrExpression<()>>), (Spanned<bool>, Spanned<bool>)> {
+    let result = pair_compile_general(left, right, |x| {
+        Result::<_, Never>::Ok(TypedIrExpression {
+            ty: (),
+            domain: ValueDomain::CompileTime,
+            expr: IrExpression::Bool(x.inner),
+        })
+    });
+    match result {
+        Ok(result) => result,
+        Err(never) => never.unreachable(),
+    }
+}
+
+fn pair_compile_general<T, C, E>(
+    left: Spanned<MaybeCompile<T, C>>,
+    right: Spanned<MaybeCompile<T, C>>,
+    to_other: impl Fn(Spanned<C>) -> Result<T, E>,
+) -> Result<MaybeCompile<(Spanned<T>, Spanned<T>), (Spanned<C>, Spanned<C>)>, E> {
+    match (left.inner, right.inner) {
+        (MaybeCompile::Compile(left_inner), MaybeCompile::Compile(right_inner)) => Ok(MaybeCompile::Compile((
+            Spanned {
+                span: left.span,
+                inner: left_inner,
+            },
+            Spanned {
+                span: right.span,
+                inner: right_inner,
+            },
+        ))),
+        (left_inner, right_inner) => {
+            let left_inner = match left_inner {
+                MaybeCompile::Compile(left_inner) => to_other(Spanned {
+                    span: left.span,
+                    inner: left_inner,
+                }),
+                MaybeCompile::Other(left_inner) => Ok(left_inner),
+            };
+            let right_inner = match right_inner {
+                MaybeCompile::Compile(right_inner) => to_other(Spanned {
+                    span: right.span,
+                    inner: right_inner,
+                }),
+                MaybeCompile::Other(right_inner) => Ok(right_inner),
+            };
+
+            let left_inner = left_inner?;
+            let right_inner = right_inner?;
+
+            Ok(MaybeCompile::Other((
+                Spanned {
+                    span: left.span,
+                    inner: left_inner,
+                },
+                Spanned {
+                    span: right.span,
+                    inner: right_inner,
+                },
+            )))
+        }
     }
 }

@@ -32,6 +32,7 @@ pub enum HardwareType {
     Array(Box<HardwareType>, BigUint),
 }
 
+// TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct IncRange<T> {
     pub start_inc: Option<T>,
@@ -198,6 +199,11 @@ impl HardwareType {
 }
 
 impl<T> IncRange<T> {
+    pub const OPEN: IncRange<T> = IncRange {
+        start_inc: None,
+        end_inc: None,
+    };
+
     pub fn try_into_closed(self) -> Option<ClosedIncRange<T>> {
         let IncRange { start_inc, end_inc } = self;
         Some(ClosedIncRange {
@@ -225,6 +231,21 @@ impl<T> ClosedIncRange<T> {
             end_inc: Some(end_inc),
         }
     }
+
+    pub fn as_ref(&self) -> ClosedIncRange<&T> {
+        ClosedIncRange {
+            start_inc: &self.start_inc,
+            end_inc: &self.end_inc,
+        }
+    }
+
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialOrd,
+    {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        start_inc <= value && value <= end_inc
+    }
 }
 
 impl<T: Display> Display for IncRange<T> {
@@ -236,5 +257,12 @@ impl<T: Display> Display for IncRange<T> {
             (None, Some(end_inc)) => write!(f, "..={}", end_inc),
             (Some(start_inc), Some(end_inc)) => write!(f, "{}..={}", start_inc, end_inc),
         }
+    }
+}
+
+impl<T: Display> Display for ClosedIncRange<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        write!(f, "{}..={}", start_inc, end_inc)
     }
 }

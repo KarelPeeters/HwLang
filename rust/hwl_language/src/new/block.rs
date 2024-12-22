@@ -20,8 +20,8 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TypedIrExpression {
-    pub ty: HardwareType,
+pub struct TypedIrExpression<T = HardwareType> {
+    pub ty: T,
     pub domain: ValueDomain,
     pub expr: IrExpression,
 }
@@ -474,7 +474,7 @@ impl CompileState<'_> {
         check_ty?;
 
         report_assignment(target.as_ref())?;
-        Ok(Some(IrStatement::Assign(ir_target, ir_value)))
+        Ok(Some(IrStatement::Assign(ir_target, ir_value.expr)))
     }
 
     fn elaborate_if_statement(
@@ -877,7 +877,7 @@ fn build_merge_store(
     *domain = domain.join(&value.value.domain());
 
     let target = IrAssignmentTarget::Variable(var_ir);
-    let assign = IrStatement::Assign(target, value_ir);
+    let assign = IrStatement::Assign(target, value_ir.expr);
     let assign_spanned = Spanned {
         span: span_stmt,
         inner: assign,
