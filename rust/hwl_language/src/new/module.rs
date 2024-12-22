@@ -66,8 +66,8 @@ impl CompileState<'_> {
 
         let (scope_params, debug_info_generic_args) =
             self.elaborate_module_generics(def_span, scope_file, params, args)?;
-        let (scope_ports, ir_ports) = self.elaborate_module_ports(def_span, scope_params, ports);
-        self.elaborate_module_body(def_id, debug_info_generic_args, ir_ports, scope_ports, body)
+        let (scope_ports, ports_vec, ir_ports) = self.elaborate_module_ports(def_span, scope_params, ports);
+        self.elaborate_module_body(def_id, debug_info_generic_args, ports_vec, ir_ports, scope_ports, body)
     }
 
     fn elaborate_module_generics(
@@ -130,9 +130,10 @@ impl CompileState<'_> {
         def_span: Span,
         params_scope: Scope,
         ports: &Spanned<Vec<ModulePortItem>>,
-    ) -> (Scope, Arena<IrPort, IrPortInfo>) {
+    ) -> (Scope, Vec<Port>, Arena<IrPort, IrPortInfo>) {
         let diags = self.diags;
 
+        let mut ports_vec: Vec<Port> = vec![];
         let mut ir_ports = Arena::default();
         let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
 
@@ -184,7 +185,7 @@ impl CompileState<'_> {
                             ty,
                             ir: ir_port,
                         });
-
+                        ports_vec.push(port);
                         Ok(ScopedEntry::Direct(NamedValue::Port(port)))
                     });
 
@@ -226,6 +227,7 @@ impl CompileState<'_> {
                                 ty,
                                 ir: ir_port,
                             });
+                            ports_vec.push(port);
                             Ok(ScopedEntry::Direct(NamedValue::Port(port)))
                         });
 
@@ -235,13 +237,14 @@ impl CompileState<'_> {
             }
         }
 
-        (ports_scope, ir_ports)
+        (ports_scope, ports_vec, ir_ports)
     }
 
     fn elaborate_module_body(
         &mut self,
         def_id: &Identifier,
         debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
+        ports: Vec<Port>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         scope_ports: Scope,
         body: &Block<ModuleStatement>,
@@ -263,9 +266,24 @@ impl CompileState<'_> {
             processes: vec![],
         };
 
+        // process declarations
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future declarations
         state.pass_0_declarations(body);
+
+        // create driver entries for remaining (= non-reg) output ports
+        for port in ports {
+            match state.state.ports[port].direction.inner {
+                PortDirection::Input => {
+                    // do nothing
+                }
+                PortDirection::Output => {
+                    state.drivers.output_port_drivers.entry(port).or_insert_with(IndexMap::new);
+                }
+            }
+        }
+
+        // process processes
         state.pass_1_processes(body);
 
         // stop if any errors have happened so far, we don't want redundant errors about drivers
