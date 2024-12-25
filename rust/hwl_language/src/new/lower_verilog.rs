@@ -13,7 +13,6 @@ use crate::syntax::ast::{
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::util::int::IntRepresentation;
 use crate::util::ResultExt;
 use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
@@ -862,11 +861,11 @@ impl VerilogType {
         }
     }
 
+    // TODO split tuples and short arrays into multiple ports instead?
     pub fn from_ir_ty(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<VerilogType, ErrorGuaranteed> {
         match ty {
             IrType::Bool => Ok(VerilogType::Bit),
-            IrType::Int(v) => Self::array(diags, span, IntRepresentation::for_range(v).width),
-            IrType::Array(inner, len) => Self::array(diags, span, inner.bit_width() * len),
+            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::array(diags, span, ty.bit_width()),
         }
     }
 

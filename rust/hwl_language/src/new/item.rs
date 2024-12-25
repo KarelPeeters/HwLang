@@ -8,7 +8,7 @@ use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::misc::ScopedEntry;
 use crate::new::types::Type;
 use crate::new::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{ConstDeclaration, Item, ItemDefType};
+use crate::syntax::ast::{ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
@@ -110,7 +110,31 @@ impl CompileState<'_> {
             }
             Item::Struct(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Struct")),
             Item::Enum(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Enum")),
-            Item::Function(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Function")),
+            Item::Function(item_inner) => {
+                let ItemDefFunction {
+                    span: _,
+                    vis: _,
+                    id: _,
+                    params,
+                    ret_ty,
+                    body,
+                } = item_inner;
+
+                let ret_ty = match ret_ty {
+                    None => ReturnType::Evaluated(Type::UNIT),
+                    Some(ret_ty) => ReturnType::Expression(Box::new(ret_ty.clone())),
+                };
+
+                let function = FunctionValue {
+                    outer_scope: file_scope,
+                    item,
+                    params: params.clone(),
+                    ret_ty,
+                    body_span: body.span,
+                    body: FunctionBody::Block(body.clone()),
+                };
+                Ok(CompileValue::Function(function))
+            }
             Item::Module(_) => {
                 let ast_ref = AstRefModule::new_unchecked(item);
                 Ok(CompileValue::Module(ast_ref))

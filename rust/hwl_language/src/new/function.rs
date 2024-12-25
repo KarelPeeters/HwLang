@@ -7,18 +7,24 @@ use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::misc::ScopedEntry;
 use crate::new::types::Type;
 use crate::new::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{Arg, Args, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned};
+use crate::syntax::ast::{
+    Arg, Args, Block, BlockStatement, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned,
+};
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultDoubleExt;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use itertools::Itertools;
+use std::hash::Hash;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct FunctionValue {
-    pub outer_scope: Scope,
+    // TODO only this value is used for eq/hash, is that okay?
+    //   this will certainly need to be expanded once lambdas are supported
     pub item: AstRefItem,
+
+    pub outer_scope: Scope,
 
     // TODO avoid ast cloning
     // TODO Eq+Hash are a bit weird for types containing ast nodes
@@ -29,18 +35,32 @@ pub struct FunctionValue {
     pub body: FunctionBody,
 }
 
+impl Eq for FunctionValue {}
+
+impl PartialEq for FunctionValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.item == other.item
+    }
+}
+
+impl Hash for FunctionValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.item.hash(state);
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ReturnType {
     Evaluated(Type),
     Expression(Box<Expression>),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum FunctionBody {
     Type(Box<Expression>),
+    Block(Block<BlockStatement>),
     // Enum(/*TODO*/),
     // Struct(/*TODO*/),
-    // TODO add normal functions
 }
 
 impl CompileState<'_> {
@@ -210,9 +230,13 @@ impl FunctionValue {
                 // run the body
                 // TODO add execution limits?
                 match &self.body {
-                    FunctionBody::Type(expr) => Ok(state
-                        .eval_expression_as_compile(param_scope, &VariableValues::new_no_vars(), expr, "type body")?
-                        .inner),
+                    FunctionBody::Type(expr) => {
+                        let result = state
+                            .eval_expression_as_compile(param_scope, &VariableValues::new_no_vars(), expr, "type body")?
+                            .inner;
+                        Ok(result)
+                    }
+                    FunctionBody::Block(block) => Err(state.diags.report_todo(block.span, "run function body")),
                 }
             })
             .flatten_err()

@@ -14,6 +14,7 @@ use num_traits::One;
 pub enum IrType {
     Bool,
     Int(ClosedIncRange<BigInt>),
+    Tuple(Vec<IrType>),
     Array(Box<IrType>, BigUint),
 }
 
@@ -215,6 +216,7 @@ impl IrType {
         match self {
             IrType::Bool => Type::Bool,
             IrType::Int(range) => Type::Int(range.clone().into_range()),
+            IrType::Tuple(inner) => Type::Tuple(inner.iter().map(IrType::as_type).collect()),
             IrType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
         }
     }
@@ -223,6 +225,7 @@ impl IrType {
         match self {
             IrType::Bool => BigUint::one(),
             IrType::Int(range) => IntRepresentation::for_range(range).width,
+            IrType::Tuple(inner) => inner.iter().map(IrType::bit_width).sum(),
             IrType::Array(inner, len) => inner.bit_width() * len,
         }
     }

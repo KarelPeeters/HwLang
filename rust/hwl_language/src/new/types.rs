@@ -1,8 +1,7 @@
 use crate::new::ir::IrType;
 use crate::swrite;
-use crate::util::int::IntRepresentation;
+use itertools::{zip_eq, Itertools};
 use num_bigint::{BigInt, BigUint};
-use num_traits::One;
 use std::fmt::{Display, Formatter};
 
 // TODO add an arena for types?
@@ -18,6 +17,7 @@ pub enum Type {
     Bool,
     String,
     Int(IncRange<BigInt>),
+    Tuple(Vec<Type>),
     Array(Box<Type>, BigUint),
     Range,
     Module,   // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
@@ -29,6 +29,7 @@ pub enum HardwareType {
     Clock,
     Bool,
     Int(ClosedIncRange<BigInt>),
+    Tuple(Vec<HardwareType>),
     Array(Box<HardwareType>, BigUint),
 }
 
@@ -46,6 +47,8 @@ pub struct ClosedIncRange<T> {
 }
 
 impl Type {
+    pub const UNIT: Type = Type::Tuple(Vec::new());
+
     pub fn union(&self, other: &Type) -> Type {
         match (self, other) {
             // top and bottom
@@ -87,6 +90,14 @@ impl Type {
                 })
             }
 
+            // tuple
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                if a.len() == b.len() {
+                    Type::Tuple(zip_eq(a, b).map(|(a, b)| a.union(b)).collect_vec())
+                } else {
+                    Type::Any
+                }
+            }
             // array
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
@@ -108,6 +119,7 @@ impl Type {
                 | Type::Module
                 | Type::Function
                 | Type::Int(_)
+                | Type::Tuple(_)
                 | Type::Array(_, _),
                 Type::Type
                 | Type::Clock
@@ -117,6 +129,7 @@ impl Type {
                 | Type::Module
                 | Type::Function
                 | Type::Int(_)
+                | Type::Tuple(_)
                 | Type::Array(_, _),
             ) => Type::Any,
         }
@@ -131,6 +144,11 @@ impl Type {
             Type::Clock => Some(HardwareType::Clock),
             Type::Bool => Some(HardwareType::Bool),
             Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int),
+            Type::Tuple(inner) => inner
+                .iter()
+                .map(Type::as_hardware_type)
+                .collect::<Option<_>>()
+                .map(HardwareType::Tuple),
             Type::Array(inner, len) => inner
                 .as_hardware_type()
                 .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
@@ -149,6 +167,10 @@ impl Type {
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
             Type::Int(range) => format!("int({})", range),
+            Type::Tuple(inner) => {
+                let inner_str = inner.iter().map(Type::to_diagnostic_string).join(", ");
+                format!("({})", inner_str)
+            }
             Type::Array(first_inner, first_len) => {
                 let mut dims = String::new();
 
@@ -175,16 +197,8 @@ impl HardwareType {
             HardwareType::Clock => Type::Clock,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(range.clone().into_range()),
+            HardwareType::Tuple(inner) => Type::Tuple(inner.iter().map(HardwareType::as_type).collect_vec()),
             HardwareType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
-        }
-    }
-
-    pub fn bit_width(&self) -> BigUint {
-        match self {
-            HardwareType::Clock => BigUint::one(),
-            HardwareType::Bool => BigUint::one(),
-            HardwareType::Int(range) => IntRepresentation::for_range(range).width,
-            HardwareType::Array(inner, len) => inner.bit_width() * len,
         }
     }
 
@@ -193,6 +207,7 @@ impl HardwareType {
             HardwareType::Clock => IrType::Bool,
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.clone()),
+            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::to_ir).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.to_ir()), len.clone()),
         }
     }
