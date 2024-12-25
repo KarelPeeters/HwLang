@@ -101,7 +101,7 @@ fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> 
 
         Ok(())
     })
-        .unwrap();
+    .unwrap();
 
     if source_database.len() == 0 {
         println!("Warning: no input files found");

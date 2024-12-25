@@ -83,7 +83,7 @@ impl ServerState {
                             kind: None,
                         }],
                     })
-                        .unwrap(),
+                    .unwrap(),
                 ),
             }],
         };

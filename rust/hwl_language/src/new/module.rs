@@ -1,7 +1,9 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{BlockDomain, VariableValues};
-use crate::new::check::{check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason};
+use crate::new::check::{
+    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
+};
 use crate::new::compile::{
     CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
@@ -15,10 +17,10 @@ use crate::new::types::{HardwareType, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter,
-    Identifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle,
-    ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker,
-    Spanned, SyncDomain, WireDeclaration, WireKind,
+    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,
+    MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle,
+    ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker, Spanned,
+    SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -730,9 +732,7 @@ impl BodyElaborationState<'_, '_> {
                 };
 
                 match &connection_expr.inner {
-                    ExpressionKind::Dummy => {
-                        IrPortConnection::Output(None)
-                    }
+                    ExpressionKind::Dummy => IrPortConnection::Output(None),
                     ExpressionKind::Id(id) => {
                         let named = self.state.eval_id(scope, id)?;
 

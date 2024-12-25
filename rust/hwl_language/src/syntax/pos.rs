@@ -293,7 +293,7 @@ impl LineOffsets {
         self.line_start(line_0)..self.line_end(line_0, include_terminator)
     }
 
-    pub fn split_lines(&self, span: SpanFull, include_terminator: bool) -> impl Iterator<Item=SpanFull> + '_ {
+    pub fn split_lines(&self, span: SpanFull, include_terminator: bool) -> impl Iterator<Item = SpanFull> + '_ {
         assert_eq!(span.start.file, span.end.file);
         let file = span.start.file;
 

@@ -33,7 +33,7 @@ impl ServerSender {
     }
 
     // TODO support non-void requests
-    pub fn send_request<R: Request<Result=()>>(&mut self, args: R::Params) -> SendResult {
+    pub fn send_request<R: Request<Result = ()>>(&mut self, args: R::Params) -> SendResult {
         let id = self.next_unique_id();
         let request = lsp_server::Request {
             id: RequestId::from(id.clone()),

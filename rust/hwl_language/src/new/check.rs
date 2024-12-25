@@ -73,8 +73,14 @@ pub enum TypeContainsReason {
     },
     Operator(Span),
     InstanceModule(Span),
-    InstancePortInput { span_connection_port_id: Span, span_port_ty: Span },
-    InstancePortOutput { span_connection_signal_id: Span, span_signal_ty: Span },
+    InstancePortInput {
+        span_connection_port_id: Span,
+        span_port_ty: Span,
+    },
+    InstancePortOutput {
+        span_connection_signal_id: Span,
+        span_signal_ty: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -87,26 +93,31 @@ impl TypeContainsReason {
                 span_target_ty,
             } => diag
                 .add_info(span_target, format!("target requires type `{}`", target_ty_str))
+                .add_info(span_target_ty, format!("target type `{}` set here", target_ty_str)),
+            TypeContainsReason::Operator(span) => {
+                diag.add_info(span, format!("operator requires type `{}`", target_ty_str))
+            }
+            TypeContainsReason::InstanceModule(span) => {
+                diag.add_info(span, format!("module instance requires `{}`", target_ty_str))
+            }
+            TypeContainsReason::InstancePortInput {
+                span_connection_port_id,
+                span_port_ty,
+            } => diag
                 .add_info(
-                    span_target_ty,
-                    format!("target type `{}` set here", target_ty_str),
-                ),
-            TypeContainsReason::Operator(span) => diag.add_info(
-                span,
-                format!("operator requires type `{}`", target_ty_str),
-            ),
-            TypeContainsReason::InstanceModule(span) => diag.add_info(
-                span,
-                format!("module instance requires `{}`", target_ty_str),
-            ),
-            TypeContainsReason::InstancePortInput { span_connection_port_id, span_port_ty } => {
-                diag.add_info(span_connection_port_id, format!("input port has type `{}`", target_ty_str))
-                    .add_info(span_port_ty, "port type set here")
-            }
-            TypeContainsReason::InstancePortOutput { span_connection_signal_id, span_signal_ty } => {
-                diag.add_info(span_connection_signal_id, format!("target signal has type `{}`", target_ty_str))
-                    .add_info(span_signal_ty, "target signal type set here")
-            }
+                    span_connection_port_id,
+                    format!("input port has type `{}`", target_ty_str),
+                )
+                .add_info(span_port_ty, "port type set here"),
+            TypeContainsReason::InstancePortOutput {
+                span_connection_signal_id,
+                span_signal_ty,
+            } => diag
+                .add_info(
+                    span_connection_signal_id,
+                    format!("target signal has type `{}`", target_ty_str),
+                )
+                .add_info(span_signal_ty, "target signal type set here"),
         }
     }
 }
@@ -154,10 +165,7 @@ pub fn check_type_contains_compile_value(
         let diag = diag
             .add_error(
                 value.span,
-                format!(
-                    "source value `{}` does not fit",
-                    value.inner.to_diagnostic_string()
-                ),
+                format!("source value `{}` does not fit", value.inner.to_diagnostic_string()),
             )
             .finish();
         Err(diags.report(diag))

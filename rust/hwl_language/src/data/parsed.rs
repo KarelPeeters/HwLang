@@ -105,7 +105,7 @@ pub enum ModulePort<'a> {
 }
 
 impl FileContent {
-    pub fn items_with_ref(&self) -> impl Iterator<Item=(AstRefItem, &ast::Item)> {
+    pub fn items_with_ref(&self) -> impl Iterator<Item = (AstRefItem, &ast::Item)> {
         self.items.iter().enumerate().map(move |(i, item)| {
             (
                 AstRefItem {

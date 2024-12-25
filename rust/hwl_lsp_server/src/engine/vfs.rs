@@ -136,7 +136,7 @@ impl VirtualFileSystem {
         &self.root
     }
 
-    pub fn iter(&mut self) -> impl Iterator<Item=(&PathBuf, &mut Content)> {
+    pub fn iter(&mut self) -> impl Iterator<Item = (&PathBuf, &mut Content)> {
         self.map_rel.iter_mut()
     }
 }

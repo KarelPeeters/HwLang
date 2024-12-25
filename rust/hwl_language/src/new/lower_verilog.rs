@@ -641,10 +641,10 @@ fn lower_block(
                 swriteln!(f, "{indent}end");
             }
             IrStatement::If(IfStatement {
-                                initial_if,
-                                else_ifs,
-                                final_else,
-                            }) => {
+                initial_if,
+                else_ifs,
+                final_else,
+            }) => {
                 let mut write_if = |f: &mut String, pair: &IfCondBlockPair<IrExpression, IrBlock>| {
                     swrite!(f, "if (");
                     lower_expression(diag, name_map, stmt.span, &pair.cond, f)?;

@@ -432,7 +432,10 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn elaborate_module(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<(IrModule, Vec<Port>), ErrorGuaranteed> {
+    pub fn elaborate_module(
+        &mut self,
+        module_elaboration: ModuleElaborationInfo,
+    ) -> Result<(IrModule, Vec<Port>), ErrorGuaranteed> {
         // check cache
         let cache_key = module_elaboration.to_cache_key();
         if let Some(result) = self.elaborated_modules_cache.get(&cache_key) {
@@ -451,7 +454,8 @@ impl CompileState<'_> {
         // put into cache and return
         // this is correct even for errors caused by cycles:
         //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
-        self.elaborated_modules_cache.insert_first(cache_key, elaboration_result.clone());
+        self.elaborated_modules_cache
+            .insert_first(cache_key, elaboration_result.clone());
 
         elaboration_result
     }

@@ -56,7 +56,7 @@ impl CompileState<'_> {
                     expr.span,
                     "dummy expression used here",
                 ))
-            },
+            }
             ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
             ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
             ExpressionKind::Wrapped(inner) => Ok(self.eval_expression(scope, vars, inner)?.inner),

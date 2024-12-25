@@ -50,8 +50,9 @@ impl CompileState<'_> {
         args: &Args<I, Spanned<CompileValue>>,
         scope_outer: Scope,
         span_scope_inner: Span,
-    ) -> Result<(Scope, Vec<(Identifier, CompileValue)>), ErrorGuaranteed> where
-            for<'i> &'i I: Into<Option<&'i Identifier>>,
+    ) -> Result<(Scope, Vec<(Identifier, CompileValue)>), ErrorGuaranteed>
+    where
+        for<'i> &'i I: Into<Option<&'i Identifier>>,
     {
         let diags = self.diags;
 
@@ -203,8 +204,7 @@ impl FunctionValue {
         // TODO cache function calls?
         // TODO we already do this for module elaborations, which are similar
         let param_key = param_values.into_iter().map(|(_, v)| v).collect_vec();
-        let stack_entry =
-            ElaborationStackEntry::FunctionRun(self.item, param_key);
+        let stack_entry = ElaborationStackEntry::FunctionRun(self.item, param_key);
         state
             .check_compile_loop(stack_entry, |state| {
                 // run the body

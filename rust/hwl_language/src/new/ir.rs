@@ -248,7 +248,12 @@ impl IrExpression {
                     IrBoolBinaryOp::Or => "||",
                     IrBoolBinaryOp::Xor => "^",
                 };
-                format!("({} {} {})", left.to_diagnostic_string(m), op_str, right.to_diagnostic_string(m))
+                format!(
+                    "({} {} {})",
+                    left.to_diagnostic_string(m),
+                    op_str,
+                    right.to_diagnostic_string(m)
+                )
             }
             IrExpression::IntBinary(op, left, right) => {
                 let op_str = match op {
@@ -258,9 +263,14 @@ impl IrExpression {
                     IrIntBinaryOp::Div => "/",
                     IrIntBinaryOp::Mod => "%",
                 };
-                format!("({} {} {})", left.to_diagnostic_string(m), op_str, right.to_diagnostic_string(m))
+                format!(
+                    "({} {} {})",
+                    left.to_diagnostic_string(m),
+                    op_str,
+                    right.to_diagnostic_string(m)
+                )
             }
-            
+
             IrExpression::ArrayLiteral(x) => {
                 let inner = x
                     .iter()

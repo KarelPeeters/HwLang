@@ -109,15 +109,15 @@ impl<K: IndexType, T> Arena<K, T> {
         self.map.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=(K, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (K, &T)> {
         self.into_iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=(K, &mut T)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (K, &mut T)> {
         self.into_iter()
     }
 
-    pub fn keys(&self) -> impl Iterator<Item=K> + '_ {
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
         self.into_iter().map(|(k, _)| k)
     }
 
@@ -251,7 +251,7 @@ impl<K: IndexType, T: Eq + Hash + Clone + Debug> ArenaSet<K, T> {
         self.map_fwd.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=(K, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (K, &T)> {
         self.into_iter()
     }
 }

@@ -8,7 +8,7 @@ impl<I: Iterator> IterExt for I {
             None => Ok(Some(x)),
             Some(_) => Err(()),
         })
-            .ok()
-            .flatten()
+        .ok()
+        .flatten()
     }
 }

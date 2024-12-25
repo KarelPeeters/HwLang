@@ -42,5 +42,5 @@ fn parse_std_all() {
         test_parse(entry.path());
         Ok(())
     })
-        .unwrap();
+    .unwrap();
 }
