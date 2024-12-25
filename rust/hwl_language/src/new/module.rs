@@ -583,7 +583,7 @@ impl BodyElaborationState<'_, '_> {
         Ok(IrModuleInstance {
             name: name.as_ref().map(|name| name.string.clone()),
             module: module_ir,
-            ports: ir_connections,
+            port_connections: ir_connections,
         })
     }
 
@@ -719,7 +719,10 @@ impl BodyElaborationState<'_, '_> {
 
                 // success, build connection
                 any_err?;
-                IrPortConnection::Input(connection_value.inner.to_ir_expression(diags, connection_expr.span)?)
+                let connection_expr = connection_value
+                    .map_inner(|v| Ok(v.to_ir_expression(diags, connection_expr.span)?.expr))
+                    .transpose()?;
+                IrPortConnection::Input(connection_expr)
             }
             PortDirection::Output => {
                 // eval expr as dummy, wire or port

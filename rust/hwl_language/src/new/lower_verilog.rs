@@ -3,8 +3,8 @@ use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::new::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule,
-    IrModuleChild, IrModuleInfo, IrPort, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable,
-    IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
+    IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::new::types::HardwareType;
 use crate::syntax::ast::{
@@ -42,26 +42,35 @@ pub fn lower(
     parsed: &ParsedDatabase,
     compiled: &IrDatabase,
 ) -> Result<LoweredVerilog, ErrorGuaranteed> {
-    let mut result = String::new();
-    let mut module_map = IndexMap::new();
-    let mut top_name_scope = LoweredNameScope::default();
+    // the fact that we're not using `parsed` is good, all information should be contained in `compiled`
+    // ideally `source` would also not be used
+    let _ = parsed;
 
-    let top_name = lower_module(
+    let mut ctx = LowerContext {
         diags,
         source,
-        parsed,
         compiled,
-        &mut module_map,
-        &mut top_name_scope,
-        compiled.top_module?,
-        &mut result,
-    )?;
+        module_map: IndexMap::new(),
+        top_name_scope: LoweredNameScope::default(),
+        lowered_modules: vec![],
+    };
+
+    let top_name = lower_module(&mut ctx, compiled.top_module?)?;
 
     Ok(LoweredVerilog {
-        verilog_source: result,
+        verilog_source: ctx.lowered_modules.join("\n\n"),
         top_module_name: top_name.0,
-        debug_info_module_map: module_map.into_iter().map(|(k, v)| (k, v.0)).collect(),
+        debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.0)).collect(),
     })
+}
+
+struct LowerContext<'a> {
+    diags: &'a Diagnostics,
+    source: &'a SourceDatabase,
+    compiled: &'a IrDatabase,
+    module_map: IndexMap<IrModule, LoweredName>,
+    top_name_scope: LoweredNameScope,
+    lowered_modules: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,27 +183,17 @@ struct NameMap<'a> {
     variables: &'a IndexMap<IrVariable, LoweredName>,
 }
 
-// TODO write straight into a single string buffer instead of repeated concatenation
-fn lower_module(
-    diags: &Diagnostics,
-    source: &SourceDatabase,
-    parsed: &ParsedDatabase,
-    compiled: &IrDatabase,
-    module_map: &mut IndexMap<IrModule, LoweredName>,
-    top_name_scope: &mut LoweredNameScope,
-    module: IrModule,
-    f: &mut String,
-) -> Result<LoweredName, ErrorGuaranteed> {
-    let _ = parsed;
+fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredName, ErrorGuaranteed> {
+    let diags = ctx.diags;
 
-    if let Some(lowered) = module_map.get(&module) {
+    if let Some(lowered) = ctx.module_map.get(&module) {
         return Ok(lowered.clone());
     }
 
     // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
     //   or maybe verilog has separate namespaces, then it's fine
 
-    let module_info = &compiled.modules[module];
+    let module_info = &ctx.compiled.modules[module];
     let IrModuleInfo {
         debug_info_id,
         debug_info_generic_args,
@@ -203,13 +202,16 @@ fn lower_module(
         wires,
         children: processes,
     } = module_info;
-    let module_name = top_name_scope.make_unique_id(diags, debug_info_id)?;
+    let module_name = ctx.top_name_scope.make_unique_id(diags, debug_info_id)?;
+
+    let mut result_str = String::new();
+    let f = &mut result_str;
 
     swriteln!(f, "// module {}", debug_info_id.string);
     swriteln!(
         f,
         "//   defined in \"{}\"",
-        source[debug_info_id.span.start.file].path_raw
+        ctx.source[debug_info_id.span.start.file].path_raw
     );
 
     if let Some(generic_args) = debug_info_generic_args {
@@ -230,7 +232,7 @@ fn lower_module(
         lower_module_signals(diags, &mut module_name_scope, registers, wires, &mut newline, f)?;
 
     lower_module_statements(
-        diags,
+        ctx,
         &mut module_name_scope,
         &port_name_map,
         &reg_name_map,
@@ -243,7 +245,9 @@ fn lower_module(
 
     swriteln!(f, "endmodule");
 
-    module_map.insert_first(module, module_name.clone());
+    ctx.module_map.insert_first(module, module_name.clone());
+    ctx.lowered_modules.push(result_str);
+
     Ok(module_name)
 }
 
@@ -377,7 +381,7 @@ fn lower_module_signals(
 }
 
 fn lower_module_statements(
-    diags: &Diagnostics,
+    ctx: &mut LowerContext,
     module_name_scope: &mut LoweredNameScope,
     port_name_map: &IndexMap<IrPort, LoweredName>,
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
@@ -387,7 +391,8 @@ fn lower_module_statements(
     newline: &mut NewlineGenerator,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
-    // TODO implement blocked assignment transformation again
+    let diags = ctx.diags;
+
     for child in children {
         newline.start_new_block();
         newline.before_item(f);
@@ -491,8 +496,67 @@ fn lower_module_statements(
                 swriteln!(f, "{I}end");
             }
             IrModuleChild::ModuleInstance(instance) => {
-                let _ = instance;
-                return Err(diags.report_todo(child.span, "lower module instance"));
+                let IrModuleInstance {
+                    name,
+                    module,
+                    port_connections,
+                } = instance;
+
+                // TODO this messes up string concatenation, go back to string building per module with a final concat later
+                let module = lower_module(ctx, *module)?;
+
+                if let Some(name) = name {
+                    let name_safe = LoweredName(name.clone());
+                    swrite!(f, "{I}{module} {name_safe}(");
+                } else {
+                    swrite!(f, "{I}{module}(");
+                }
+
+                if port_connections.is_empty() {
+                    swriteln!(f, ");");
+                    return Ok(());
+                }
+                swriteln!(f);
+
+                let name_map = NameMap {
+                    ports: port_name_map,
+                    registers: &reg_name_map,
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+
+                for (port_index, (&port, connection)) in enumerate(port_connections) {
+                    let port_name = name_map.ports.get(&port).unwrap();
+                    swrite!(f, "{I}{I}.{port_name}(");
+                    match connection {
+                        IrPortConnection::Input(expr) => {
+                            lower_expression(diags, name_map, expr.span, &expr.inner, f)?;
+                        }
+                        &IrPortConnection::Output(signal) => {
+                            match signal {
+                                None => {
+                                    // write nothing, causing empty `()`
+                                }
+                                Some(IrWireOrPort::Wire(signal_wire)) => {
+                                    let wire_name = name_map.wires.get(&signal_wire).unwrap();
+                                    swrite!(f, "{wire_name}");
+                                }
+                                Some(IrWireOrPort::Port(signal_port)) => {
+                                    let port_name = name_map.ports.get(&signal_port).unwrap();
+                                    swrite!(f, "{port_name}");
+                                }
+                            }
+                        }
+                    }
+
+                    if port_index == port_connections.len() - 1 {
+                        swriteln!(f, ")");
+                    } else {
+                        swriteln!(f, "),");
+                    }
+                }
+
+                swriteln!(f, "{I});");
             }
         }
     }

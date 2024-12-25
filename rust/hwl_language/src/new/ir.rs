@@ -1,5 +1,4 @@
 use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::block::TypedIrExpression;
 use crate::new::types::{ClosedIncRange, HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::new_index_type;
@@ -115,16 +114,16 @@ pub struct IrCombinatorialProcess {
 pub struct IrModuleInstance {
     pub name: Option<String>,
     pub module: IrModule,
-    pub ports: IndexMap<IrPort, IrPortConnection>,
+    pub port_connections: IndexMap<IrPort, IrPortConnection>,
 }
 
 #[derive(Debug)]
 pub enum IrPortConnection {
-    Input(TypedIrExpression),
+    Input(Spanned<IrExpression>),
     Output(Option<IrWireOrPort>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum IrWireOrPort {
     Wire(IrWire),
     Port(IrPort),
