@@ -26,12 +26,9 @@ impl IntRepresentation {
         } = range;
         assert!(start <= end, "Range must be valid, got {start}..={end}");
 
-        if start == end {
-            return IntRepresentation {
-                signed: Signed::Unsigned,
-                width: BigUint::ZERO,
-            };
-        }
+        // TODO consider switching to zero-width range when there is only a single possible value
+        //    this is a bit tricky for signed, and also only a partial optimization
+        //    (we could minimize bits even for non-single-value ranges too)
 
         let (signed, bits) = if start.is_negative() {
             // signed
