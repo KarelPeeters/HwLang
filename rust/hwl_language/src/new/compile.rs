@@ -4,13 +4,13 @@ use crate::data::source::SourceDatabase;
 use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
 use crate::new::block::TypedIrExpression;
 use crate::new::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
-use crate::new::misc::{DomainSignal, PortDomain, ScopedEntry, ValueDomain};
+use crate::new::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::new::types::{HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::syntax::ast;
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
-use crate::util::arena::{Arena, ArenaSet};
+use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use crate::{new_index_type, throw};
@@ -107,8 +107,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         wires: Arena::default(),
         variables: Arena::default(),
         ir_modules: Arena::default(),
-        elaborated_modules: ArenaSet::default(),
-        elaborated_modules_to_ir: IndexMap::new(),
+        elaborated_modules_cache: IndexMap::new(),
         elaboration_stack: vec![],
         items: IndexMap::default(),
     };
@@ -120,11 +119,12 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
 
     // get the top module (it will always hit the elaboration cache)
     let top_module = state.find_top_module().and_then(|top_item| {
-        let elaboration = state.elaborated_modules.push(ModuleElaborationInfo {
+        let elaboration_info = ModuleElaborationInfo {
             item: top_item,
             args: None,
-        });
-        state.elaborate_module(elaboration)
+        };
+        let (module_ir, _) = state.elaborate_module(elaboration_info)?;
+        Ok(module_ir)
     });
 
     // return result
@@ -151,28 +151,29 @@ pub struct CompileState<'a> {
     pub registers: Arena<Register, RegisterInfo>,
 
     pub ir_modules: Arena<IrModule, IrModuleInfo>,
-    pub elaborated_modules: ArenaSet<ModuleElaboration, ModuleElaborationInfo>,
-    pub elaborated_modules_to_ir: IndexMap<ModuleElaboration, Result<IrModule, ErrorGuaranteed>>,
+    pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<(IrModule, Vec<Port>), ErrorGuaranteed>>,
 
     pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
 
     elaboration_stack: Vec<ElaborationStackEntry>,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct StackNotEq(usize);
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ElaborationStackEntry {
     // TODO properly refer to ast instantiation site
     /// Module instantiation is only here to provide nicer error messages.
-    ModuleInstantiation(Span),
-    ModuleElaboration(ModuleElaboration),
+    ModuleInstantiation(Span, StackNotEq),
+    ModuleElaboration(ModuleElaborationCacheKey),
     // TODO better name, is this ItemEvaluation, ItemSignature, ...?
     Item(AstRefItem),
     // TODO better names
-    FunctionCall(Span, Args<Option<Identifier>, CompileValue>),
-    FunctionRun(AstRefItem, Args<Option<Identifier>, CompileValue>),
+    FunctionCall(Span, StackNotEq),
+    FunctionRun(AstRefItem, Vec<CompileValue>),
 }
 
-new_index_type!(pub ModuleElaboration);
 new_index_type!(pub Constant);
 new_index_type!(pub Parameter);
 new_index_type!(pub Variable);
@@ -180,10 +181,30 @@ new_index_type!(pub Port);
 new_index_type!(pub Wire);
 new_index_type!(pub Register);
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct ModuleElaborationInfo {
     pub item: AstRefModule,
-    pub args: Option<Vec<CompileValue>>,
+    pub args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
+}
+
+impl ModuleElaborationInfo {
+    pub fn to_cache_key(&self) -> ModuleElaborationCacheKey {
+        ModuleElaborationCacheKey {
+            item: self.item,
+            args: self.args.as_ref().map(|args| {
+                args.inner
+                    .iter()
+                    .map(|arg| (arg.name.as_ref().map(|id| id.string.clone()), arg.value.inner.clone()))
+                    .collect_vec()
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ModuleElaborationCacheKey {
+    pub item: AstRefModule,
+    pub args: Option<Vec<(Option<String>, CompileValue)>>,
 }
 
 #[derive(Debug)]
@@ -203,7 +224,7 @@ pub struct VariableInfo {
 pub struct PortInfo {
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    pub domain: Spanned<PortDomain<DomainSignal>>,
+    pub domain: Spanned<PortDomain>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrPort,
 }
@@ -211,7 +232,7 @@ pub struct PortInfo {
 #[derive(Debug)]
 pub struct WireInfo {
     pub id: MaybeIdentifier,
-    pub domain: Spanned<DomainKind<DomainSignal>>,
+    pub domain: Spanned<ValueDomain>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrWire,
 }
@@ -238,7 +259,7 @@ impl WireInfo {
     pub fn typed_ir_expr(&self) -> TypedIrExpression {
         TypedIrExpression {
             ty: self.ty.inner.clone(),
-            domain: ValueDomain::from_domain_kind(self.domain.inner.clone()),
+            domain: self.domain.inner.clone(),
             expr: IrExpression::Wire(self.ir),
         }
     }
@@ -356,6 +377,10 @@ fn find_parent_scope(
 }
 
 impl CompileState<'_> {
+    pub fn not_eq_stack(&self) -> StackNotEq {
+        StackNotEq(self.elaboration_stack.len())
+    }
+
     // TODO add stack limit
     pub fn check_compile_loop<T>(
         &mut self,
@@ -369,19 +394,18 @@ impl CompileState<'_> {
             let mut diag = Diagnostic::new("encountered elaboration cycle");
             for (i, elem) in enumerate(cycle) {
                 match elem {
-                    &ElaborationStackEntry::ModuleInstantiation(span) => {
+                    &ElaborationStackEntry::ModuleInstantiation(span, _not_eq) => {
                         // TODO include generic args
                         diag = diag.add_error(span, format!("({i}): module instantiation"));
                     }
-                    &ElaborationStackEntry::ModuleElaboration(elem) => {
-                        let item = self.elaborated_modules[elem].item;
+                    ElaborationStackEntry::ModuleElaboration(elem) => {
+                        let item = elem.item;
                         diag = diag.add_error(self.parsed[item].id.span, format!("({i}): module"));
                     }
                     &ElaborationStackEntry::Item(item) => {
                         diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): item"));
                     }
-                    &ElaborationStackEntry::FunctionCall(expr_span, _) => {
-                        // TODO include args
+                    &ElaborationStackEntry::FunctionCall(expr_span, _not_eq) => {
                         diag = diag.add_error(expr_span, format!("({i}): function call"));
                     }
                     &ElaborationStackEntry::FunctionRun(item, _) => {
@@ -408,27 +432,28 @@ impl CompileState<'_> {
         }
     }
 
-    pub fn elaborate_module(&mut self, module_elaboration: ModuleElaboration) -> Result<IrModule, ErrorGuaranteed> {
+    pub fn elaborate_module(&mut self, module_elaboration: ModuleElaborationInfo) -> Result<(IrModule, Vec<Port>), ErrorGuaranteed> {
         // check cache
-        if let Some(&result) = self.elaborated_modules_to_ir.get(&module_elaboration) {
-            return result;
+        let cache_key = module_elaboration.to_cache_key();
+        if let Some(result) = self.elaborated_modules_cache.get(&cache_key) {
+            return result.clone();
         }
 
         // new elaboration
-        let ir_module = self
-            .check_compile_loop(ElaborationStackEntry::ModuleElaboration(module_elaboration), |s| {
-                s.elaborate_module_new(module_elaboration)
-                    .map(|ir_content| s.ir_modules.push(ir_content))
+        let elaboration_result = self
+            .check_compile_loop(ElaborationStackEntry::ModuleElaboration(cache_key.clone()), |s| {
+                let (ir_module_info, ports) = s.elaborate_module_new(module_elaboration)?;
+                let ir_module = s.ir_modules.push(ir_module_info);
+                Ok((ir_module, ports))
             })
             .flatten_err();
 
         // put into cache and return
         // this is correct even for errors caused by cycles:
         //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
-        self.elaborated_modules_to_ir
-            .insert_first(module_elaboration, ir_module);
+        self.elaborated_modules_cache.insert_first(cache_key, elaboration_result.clone());
 
-        ir_module
+        elaboration_result
     }
 
     fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
@@ -483,11 +508,16 @@ impl CompileState<'_> {
     }
 
     pub fn domain_signal_to_ir(&self, signal: &DomainSignal) -> IrExpression {
-        match signal {
-            &DomainSignal::Port(port) => IrExpression::Port(self.ports[port].ir),
-            &DomainSignal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
-            &DomainSignal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
-            DomainSignal::BoolNot(inner) => IrExpression::BoolNot(Box::new(self.domain_signal_to_ir(inner))),
+        let &Polarized { inverted, signal } = signal;
+        let inner = match signal {
+            Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
+            Signal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
+            Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
+        };
+        if inverted {
+            IrExpression::BoolNot(Box::new(inner))
+        } else {
+            inner
         }
     }
 }

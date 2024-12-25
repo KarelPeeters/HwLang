@@ -10,24 +10,30 @@ pub enum ScopedEntry {
     Direct(NamedValue),
 }
 
-// TODO expand to all possible values again
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum DomainSignal {
+pub type DomainSignal = Polarized<Signal>;
+
+// TODO expand to all possible values again?
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Polarized<V> {
+    pub inverted: bool,
+    pub signal: V,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Signal {
     Port(Port),
     Wire(Wire),
     Register(Register),
-    // TODO make invert a common struct field instead of a boxed variant?
-    BoolNot(Box<DomainSignal>),
 }
 
-#[derive(Debug, Clone)]
-pub enum PortDomain<V> {
+#[derive(Debug, Copy, Clone)]
+pub enum PortDomain {
     Clock,
-    Kind(DomainKind<V>),
+    Kind(DomainKind<Polarized<Port>>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum ValueDomain<V = DomainSignal> {
+pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset
@@ -45,20 +51,16 @@ impl ValueDomain {
         }
     }
 
-    pub fn from_domain_kind(domain: DomainKind<DomainSignal>) -> Self {
-        match domain {
-            DomainKind::Async => ValueDomain::Async,
-            DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
-                clock: sync.clock,
-                reset: sync.reset,
-            }),
-        }
-    }
-
-    pub fn from_port_domain(domain: PortDomain<DomainSignal>) -> Self {
+    pub fn from_port_domain(domain: PortDomain) -> Self {
         match domain {
             PortDomain::Clock => ValueDomain::Clock,
-            PortDomain::Kind(kind) => ValueDomain::from_domain_kind(kind),
+            PortDomain::Kind(kind) => match kind {
+                DomainKind::Async => ValueDomain::Async,
+                DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
+                    clock: sync.clock.map_inner(Signal::Port),
+                    reset: sync.reset.map_inner(Signal::Port),
+                }),
+            },
         }
     }
 
@@ -72,27 +74,83 @@ impl ValueDomain {
     }
 }
 
-impl DomainSignal {
-    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
-        match self {
-            &DomainSignal::Port(port) => s.ports[port].id.string.clone(),
-            &DomainSignal::Wire(wire) => s.wires[wire].id.string().to_owned(),
-            &DomainSignal::Register(reg) => s.registers[reg].id.string().to_owned(),
-            DomainSignal::BoolNot(x) => format!("!({})", x.to_diagnostic_string(s)),
+impl<V> ValueDomain<V> {
+    pub fn from_domain_kind(domain: DomainKind<V>) -> Self {
+        match domain {
+            DomainKind::Async => ValueDomain::Async,
+            DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
+                clock: sync.clock,
+                reset: sync.reset,
+            }),
         }
     }
 }
 
-impl PortDomain<DomainSignal> {
-    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
-        match self {
-            PortDomain::Clock => "clock".to_owned(),
-            PortDomain::Kind(kind) => kind.to_diagnostic_string(s),
+impl<V> Polarized<V> {
+    pub fn new(signal: V) -> Self {
+        Polarized {
+            signal,
+            inverted: false,
+        }
+    }
+
+    pub fn invert(self) -> Self {
+        Polarized {
+            signal: self.signal,
+            inverted: !self.inverted,
+        }
+    }
+
+    pub fn map_inner<F, U>(self, f: F) -> Polarized<U>
+    where
+        F: FnOnce(V) -> U,
+    {
+        Polarized {
+            signal: f(self.signal),
+            inverted: self.inverted,
+        }
+    }
+
+    pub fn try_map_inner<F, U, E>(self, f: F) -> Result<Polarized<U>, E>
+    where
+        F: FnOnce(V) -> Result<U, E>,
+    {
+        Ok(Polarized {
+            signal: f(self.signal)?,
+            inverted: self.inverted,
+        })
+    }
+}
+
+impl Polarized<Signal> {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
+        let Polarized { inverted, signal } = self;
+
+        let signal_str = signal.to_diagnostic_string(s);
+        match inverted {
+            false => signal_str,
+            true => format!("(!{})", signal_str),
         }
     }
 }
 
-impl DomainKind<DomainSignal> {
+impl Signal {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
+        match self {
+            Signal::Port(port) => s.ports[port].id.string.clone(),
+            Signal::Wire(wire) => s.wires[wire].id.string().to_owned(),
+            Signal::Register(reg) => s.registers[reg].id.string().to_owned(),
+        }
+    }
+}
+
+impl PortDomain {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
+        ValueDomain::from_port_domain(self).to_diagnostic_string(s)
+    }
+}
+
+impl DomainKind<Polarized<Signal>> {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         match self {
             DomainKind::Async => "async".to_owned(),
@@ -101,12 +159,19 @@ impl DomainKind<DomainSignal> {
     }
 }
 
-impl SyncDomain<DomainSignal> {
+impl SyncDomain<Polarized<Signal>> {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         format!(
             "sync({}, {})",
             self.clock.to_diagnostic_string(s),
             self.reset.to_diagnostic_string(s)
         )
+    }
+}
+
+impl SyncDomain<Polarized<Port>> {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
+        self.map_inner(|p| p.map_inner(|p| Signal::Port(p)))
+            .to_diagnostic_string(s)
     }
 }

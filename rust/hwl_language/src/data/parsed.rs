@@ -1,6 +1,6 @@
 use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::data::source::SourceDatabase;
-use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, PortKind, Spanned};
+use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, WireKind};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::data::IndexMapExt;
@@ -150,8 +150,8 @@ impl<'a> ModulePort<'a> {
     pub fn ty_span(self) -> Span {
         match self {
             ModulePort::Single(port) => match &port.kind.inner {
-                PortKind::Clock => port.kind.span,
-                PortKind::Normal { domain: _, ty } => ty.span,
+                WireKind::Clock => port.kind.span,
+                WireKind::Normal { domain: _, ty } => ty.span,
             },
             ModulePort::InBlock(port) => port.ty.span,
         }

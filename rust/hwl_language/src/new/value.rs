@@ -1,8 +1,9 @@
 use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::data::parsed::AstRefModule;
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
-use crate::new::ir::{IrExpression, IrModule};
+use crate::new::ir::IrExpression;
 use crate::new::misc::ValueDomain;
 use crate::new::types::{ClosedIncRange, IncRange, Type};
 use crate::syntax::pos::Span;
@@ -38,7 +39,7 @@ pub enum CompileValue {
     String(String),
     Array(Vec<CompileValue>),
     IntRange(IncRange<BigInt>),
-    Module(IrModule),
+    Module(AstRefModule),
     Function(FunctionValue),
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }

@@ -172,8 +172,8 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<DomainKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
+    <start:@L> "wire" <id:MaybeId> ":" <kind:Spanned<WireKind>> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
+        let decl = WireDeclaration { span: loc.span(start, end), id, kind, value };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -208,7 +208,7 @@ ModuleStatementKind: ModuleStatementKind = {
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
         <generic_args:("generics" "(" <Args> ")")?>
-        "ports" "(" <port_connections:Spanned<Separated<InstancePortConnection, ",">>> ")"
+        "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
@@ -222,8 +222,8 @@ ModuleStatementKind: ModuleStatementKind = {
 
 // TODO better port syntax, maybe including directionality?
 //   now it's different from both generics and struct literals
-InstancePortConnection: (Identifier, Spanned<Option<Expression>>) = {
-    "." <id:Id> "(" <value:Spanned<Expr?>> ")" => (id, value),
+PortConnection: PortConnection = {
+    "." <id:Id> "(" <expr:Expr> ")" => PortConnection { id, expr },
 }
 
 BlockStatementKind: BlockStatementKind = {
@@ -305,7 +305,7 @@ GenericParameter: GenericParameter = {
 ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
 
 ModulePortItem: ModulePortItem = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<PortKind>> <end:@R>
+    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>> <end:@R>
             => ModulePortItem::Single(ModulePortSingle { id, direction, kind, span: loc.span(start, end) }),
     <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
@@ -316,9 +316,9 @@ ModulePortInBlock: ModulePortInBlock = {
         => ModulePortInBlock { id, direction, ty, span: loc.span(start, end) },
 }
 
-PortKind: PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
-    "clock" => PortKind::Clock,
-    <domain:Spanned<DomainKind>> <ty:BoxExpr> => PortKind::Normal { domain, ty },
+WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
+    "clock" => WireKind::Clock,
+    <domain:Spanned<DomainKind>> <ty:BoxExpr> => WireKind::Normal { domain, ty },
 }
 
 PortDirection: PortDirection = {

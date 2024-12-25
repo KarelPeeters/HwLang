@@ -1,28 +1,24 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
-use crate::new::misc::{DomainSignal, ValueDomain};
+use crate::new::misc::ValueDomain;
 use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::new::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
-use crate::throw;
 use annotate_snippets::Level;
 use num_bigint::BigInt;
 
 impl CompileState<'_> {
     pub fn check_valid_domain_crossing(
         &self,
-        assignment_span: Span,
+        crossing_span: Span,
         target: Spanned<&ValueDomain>,
         source: Spanned<&ValueDomain>,
         required_reason: &str,
     ) -> Result<(), ErrorGuaranteed> {
         let valid = match (target.inner, source.inner) {
-            // clock only clock, and even that is not yet supported
-            (ValueDomain::Clock, ValueDomain::Clock) => {
-                throw!(self.diags.report_todo(assignment_span, "clock assignments"))
-            }
+            (ValueDomain::Clock, ValueDomain::Clock) => Ok(()),
             (ValueDomain::Clock, _) => Err("non-clock to clock"),
             (ValueDomain::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
             (ValueDomain::Sync(_), ValueDomain::Async) => Err("async to sync"),
@@ -56,10 +52,10 @@ impl CompileState<'_> {
         };
 
         valid.map_err(|invalid_reason| {
-            let target_str = self.value_domain_to_diagnostic_string(&target.inner);
-            let source_str = self.value_domain_to_diagnostic_string(source.inner);
+            let target_str = target.inner.to_diagnostic_string(self);
+            let source_str = source.inner.to_diagnostic_string(self);
             let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
-                .add_error(assignment_span, "invalid domain crossing here")
+                .add_error(crossing_span, "invalid domain crossing here")
                 .add_info(target.span, format!("target domain is {target_str}"))
                 .add_info(source.span, format!("source domain is {source_str}"))
                 .footer(Level::Info, required_reason)
@@ -67,58 +63,50 @@ impl CompileState<'_> {
             self.diags.report(diag)
         })
     }
-
-    fn value_domain_to_diagnostic_string(&self, domain: &ValueDomain) -> String {
-        match domain {
-            ValueDomain::CompileTime => "compile-time".to_string(),
-            ValueDomain::Clock => "clock".to_string(),
-            ValueDomain::Async => "async".to_string(),
-            ValueDomain::Sync(sync) => {
-                let SyncDomain { clock, reset } = sync;
-                format!(
-                    "sync({}, {})",
-                    self.domain_signal_to_diagnostic_string(clock),
-                    self.domain_signal_to_diagnostic_string(reset),
-                )
-            }
-        }
-    }
-
-    fn domain_signal_to_diagnostic_string(&self, signal: &DomainSignal) -> String {
-        match signal {
-            &DomainSignal::Port(port) => self.ports[port].id.string.clone(),
-            &DomainSignal::Wire(wire) => self.wires[wire].id.string().to_string(),
-            &DomainSignal::Register(reg) => self.registers[reg].id.string().to_string(),
-            DomainSignal::BoolNot(signal) => format!("!{}", self.domain_signal_to_diagnostic_string(signal)),
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum TypeContainsReason {
     Assignment {
-        span_assignment: Span,
+        span_target: Span,
         span_target_ty: Span,
     },
     Operator(Span),
+    InstanceModule(Span),
+    InstancePortInput { span_connection_port_id: Span, span_port_ty: Span },
+    InstancePortOutput { span_connection_signal_id: Span, span_signal_ty: Span },
 }
 
 impl TypeContainsReason {
     pub fn add_diag_info(self, diag: DiagnosticBuilder, target_ty: &Type) -> DiagnosticBuilder {
+        let target_ty_str = target_ty.to_diagnostic_string();
         match self {
+            // TODO improve assignment error message
             TypeContainsReason::Assignment {
-                span_assignment,
+                span_target,
                 span_target_ty,
             } => diag
-                .add_info(span_assignment, "assignment requires type match")
+                .add_info(span_target, format!("target requires type `{}`", target_ty_str))
                 .add_info(
                     span_target_ty,
-                    format!("target type `{}` set here", target_ty.to_diagnostic_string()),
+                    format!("target type `{}` set here", target_ty_str),
                 ),
             TypeContainsReason::Operator(span) => diag.add_info(
                 span,
-                format!("operator requires type `{}`", target_ty.to_diagnostic_string()),
+                format!("operator requires type `{}`", target_ty_str),
             ),
+            TypeContainsReason::InstanceModule(span) => diag.add_info(
+                span,
+                format!("module instance requires `{}`", target_ty_str),
+            ),
+            TypeContainsReason::InstancePortInput { span_connection_port_id, span_port_ty } => {
+                diag.add_info(span_connection_port_id, format!("input port has type `{}`", target_ty_str))
+                    .add_info(span_port_ty, "port type set here")
+            }
+            TypeContainsReason::InstancePortOutput { span_connection_signal_id, span_signal_ty } => {
+                diag.add_info(span_connection_signal_id, format!("target signal has type `{}`", target_ty_str))
+                    .add_info(span_signal_ty, "target signal type set here")
+            }
         }
     }
 }
@@ -139,23 +127,11 @@ pub fn check_type_contains_value(
             check_type_contains_compile_value(diags, reason, target_ty, value, accept_undefined)
         }
         MaybeCompile::Other(value_inner) => {
-            let value_ty = value_inner.ty.as_type();
-            if target_ty.contains_type(&value_ty) {
-                Ok(())
-            } else {
-                let mut diag = Diagnostic::new("type does not fit in type");
-                diag = reason.add_diag_info(diag, target_ty);
-                let diag = diag
-                    .add_error(
-                        value.span,
-                        format!(
-                            "source value with type `{}` does not fit",
-                            value_ty.to_diagnostic_string()
-                        ),
-                    )
-                    .finish();
-                Err(diags.report(diag))
-            }
+            let value_ty = Spanned {
+                span: value.span,
+                inner: &value_inner.ty.as_type(),
+            };
+            check_type_contains_type(diags, reason, target_ty, value_ty)
         }
     }
 }
@@ -179,8 +155,32 @@ pub fn check_type_contains_compile_value(
             .add_error(
                 value.span,
                 format!(
-                    "source value `{}` here does not fit",
+                    "source value `{}` does not fit",
                     value.inner.to_diagnostic_string()
+                ),
+            )
+            .finish();
+        Err(diags.report(diag))
+    }
+}
+
+pub fn check_type_contains_type(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    target_ty: &Type,
+    value_ty: Spanned<&Type>,
+) -> Result<(), ErrorGuaranteed> {
+    if target_ty.contains_type(value_ty.inner) {
+        Ok(())
+    } else {
+        let mut diag = Diagnostic::new("value does not fit in type");
+        diag = reason.add_diag_info(diag, target_ty);
+        let diag = diag
+            .add_error(
+                value_ty.span,
+                format!(
+                    "source value with type `{}` does not fit",
+                    value_ty.inner.to_diagnostic_string()
                 ),
             )
             .finish();

@@ -2,8 +2,10 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::data::parsed::AstRefItem;
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::VariableValues;
+use crate::new::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::misc::ScopedEntry;
+use crate::new::types::Type;
 use crate::new::value::{CompileValue, NamedValue};
 use crate::syntax::ast::{Arg, Args, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
@@ -11,6 +13,7 @@ use crate::util::data::IndexMapExt;
 use crate::util::ResultDoubleExt;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
+use itertools::Itertools;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct FunctionValue {
@@ -28,7 +31,7 @@ pub struct FunctionValue {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ReturnType {
-    Type,
+    Evaluated(Type),
     Expression(Box<Expression>),
 }
 
@@ -40,21 +43,24 @@ pub enum FunctionBody {
     // TODO add normal functions
 }
 
-// TODO implement call_runtime which generates ir code
-impl FunctionValue {
-    pub fn call_compile_time(
-        &self,
-        state: &mut CompileState,
-        args: Args<Option<Identifier>, CompileValue>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
-        let diags = state.diags;
+impl CompileState<'_> {
+    pub fn match_args_to_params<I>(
+        &mut self,
+        params: &Spanned<Vec<GenericParameter>>,
+        args: &Args<I, Spanned<CompileValue>>,
+        scope_outer: Scope,
+        span_scope_inner: Span,
+    ) -> Result<(Scope, Vec<(Identifier, CompileValue)>), ErrorGuaranteed> where
+            for<'i> &'i I: Into<Option<&'i Identifier>>,
+    {
+        let diags = self.diags;
 
         // check params unique
         // TODO we could do this earlier, but then parameters that only exist conditionally can't get checked yet
         //   eventually we will do partial checking of generic items, then this check will trigger early enough
         let mut param_ids: IndexMap<&str, &Identifier> = IndexMap::new();
         let mut e = Ok(());
-        for param in &self.params.inner {
+        for param in &params.inner {
             match param_ids.entry(&param.id.string) {
                 Entry::Occupied(entry) => {
                     let diag = Diagnostic::new("parameter declared twice")
@@ -70,7 +76,7 @@ impl FunctionValue {
         }
         let () = e?;
 
-        // check args valid
+        // match args to params
         let mut first_named_span = None;
         let mut args_passed = IndexMap::new();
 
@@ -80,6 +86,7 @@ impl FunctionValue {
                 name: ref arg_name,
                 value: ref arg_value,
             } = arg;
+            let arg_name = arg_name.into();
 
             match (first_named_span, arg_name) {
                 (None, None) => {
@@ -90,7 +97,7 @@ impl FunctionValue {
                         }
                         None => {
                             let diag = Diagnostic::new("too many arguments")
-                                .add_info(self.params.span, format!("expected {} parameter(s)", param_ids.len()))
+                                .add_info(params.span, format!("expected {} parameter(s)", param_ids.len()))
                                 .add_error(arg.span, format!("trying to pass {} argument(s)", args.inner.len()))
                                 .finish();
                             return Err(diags.report(diag));
@@ -107,7 +114,7 @@ impl FunctionValue {
                             }
                             None => {
                                 let diag = Diagnostic::new(format!("unexpected argument `{}`", name.string))
-                                    .add_info(self.params.span, "parameters declared here")
+                                    .add_info(params.span, "parameters declared here")
                                     .add_error(name.span, "unexpected argument")
                                     .finish();
                                 return Err(diags.report(diag));
@@ -132,33 +139,80 @@ impl FunctionValue {
             }
         }
 
+        // typecheck and final result building
+        if params.inner.len() != args_passed.len() {
+            return Err(diags.report_internal_error(args.span, "finished matching args, but got wrong final length"));
+        }
+
+        let scope_params = self
+            .scopes
+            .new_child(scope_outer, span_scope_inner, Visibility::Private);
+        let mut param_values_vec = vec![];
+        let no_vars = VariableValues::new_no_vars();
+
+        for param_info in &params.inner {
+            let param_id = &param_info.id;
+
+            // check param type
+            let param_ty = self.eval_expression_as_ty(scope_params, &no_vars, &param_info.ty)?;
+            let (_, _, arg_value) = args_passed.get(&param_id.string).ok_or_else(|| {
+                diags.report_internal_error(params.span, "finished matching args, but got missing param name")
+            })?;
+
+            // TODO this is abusing the assignment reason, and the span is probably not even right
+            let reason = TypeContainsReason::Assignment {
+                span_target: param_id.span,
+                span_target_ty: param_ty.span,
+            };
+            check_type_contains_compile_value(diags, reason, &param_ty.inner, arg_value.as_ref(), true)?;
+
+            // record value into vec
+            param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
+
+            // declare param in scope
+            let param = self.parameters.push(ConstantInfo {
+                id: MaybeIdentifier::Identifier(param_id.clone()),
+                value: arg_value.inner.clone(),
+            });
+            let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
+            self.scopes[scope_params].declare_already_checked(
+                diags,
+                param_id.string.clone(),
+                param_id.span,
+                Ok(entry),
+            )?;
+        }
+
+        Ok((scope_params, param_values_vec))
+    }
+}
+
+// TODO implement call_runtime which generates ir code
+impl FunctionValue {
+    pub fn call_compile_time(
+        &self,
+        state: &mut CompileState,
+        args: Args<Option<Identifier>, Spanned<CompileValue>>,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        // map params
+        // TODO discard scope after use?
+        let span_scope_inner = self.params.span.join(self.body_span);
+        let (param_scope, param_values) =
+            state.match_args_to_params(&self.params, &args, self.outer_scope, span_scope_inner)?;
+
         // TODO cache function calls?
-        let stack_entry = ElaborationStackEntry::FunctionRun(self.item, args.clone());
+        // TODO we already do this for module elaborations, which are similar
+        let param_key = param_values.into_iter().map(|(_, v)| v).collect_vec();
+        let stack_entry =
+            ElaborationStackEntry::FunctionRun(self.item, param_key);
         state
             .check_compile_loop(stack_entry, |state| {
-                // create temporary scope
-                // TODO discard scope after use?
-                let scope_span = self.params.span.join(self.body_span);
-                let scope = state
-                    .scopes
-                    .new_child(self.outer_scope, scope_span, Visibility::Private);
-
-                // populate scope with args
-                for (id, (param_id, span, value)) in args_passed {
-                    let param = state.parameters.push(ConstantInfo {
-                        id: MaybeIdentifier::Identifier(param_id.clone()),
-                        value: value.clone(),
-                    });
-                    let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
-                    state.scopes[scope].declare_already_checked(diags, id, span, Ok(entry))?;
-                }
-
                 // run the body
                 // TODO add execution limits?
                 match &self.body {
-                    FunctionBody::Type(expr) => {
-                        Ok(state.eval_expression_as_compile(scope, &VariableValues::new_no_vars(), expr, "type body")?.inner)
-                    }
+                    FunctionBody::Type(expr) => Ok(state
+                        .eval_expression_as_compile(param_scope, &VariableValues::new_no_vars(), expr, "type body")?
+                        .inner),
                 }
             })
             .flatten_err()

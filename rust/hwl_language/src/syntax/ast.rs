@@ -166,7 +166,7 @@ pub struct ModulePortSingle {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    pub kind: Spanned<PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
+    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,12 +185,12 @@ pub struct ModulePortInBlock {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PortKind<S, T> {
+pub enum WireKind<S, T> {
     Clock,
     Normal { domain: S, ty: T },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DomainKind<S> {
     Async,
     Sync(SyncDomain<S>),
@@ -198,7 +198,7 @@ pub enum DomainKind<S> {
 
 // TODO how to represent the difference between sync and async reset?
 //   this is not the same as the sync/async-ness of the reset itself! (or is it?)
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SyncDomain<S> {
     pub clock: S,
     // TODO make reset optional
@@ -218,6 +218,13 @@ impl<S> SyncDomain<S> {
             clock: f(self.clock),
             reset: f(self.reset),
         }
+    }
+
+    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(S) -> Result<U, E>) -> Result<SyncDomain<U>, E> {
+        Ok(SyncDomain {
+            clock: f(self.clock)?,
+            reset: f(self.reset)?,
+        })
     }
 }
 
@@ -324,8 +331,7 @@ pub struct WireDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     // TODO make optional and infer
-    pub sync: Spanned<DomainKind<Box<Expression>>>,
-    pub ty: Box<Expression>,
+    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
     pub value: Option<Box<Expression>>,
 }
 
@@ -377,7 +383,13 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
     pub generic_args: Option<Args>,
-    pub port_connections: Spanned<Vec<(Identifier, Spanned<Option<Expression>>)>>,
+    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PortConnection {
+    pub id: Identifier,
+    pub expr: Expression,
 }
 
 pub type Expression = Spanned<ExpressionKind>;

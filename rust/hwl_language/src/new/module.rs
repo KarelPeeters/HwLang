@@ -1,23 +1,24 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{BlockDomain, VariableValues};
-use crate::new::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
+use crate::new::check::{check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason};
 use crate::new::compile::{
-    CompileState, ConstantInfo, ModuleElaboration, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire,
-    WireInfo,
+    CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
 use crate::new::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrModuleInfo, IrPort,
-    IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrModuleChild, IrModuleInfo,
+    IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrVariables,
+    IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::new::misc::{PortDomain, ScopedEntry, ValueDomain};
-use crate::new::types::HardwareType;
+use crate::new::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
+use crate::new::types::{HardwareType, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    Block, ClockedBlock, CombinatorialBlock, DomainKind, GenericParameter, Identifier, MaybeIdentifier,
-    ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement, ModuleStatementKind,
-    PortDirection, PortKind, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration,
+    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter,
+    Identifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle,
+    ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker,
+    Spanned, SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -27,7 +28,8 @@ use crate::util::iter::IterExt;
 use crate::util::{result_pair, result_pair_split, ResultExt};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{enumerate, zip_eq, Itertools};
+use itertools::{enumerate, zip_eq, Either, Itertools};
+use std::convert::identity;
 use std::hash::Hash;
 
 struct BodyElaborationState<'a, 'b> {
@@ -45,15 +47,15 @@ struct BodyElaborationState<'a, 'b> {
     port_register_connections: IndexMap<Port, Register>,
 
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    processes: Vec<Result<Spanned<IrProcess>, ErrorGuaranteed>>,
+    processes: Vec<Result<Spanned<IrModuleChild>, ErrorGuaranteed>>,
 }
 
 impl CompileState<'_> {
     pub fn elaborate_module_new(
         &mut self,
-        module_elaboration: ModuleElaboration,
-    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
-        let ModuleElaborationInfo { item, args } = self.elaborated_modules[module_elaboration].clone();
+        elaboration_info: ModuleElaborationInfo,
+    ) -> Result<(IrModuleInfo, Vec<Port>), ErrorGuaranteed> {
+        let ModuleElaborationInfo { item, args } = elaboration_info;
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
@@ -67,7 +69,9 @@ impl CompileState<'_> {
         let (scope_params, debug_info_generic_args) =
             self.elaborate_module_generics(def_span, scope_file, params, args)?;
         let (scope_ports, ports_vec, ir_ports) = self.elaborate_module_ports(def_span, scope_params, ports);
-        self.elaborate_module_body(def_id, debug_info_generic_args, ports_vec, ir_ports, scope_ports, body)
+        let ir_module =
+            self.elaborate_module_body(def_id, debug_info_generic_args, &ports_vec, ir_ports, scope_ports, body)?;
+        Ok((ir_module, ports_vec))
     }
 
     fn elaborate_module_generics(
@@ -75,49 +79,19 @@ impl CompileState<'_> {
         def_span: Span,
         file_scope: Scope,
         params: &Option<Spanned<Vec<GenericParameter>>>,
-        args: Option<Vec<CompileValue>>,
+        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
     ) -> Result<(Scope, Option<Vec<(Identifier, CompileValue)>>), ErrorGuaranteed> {
         let diags = self.diags;
-        let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
 
-        let debug_info_generic_args = match (params, args) {
-            (None, None) => None,
+        let (params_scope, debug_info_generic_args) = match (params, args) {
+            (None, None) => {
+                let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
+                (params_scope, None)
+            }
             (Some(params), Some(args)) => {
-                if params.inner.len() != args.len() {
-                    throw!(diags.report_internal_error(params.span, "mismatched generic argument count"));
-                }
-
-                let mut debug_info_generic_args = vec![];
-
-                for (param, arg) in zip_eq(&params.inner, args) {
-                    let no_vars = VariableValues::new_no_vars();
-                    let param_ty = self.eval_expression_as_ty(params_scope, &no_vars, &param.ty);
-
-                    let entry = param_ty.and_then(|param_ty| {
-                        if param_ty.inner.contains_type(&arg.ty()) {
-                            let param = self.parameters.push(ConstantInfo {
-                                id: MaybeIdentifier::Identifier(param.id.clone()),
-                                value: arg.clone(),
-                            });
-                            Ok(ScopedEntry::Direct(NamedValue::Parameter(param)))
-                        } else {
-                            let e = diags.report_internal_error(
-                                param.ty.span,
-                                format!(
-                                    "invalid generic argument: type `{}` does not contain value `{}`",
-                                    param_ty.inner.to_diagnostic_string(),
-                                    arg.to_diagnostic_string()
-                                ),
-                            );
-                            Err(e)
-                        }
-                    });
-
-                    self.scopes[params_scope].declare(diags, &param.id, entry, Visibility::Private);
-                    debug_info_generic_args.push((param.id.clone(), arg));
-                }
-
-                Some(debug_info_generic_args)
+                let span_params = Span::new(params.span.start, def_span.end);
+                let (params_scope, param_values) = self.match_args_to_params(params, &args, file_scope, span_params)?;
+                (params_scope, Some(param_values))
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
         };
@@ -149,7 +123,7 @@ impl CompileState<'_> {
 
                     // eval kind
                     let (domain, ty) = match &kind.inner {
-                        PortKind::Clock => (
+                        WireKind::Clock => (
                             Ok(Spanned {
                                 span: kind.span,
                                 inner: PortDomain::Clock,
@@ -159,10 +133,10 @@ impl CompileState<'_> {
                                 inner: HardwareType::Clock,
                             }),
                         ),
-                        PortKind::Normal { domain, ty } => {
+                        WireKind::Normal { domain, ty } => {
                             let no_vars = VariableValues::new_no_vars();
                             (
-                                self.eval_domain(ports_scope, &domain)
+                                self.eval_port_domain(ports_scope, &domain)
                                     .map(|d| d.map_inner(|d| PortDomain::Kind(d))),
                                 self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port"),
                             )
@@ -196,7 +170,7 @@ impl CompileState<'_> {
 
                     // eval domain
                     let domain = self
-                        .eval_domain(ports_scope, &domain)
+                        .eval_port_domain(ports_scope, &domain)
                         .map(|d| d.map_inner(|d| PortDomain::Kind(d)));
 
                     for port in ports {
@@ -244,7 +218,7 @@ impl CompileState<'_> {
         &mut self,
         def_id: &Identifier,
         debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
-        ports: Vec<Port>,
+        ports: &Vec<Port>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         scope_ports: Scope,
         body: &Block<ModuleStatement>,
@@ -272,13 +246,17 @@ impl CompileState<'_> {
         state.pass_0_declarations(body);
 
         // create driver entries for remaining (= non-reg) output ports
-        for port in ports {
+        for &port in ports {
             match state.state.ports[port].direction.inner {
                 PortDirection::Input => {
                     // do nothing
                 }
                 PortDirection::Output => {
-                    state.drivers.output_port_drivers.entry(port).or_insert_with(IndexMap::new);
+                    state
+                        .drivers
+                        .output_port_drivers
+                        .entry(port)
+                        .or_insert_with(IndexMap::new);
                 }
             }
         }
@@ -303,7 +281,7 @@ impl CompileState<'_> {
             ports: state.ir_ports,
             registers: state.ir_registers,
             wires: state.ir_wires,
-            processes,
+            children: processes,
             debug_info_id: def_id.clone(),
             debug_info_generic_args,
         })
@@ -384,12 +362,11 @@ impl BodyElaborationState<'_, '_> {
     }
 
     fn pass_1_processes(&mut self, body: &Block<ModuleStatement>) {
-        let state = &mut self.state;
         let scope_body = self.scope_body;
-        let diags = state.diags;
+        let diags = self.state.diags;
 
         let Block { span: _, statements } = body;
-        for (statement_index, stmt) in enumerate(statements) {
+        for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // declarations, already handled
                 ModuleStatementKind::ConstDeclaration(_) => {}
@@ -408,11 +385,11 @@ impl BodyElaborationState<'_, '_> {
                     let mut ir_locals = Arena::default();
                     let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
                         self.drivers
-                            .report_assignment(diags, Driver::CombinatorialBlock(statement_index), target)
+                            .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
                     };
 
                     let mut condition_domains = vec![];
-                    let ir_block = state.elaborate_ir_block(
+                    let ir_block = self.state.elaborate_ir_block(
                         &mut report_assignment,
                         &mut ir_locals,
                         VariableValues::new(),
@@ -428,7 +405,7 @@ impl BodyElaborationState<'_, '_> {
                             locals: ir_locals,
                             block,
                         };
-                        IrProcess::Combinatorial(ir_body)
+                        IrModuleChild::CombinatorialProcess(ir_body)
                     });
                     self.processes.push(ir_process.map(|p| Spanned {
                         span: block.span,
@@ -445,14 +422,14 @@ impl BodyElaborationState<'_, '_> {
 
                     let domain = domain
                         .as_ref()
-                        .map_inner(|d| state.eval_domain_sync(scope_body, d))
+                        .map_inner(|d| self.state.eval_domain_sync(scope_body, d))
                         .transpose();
 
                     let ir_process = domain.and_then(|domain| {
                         let mut ir_locals = Arena::default();
                         let ir_domain = SyncDomain {
-                            clock: state.domain_signal_to_ir(&domain.inner.clock),
-                            reset: state.domain_signal_to_ir(&domain.inner.reset),
+                            clock: self.state.domain_signal_to_ir(&domain.inner.clock),
+                            reset: self.state.domain_signal_to_ir(&domain.inner.reset),
                         };
 
                         let block_domain = Spanned {
@@ -462,11 +439,11 @@ impl BodyElaborationState<'_, '_> {
                         let block_domain = BlockDomain::Clocked(block_domain);
                         let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
                             self.drivers
-                                .report_assignment(diags, Driver::ClockedBlock(statement_index), target)
+                                .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
                         };
 
                         let mut condition_domains = vec![];
-                        let (ir_block, _vars) = state.elaborate_ir_block(
+                        let (ir_block, _vars) = self.state.elaborate_ir_block(
                             &mut report_assignment,
                             &mut ir_locals,
                             VariableValues::new(),
@@ -493,7 +470,7 @@ impl BodyElaborationState<'_, '_> {
                             // will be filled in later, during driver checking
                             on_reset: IrBlock { statements: vec![] },
                         };
-                        Ok(IrProcess::Clocked(ir_process))
+                        Ok(IrModuleChild::ClockedProcess(ir_process))
                     });
 
                     let process_index = self.processes.len();
@@ -502,14 +479,332 @@ impl BodyElaborationState<'_, '_> {
                         inner: p,
                     }));
                     self.clocked_block_statement_index_to_process_index
-                        .insert_first(statement_index, process_index);
+                        .insert_first(stmt_index, process_index);
                 }
-                ModuleStatementKind::Instance(_) => {
-                    let e = diags.report_todo(stmt.span, "module instance");
-                    self.processes.push(Err(e));
+                ModuleStatementKind::Instance(instance) => {
+                    let instance_ir = self.elaborate_instance(scope_body, stmt_index, instance);
+                    self.processes.push(instance_ir.map(|instance_ir| Spanned {
+                        span: instance.span,
+                        inner: IrModuleChild::ModuleInstance(instance_ir),
+                    }));
                 }
             }
         }
+    }
+
+    fn elaborate_instance(
+        &mut self,
+        scope_body: Scope,
+        stmt_index: usize,
+        instance: &ModuleInstance,
+    ) -> Result<IrModuleInstance, ErrorGuaranteed> {
+        let state = &mut self.state;
+        let diags = state.diags;
+
+        let ModuleInstance {
+            span: _,
+            span_keyword,
+            name,
+            module,
+            generic_args,
+            port_connections,
+        } = instance;
+
+        // eval module and generics
+        let no_vars = VariableValues::new_no_vars();
+        let module = state.eval_expression_as_compile(scope_body, &no_vars, module, "module instance");
+        let generic_args = generic_args.as_ref().map(|generic_args| {
+            generic_args.map_inner(|a| state.eval_expression_as_compile(scope_body, &no_vars, a, "generic arg"))
+        });
+
+        // check that module is indeed a module
+        let module = module?;
+        let reason = TypeContainsReason::InstanceModule(*span_keyword);
+        check_type_contains_compile_value(diags, reason, &Type::Module, module.as_ref(), false)?;
+        let module_ast_ref = match module.inner {
+            CompileValue::Module(module_eval) => module_eval,
+            _ => {
+                return Err(
+                    diags.report_internal_error(module.span, "expected module, should have already been checked")
+                )
+            }
+        };
+        let module_ast = &state.parsed[module_ast_ref];
+
+        // match args
+        let generic_args = generic_args
+            .map(|generic_args| generic_args.try_map_inner(identity))
+            .transpose()?;
+
+        // elaborate module
+        let elaboration = ModuleElaborationInfo {
+            item: module_ast_ref,
+            args: generic_args,
+        };
+        let (module_ir, ports) = self.state.elaborate_module(elaboration)?;
+
+        // eval and check port connections
+        // TODO allow port re-ordering as long as domain ordering constraints are respected
+        if ports.len() != port_connections.inner.len() {
+            let diag = Diagnostic::new("mismatched port connections for module instance")
+                .add_error(
+                    port_connections.span,
+                    format!("ports connected here, got {} connections", port_connections.inner.len()),
+                )
+                .add_info(
+                    module_ast.ports.span,
+                    format!("module ports declared here, expected {} connections", ports.len()),
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+
+        let mut any_port_err = Ok(());
+
+        let mut port_signals = IndexMap::new();
+        let mut ir_connections = IndexMap::new();
+
+        for (&port, connection) in zip_eq(&ports, &port_connections.inner) {
+            match self.elaborate_instance_port_connection(scope_body, stmt_index, &port_signals, port, connection) {
+                Ok((signal, connection)) => {
+                    port_signals.insert_first(port, signal);
+                    ir_connections.insert_first(self.state.ports[port].ir, connection);
+                }
+                Err(e) => {
+                    any_port_err = Err(e);
+                }
+            }
+        }
+
+        any_port_err?;
+
+        Ok(IrModuleInstance {
+            name: name.as_ref().map(|name| name.string.clone()),
+            module: module_ir,
+            ports: ir_connections,
+        })
+    }
+
+    fn elaborate_instance_port_connection(
+        &mut self,
+        scope: Scope,
+        stmt_index: usize,
+        prev_port_signals: &IndexMap<Port, ConnectionSignal>,
+        port: Port,
+        connection: &Spanned<PortConnection>,
+    ) -> Result<(ConnectionSignal, IrPortConnection), ErrorGuaranteed> {
+        let diags = self.state.diags;
+
+        let PortConnection {
+            id: connection_id,
+            expr: connection_expr,
+        } = &connection.inner;
+        let &PortInfo {
+            id: ref port_id,
+            direction: port_direction,
+            domain: ref port_domain_raw,
+            ty: ref port_ty,
+            ir: _,
+        } = &self.state.ports[port];
+
+        let port_ty = port_ty.as_ref().map_inner(|ty| ty.as_type());
+
+        // check id match
+        if port_id.string != connection_id.string {
+            let diag = Diagnostic::new("mismatched port connection")
+                .add_error(
+                    connection_id.span,
+                    format!("connected here to `{}`", connection_id.string),
+                )
+                .add_info(port_id.span, format!("expected connection to `{}`", port_id.string))
+                .footer(Level::Note, "port connection re-ordering is not yet supported")
+                .finish();
+            return Err(diags.report(diag));
+        }
+
+        // replace signals that are earlier ports with their connected value
+        let port_domain_span = port_domain_raw.span;
+        let port_domain = port_domain_raw
+            .map_inner(|port_domain_raw| {
+                Ok(match port_domain_raw {
+                    PortDomain::Clock => ValueDomain::Clock,
+                    PortDomain::Kind(port_domain_raw) => match port_domain_raw {
+                        DomainKind::Async => ValueDomain::Async,
+                        DomainKind::Sync(sync) => ValueDomain::Sync(sync.try_map_inner(|raw_port| {
+                            let mapped_port = match prev_port_signals.get(&raw_port.signal) {
+                                None => throw!(diags.report_internal_error(connection.span, "failed to get signal for previous port")),
+                                Some(&ConnectionSignal::Dummy(dummy_span)) => {
+                                    let diag = Diagnostic::new("feature not yet implemented: dummy port connections that are used in the domain of other ports")
+                                        .add_error(dummy_span, "port connected to dummy here")
+                                        .add_info(port_domain_span, "port used in a domain here")
+                                        .finish();
+                                    throw!(diags.report(diag))
+                                }
+                                Some(&ConnectionSignal::Expression(expr_span)) => {
+                                    let diag = Diagnostic::new("feature not yet implemented: expression port connections that are used in the domain of other ports")
+                                        .add_error(expr_span, "port connected to expression here")
+                                        .add_info(port_domain_span, "port used in a domain here")
+                                        .finish();
+                                    throw!(diags.report(diag))
+                                },
+                                Some(&ConnectionSignal::Signal(signal)) => Ok(signal),
+                            }?;
+                            Ok(Polarized {
+                                signal: mapped_port.signal,
+                                inverted: mapped_port.inverted ^ raw_port.inverted,
+                            })
+                        })?),
+                    },
+                })
+            })
+            .transpose();
+
+        // always evaluate as signal for domain replacing purposes
+        let signal = match &connection_expr.inner {
+            ExpressionKind::Dummy => ConnectionSignal::Dummy(connection_expr.span),
+            _ => match self
+                .state
+                .try_eval_expression_as_domain_signal(scope, connection_expr, |_| ())
+            {
+                Ok(signal) => ConnectionSignal::Signal(signal.inner),
+                Err(Either::Left(())) => ConnectionSignal::Expression(connection_expr.span),
+                Err(Either::Right(e)) => throw!(e),
+            },
+        };
+
+        // evaluate the connection differently depending on the port direction
+        let ir_connection = match port_direction.inner {
+            PortDirection::Input => {
+                // better dummy port error message
+                if let ExpressionKind::Dummy = connection_expr.inner {
+                    return Err(diags.report_simple(
+                        "dummy connections are only allowed for output ports",
+                        connection_expr.span,
+                        "used dummy connection on input port here",
+                    ));
+                }
+
+                // eval expr
+                let no_vars = VariableValues::new_no_vars();
+                let connection_value = self.state.eval_expression(scope, &no_vars, connection_expr)?;
+
+                // check type
+                let mut any_err = Ok(());
+                let reason = TypeContainsReason::InstancePortInput {
+                    span_connection_port_id: connection_id.span,
+                    span_port_ty: port_ty.span,
+                };
+                any_err = any_err.and(check_type_contains_value(
+                    diags,
+                    reason,
+                    &port_ty.inner,
+                    connection_value.as_ref(),
+                    true,
+                ));
+
+                // check domain
+                let target_domain = Spanned {
+                    span: connection_id.span,
+                    inner: &port_domain.as_ref_ok()?.inner,
+                };
+                let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
+                any_err = any_err.and(self.state.check_valid_domain_crossing(
+                    connection.span,
+                    target_domain,
+                    source_domain,
+                    "input port connection",
+                ));
+
+                // success, build connection
+                any_err?;
+                IrPortConnection::Input(connection_value.inner.to_ir_expression(diags, connection_expr.span)?)
+            }
+            PortDirection::Output => {
+                // eval expr as dummy, wire or port
+                let build_error = || {
+                    diags.report_simple(
+                        "output port must be connected to wire or port",
+                        connection_expr.span,
+                        "other value",
+                    )
+                };
+
+                match &connection_expr.inner {
+                    ExpressionKind::Dummy => {
+                        IrPortConnection::Output(None)
+                    }
+                    ExpressionKind::Id(id) => {
+                        let named = self.state.eval_id(scope, id)?;
+
+                        let (signal_ir, signal_target, signal_ty, signal_domain) = match &named.inner {
+                            &MaybeCompile::Other(NamedValue::Wire(wire)) => {
+                                let wire_info = &self.state.wires[wire];
+                                (
+                                    IrWireOrPort::Wire(wire_info.ir),
+                                    AssignmentTarget::Wire(wire),
+                                    &wire_info.ty,
+                                    &wire_info.domain,
+                                )
+                            }
+                            &MaybeCompile::Other(NamedValue::Port(port)) => {
+                                let port_info = &self.state.ports[port];
+                                (
+                                    IrWireOrPort::Port(port_info.ir),
+                                    AssignmentTarget::Port(port),
+                                    &port_info.ty,
+                                    &port_info
+                                        .domain
+                                        .map_inner(|port_domain| ValueDomain::from_port_domain(port_domain)),
+                                )
+                            }
+                            _ => throw!(build_error()),
+                        };
+
+                        // check type
+                        let mut any_err = Ok(());
+                        let reason = TypeContainsReason::InstancePortOutput {
+                            span_connection_signal_id: connection_expr.span,
+                            span_signal_ty: signal_ty.span,
+                        };
+                        any_err = any_err.and(check_type_contains_type(
+                            diags,
+                            reason,
+                            &signal_ty.inner.as_type(),
+                            Spanned {
+                                span: connection_id.span,
+                                inner: &port_ty.inner,
+                            },
+                        ));
+
+                        // check domain
+                        any_err = any_err.and(self.state.check_valid_domain_crossing(
+                            connection.span,
+                            signal_domain.as_ref(),
+                            Spanned {
+                                span: connection_id.span,
+                                inner: &port_domain.as_ref_ok()?.inner,
+                            },
+                            "output port connection",
+                        ));
+
+                        // report driver
+                        let driver = Driver::InstancePortConnection(stmt_index);
+                        let target = Spanned {
+                            span: named.span,
+                            inner: &signal_target,
+                        };
+                        self.drivers.report_assignment(diags, driver, target)?;
+
+                        // success, build connection
+                        any_err?;
+                        IrPortConnection::Output(Some(signal_ir))
+                    }
+                    _ => throw!(build_error()),
+                }
+            }
+        };
+
+        Ok((signal, ir_connection))
     }
 
     fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
@@ -562,7 +857,9 @@ impl BodyElaborationState<'_, '_> {
 
         if let Driver::ClockedBlock(stmt_index) = driver {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
-                if let IrProcess::Clocked(process) = &mut self.processes[process_index].as_ref_mut_ok()?.inner {
+                if let IrModuleChild::ClockedProcess(process) =
+                    &mut self.processes[process_index].as_ref_mut_ok()?.inner
+                {
                     if let Some(init) = self.register_initial_values.get(&reg) {
                         let init = init.as_ref_ok()?;
 
@@ -688,7 +985,7 @@ impl BodyElaborationState<'_, '_> {
     fn elaborate_module_declaration_wire(
         &mut self,
         decl: &WireDeclaration,
-    ) -> Result<(Wire, Option<IrProcess>), ErrorGuaranteed> {
+    ) -> Result<(Wire, Option<IrModuleChild>), ErrorGuaranteed> {
         let state = &mut self.state;
         let scope_body = self.scope_body;
         let diags = state.diags;
@@ -696,16 +993,31 @@ impl BodyElaborationState<'_, '_> {
         let WireDeclaration {
             span: _,
             id,
-            sync,
-            ty,
+            kind: domain_ty,
             value,
         } = decl;
 
         // evaluate
-        // TODO allow clock wires
-        let domain = state.eval_domain(scope_body, sync);
         let no_vars = VariableValues::new_no_vars();
-        let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "wire");
+        let (domain, ty) = match &domain_ty.inner {
+            WireKind::Clock => (
+                Ok(Spanned {
+                    span: domain_ty.span,
+                    inner: ValueDomain::Clock,
+                }),
+                Ok(Spanned {
+                    span: domain_ty.span,
+                    inner: HardwareType::Clock,
+                }),
+            ),
+            WireKind::Normal { domain, ty } => {
+                let domain = state
+                    .eval_domain(scope_body, domain)
+                    .map(|d| d.map_inner(|d| ValueDomain::from_domain_kind(d)));
+                let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "wire");
+                (domain, ty)
+            }
+        };
 
         let value = value
             .as_ref()
@@ -719,7 +1031,7 @@ impl BodyElaborationState<'_, '_> {
         if let Some(value) = &value {
             // check type
             let reason = TypeContainsReason::Assignment {
-                span_assignment: decl.span,
+                span_target: id.span(),
                 span_target_ty: ty.span,
             };
             let check_ty = check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref(), true);
@@ -730,13 +1042,8 @@ impl BodyElaborationState<'_, '_> {
                 span: value.span,
                 inner: value_domain,
             };
-            let target_domain = domain.clone().map_inner(|d| ValueDomain::from_domain_kind(d));
-            let check_domain = state.check_valid_domain_crossing(
-                decl.span,
-                target_domain.as_ref(),
-                value_domain_spanned,
-                "value to wire",
-            );
+            let check_domain =
+                state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
 
             check_ty?;
             check_domain?;
@@ -778,7 +1085,7 @@ impl BodyElaborationState<'_, '_> {
                         statements: ir_statements,
                     },
                 };
-                let ir_process = IrProcess::Combinatorial(ir_process);
+                let ir_process = IrModuleChild::CombinatorialProcess(ir_process);
 
                 Ok(ir_process)
             })
@@ -815,7 +1122,7 @@ impl BodyElaborationState<'_, '_> {
         // check type
         let init = init.and_then(|init| {
             let reason = TypeContainsReason::Assignment {
-                span_assignment: decl.span,
+                span_target: id.span(),
                 span_target_ty: ty.span,
             };
             check_type_contains_compile_value(diags, reason, &ty.inner.as_type(), init.as_ref(), true)?;
@@ -901,7 +1208,7 @@ impl BodyElaborationState<'_, '_> {
         // check type
         let init = init.and_then(|init| {
             let reason = TypeContainsReason::Assignment {
-                span_assignment: decl.span,
+                span_target: id.span,
                 span_target_ty: port_info.ty.span,
             };
             check_type_contains_compile_value(diags, reason, &port_info.ty.inner.as_type(), init.as_ref(), true)?;
@@ -919,13 +1226,19 @@ impl BodyElaborationState<'_, '_> {
             id: MaybeIdentifier::Identifier(id.clone()),
             domain: Spanned {
                 span: port_info.domain.span,
-                inner: domain.clone(),
+                inner: domain.map_inner(|p| p.map_inner(Signal::Port)),
             },
             ty: port_info.ty.clone(),
             ir: ir_reg,
         });
         Ok((port, RegisterInit { reg, init }))
     }
+}
+
+enum ConnectionSignal {
+    Signal(DomainSignal),
+    Dummy(Span),
+    Expression(Span),
 }
 
 #[derive(Debug)]

@@ -3,7 +3,7 @@ use crate::data::parsed::ParsedDatabase;
 use crate::data::source::SourceDatabase;
 use crate::new::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule,
-    IrModuleInfo, IrPort, IrPortInfo, IrProcess, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable,
+    IrModuleChild, IrModuleInfo, IrPort, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo,
 };
 use crate::new::types::HardwareType;
@@ -201,7 +201,7 @@ fn lower_module(
         ports,
         registers,
         wires,
-        processes,
+        children: processes,
     } = module_info;
     let module_name = top_name_scope.make_unique_id(diags, debug_info_id)?;
 
@@ -383,19 +383,19 @@ fn lower_module_statements(
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
     wire_name_map: &IndexMap<IrWire, LoweredName>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    processes: &[Spanned<IrProcess>],
+    children: &[Spanned<IrModuleChild>],
     newline: &mut NewlineGenerator,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
     // TODO implement blocked assignment transformation again
-    for process in processes {
+    for child in children {
         newline.start_new_block();
         newline.before_item(f);
 
         let mut newline = NewlineGenerator::new();
 
-        match &process.inner {
-            IrProcess::Combinatorial(process) => {
+        match &child.inner {
+            IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 
                 swriteln!(f, "{I}always @(*) begin");
@@ -412,7 +412,7 @@ fn lower_module_statements(
                 lower_block(diags, name_map, block, f, Indent::new(2), &mut newline)?;
                 swriteln!(f, "{I}end");
             }
-            IrProcess::Clocked(process) => {
+            IrModuleChild::ClockedProcess(process) => {
                 let IrClockedProcess {
                     domain,
                     locals,
@@ -489,6 +489,10 @@ fn lower_module_statements(
                 }
 
                 swriteln!(f, "{I}end");
+            }
+            IrModuleChild::ModuleInstance(instance) => {
+                let _ = instance;
+                return Err(diags.report_todo(child.span, "lower module instance"));
             }
         }
     }

@@ -176,7 +176,7 @@ impl CompileState<'_> {
                         if let Some(ty) = &ty {
                             if let Some(init) = &init {
                                 let reason = TypeContainsReason::Assignment {
-                                    span_assignment: stmt.span,
+                                    span_target: id.span(),
                                     span_target_ty: ty.span,
                                 };
                                 check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true)?;
@@ -343,7 +343,7 @@ impl CompileState<'_> {
             }
             AssignmentTarget::Wire(wire) => {
                 let info = &self.wires[wire];
-                let domain = ValueDomain::from_domain_kind(info.domain.inner.clone());
+                let domain = info.domain.inner.clone();
                 (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
             }
             AssignmentTarget::Register(reg) => {
@@ -366,7 +366,7 @@ impl CompileState<'_> {
                 // check type
                 if let Some(ty) = ty {
                     let reason = TypeContainsReason::Assignment {
-                        span_assignment: stmt.span,
+                        span_target: id.span(),
                         span_target_ty: ty.span,
                     };
                     check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true)?;
@@ -407,7 +407,7 @@ impl CompileState<'_> {
 
         // check type
         let reason = TypeContainsReason::Assignment {
-            span_assignment: stmt.span,
+            span_target: target.span,
             span_target_ty: target_ty.span,
         };
         let target_ty = target_ty.inner.as_type();

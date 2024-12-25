@@ -3,11 +3,12 @@ use crate::data::parsed::{AstRefItem, AstRefModule};
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::VariableValues;
 use crate::new::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry, ModuleElaborationInfo};
+use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
 use crate::new::misc::ScopedEntry;
+use crate::new::types::Type;
 use crate::new::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{ConstDeclaration, Item, ItemDefModule, ItemDefType};
+use crate::syntax::ast::{ConstDeclaration, Item, ItemDefType};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
@@ -31,7 +32,7 @@ impl CompileState<'_> {
         let ConstDeclaration {
             span: _,
             vis: _,
-            id: _,
+            id,
             ty,
             value,
         } = decl;
@@ -49,7 +50,7 @@ impl CompileState<'_> {
         // check type
         if let Some(ty) = ty {
             let reason = TypeContainsReason::Assignment {
-                span_assignment: decl.span,
+                span_target: id.span(),
                 span_target_ty: ty.span,
             };
             check_type_contains_compile_value(self.diags, reason, &ty.inner, value.as_ref(), true)?;
@@ -99,7 +100,7 @@ impl CompileState<'_> {
                             outer_scope: file_scope.clone(),
                             item,
                             params: params.clone(),
-                            ret_ty: ReturnType::Type,
+                            ret_ty: ReturnType::Evaluated(Type::Type),
                             body_span: inner.span,
                             body: FunctionBody::Type(inner.clone()),
                         };
@@ -110,27 +111,9 @@ impl CompileState<'_> {
             Item::Struct(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Struct")),
             Item::Enum(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Enum")),
             Item::Function(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Function")),
-            Item::Module(item_inner) => {
-                let ItemDefModule {
-                    span: _,
-                    vis: _,
-                    id: _,
-                    params,
-                    ports: _,
-                    body: _,
-                } = item_inner;
-
-                match params {
-                    None => {
-                        let elaboration = self.elaborated_modules.push(ModuleElaborationInfo {
-                            item: AstRefModule::new_unchecked(item),
-                            args: None,
-                        });
-                        let ir_module = self.elaborate_module(elaboration)?;
-                        Ok(CompileValue::Module(ir_module))
-                    }
-                    Some(_) => Err(diags.report_todo(item_inner.span, "visit item kind Module with params")),
-                }
+            Item::Module(_) => {
+                let ast_ref = AstRefModule::new_unchecked(item);
+                Ok(CompileValue::Module(ast_ref))
             }
             Item::Interface(item) => Err(diags.report_todo(item.span, "visit item kind Interface")),
         }

@@ -1,10 +1,13 @@
 // TODO allow signature declarations for everything, even types!
+// TODO switch to consistent capital for types, lowercase for variables/signals?
 
 // Basic types
 pub type any = __builtin("type", "any");
 
 // TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");
+
+pub type Range = __builtin("type", "Range");
 
 // TODO what is the difference if anything between "type" and "const" for types?
 //const bool: type = __builtin("type", );

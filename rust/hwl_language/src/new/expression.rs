@@ -2,9 +2,9 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{TypedIrExpression, VariableValues};
 use crate::new::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
-use crate::new::compile::{CompileState, ElaborationStackEntry};
+use crate::new::compile::{CompileState, ElaborationStackEntry, Port};
 use crate::new::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
-use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
+use crate::new::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
@@ -14,7 +14,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::Span;
 use crate::util::{Never, ResultDoubleExt};
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{One, Pow, ToPrimitive};
 use std::cmp::{max, min};
@@ -49,7 +49,14 @@ impl CompileState<'_> {
         let diags = self.diags;
 
         let result = match &expr.inner {
-            ExpressionKind::Dummy => Err(diags.report_todo(expr.span, "expr kind Dummy")),
+            ExpressionKind::Dummy => {
+                // if dummy expressions were allowed, the caller would have checked for them already
+                Err(diags.report_simple(
+                    "dummy expression not allowed in this context",
+                    expr.span,
+                    "dummy expression used here",
+                ))
+            },
             ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
             ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
             ExpressionKind::Wrapped(inner) => Ok(self.eval_expression(scope, vars, inner)?.inner),
@@ -65,9 +72,11 @@ impl CompileState<'_> {
                             let port_info = &self.ports[port];
                             match port_info.direction.inner {
                                 PortDirection::Input => Ok(MaybeCompile::Other(port_info.typed_ir_expr())),
-                                PortDirection::Output => Err(self.diags.report_todo(expr.span, "read back from output port")),
+                                PortDirection::Output => {
+                                    Err(self.diags.report_todo(expr.span, "read back from output port"))
+                                }
                             }
-                        },
+                        }
                         NamedValue::Wire(wire) => Ok(MaybeCompile::Other(self.wires[wire].typed_ir_expr())),
                         NamedValue::Register(reg) => Ok(MaybeCompile::Other(self.registers[reg].typed_ir_expr())),
                     },
@@ -348,11 +357,7 @@ impl CompileState<'_> {
                 // evaluate target and args
                 let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
                 // TODO allow runtime expressions in arguments
-                let args = args.map_inner(|arg| {
-                    Ok(self
-                        .eval_expression_as_compile(scope, vars, arg, "call argument")?
-                        .inner)
-                });
+                let args = args.map_inner(|arg| self.eval_expression_as_compile(scope, vars, arg, "call argument"));
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
@@ -370,7 +375,7 @@ impl CompileState<'_> {
                 let args = args.try_map_inner(identity)?;
 
                 // actually do the call
-                let entry = ElaborationStackEntry::FunctionCall(expr.span, args.clone());
+                let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
                 self.check_compile_loop(entry, |s| target.call_compile_time(s, args).map(MaybeCompile::Compile))
                     .flatten_err()
             }
@@ -607,6 +612,7 @@ impl CompileState<'_> {
             match (a0.as_str(), a1.as_str(), rest) {
                 ("type", "any", []) => return Ok(CompileValue::Type(Type::Any)),
                 ("type", "bool", []) => return Ok(CompileValue::Type(Type::Bool)),
+                ("type", "Range", []) => return Ok(CompileValue::Type(Type::Range)),
                 ("type", "int_range", [range]) => {
                     if let CompileValue::IntRange(range) = range {
                         return Ok(CompileValue::Type(Type::Int(range.clone())));
@@ -735,14 +741,21 @@ impl CompileState<'_> {
         scope: Scope,
         expr: &Expression,
     ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
-        // TODO expand to allow general expressions (which then probably create implicit signals)?
-
-        let diags = self.diags;
         let build_err = |actual: &str| {
             self.diags
                 .report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
         };
+        self.try_eval_expression_as_domain_signal(scope, expr, build_err)
+            .map_err(|e| e.into_inner())
+    }
 
+    pub fn try_eval_expression_as_domain_signal<E>(
+        &mut self,
+        scope: Scope,
+        expr: &Expression,
+        build_err: impl Fn(&str) -> E,
+    ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
+        // TODO expand to allow general expressions again (which then probably create implicit signals)?
         let result = match &expr.inner {
             ExpressionKind::UnaryOp(
                 Spanned {
@@ -751,29 +764,33 @@ impl CompileState<'_> {
                 },
                 inner,
             ) => {
-                let inner = self.eval_expression_as_domain_signal(scope, inner)?.inner;
-                Ok(DomainSignal::BoolNot(Box::new(inner)))
+                let inner = self
+                    .eval_expression_as_domain_signal(scope, inner)
+                    .map_err(|e| Either::Right(e))?
+                    .inner;
+                Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let value = self.eval_id(scope, id)?;
+                let value = self.eval_id(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
                     MaybeCompile::Compile(_) => Err(build_err("compile-time value")),
                     MaybeCompile::Other(s) => match s {
                         NamedValue::Constant(_) => Err(build_err("constant")),
                         NamedValue::Parameter(_) => Err(build_err("parameter")),
                         NamedValue::Variable(_) => Err(build_err("variable")),
-                        NamedValue::Port(p) => Ok(DomainSignal::Port(p)),
-                        NamedValue::Wire(w) => Ok(DomainSignal::Wire(w)),
-                        NamedValue::Register(r) => Ok(DomainSignal::Register(r)),
+                        NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
+                        NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
+                        NamedValue::Register(r) => Ok(Polarized::new(Signal::Register(r))),
                     },
                 }
             }
-            _ => Err(diags.report_simple("expected domain signal (port, wire, reg)", expr.span, "got expression")),
+            _ => Err(build_err("expression")),
         };
 
+        let result = result.map_err(|e| Either::Left(e))?;
         Ok(Spanned {
             span: expr.span,
-            inner: result?,
+            inner: result,
         })
     }
 
@@ -804,6 +821,32 @@ impl CompileState<'_> {
         Ok(Spanned {
             span: domain.span,
             inner: result?,
+        })
+    }
+
+    pub fn eval_port_domain(
+        &mut self,
+        scope: Scope,
+        domain: &Spanned<DomainKind<Box<Expression>>>,
+    ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
+        let result = self.eval_domain(scope, domain)?;
+
+        Ok(Spanned {
+            span: result.span,
+            inner: match result.inner {
+                DomainKind::Async => DomainKind::Async,
+                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_inner(|signal| {
+                    signal.try_map_inner(|signal| match signal {
+                        Signal::Port(port) => Ok(port),
+                        Signal::Wire(_) => {
+                            Err(self.diags.report_internal_error(domain.span, "expected port, got wire"))
+                        }
+                        Signal::Register(_) => Err(self
+                            .diags
+                            .report_internal_error(domain.span, "expected port, got register")),
+                    })
+                })?),
+            },
         })
     }
 }

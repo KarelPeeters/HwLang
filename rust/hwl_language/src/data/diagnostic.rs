@@ -70,6 +70,7 @@ impl Diagnostics {
         self.report(Diagnostic::new_simple(title, span, label))
     }
 
+    #[track_caller]
     pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_todo(span, feature))
     }

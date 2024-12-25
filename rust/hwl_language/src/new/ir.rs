@@ -1,10 +1,12 @@
 use crate::data::diagnostic::ErrorGuaranteed;
+use crate::new::block::TypedIrExpression;
 use crate::new::types::{ClosedIncRange, HardwareType, Type};
 use crate::new::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
+use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
 
@@ -34,7 +36,7 @@ pub struct IrModuleInfo {
     pub registers: Arena<IrRegister, IrRegisterInfo>,
     pub wires: Arena<IrWire, IrWireInfo>,
 
-    pub processes: Vec<Spanned<IrProcess>>,
+    pub children: Vec<Spanned<IrModuleChild>>,
 
     pub debug_info_id: Identifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
@@ -83,9 +85,10 @@ pub struct IrVariableInfo {
 }
 
 #[derive(Debug)]
-pub enum IrProcess {
-    Clocked(IrClockedProcess),
-    Combinatorial(IrCombinatorialProcess),
+pub enum IrModuleChild {
+    ClockedProcess(IrClockedProcess),
+    CombinatorialProcess(IrCombinatorialProcess),
+    ModuleInstance(IrModuleInstance),
 }
 
 /// The execution/memory model is:
@@ -108,19 +111,29 @@ pub struct IrCombinatorialProcess {
     pub block: IrBlock,
 }
 
+#[derive(Debug)]
+pub struct IrModuleInstance {
+    pub name: Option<String>,
+    pub module: IrModule,
+    pub ports: IndexMap<IrPort, IrPortConnection>,
+}
+
+#[derive(Debug)]
+pub enum IrPortConnection {
+    Input(TypedIrExpression),
+    Output(Option<IrWireOrPort>),
+}
+
+#[derive(Debug)]
+pub enum IrWireOrPort {
+    Wire(IrWire),
+    Port(IrPort),
+}
+
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
 pub type IrWires = Arena<IrWire, IrWireInfo>;
 pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;
 pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
-
-#[derive(Debug)]
-pub enum IrSignal {
-    Port(IrPort),
-    Register(IrRegister),
-    Wire(IrWire),
-    // TODO are variables not just wires?
-    Variable(IrVariable),
-}
 
 #[derive(Debug)]
 pub struct IrBlock {
