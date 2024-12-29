@@ -1,19 +1,29 @@
 pub mod arena;
+pub mod data;
+pub mod int;
 pub mod io;
 pub mod iter;
-pub mod data;
 
+// TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Never {}
 
+impl Never {
+    pub fn unreachable(self) -> ! {
+        match self {}
+    }
+}
+
 #[macro_export]
 macro_rules! throw {
-    ($e:expr) => { return Err($e.into()) };
+    ($e:expr) => {
+        return Err($e.into())
+    };
 }
 
 #[macro_export]
 macro_rules! try_opt_result {
-    ($e:expr) => { 
+    ($e:expr) => {
         match $e {
             Some(v) => v,
             None => return Ok(None),
@@ -23,7 +33,7 @@ macro_rules! try_opt_result {
 
 #[macro_export]
 macro_rules! try_inner {
-    ($e:expr) => { 
+    ($e:expr) => {
         match $e {
             Ok(v) => v,
             Err(e) => return Ok(Err(e.into())),
@@ -33,12 +43,41 @@ macro_rules! try_inner {
 
 pub trait ResultExt<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E>;
+    fn as_ref_mut_ok(&mut self) -> Result<&mut T, E>;
+}
+
+pub trait ResultDoubleExt<T, E> {
+    fn flatten_err(self) -> Result<T, E>;
+}
+
+pub trait ResultSplitExt {
+    type A;
+    type B;
+    type E;
+    fn result_split(self) -> (Result<Self::A, Self::E>, Result<Self::B, Self::E>);
 }
 
 impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
     fn as_ref_ok(&self) -> Result<&T, E> {
-        match *self {
-            Ok(ref v) => Ok(v),
+        match self {
+            Ok(v) => Ok(v),
+            &Err(e) => Err(e),
+        }
+    }
+
+    fn as_ref_mut_ok(&mut self) -> Result<&mut T, E> {
+        match self {
+            Ok(v) => Ok(v),
+            &mut Err(e) => Err(e),
+        }
+    }
+}
+
+impl<T, E> ResultDoubleExt<T, E> for Result<Result<T, E>, E> {
+    fn flatten_err(self) -> Result<T, E> {
+        match self {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
             Err(e) => Err(e),
         }
     }
@@ -55,6 +94,20 @@ pub fn result_pair<A, B, E>(left: Result<A, E>, right: Result<B, E>) -> Result<(
     match (left, right) {
         (Ok(left), Ok(right)) => Ok((left, right)),
         (Err(e), _) | (_, Err(e)) => Err(e),
+    }
+}
+
+pub fn result_triple<A, B, C, E>(a: Result<A, E>, b: Result<B, E>, c: Result<C, E>) -> Result<(A, B, C), E> {
+    match (a, b, c) {
+        (Ok(a), Ok(b), Ok(c)) => Ok((a, b, c)),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+    }
+}
+
+pub fn result_pair_split<A, B, E: Copy>(r: Result<(A, B), E>) -> (Result<A, E>, Result<B, E>) {
+    match r {
+        Ok((a, b)) => (Ok(a), Ok(b)),
+        Err(e) => (Err(e), Err(e)),
     }
 }
 

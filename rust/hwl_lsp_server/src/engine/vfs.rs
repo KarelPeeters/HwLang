@@ -57,8 +57,7 @@ impl VirtualFileSystem {
             }
 
             let path_rel = path.strip_prefix(&root_path).unwrap();
-            let source = std::fs::read(&path)
-                .map_err(|e| e.with_path(path.clone()))?;
+            let source = std::fs::read(&path).map_err(|e| e.with_path(path.clone()))?;
 
             vfs.map_rel.insert_first(path_rel.to_owned(), Content::Unknown(source));
 
@@ -86,7 +85,9 @@ impl VirtualFileSystem {
         self.has_changed = true;
 
         let path = self.uri_to_relative_path(uri)?;
-        let slot = self.map_rel.get_mut(&path)
+        let slot = self
+            .map_rel
+            .get_mut(&path)
             .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path))?;
         *slot = content;
 
@@ -112,7 +113,9 @@ impl VirtualFileSystem {
 
     pub fn get_text(&mut self, uri: &Uri) -> VfsResult<&str> {
         let path = self.uri_to_relative_path(uri)?;
-        let content = self.map_rel.get_mut(&path)
+        let content = self
+            .map_rel
+            .get_mut(&path)
             .ok_or_else(|| VfsError::FileDoesNotExist(uri.clone(), path.clone()))?;
         content.get_text(&path)
     }
@@ -133,7 +136,7 @@ impl VirtualFileSystem {
         &self.root
     }
 
-    pub fn iter(&mut self) -> impl Iterator<Item=(&PathBuf, &mut Content)> {
+    pub fn iter(&mut self) -> impl Iterator<Item = (&PathBuf, &mut Content)> {
         self.map_rel.iter_mut()
     }
 }

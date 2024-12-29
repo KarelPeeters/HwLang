@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use hwl_language::{syntax::{parse_file_content, pos::FileId}, util::io::recurse_for_each_file};
+use hwl_language::{
+    syntax::{parse_file_content, pos::FileId},
+    util::io::recurse_for_each_file,
+};
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
@@ -38,5 +41,6 @@ fn parse_std_all() {
     recurse_for_each_file(Path::new("../../design/project/std"), &mut |_, entry| {
         test_parse(entry.path());
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
 }

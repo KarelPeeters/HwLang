@@ -1,10 +1,10 @@
-use hwl_language::back::core::lower;
-use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::data::lowered::LoweredDatabase;
-use hwl_language::data::source::FilePath;
-use hwl_language::data::source::SourceDatabase;
-use hwl_language::front::driver::compile;
+use hwl_language::front::compile::compile;
+use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::lower_verilog::lower;
+use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
+use hwl_language::syntax::source::FilePath;
+use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -31,32 +31,38 @@ pub fn initial_source() -> String {
 pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let mut source = SourceDatabase::new();
     const STD_TYPES_SRC: &str = include_str!("../../../design/project/std/types.kh");
-    source.add_file(
-        FilePath(vec!["std".to_owned(), "types".to_owned()]),
-        "std/types.kh".to_owned(),
-        STD_TYPES_SRC.to_owned(),
-    ).unwrap();
-    source.add_file(
-        FilePath(vec!["top".to_owned()]),
-        "top.kh".to_owned(),
-        src,
-    ).unwrap();
+    source
+        .add_file(
+            FilePath(vec!["std".to_owned(), "types".to_owned()]),
+            "std/types.kh".to_owned(),
+            STD_TYPES_SRC.to_owned(),
+        )
+        .unwrap();
+    source
+        .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src)
+        .unwrap();
 
-    let diag = Diagnostics::new();
-    let (parsed, mut compiled) = compile(&diag, &source);
-    let LoweredDatabase { top_module_name, verilog_source, module_names: _ }
-        = lower(&diag, &source, &parsed, &mut compiled);
+    let diags = Diagnostics::new();
+    let parsed = ParsedDatabase::new(&diags, &source);
+    let compiled = compile(&diags, &source, &parsed);
+    let lowered = lower(&diags, &source, &parsed, &compiled);
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();
-    let diagnostics_ansi = diag.finish().into_iter()
+    let diagnostics_ansi = diags
+        .finish()
+        .into_iter()
         .map(|d| d.to_string(&source, diag_settings))
         .join("\n\n");
 
-    let _ = top_module_name;
+    let lowered_verilog = match lowered {
+        Ok(lowered) => lowered.verilog_source,
+        Err(_) => "/* error */".to_string(),
+    };
+
     CompileAndLowerResult {
         diagnostics_ansi,
-        lowered_verilog: verilog_source,
+        lowered_verilog,
     }
 }
 
@@ -98,12 +104,7 @@ pub fn codemirror_tokenize_to_tree(src: &str) -> Vec<u32> {
     }
 
     // push final top token
-    result.extend_from_slice(&[
-        top_node_index as u32,
-        0,
-        src.len() as u32,
-        (4 + result.len()) as u32,
-    ]);
+    result.extend_from_slice(&[top_node_index as u32, 0, src.len() as u32, (4 + result.len()) as u32]);
 
     result
 }
@@ -126,7 +127,7 @@ fn token_category_to_tag(tc: TokenCategory) -> Option<&'static str> {
         TokenCategory::IntegerLiteral => Some("number"),
         TokenCategory::StringLiteral => Some("string"),
         TokenCategory::Keyword => Some("keyword"),
-        TokenCategory::Symbol => Some("punctuation")
+        TokenCategory::Symbol => Some("punctuation"),
     }
 }
 

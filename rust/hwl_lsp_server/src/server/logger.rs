@@ -8,16 +8,17 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(log_to_stderr: bool, log_path: Option<&Path>) -> Self {
-        let log_file = log_path.and_then(|log_path| {
-            match std::fs::File::create(&log_path) {
-                Ok(log_file) => Some(BufWriter::new(log_file)),
-                Err(e) => {
-                    eprintln!("failed to open log file {log_path:?}: {e:?}");
-                    None
-                }
+        let log_file = log_path.and_then(|log_path| match std::fs::File::create(&log_path) {
+            Ok(log_file) => Some(BufWriter::new(log_file)),
+            Err(e) => {
+                eprintln!("failed to open log file {log_path:?}: {e:?}");
+                None
             }
         });
-        Self { log_to_stderr, log_file }
+        Self {
+            log_to_stderr,
+            log_file,
+        }
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {

@@ -5,13 +5,17 @@ use crate::server::settings::PositionEncoding;
 use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
-use hwl_language::data::diagnostic::{Annotation, Diagnostic, Diagnostics};
-use hwl_language::data::source::{CompileSetError, FilePath, SourceDatabase};
-use hwl_language::front::driver::compile;
+use hwl_language::front::compile::compile;
+use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
+use hwl_language::front::lower_verilog::lower;
+use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
+use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
-use lsp_types::{notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri};
+use lsp_types::{
+    notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
+};
 use std::cmp::Ordering;
 use std::fmt::Write;
 use std::path::{Component, PathBuf};
@@ -23,24 +27,24 @@ impl ServerState {
 
             let (source, abs_path_map) = match self.build_source_database()? {
                 Ok(v) => v,
-                Err(e) => throw!(RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))),
+                Err(e) => throw!(RequestError::Internal(format!(
+                    "compile set error, should not be possible through VFS: {e:?}"
+                ))),
             };
 
-            let diagnostics = Diagnostics::new();
-
             self.log("source database built, compiling");
-            let _compiled_database = compile(&diagnostics, &source);
+            let diags = Diagnostics::new();
+            let parsed = ParsedDatabase::new(&diags, &source);
+            let compiled = compile(&diags, &source, &parsed);
+            let _ = lower(&diags, &source, &parsed, &compiled);
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI
             let mut diagnostics_per_uri: IndexMap<Uri, Vec<lsp_types::Diagnostic>> = IndexMap::new();
-            for diagnostic in diagnostics.finish() {
-                let (uri, diag) = diagnostic_to_lsp(
-                    self.settings.position_encoding,
-                    &source,
-                    &abs_path_map,
-                    diagnostic,
-                ).map_err(|e| OrSendError::Error(e.into()))?;
+            for diagnostic in diags.finish() {
+                let (uri, diag) =
+                    diagnostic_to_lsp(self.settings.position_encoding, &source, &abs_path_map, diagnostic)
+                        .map_err(|e| OrSendError::Error(e.into()))?;
 
                 diagnostics_per_uri.entry(uri).or_default().push(diag);
             }
@@ -51,19 +55,23 @@ impl ServerState {
                 let uri = abs_path_to_uri(path).map_err(|e| OrSendError::Error(e.into()))?;
                 let diagnostics = diagnostics_per_uri.swap_remove(&uri).unwrap_or_default();
 
-                self.sender.send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
-                    uri,
-                    diagnostics,
-                    // TODO version
-                    version: None,
-                }).map_err(OrSendError::SendError)?;
+                self.sender
+                    .send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
+                        uri,
+                        diagnostics,
+                        // TODO version
+                        version: None,
+                    })
+                    .map_err(OrSendError::SendError)?;
             }
         }
 
         Ok(())
     }
 
-    pub fn build_source_database(&mut self) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), CompileSetError>> {
+    pub fn build_source_database(
+        &mut self,
+    ) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), SourceSetError>> {
         let vfs = self.vfs.inner()?;
         let vfs_root = vfs.root().clone();
 
@@ -74,22 +82,25 @@ impl ServerState {
             let mut steps = vec![];
             for c in path.components() {
                 match c {
-                    Component::Normal(c) => steps.push(c.to_str()
-                        .expect("the vfs layer should already check for non-utf8 paths ")
-                        .to_owned()
+                    Component::Normal(c) => steps.push(
+                        c.to_str()
+                            .expect("the vfs layer should already check for non-utf8 paths ")
+                            .to_owned(),
                     ),
-                    _ => unreachable!("the vfs path should be a simple relative path, got {:?}", path)
+                    _ => unreachable!("the vfs path should be a simple relative path, got {:?}", path),
                 }
             }
 
             // remove final extension
             let last = steps.last_mut().unwrap();
-            *last = last.strip_suffix(&format!(".{LANGUAGE_FILE_EXTENSION}"))
+            *last = last
+                .strip_suffix(&format!(".{LANGUAGE_FILE_EXTENSION}"))
                 .expect("only language source files should be in the VFS")
                 .to_owned();
 
             let text = content.get_text(path)?;
-            let file_id = try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
+            let file_id =
+                try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
             abs_path_map.insert(file_id, vfs_root.join(&path));
         }
 
@@ -103,7 +114,12 @@ fn diagnostic_to_lsp(
     abs_path_map: &IndexMap<FileId, PathBuf>,
     diagnostic: Diagnostic,
 ) -> VfsResult<(Uri, lsp_types::Diagnostic)> {
-    let Diagnostic { title, snippets, footers, backtrace } = diagnostic;
+    let Diagnostic {
+        title,
+        snippets,
+        footers,
+        backtrace,
+    } = diagnostic;
 
     // don't show backtrace in LSP, it's not intended for end-users
     let _ = backtrace;
@@ -156,7 +172,12 @@ fn diagnostic_to_lsp(
     }
 
     let diag = lsp_types::Diagnostic {
-        range: encode_span_to_lsp(encoding, &top_file_info.offsets, &top_file_info.source, top_annotation.span),
+        range: encode_span_to_lsp(
+            encoding,
+            &top_file_info.offsets,
+            &top_file_info.source,
+            top_annotation.span,
+        ),
         severity: Some(level_to_severity(top_annotation.level)),
         code: None,
         code_description: None,

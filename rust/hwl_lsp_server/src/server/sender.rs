@@ -11,7 +11,7 @@ pub struct ServerSender {
     sender: Sender<Message>,
     next_id: u64,
     request_ids_expecting_null_response: HashSet<String>,
-    pub logger: Logger,    
+    pub logger: Logger,
 }
 
 pub type SendResult<T = ()> = Result<T, SendError<Message>>;
@@ -33,7 +33,7 @@ impl ServerSender {
     }
 
     // TODO support non-void requests
-    pub fn send_request<R: Request<Result=()>>(&mut self, args: R::Params) -> SendResult {
+    pub fn send_request<R: Request<Result = ()>>(&mut self, args: R::Params) -> SendResult {
         let id = self.next_unique_id();
         let request = lsp_server::Request {
             id: RequestId::from(id.clone()),

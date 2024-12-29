@@ -2,13 +2,15 @@ use annotate_snippets::Level;
 use itertools::enumerate;
 use lalrpop_util::lalrpop_mod;
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 use pos::Pos;
 
 pub mod ast;
+pub mod parsed;
 pub mod pos;
+pub mod source;
 pub mod token;
 
 lalrpop_mod!(grammar, "/syntax/grammar.rs");
@@ -23,8 +25,14 @@ pub struct LocationBuilder {
 impl LocationBuilder {
     pub fn span(&self, start: usize, end: usize) -> Span {
         Span {
-            start: Pos { file: self.file, byte: start },
-            end: Pos { file: self.file, byte: end },
+            start: Pos {
+                file: self.file,
+                byte: start,
+            },
+            end: Pos {
+                file: self.file,
+                byte: end,
+            },
         }
     }
 }
@@ -42,8 +50,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
     let location_builder = LocationBuilder { file };
 
     // actual parsing
-    let result = grammar::FileContentParser::new()
-        .parse(&location_builder, &src, tokenizer);
+    let result = grammar::FileContentParser::new().parse(&location_builder, &src, tokenizer);
 
     // convert the error back to our own formats
     result.map_err(|e| {

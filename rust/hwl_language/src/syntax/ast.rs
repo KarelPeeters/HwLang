@@ -1,5 +1,5 @@
 use crate::syntax::pos::Span;
-
+use itertools::Itertools;
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
 #[derive(Debug, Clone)]
@@ -15,6 +15,7 @@ pub enum Visibility {
 }
 
 // TODO add "doc comment" field to items?
+// TODO rename to ItemDef
 #[derive(Debug, Clone)]
 pub enum Item {
     Import(ItemImport),
@@ -142,21 +143,15 @@ pub struct ItemDefInterface {
 pub struct InterfaceField {
     pub span: Span,
     pub id: Identifier,
-    pub dir: Direction,
+    pub dir: InterfaceDirection,
     pub ty: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct GenericParameter {
     pub span: Span,
     pub id: Identifier,
-    pub kind: GenericParameterKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum GenericParameterKind {
-    Type(Span),
-    Value(Expression),
+    pub ty: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +165,7 @@ pub struct ModulePortSingle {
     pub span: Span,
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
-    pub kind: Spanned<PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
+    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,14 +183,13 @@ pub struct ModulePortInBlock {
     pub ty: Box<Expression>,
 }
 
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum PortKind<S, T> {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WireKind<S, T> {
     Clock,
     Normal { domain: S, ty: T },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DomainKind<S> {
     Async,
     Sync(SyncDomain<S>),
@@ -203,9 +197,10 @@ pub enum DomainKind<S> {
 
 // TODO how to represent the difference between sync and async reset?
 //   this is not the same as the sync/async-ness of the reset itself! (or is it?)
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SyncDomain<S> {
     pub clock: S,
+    // TODO make reset optional
     pub reset: S,
 }
 
@@ -222,6 +217,13 @@ impl<S> SyncDomain<S> {
             clock: f(self.clock),
             reset: f(self.reset),
         }
+    }
+
+    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(S) -> Result<U, E>) -> Result<SyncDomain<U>, E> {
+        Ok(SyncDomain {
+            clock: f(self.clock)?,
+            reset: f(self.reset)?,
+        })
     }
 }
 
@@ -254,7 +256,6 @@ pub enum ModuleStatementKind {
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
-
     // TODO control flow (if, for), probably not while/break/continue
     // TODO allow function/type/module(?) definitions in blocks
 }
@@ -268,30 +269,29 @@ pub enum BlockStatementKind {
 
     // control flow
     Block(Block<BlockStatement>),
-    If(IfStatement),
+    If(IfStatement<Box<Expression>, Block<BlockStatement>, Option<Block<BlockStatement>>>),
     While(WhileStatement),
     For(ForStatement),
     // control flow terminators
-    Return(Option<Box<Expression>>),
+    Return(ReturnStatement),
     Break(Option<Box<Expression>>),
     Continue,
-
     // TODO allow function/type definitions in blocks
 }
 
 #[derive(Debug, Clone)]
-pub struct IfStatement {
-    pub cond: Box<Expression>,
-    pub then_block: Block<BlockStatement>,
-    pub else_if_pairs: Vec<ElseIfPair>,
-    pub else_block: Option<Block<BlockStatement>>,
+pub struct IfStatement<C, B, E> {
+    pub initial_if: IfCondBlockPair<C, B>,
+    pub else_ifs: Vec<IfCondBlockPair<C, B>>,
+    pub final_else: E,
 }
 
 #[derive(Debug, Clone)]
-pub struct ElseIfPair {
+pub struct IfCondBlockPair<C, B> {
     pub span: Span,
-    pub cond: Box<Expression>,
-    pub block: Block<BlockStatement>,
+    pub span_if: Span,
+    pub cond: C,
+    pub block: B,
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +306,12 @@ pub struct ForStatement {
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,
     pub body: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReturnStatement {
+    pub span_return: Span,
+    pub value: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -330,8 +336,7 @@ pub struct WireDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     // TODO make optional and infer
-    pub sync: Spanned<DomainKind<Box<Expression>>>,
-    pub ty: Box<Expression>,
+    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
     pub value: Option<Box<Expression>>,
 }
 
@@ -350,7 +355,7 @@ pub struct VariableDeclaration {
     pub mutable: bool,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
-    pub init: Box<Expression>,
+    pub init: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -383,16 +388,23 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub module: Box<Expression>,
     pub generic_args: Option<Args>,
-    pub port_connections: Spanned<Vec<(Identifier, Spanned<Option<Expression>>)>>,
+    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PortConnection {
+    pub id: Identifier,
+    pub expr: Expression,
 }
 
 pub type Expression = Spanned<ExpressionKind>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
-    Any,
+    Undefined,
+    Type,
 
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
@@ -414,8 +426,8 @@ pub enum ExpressionKind {
     RangeLiteral(RangeLiteral),
 
     // Operations
-    UnaryOp(UnaryOp, Box<Expression>),
-    BinaryOp(BinaryOp, Box<Expression>, Box<Expression>),
+    UnaryOp(Spanned<UnaryOp>, Box<Expression>),
+    BinaryOp(Spanned<BinaryOp>, Box<Expression>, Box<Expression>),
     TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
@@ -425,32 +437,56 @@ pub enum ExpressionKind {
 
     // Calls
     Call(Box<Expression>, Args),
-    Builtin(Args),
+    Builtin(Spanned<Vec<Expression>>),
 }
 
-#[derive(Debug, Clone)]
-pub struct Args<T = Expression> {
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
-    pub inner: Vec<Arg<T>>,
+    pub inner: Vec<Arg<N, T>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Arg<T = Expression> {
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub span: Span,
-    pub name: Option<Identifier>,
+    pub name: N,
     pub value: T,
 }
 
-impl<T> Args<T> {
-    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<U> {
+impl<N, T> Args<N, T> {
+    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<N, U>
+    where
+        N: Clone,
+    {
         Args {
             span: self.span,
-            inner: self.inner.iter().map(|arg| Arg {
-                span: arg.span,
-                name: arg.name.clone(),
-                value: f(&arg.value),
-            }).collect(),
+            inner: self
+                .inner
+                .iter()
+                .map(|arg| Arg {
+                    span: arg.span,
+                    name: arg.name.clone(),
+                    value: f(&arg.value),
+                })
+                .collect(),
         }
+    }
+
+    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<N, U>, E> {
+        Ok(Args {
+            span: self.span,
+            inner: self
+                .inner
+                .into_iter()
+                .map(|arg| {
+                    Ok(Arg {
+                        span: arg.span,
+                        name: arg.name,
+                        value: f(arg.value)?,
+                    })
+                })
+                .try_collect()?,
+        })
     }
 }
 
@@ -460,24 +496,24 @@ pub struct ArrayLiteralElement<V> {
     pub value: V,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct StructLiteral {
     pub struct_ty: Box<Expression>,
     pub fields: Vec<StructLiteralField>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct StructLiteralField {
     pub span: Span,
     pub id: Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RangeLiteral {
     pub end_inclusive: bool,
     pub start: Option<Box<Expression>>,
-    pub end: Option<Box<Expression>>
+    pub end: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -490,7 +526,7 @@ pub struct SyncExpression {
 // TODO wildcard symbol: `_`, `?`, `*`, `#`?
 //     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum IntPattern {
     // [0-9a-fA-F_]+
     Hex(String),
@@ -507,16 +543,23 @@ pub enum MaybeIdentifier<I = Identifier> {
 }
 
 // TODO this is also just a spanned string
-// TODO intern identifiers 
-#[derive(Debug, Clone)]
+// TODO intern identifiers
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
-    ExpressionKind::BinaryOp(op, Box::new(left), Box::new(right))
+pub fn build_binary_op(op_span: Span, op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
+    ExpressionKind::BinaryOp(
+        Spanned {
+            span: op_span,
+            inner: op,
+        },
+        Box::new(left),
+        Box::new(right),
+    )
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -548,20 +591,20 @@ pub enum BinaryOp {
     In,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum UnaryOp {
     Neg,
     Not,
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Direction {
+pub enum InterfaceDirection {
     None,
     In,
     Out,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Spanned<T> {
     pub span: Span,
     pub inner: T,
@@ -580,6 +623,12 @@ impl<T> Spanned<T> {
             span: self.span,
             inner: &self.inner,
         }
+    }
+}
+
+impl<T, E> Spanned<Result<T, E>> {
+    pub fn transpose(self) -> Result<Spanned<T>, E> {
+        self.inner.map(|inner| Spanned { span: self.span, inner })
     }
 }
 
@@ -607,10 +656,10 @@ impl MaybeIdentifier {
         }
     }
 
-    pub fn string(&self) -> Option<&str> {
+    pub fn string(&self) -> &str {
         match self {
-            MaybeIdentifier::Dummy(_span) => None,
-            MaybeIdentifier::Identifier(id) => Some(&id.string),
+            MaybeIdentifier::Dummy(_span) => "_",
+            MaybeIdentifier::Identifier(id) => &id.string,
         }
     }
 }
@@ -654,22 +703,83 @@ impl Item {
 
     fn info(&self) -> (ItemCommonInfo, Option<ItemDeclarationInfo>) {
         match self {
-            Item::Import(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.span }, None),
-            Item::Const(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span() }, Some(ItemDeclarationInfo { vis: item.vis, id: item.id.as_ref() })),
-            Item::Type(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Struct(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Enum(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Function(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Module(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
-            Item::Interface(item) =>
-                (ItemCommonInfo { span_full: item.span, span_short: item.id.span }, Some(ItemDeclarationInfo { vis: item.vis, id: MaybeIdentifier::Identifier(&item.id) })),
+            Item::Import(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.span,
+                },
+                None,
+            ),
+            Item::Const(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span(),
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: item.id.as_ref(),
+                }),
+            ),
+            Item::Type(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Struct(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Enum(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Function(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Module(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
+            Item::Interface(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span,
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
+                }),
+            ),
         }
     }
 }

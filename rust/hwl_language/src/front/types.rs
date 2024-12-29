@@ -1,218 +1,287 @@
-use crate::data::compiled::{CompiledDatabase, CompiledStage, GenericParameter, GenericTypeParameter, Item};
-use crate::data::diagnostic::ErrorGuaranteed;
-use crate::front::common::TypeOrValue;
-use crate::front::common::{GenericContainer, GenericMap};
-use crate::front::values::Value;
-use crate::syntax::ast::Spanned;
-use derivative::Derivative;
-use indexmap::IndexMap;
+use crate::front::ir::IrType;
+use crate::swrite;
+use itertools::{zip_eq, Itertools};
+use num_bigint::{BigInt, BigUint};
+use std::fmt::{Display, Formatter};
 
-// TODO find a better name for this
-#[derive(Debug, Clone)]
-pub enum MaybeConstructor<T> {
-    Immediate(T),
-    Constructor(Constructor<T>),
-    /// This error case means we don't know whether this is a constructor or not.
-    Error(ErrorGuaranteed),
-}
-
-#[derive(Debug, Clone)]
-pub struct Constructor<T> {
-    pub parameters: GenericParameters,
-    pub inner: T,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct GenericParameters {
-    pub vec: Vec<GenericParameter>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct GenericArguments {
-    // guaranteed to be the same length and ordering as the parameters
-    pub vec: Vec<TypeOrValue>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PortConnections {
-    // guaranteed to be the same length and ordering as the ports
-    pub vec: Vec<Spanned<Value>>,
-}
-
-// TODO function arguments?
-
-// TODO push type constructor args into struct, enum, ... types, like Rust?
+// TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
-    // error
-    // TODO how should this behave under equality?
-    Error(ErrorGuaranteed),
-
-    // parameters
-    GenericParameter(GenericTypeParameter),
-
-    // basic
+    // Higher order type, containing other types (including type itself!).
+    Type,
+    // Lattice top type (including type!)
     Any,
-    Unchecked,
-    // TODO make unit just a special case of tuple
-    Unit,
-    // TODO properly handle never type and value everywhere
-    Never,
-    Boolean,
+    // Lattice bottom type
+    Undefined,
     Clock,
-    // TODO remove this (or at least the limited one), this has been replaced by arrays
-    Bits(Option<Box<Value>>),
+    Bool,
     String,
-    // TODO range of what inner type? and how do int ranges with mixed types work exactly?
-    Range,
-    Array(Box<Type>, Box<Value>),
-    Integer(IntegerTypeInfo),
-    Function(FunctionTypeInfo),
+    Int(IncRange<BigInt>),
     Tuple(Vec<Type>),
-    Struct(StructTypeInfo),
-    Enum(EnumTypeInfo),
+    Array(Box<Type>, BigUint),
+    Range,
+    Module,   // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
+    Function, // TODO make this (optionally) more specific, with arg and return types
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct IntegerTypeInfo {
-    pub range: Box<Value>,
+pub enum HardwareType {
+    Clock,
+    Bool,
+    Int(ClosedIncRange<BigInt>),
+    Tuple(Vec<HardwareType>),
+    Array(Box<HardwareType>, BigUint),
 }
 
-/// This is only used for higher-order functions, which are restricted to only take values as parameters.
-/// Functions themselves don't really define a type, they define a value constructor.
+// TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct FunctionTypeInfo {
-    pub params: Vec<Type>,
-    pub ret: Box<Type>,
+pub struct IncRange<T> {
+    pub start_inc: Option<T>,
+    pub end_inc: Option<T>,
 }
 
-/// Two nominal types are considered equal iff their unique ids are equal.
-/// This is a stronger requirement than just requiring the type structures to be the same in two ways:
-/// * Both types need to be defined by the same exact item
-/// * The generic parameters need to match.
-/// This is an additional requirement if some of the parameters don't effect the structure of the type.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct NominalTypeUnique {
-    pub item: Item,
-    pub args: GenericArguments,
-    // TODO think about how captured values and types should work
+pub struct ClosedIncRange<T> {
+    pub start_inc: T,
+    pub end_inc: T,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
-pub struct StructTypeInfo {
-    pub nominal_type_unique: NominalTypeUnique,
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(Hash = "ignore")]
-    pub fields: IndexMap<String, Type>,
+pub trait Typed {
+    fn ty(&self) -> Type;
 }
 
-#[derive(Debug, Clone)]
-#[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
-pub struct EnumTypeInfo {
-    pub nominal_type_unique: NominalTypeUnique,
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(Hash = "ignore")]
-    pub variants: IndexMap<String, Option<Type>>,
-}
+impl Type {
+    pub const UNIT: Type = Type::Tuple(Vec::new());
 
-impl<T> MaybeConstructor<T> {
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> MaybeConstructor<U> {
+    pub fn union(&self, other: &Type) -> Type {
+        match (self, other) {
+            // top and bottom
+            (Type::Any, _) | (_, Type::Any) => Type::Any,
+            (Type::Undefined, other) | (other, Type::Undefined) => other.clone(),
+
+            // simple matches
+            (Type::Type, Type::Type) => Type::Type,
+            (Type::Clock, Type::Clock) => Type::Clock,
+            (Type::Bool, Type::Bool) => Type::Bool,
+            (Type::String, Type::String) => Type::String,
+            (Type::Range, Type::Range) => Type::Range,
+            (Type::Module, Type::Module) => Type::Module,
+            (Type::Function, Type::Function) => Type::Function,
+
+            // integer
+            (Type::Int(a), Type::Int(b)) => {
+                let IncRange {
+                    start_inc: a_start,
+                    end_inc: a_end,
+                } = a;
+                let IncRange {
+                    start_inc: b_start,
+                    end_inc: b_end,
+                } = b;
+
+                let start = match (a_start, b_start) {
+                    (Some(a_start), Some(b_start)) => Some(a_start.min(b_start).clone()),
+                    (None, _) | (_, None) => None,
+                };
+                let end = match (a_end, b_end) {
+                    (Some(a_end), Some(b_end)) => Some(a_end.max(b_end).clone()),
+                    (None, _) | (_, None) => None,
+                };
+
+                Type::Int(IncRange {
+                    start_inc: start,
+                    end_inc: end,
+                })
+            }
+
+            // tuple
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                if a.len() == b.len() {
+                    Type::Tuple(zip_eq(a, b).map(|(a, b)| a.union(b)).collect_vec())
+                } else {
+                    Type::Any
+                }
+            }
+            // array
+            (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
+                if a_len == b_len {
+                    let inner = a_inner.union(b_inner);
+                    Type::Array(Box::new(inner), a_len.clone())
+                } else {
+                    // TODO into list?
+                    Type::Any
+                }
+            }
+
+            // simple mismatches
+            (
+                Type::Type
+                | Type::Clock
+                | Type::Bool
+                | Type::String
+                | Type::Range
+                | Type::Module
+                | Type::Function
+                | Type::Int(_)
+                | Type::Tuple(_)
+                | Type::Array(_, _),
+                Type::Type
+                | Type::Clock
+                | Type::Bool
+                | Type::String
+                | Type::Range
+                | Type::Module
+                | Type::Function
+                | Type::Int(_)
+                | Type::Tuple(_)
+                | Type::Array(_, _),
+            ) => Type::Any,
+        }
+    }
+
+    pub fn contains_type(&self, ty: &Type) -> bool {
+        self == &self.union(ty)
+    }
+
+    pub fn as_hardware_type(&self) -> Option<HardwareType> {
         match self {
-            MaybeConstructor::Constructor(c) => MaybeConstructor::Constructor(Constructor {
-                parameters: c.parameters,
-                inner: f(c.inner),
-            }),
-            MaybeConstructor::Immediate(t) => MaybeConstructor::Immediate(f(t)),
-            MaybeConstructor::Error(e) => MaybeConstructor::Error(e),
+            Type::Clock => Some(HardwareType::Clock),
+            Type::Bool => Some(HardwareType::Bool),
+            Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int),
+            Type::Tuple(inner) => inner
+                .iter()
+                .map(Type::as_hardware_type)
+                .collect::<Option<_>>()
+                .map(HardwareType::Tuple),
+            Type::Array(inner, len) => inner
+                .as_hardware_type()
+                .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
+            Type::Type | Type::Any | Type::Undefined => None,
+            Type::String | Type::Range | Type::Module | Type::Function => None,
+        }
+    }
+
+    pub fn to_diagnostic_string(&self) -> String {
+        match self {
+            Type::Type => "type".to_string(),
+            Type::Any => "any".to_string(),
+            Type::Undefined => "undefined".to_string(),
+
+            Type::Clock => "clock".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::String => "string".to_string(),
+            Type::Int(range) => format!("int({})", range),
+            Type::Tuple(inner) => {
+                let inner_str = inner.iter().map(Type::to_diagnostic_string).join(", ");
+                format!("({})", inner_str)
+            }
+            Type::Array(first_inner, first_len) => {
+                let mut dims = String::new();
+
+                swrite!(&mut dims, "{}", first_len);
+                let mut inner = first_inner;
+                while let Type::Array(curr_inner, curr_len) = &**inner {
+                    swrite!(&mut dims, ", {}", curr_len);
+                    inner = curr_inner;
+                }
+
+                let inner_str = inner.to_diagnostic_string();
+                format!("{inner_str}[{dims}]")
+            }
+            Type::Range => "range".to_string(),
+            Type::Module => "module".to_string(),
+            Type::Function => "function".to_string(),
         }
     }
 }
 
-impl GenericContainer for Type {
-    type Result = Type;
+impl HardwareType {
+    pub fn as_type(&self) -> Type {
+        match self {
+            HardwareType::Clock => Type::Clock,
+            HardwareType::Bool => Type::Bool,
+            HardwareType::Int(range) => Type::Int(range.clone().into_range()),
+            HardwareType::Tuple(inner) => Type::Tuple(inner.iter().map(HardwareType::as_type).collect_vec()),
+            HardwareType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
+        }
+    }
 
-    fn replace_generics<S: CompiledStage>(
-        &self,
-        compiled: &mut CompiledDatabase<S>,
-        map: &GenericMap,
-    ) -> Self {
-        match *self {
-            Type::Error(e) => Type::Error(e),
-
-            Type::GenericParameter(param) =>
-                param.replace_generics(compiled, map),
-
-            Type::Any => Type::Any,
-            Type::Unchecked => Type::Unchecked,
-            Type::Never => Type::Never,
-            Type::Unit => Type::Unit,
-            Type::Boolean => Type::Boolean,
-            Type::Clock => Type::Clock,
-            Type::String => Type::String,
-            Type::Bits(ref width) => {
-                Type::Bits(width.as_ref().map(|width| Box::new(width.replace_generics(compiled, map))))
-            }
-            Type::Array(ref inner, ref len) => {
-                Type::Array(
-                    Box::new(inner.replace_generics(compiled, map)),
-                    Box::new(len.replace_generics(compiled, map)),
-                )
-            }
-            Type::Range => Type::Range,
-            Type::Integer(ref info) => {
-                Type::Integer(IntegerTypeInfo {
-                    range: Box::new(info.range.replace_generics(compiled, map)),
-                })
-            }
-            Type::Function(ref info) => {
-                Type::Function(FunctionTypeInfo {
-                    params: info.params.iter()
-                        .map(|p| p.replace_generics(compiled, map))
-                        .collect(),
-                    ret: Box::new(info.ret.replace_generics(compiled, map)),
-                })
-            }
-            Type::Tuple(ref types) => {
-                Type::Tuple(types.iter().map(|t| t.replace_generics(compiled, map)).collect())
-            }
-            Type::Struct(ref info) => {
-                Type::Struct(StructTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generics(compiled, map),
-                    fields: info.fields.iter()
-                        .map(|(name, ty)| (name.clone(), ty.replace_generics(compiled, map)))
-                        .collect(),
-                })
-            }
-            Type::Enum(ref info) => {
-                Type::Enum(EnumTypeInfo {
-                    nominal_type_unique: info.nominal_type_unique.replace_generics(compiled, map),
-                    variants: info.variants.iter()
-                        .map(|(name, ty)| {
-                            (name.clone(), ty.as_ref().map(|t| t.replace_generics(compiled, map)))
-                        })
-                        .collect(),
-                })
-            }
+    pub fn to_ir(&self) -> IrType {
+        match self {
+            HardwareType::Clock => IrType::Bool,
+            HardwareType::Bool => IrType::Bool,
+            HardwareType::Int(range) => IrType::Int(range.clone()),
+            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::to_ir).collect_vec()),
+            HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.to_ir()), len.clone()),
         }
     }
 }
 
-impl GenericContainer for NominalTypeUnique {
-    type Result = NominalTypeUnique;
+impl<T> IncRange<T> {
+    pub const OPEN: IncRange<T> = IncRange {
+        start_inc: None,
+        end_inc: None,
+    };
 
-    fn replace_generics<S: CompiledStage>(
-        &self,
-        compiled: &mut CompiledDatabase<S>,
-        map: &GenericMap,
-    ) -> Self {
-        NominalTypeUnique {
-            item: self.item,
-            args: GenericArguments {
-                vec: self.args.vec.iter().map(|t| t.replace_generics(compiled, map)).collect(),
-            },
+    pub fn try_into_closed(self) -> Option<ClosedIncRange<T>> {
+        let IncRange { start_inc, end_inc } = self;
+        Some(ClosedIncRange {
+            start_inc: start_inc?,
+            end_inc: end_inc?,
+        })
+    }
+}
+
+impl<T> ClosedIncRange<T> {
+    pub fn single(value: T) -> ClosedIncRange<T>
+    where
+        T: Clone,
+    {
+        ClosedIncRange {
+            start_inc: value.clone(),
+            end_inc: value,
         }
+    }
+
+    pub fn into_range(self) -> IncRange<T> {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        IncRange {
+            start_inc: Some(start_inc),
+            end_inc: Some(end_inc),
+        }
+    }
+
+    pub fn as_ref(&self) -> ClosedIncRange<&T> {
+        ClosedIncRange {
+            start_inc: &self.start_inc,
+            end_inc: &self.end_inc,
+        }
+    }
+
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialOrd,
+    {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        start_inc <= value && value <= end_inc
+    }
+}
+
+impl<T: Display> Display for IncRange<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let IncRange { start_inc, end_inc } = self;
+        match (start_inc, end_inc) {
+            (None, None) => write!(f, ".."),
+            (Some(start_inc), None) => write!(f, "{}..", start_inc),
+            (None, Some(end_inc)) => write!(f, "..={}", end_inc),
+            (Some(start_inc), Some(end_inc)) => write!(f, "{}..={}", start_inc, end_inc),
+        }
+    }
+}
+
+impl<T: Display> Display for ClosedIncRange<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        write!(f, "{}..={}", start_inc, end_inc)
     }
 }

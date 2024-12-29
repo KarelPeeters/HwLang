@@ -47,7 +47,11 @@ fn main_inner() -> Result<(), TopError> {
             Ok(settings) => settings,
             Err(e) => {
                 let mut sender = ServerSender::new(connection.sender, logger);
-                sender.send_response(Response::new_err(initialize_id, ErrorCode::RequestFailed as i32, e.0.clone()))?;
+                sender.send_response(Response::new_err(
+                    initialize_id,
+                    ErrorCode::RequestFailed as i32,
+                    e.0.clone(),
+                ))?;
                 return Ok(());
             }
         };
@@ -79,13 +83,13 @@ fn main_inner() -> Result<(), TopError> {
             match msg {
                 Ok(msg) => {
                     state.log(format!("==> {:?}", msg));
-                    
+
                     let outcome = state.handle_message(msg)?;
                     match outcome {
                         HandleMessageOutcome::Continue => {}
                         HandleMessageOutcome::Exit(exit_code) => break 'outer exit_code,
                     }
-                },
+                }
                 Err(e) => {
                     let _: RecvError = e;
                     // Receive error, which means the input channel was closed
@@ -111,14 +115,12 @@ fn main_inner() -> Result<(), TopError> {
             Ok(()) => {
                 state.log("finished background work");
             }
-            Err(e) => {
-                match e {
-                    OrSendError::SendError(e) => throw!(e),
-                    OrSendError::Error(e) => {
-                        state.sender.send_notification_error(e, "background work")?;
-                    }
+            Err(e) => match e {
+                OrSendError::SendError(e) => throw!(e),
+                OrSendError::Error(e) => {
+                    state.sender.send_notification_error(e, "background work")?;
                 }
-            }
+            },
         };
     };
 

@@ -1,5 +1,5 @@
 use crate::syntax::ast::*;
-use crate::syntax::LocationBuilder;
+use crate::syntax::{Span, LocationBuilder};
 use crate::syntax::token::{TokenType, TokenError};
 
 // TODO move this boilerplate stuff to the bottom
@@ -22,7 +22,6 @@ extern {
         "import" => TokenType::Import,
         "as" => TokenType::As,
         "type" => TokenType::Type,
-        "any" => TokenType::Any,
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
         "generics" => TokenType::Generics,
@@ -48,6 +47,7 @@ extern {
         "continue" => TokenType::Continue,
         "true" => TokenType::True,
         "false" => TokenType::False,
+        "undefined" => TokenType::Undefined,
         "if" => TokenType::If,
         "else" => TokenType::Else,
         "loop" => TokenType::Loop,
@@ -172,8 +172,8 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    <start:@L> "wire" <id:MaybeId> ":" <sync:Spanned<DomainKind>> <ty:BoxExpr> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        let decl = WireDeclaration { span: loc.span(start, end), id, sync, ty, value };
+    <start:@L> "wire" <id:MaybeId> ":" <kind:Spanned<WireKind>> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
+        let decl = WireDeclaration { span: loc.span(start, end), id, kind, value };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -191,6 +191,8 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::CombinatorialBlock(inner)
     },
     // clocked block
+    // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
+    //   registers declared inside of the block do still inherit their clock/reset from the block though
     <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R> => {
         let inner = ClockedBlock {
             domain: Spanned { span: clock.span.join(reset.span), inner: SyncDomain { clock, reset } },
@@ -206,7 +208,7 @@ ModuleStatementKind: ModuleStatementKind = {
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
         <generic_args:("generics" "(" <Args> ")")?>
-        "ports" "(" <port_connections:Spanned<Separated<InstancePortConnection, ",">>> ")"
+        "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
@@ -220,8 +222,8 @@ ModuleStatementKind: ModuleStatementKind = {
 
 // TODO better port syntax, maybe including directionality?
 //   now it's different from both generics and struct literals
-InstancePortConnection: (Identifier, Spanned<Option<Expression>>) = {
-    "." <id:Id> "(" <value:Spanned<Expr?>> ")" => (id, value),
+PortConnection: PortConnection = {
+    "." <id:Id> "(" <expr:Expr> ")" => PortConnection { id, expr },
 }
 
 BlockStatementKind: BlockStatementKind = {
@@ -243,16 +245,35 @@ BlockStatementKind: BlockStatementKind = {
     // block
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
     // control flow
-    "if" "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <else_if_pairs:ElseIfPair*> <else_block:("else" <Block<BlockStatement>>)?>
-        => BlockStatementKind::If(IfStatement { cond, then_block, else_if_pairs, else_block }),
-    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<BlockStatement>>
+    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <end_if:@R>
+    <else_ifs:ElseIfPair*>
+    <final_else:("else" <Block<BlockStatement>>)?> => {
+        BlockStatementKind::If(IfStatement {
+            initial_if: IfCondBlockPair {
+                span: loc.span(start, end_if),
+                span_if: span_if,
+                cond: cond,
+                block: then_block
+            },
+            else_ifs,
+            final_else
+        })
+    },
+    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")"
+    <body:Block<BlockStatement>>
         => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
     "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { cond, body }),
     // control flow terminators
-    "return" <value:BoxExpr?> ";" => BlockStatementKind::Return(value),
+    <span_return:Span<"return">> <value:BoxExpr?> ";"
+        => BlockStatementKind::Return(ReturnStatement { span_return, value }),
     "break" <value:BoxExpr?> ";" => BlockStatementKind::Break(value),
     "continue" ";" => BlockStatementKind::Continue,
+}
+
+ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
+    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
+        => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
 }
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
@@ -262,7 +283,7 @@ ConstDeclaration<V>: ConstDeclaration<V> = {
 }
 
 VariableDeclaration: VariableDeclaration = {
-    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":" <BoxExpr>)?> "=" <init:BoxExpr> ";" <end:@R> => {
+    <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":"<BoxExpr>)?> <init: ("="<BoxExpr>)?> ";" <end:@R> => {
         VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) }
     },
 }
@@ -278,19 +299,14 @@ Parameters<P>: Spanned<Vec<P>> = {
 }
 
 GenericParameter: GenericParameter = {
-    <start:@L> <id:Id> ":" <kind:GenericParameterKind> <end:@R> => GenericParameter { id, kind, span: loc.span(start, end) },
-}
-
-GenericParameterKind: GenericParameterKind = {
-    <start:@L> "type" <end:@R> => GenericParameterKind::Type(loc.span(start, end)),
-    <ty:Expr> => GenericParameterKind::Value(ty),
+    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => GenericParameter { id, ty, span: loc.span(start, end) },
 }
 
 // TODO get rid of the need for a comma after a block
 ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
 
 ModulePortItem: ModulePortItem = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<PortKind>> <end:@R>
+    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>> <end:@R>
             => ModulePortItem::Single(ModulePortSingle { id, direction, kind, span: loc.span(start, end) }),
     <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
@@ -301,9 +317,9 @@ ModulePortInBlock: ModulePortInBlock = {
         => ModulePortInBlock { id, direction, ty, span: loc.span(start, end) },
 }
 
-PortKind: PortKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
-    "clock" => PortKind::Clock,
-    <domain:Spanned<DomainKind>> <ty:BoxExpr> => PortKind::Normal { domain, ty },
+WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
+    "clock" => WireKind::Clock,
+    <domain:Spanned<DomainKind>> <ty:BoxExpr> => WireKind::Normal { domain, ty },
 }
 
 PortDirection: PortDirection = {
@@ -325,8 +341,8 @@ Expr: Expression = Spanned<ExprLevelIn>;
 BoxExpr: Box<Expression> = Box<Expr>;
 
 ExprLevelIn: ExpressionKind = {
-    <value:Spanned<ExprLevelRange>> "in" <range:Spanned<ExprLevelRange>>
-        => build_binary_op(BinaryOp::In, value, range),
+    <value:Spanned<ExprLevelRange>> <op:Span<"in">> <range:Spanned<ExprLevelRange>>
+        => build_binary_op(op, BinaryOp::In, value, range),
     ExprLevelRange,
 }
 
@@ -343,87 +359,115 @@ ExprLevelRange: ExpressionKind = {
 
 ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
-    <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
-    <left:Spanned<ExprLevelLogicalXor>> "^^" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolXor, left, right),
+    <left:Spanned<ExprLevelLogicalAnd>> <op:Span<"&&">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolAnd, left, right),
+    <left:Spanned<ExprLevelLogicalOr>> <op:Span<"||">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolOr, left, right),
+    <left:Spanned<ExprLevelLogicalXor>> <op:Span<"^^">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalAnd: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalAnd>> "&&" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolAnd, left, right),
+    <left:Spanned<ExprLevelLogicalAnd>> <op:Span<"&&">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolAnd, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalOr: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalOr>> "||" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolOr, left, right),
+    <left:Spanned<ExprLevelLogicalOr>> <op:Span<"||">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalXor: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalXor>> "^^" <right:Spanned<ExprLevelEqual>> => build_binary_op(BinaryOp::BoolXor, left, right),
+    <left:Spanned<ExprLevelLogicalXor>> <op:Span<"^^">> <right:Spanned<ExprLevelEqual>> =>
+        build_binary_op(op, BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 
 ExprLevelEqual: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelBitWise>> "==" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpEq, left, right),
-    <left:Spanned<ExprLevelBitWise>> "!=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpNeq, left, right),
-    <left:Spanned<ExprLevelBitWise>> ">=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpGte, left, right),
-    <left:Spanned<ExprLevelBitWise>> ">" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpGt, left, right),
-    <left:Spanned<ExprLevelBitWise>> "<=" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpLte, left, right),
-    <left:Spanned<ExprLevelBitWise>> "<" <right:Spanned<ExprLevelBitWise>> => build_binary_op(BinaryOp::CmpLt, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"==">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpEq, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"!=">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpNeq, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<">=">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpGte, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<">">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpGt, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"<=">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpLte, left, right),
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"<">> <right:Spanned<ExprLevelBitWise>> =>
+        build_binary_op(op, BinaryOp::CmpLt, left, right),
     ExprLevelBitWise,
 }
 
 ExprLevelBitWise: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelBitAnd>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
-    <left:Spanned<ExprLevelBitOr>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
-    <left:Spanned<ExprLevelBitXor>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
+    <left:Spanned<ExprLevelBitAnd>> <op:Span<"&">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitAnd, left, right),
+    <left:Spanned<ExprLevelBitOr>> <op:Span<"|">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitOr, left, right),
+    <left:Spanned<ExprLevelBitXor>> <op:Span<"^">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitXor, left, right),
     ExprLevelShift,
 }
 ExprLevelBitAnd: ExpressionKind = {
-    <left:Spanned<ExprLevelBitAnd>> "&" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitAnd, left, right),
+    <left:Spanned<ExprLevelBitAnd>> <op:Span<"&">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitAnd, left, right),
     ExprLevelShift,
 }
 ExprLevelBitOr: ExpressionKind = {
-    <left:Spanned<ExprLevelBitOr>> "|" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitOr, left, right),
+    <left:Spanned<ExprLevelBitOr>> <op:Span<"|">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitOr, left, right),
     ExprLevelShift,
 }
 ExprLevelBitXor: ExpressionKind = {
-    <left:Spanned<ExprLevelBitXor>> "^" <right:Spanned<ExprLevelShift>> => build_binary_op(BinaryOp::BitXor, left, right),
+    <left:Spanned<ExprLevelBitXor>> <op:Span<"^">> <right:Spanned<ExprLevelShift>> =>
+        build_binary_op(op, BinaryOp::BitXor, left, right),
     ExprLevelShift,
 }
 
 ExprLevelShift: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelAdd>> "<<" <right:Spanned<ExprLevelAdd>> => build_binary_op(BinaryOp::Shl, left, right),
-    <left:Spanned<ExprLevelAdd>> ">>" <right:Spanned<ExprLevelAdd>> => build_binary_op(BinaryOp::Shr, left, right),
+    <left:Spanned<ExprLevelAdd>> <op:Span<"<<">> <right:Spanned<ExprLevelAdd>> =>
+        build_binary_op(op, BinaryOp::Shl, left, right),
+    <left:Spanned<ExprLevelAdd>> <op:Span<">>">> <right:Spanned<ExprLevelAdd>> =>
+        build_binary_op(op, BinaryOp::Shr, left, right),
     ExprLevelAdd,
 }
 
 ExprLevelAdd: ExpressionKind = {
     // assoc left
-    <left:Spanned<ExprLevelAdd>> "+" <right:Spanned<ExprLevelMul>> => build_binary_op(BinaryOp::Add, left, right),
-    <left:Spanned<ExprLevelAdd>> "-" <right:Spanned<ExprLevelMul>> => build_binary_op(BinaryOp::Sub, left, right),
+    <left:Spanned<ExprLevelAdd>> <op:Span<"+">> <right:Spanned<ExprLevelMul>> =>
+        build_binary_op(op, BinaryOp::Add, left, right),
+    <left:Spanned<ExprLevelAdd>> <op:Span<"-">> <right:Spanned<ExprLevelMul>> =>
+        build_binary_op(op, BinaryOp::Sub, left, right),
     ExprLevelMul,
 }
 
 ExprLevelMul: ExpressionKind = {
     // assoc left
-    <left:Spanned<ExprLevelMul>> "*" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Mul, left, right),
-    <left:Spanned<ExprLevelMul>> "/" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Div, left, right),
+    <left:Spanned<ExprLevelMul>> <op:Span<"*">> <right:Spanned<ExprLevelUnary>> =>
+        build_binary_op(op, BinaryOp::Mul, left, right),
+    <left:Spanned<ExprLevelMul>> <op:Span<"/">> <right:Spanned<ExprLevelUnary>> =>
+        build_binary_op(op, BinaryOp::Div, left, right),
     // TODO disallow mixing this with mul and/or div?
-    <left:Spanned<ExprLevelMul>> "%" <right:Spanned<ExprLevelUnary>> => build_binary_op(BinaryOp::Mod, left, right),
+    <left:Spanned<ExprLevelMul>> <op:Span<"%">> <right:Spanned<ExprLevelUnary>> =>
+        build_binary_op(op, BinaryOp::Mod, left, right),
     ExprLevelUnary,
 }
 
 ExprLevelUnary: ExpressionKind = {
-    "!" <inner:BoxSpanned<ExprLevelPower>> => ExpressionKind::UnaryOp(UnaryOp::Not, inner),
-    "-" <inner:BoxSpanned<ExprLevelPower>> => ExpressionKind::UnaryOp(UnaryOp::Neg, inner),
+    <op:Span<"!">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
+    <op:Span<"-">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Neg }, inner),
     ExprLevelPower,
 }
 
 ExprLevelPower: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelCall>> "**" <right:Spanned<ExprLevelCall>> => build_binary_op(BinaryOp::Pow, left, right),
+    <left:Spanned<ExprLevelCall>> <op:Span<"**">> <right:Spanned<ExprLevelCall>> =>
+        build_binary_op(op, BinaryOp::Pow, left, right),
     ExprLevelCall,
 }
 
@@ -431,7 +475,7 @@ ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
 ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
 
 ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
-    "__builtin" "(" <args:Args> ")" =>
+    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" =>
         ExpressionKind::Builtin(args),
     <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
         ExpressionKind::Call(target, args),
@@ -471,8 +515,8 @@ ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     // TODO allow multiple stars to flatten multi-dimensional arrays?
-    <spread:Spanned<"*">?> <value:Expr> => ArrayLiteralElement {
-        spread: spread.map(|spanned| spanned.span),
+    <spread:Span<"*">?> <value:Expr> => ArrayLiteralElement {
+        spread,
         value
     },
 }
@@ -480,8 +524,8 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
 ExprLevelStructInit: ExpressionKind = {
     //  struct
     // TODO allow struct type params?
-    // <struct_ty:Id> "{" "}" => todo!(),
-    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => todo!(),
+    // <struct_ty:Id> "{" "}" => {},
+//    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => {},
 //        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
     ExprLevelAtomic,
 }
@@ -496,10 +540,13 @@ ExprLevelAtomic: ExpressionKind = {
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),
+    // type
+    "type" => ExpressionKind::Type,
     "_" => ExpressionKind::Dummy,
     // literals
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
+    "undefined" => ExpressionKind::Undefined,
     <string:TokenIntPatternHexadecimal>
         => ExpressionKind::IntPattern(IntPattern::Hex(string[2..].to_owned())),
     <string:TokenIntPatternBinary>
@@ -511,19 +558,12 @@ ExprLevelAtomic: ExpressionKind = {
         let string = full[1..full.len()-1].to_owned();
         ExpressionKind::StringLiteral(string.to_owned())
     },
-    // any
-    "any" => ExpressionKind::Any,
 }
 
 //Path: Path = {
 //    <start:@L> <steps: Spanned<(<Id> ".")*>> <id: Id> <end:@R>
 //        => Path { span: loc.span(start, end), steps, id }
 //}
-
-ElseIfPair: ElseIfPair = {
-    <start:@L> "else" "if" "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
-        => ElseIfPair { cond, block, span: loc.span(start, end) },
-}
 
 // terminals
 Id: Identifier = {
@@ -587,9 +627,14 @@ Box<T>: Box<T> = {
 }
 
 #[inline]
+BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
+
+#[inline]
 Spanned<T>: Spanned<T> = {
     <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
 #[inline]
-BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
+Span<T>: Span = {
+    <start:@L> <inner:T> <end:@R> => loc.span(start, end),
+}

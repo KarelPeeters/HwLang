@@ -7,7 +7,10 @@ use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
-use lsp_types::{notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, Registration, RegistrationParams, Uri};
+use lsp_types::{
+    notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, Registration,
+    RegistrationParams, Uri,
+};
 use std::collections::HashSet;
 
 pub struct ServerState {
@@ -53,6 +56,7 @@ pub enum HandleMessageOutcome {
 impl ServerState {
     pub fn new(settings: Settings, sender: ServerSender) -> Self {
         // TODO support multiple workspaces through a list of VFSs instead of just a single one
+        #[allow(deprecated)]
         let vfs = VirtualFileSystemWrapper::new(settings.initialize_params.root_uri.clone().unwrap());
 
         Self {
@@ -68,21 +72,20 @@ impl ServerState {
         // subscribe to file changes
         let pattern = format!("**/{{*.{}}}", LANGUAGE_FILE_EXTENSION);
         let params = RegistrationParams {
-            registrations: vec![
-                Registration {
-                    id: self.sender.next_unique_id(),
-                    method: notification::DidChangeWatchedFiles::METHOD.to_string(),
-                    register_options: Some(serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![
-                            FileSystemWatcher {
-                                // TODO use relative?
-                                glob_pattern: GlobPattern::String(pattern),
-                                kind: None,
-                            }
-                        ],
-                    }).unwrap()),
-                }
-            ],
+            registrations: vec![Registration {
+                id: self.sender.next_unique_id(),
+                method: notification::DidChangeWatchedFiles::METHOD.to_string(),
+                register_options: Some(
+                    serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![FileSystemWatcher {
+                            // TODO use relative?
+                            glob_pattern: GlobPattern::String(pattern),
+                            kind: None,
+                        }],
+                    })
+                    .unwrap(),
+                ),
+            }],
         };
         self.sender.send_request::<RegisterCapability>(params)?;
 
@@ -131,7 +134,9 @@ impl ServerState {
                 // maybe send error back
                 match result {
                     Ok(()) => {}
-                    Err(e) => self.sender.send_notification_error(e, &format!("notification {method:?}"))?,
+                    Err(e) => self
+                        .sender
+                        .send_notification_error(e, &format!("notification {method:?}"))?,
                 }
             }
         }
@@ -151,10 +156,7 @@ impl ServerState {
 
 impl VirtualFileSystemWrapper {
     pub fn new(root: Uri) -> Self {
-        Self {
-            inner: None,
-            root,
-        }
+        Self { inner: None, root }
     }
 
     pub fn inner(&mut self) -> Result<&mut VirtualFileSystem, VfsError> {
@@ -173,26 +175,11 @@ impl RequestError {
 
     pub fn to_code_message(self) -> (ErrorCode, String) {
         match self {
-            RequestError::ParamParse(e) => (
-                ErrorCode::InvalidParams,
-                format!("failed to parameters: {e:?}")
-            ),
-            RequestError::MethodNotImplemented => (
-                ErrorCode::MethodNotFound,
-                "method not implemented".to_string()
-            ),
-            RequestError::Invalid(reason) => (
-                ErrorCode::InvalidRequest,
-                format!("invalid request {reason:?}"),
-            ),
-            RequestError::Vfs(e) => (
-                ErrorCode::InternalError,
-                format!("vfs error {e:?}"),
-            ),
-            RequestError::Internal(e) => (
-                ErrorCode::InternalError,
-                format!("internal error {e:?}"),
-            ),
+            RequestError::ParamParse(e) => (ErrorCode::InvalidParams, format!("failed to parameters: {e:?}")),
+            RequestError::MethodNotImplemented => (ErrorCode::MethodNotFound, "method not implemented".to_string()),
+            RequestError::Invalid(reason) => (ErrorCode::InvalidRequest, format!("invalid request {reason:?}")),
+            RequestError::Vfs(e) => (ErrorCode::InternalError, format!("vfs error {e:?}")),
+            RequestError::Internal(e) => (ErrorCode::InternalError, format!("internal error {e:?}")),
         }
     }
 }

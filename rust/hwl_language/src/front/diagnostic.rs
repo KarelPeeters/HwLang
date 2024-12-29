@@ -1,9 +1,9 @@
 //! This module is strongly inspired by the Rust compiler,
 //! see <https://rustc-dev-guide.rust-lang.org/diagnostics.html>.
 
-use crate::data::source::SourceDatabase;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
+use crate::syntax::source::SourceDatabase;
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;
@@ -25,6 +25,17 @@ use std::cmp::min;
 /// This value is not publicly constructible, use [Diagnostics::report].
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ErrorGuaranteed(());
+
+#[macro_export]
+macro_rules! impl_from_error_guaranteed {
+    ($ty:ident) => {
+        impl From<ErrorGuaranteed> for $ty {
+            fn from(e: ErrorGuaranteed) -> Self {
+                $ty::Error(e)
+            }
+        }
+    };
+}
 
 #[must_use]
 pub struct Diagnostics {
@@ -54,10 +65,12 @@ impl Diagnostics {
         ErrorGuaranteed(())
     }
 
+    // TODO only single string parameter, used for both title and label?
     pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_simple(title, span, label))
     }
 
+    #[track_caller]
     pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
         self.report(Diagnostic::new_todo(span, feature))
     }
@@ -94,7 +107,7 @@ pub struct Annotation {
 
 #[must_use]
 pub struct DiagnosticBuilder {
-    diagnostic: Diagnostic
+    diagnostic: Diagnostic,
 }
 
 #[must_use]
@@ -137,16 +150,14 @@ impl Diagnostic {
                 snippets: vec![],
                 footers: vec![],
                 backtrace: None,
-            }
+            },
         }
     }
 
     // TODO move this to a more logical place?
     /// Utility diagnostic constructor for a single error message with a single span.
     pub fn new_simple(title: impl Into<String>, span: Span, label: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(title)
-            .add_error(span, label)
-            .finish()
+        Diagnostic::new(title).add_error(span, label).finish()
     }
 
     /// Utility diagnostic constructor for a duplicate identifier definition.
@@ -165,9 +176,7 @@ impl Diagnostic {
         let message = format!("feature not yet implemented: '{}'", feature.into());
         let backtrace = Backtrace::force_capture();
 
-        let mut diag = Diagnostic::new(&message)
-            .add_error(span, "used here")
-            .finish();
+        let mut diag = Diagnostic::new(&message).add_error(span, "used here").finish();
         diag.backtrace = Some(backtrace.to_string());
         diag
     }
@@ -179,7 +188,12 @@ impl Diagnostic {
     }
 
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
-        let Self { title, snippets, footers, backtrace } = self;
+        let Self {
+            title,
+            snippets,
+            footers,
+            backtrace,
+        } = self;
 
         // TODO sort to ensure that the first snippet is one with the highest level,
         //   so it is always clickable
@@ -196,13 +210,11 @@ impl Diagnostic {
                     // calculate distance
                     let span_full = database.expand_span(span);
                     let span_prev_full = database.expand_span(*span_prev);
-                    let distance = span_full
-                        .distance_lines(span_prev_full);
+                    let distance = span_full.distance_lines(span_prev_full);
 
                     // check distance
                     let merge = match distance {
-                        Ok(distance) =>
-                            distance <= 2 * settings.snippet_context_lines + snippet_merge_max_distance,
+                        Ok(distance) => distance <= 2 * settings.snippet_context_lines + snippet_merge_max_distance,
                         Err(DifferentFile) => false,
                     };
 
@@ -249,7 +261,11 @@ impl Diagnostic {
                 .origin(&file_info.path_raw)
                 .line_start(start_line_0 + 1);
             for annotation in annotations {
-                let Annotation { span: span_annotation, level, label } = annotation;
+                let Annotation {
+                    span: span_annotation,
+                    level,
+                    label,
+                } = annotation;
 
                 let delta_start = span_annotation.start.byte - start_byte;
                 let delta_end = span_annotation.end.byte - start_byte;
@@ -272,8 +288,8 @@ impl Diagnostic {
         }
 
         // format into string
-        let renderer = Renderer::styled()
-            .emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))));
+        let renderer =
+            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))));
         let render = renderer.render(message);
         render.to_string()
     }
@@ -306,8 +322,15 @@ impl DiagnosticAddable for DiagnosticBuilder {
 
 impl DiagnosticSnippetBuilder {
     pub fn finish(self) -> DiagnosticBuilder {
-        let Self { diag: mut builder, span, annotations } = self;
-        assert!(!annotations.is_empty(), "DiagnosticSnippetBuilder without any annotations is not allowed");
+        let Self {
+            diag: mut builder,
+            span,
+            annotations,
+        } = self;
+        assert!(
+            !annotations.is_empty(),
+            "DiagnosticSnippetBuilder without any annotations is not allowed"
+        );
         builder.diagnostic.snippets.push((span, annotations));
         builder
     }
@@ -315,8 +338,15 @@ impl DiagnosticSnippetBuilder {
 
 impl DiagnosticAddable for DiagnosticSnippetBuilder {
     fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
-        assert!(self.span.contains(span), "DiagnosticSnippetBuilder labels must fall within snippet span");
-        self.annotations.push(Annotation { level, span, label: label.into() });
+        assert!(
+            self.span.contains(span),
+            "DiagnosticSnippetBuilder labels must fall within snippet span"
+        );
+        self.annotations.push(Annotation {
+            level,
+            span,
+            label: label.into(),
+        });
         self
     }
 }

@@ -1,9 +1,10 @@
+use indexmap::map::Entry;
 use indexmap::IndexMap;
 use std::hash::Hash;
 
 pub trait IndexMapExt<K, V> {
     // The same as [IndexMap::insert], but asserts that the key is not already present.
-    fn insert_first(&mut self, key: K, value: V);
+    fn insert_first(&mut self, key: K, value: V) -> &mut V;
 
     fn sort_by_key<T: Ord>(&mut self, f: impl FnMut(&K, &V) -> T);
 }
@@ -12,9 +13,11 @@ impl<K, V> IndexMapExt<K, V> for IndexMap<K, V>
 where
     K: Eq + Hash,
 {
-    fn insert_first(&mut self, key: K, value: V) {
-        let prev = self.insert(key, value);
-        assert!(prev.is_none());
+    fn insert_first(&mut self, key: K, value: V) -> &mut V {
+        match self.entry(key) {
+            Entry::Occupied(_) => panic!("entry already exists"),
+            Entry::Vacant(entry) => entry.insert(value),
+        }
     }
 
     fn sort_by_key<T: Ord>(&mut self, mut f: impl FnMut(&K, &V) -> T) {
@@ -24,6 +27,8 @@ where
 
 pub trait VecExt<T> {
     fn single(self) -> Option<T>;
+
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
 }
 
 impl<T> VecExt<T> for Vec<T> {
@@ -33,5 +38,12 @@ impl<T> VecExt<T> for Vec<T> {
         } else {
             None
         }
+    }
+
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.push(v);
+        let result = f(self);
+        assert!(self.pop().is_some());
+        result
     }
 }

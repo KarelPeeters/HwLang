@@ -1,5 +1,9 @@
 use crate::server::language::semantic_token_legend;
-use lsp_types::{InitializeParams, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, WorkDoneProgressOptions};
+use lsp_types::{
+    InitializeParams, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    WorkDoneProgressOptions,
+};
 
 pub struct Settings {
     pub initialize_params: InitializeParams,
@@ -15,7 +19,9 @@ pub enum PositionEncoding {
     Utf16,
 }
 
-const NO_WORK_DONE: WorkDoneProgressOptions = WorkDoneProgressOptions { work_done_progress: None };
+const NO_WORK_DONE: WorkDoneProgressOptions = WorkDoneProgressOptions {
+    work_done_progress: None,
+};
 
 #[derive(Debug)]
 pub struct SettingsError(pub String);
@@ -42,7 +48,9 @@ impl Settings {
         }
         // TODO support watching file changes ourself? but then how does synchronization work?
         if !watch_dynamic {
-            return Err(SettingsError("this server requires dynamic watched files registration".to_string()));
+            return Err(SettingsError(
+                "this server requires dynamic watched files registration".to_string(),
+            ));
         }
 
         // check if the client supports multi-line tokens
@@ -58,14 +66,16 @@ impl Settings {
             position_encoding: Some(position_encoding.to_lsp()),
             // TODO support incremental (and maybe even will_save-type notifications)
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-            semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                work_done_progress_options: NO_WORK_DONE,
-                legend: semantic_token_legend(),
-                // TODO support ranges
-                range: None,
-                // TODO support delta
-                full: Some(SemanticTokensFullOptions::Bool(true)),
-            })),
+            semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                SemanticTokensOptions {
+                    work_done_progress_options: NO_WORK_DONE,
+                    legend: semantic_token_legend(),
+                    // TODO support ranges
+                    range: None,
+                    // TODO support delta
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                },
+            )),
             ..Default::default()
         };
 

@@ -1,13 +1,16 @@
+pub mod ir;
+pub mod lower_verilog;
+pub mod misc;
 pub mod types;
-pub mod values;
-pub mod scope;
-pub mod common;
-pub mod driver;
+pub mod value;
 
-// modules split out of the driver
-pub mod checking;
+pub mod block;
+pub mod check;
+pub mod compile;
+pub mod context;
+pub mod diagnostic;
+pub mod expression;
+pub mod function;
 pub mod item;
 pub mod module;
-pub mod function;
-pub mod expression;
-pub mod block;
+pub mod scope;

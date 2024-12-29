@@ -4,11 +4,11 @@ pub trait IterExt: Iterator {
 
 impl<I: Iterator> IterExt for I {
     fn single(mut self) -> Option<Self::Item> {
-        self.try_fold(None, |a, x| {
-            match a {
-                None => Ok(Some(x)),
-                Some(_) => Err(()),
-            }
-        }).ok().flatten()
+        self.try_fold(None, |a, x| match a {
+            None => Ok(Some(x)),
+            Some(_) => Err(()),
+        })
+        .ok()
+        .flatten()
     }
 }

@@ -4,8 +4,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
-use crate::util::data::IndexMapExt;
 use indexmap::map::IndexMap;
+use rand::random;
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
 //   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
@@ -23,11 +23,11 @@ macro_rules! new_index_type {
             use crate::util::arena::Idx;
 
             impl IndexType for $name {
-                fn idx(&self) -> Idx {
-                    self.0
-                }
                 fn new(idx: Idx) -> Self {
                     Self(idx)
+                }
+                fn inner(&self) -> Idx {
+                    self.0
                 }
             }
 
@@ -40,41 +40,26 @@ macro_rules! new_index_type {
     }
 }
 
-pub trait IndexType: Sized + Debug + Copy {
-    fn idx(&self) -> Idx;
+pub trait IndexType: Sized + Debug + Copy + Eq + Hash {
     fn new(idx: Idx) -> Self;
-
-    fn index(&self) -> usize {
-        self.idx().i
-    }
+    fn inner(&self) -> Idx;
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Idx {
-    i: usize,
-}
-
-impl Idx {
-    fn new(i: usize) -> Self {
-        Self { i }
-    }
+    index: usize,
+    check: u64,
 }
 
 impl Debug for Idx {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<{}>", self.i)
+        write!(f, "<{}>", self.index)
     }
 }
 
-// TODO switch to simpler and faster vec scheme, we're not going to be deleting things from arenas anyway
-// TODO include randomly generated checker index value to avoid accidental mixing?
-//   on clone or value map, switch up the future ID, and keep a list of valid old IDs as well
-#[derive(Clone)]
 pub struct Arena<K: IndexType, T> {
-    //TODO for now this is implemented as a map, but this can be improved
-    //  to just be a vec using generational indices
-    map: IndexMap<usize, T>,
-    next_index: usize,
+    values: Vec<T>,
+    check: u64,
     ph: PhantomData<K>,
 }
 
@@ -84,92 +69,77 @@ impl<K: IndexType, T> Arena<K, T> {
         self.push_with_index(|_| value)
     }
 
+    // TODO consider passing &mut self as an argument:
+    // * keep a separate next_index, so new allocations get higher indices
+    // * the current value is not yet inserted, that breaks the arena guarantee a bit, so check for this condition
     pub fn push_with_index(&mut self, value: impl FnOnce(K) -> T) -> K {
-        let index = self.next_index;
-        let key = K::new(Idx::new(index));
-        self.next_index += 1;
-
-        // we could even pass (&mut self) as an argument here:
-        // * next_index is already incremented
-        // * the current value is not yet inserted, that breaks the arena guarantee a bit
+        let key = K::new(Idx {
+            index: self.values.len(),
+            check: self.check,
+        });
         let value = value(key);
-        self.map.insert_first(index, value);
-
+        self.values.push(value);
         key
     }
 
-    pub fn replace(&mut self, index: K, new_value: T) -> T {
-        self.map.insert(index.idx().i, new_value)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index))
-    }
-
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.values.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=(K, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (K, &T)> {
         self.into_iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=(K, &mut T)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (K, &mut T)> {
         self.into_iter()
     }
 
-    pub fn keys(&self) -> impl Iterator<Item=K> + '_ {
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
         self.into_iter().map(|(k, _)| k)
-    }
-
-    pub fn retain<F: FnMut(K, &T) -> bool>(&mut self, mut keep: F) {
-        self.map.retain(|&i, v| keep(K::new(Idx::new(i)), v))
-    }
-
-    pub fn map_values<U>(self, mut f: impl FnMut(T) -> U) -> Arena<K, U> {
-        let new_map = self.map.into_iter()
-            .map(|(i, v)| (i, f(v)))
-            .collect();
-
-        Arena {
-            map: new_map,
-            next_index: self.next_index,
-            ph: Default::default(),
-        }
     }
 }
 
 impl<K: IndexType, T> Index<K> for Arena<K, T> {
     type Output = T;
     fn index(&self, index: K) -> &Self::Output {
-        self.map.get(&index.idx().i)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index))
+        assert_eq!(self.check, index.inner().check);
+        &self.values[index.inner().index]
     }
 }
 
 impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
     fn index_mut(&mut self, index: K) -> &mut Self::Output {
-        self.map.get_mut(&index.idx().i)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index))
+        assert_eq!(self.check, index.inner().check);
+        &mut self.values[index.inner().index]
     }
 }
 
 impl<K: IndexType, T> Default for Arena<K, T> {
     fn default() -> Self {
-        Self { map: Default::default(), next_index: 0, ph: PhantomData }
+        Self {
+            values: vec![],
+            check: random(),
+            ph: PhantomData,
+        }
     }
 }
 
 impl<K: IndexType, T: Debug> Debug for Arena<K, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.map.fmt(f)
+        let map: IndexMap<_, _> = self.iter().collect();
+        map.fmt(f)
     }
 }
 
 pub struct ArenaIterator<'s, K, T> {
-    inner: indexmap::map::Iter<'s, usize, T>,
+    inner: std::iter::Enumerate<std::slice::Iter<'s, T>>,
+    check: u64,
     ph: PhantomData<K>,
 }
 
 pub struct ArenaIteratorMut<'s, K, T> {
-    inner: indexmap::map::IterMut<'s, usize, T>,
+    inner: std::iter::Enumerate<std::slice::IterMut<'s, T>>,
+    check: u64,
     ph: PhantomData<K>,
 }
 
@@ -178,7 +148,11 @@ impl<'s, K: IndexType, T> IntoIterator for &'s Arena<K, T> {
     type IntoIter = ArenaIterator<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaIterator { inner: self.map.iter(), ph: PhantomData }
+        ArenaIterator {
+            inner: self.values.iter().enumerate(),
+            check: self.check,
+            ph: PhantomData,
+        }
     }
 }
 
@@ -187,7 +161,11 @@ impl<'s, K: IndexType, T> IntoIterator for &'s mut Arena<K, T> {
     type IntoIter = ArenaIteratorMut<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaIteratorMut { inner: self.map.iter_mut(), ph: PhantomData }
+        ArenaIteratorMut {
+            inner: self.values.iter_mut().enumerate(),
+            check: self.check,
+            ph: PhantomData,
+        }
     }
 }
 
@@ -195,8 +173,15 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIterator<'s, K, T> {
     type Item = (K, &'s T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
+        self.inner.next().map(|(index, value)| {
+            (
+                K::new(Idx {
+                    index,
+                    check: self.check,
+                }),
+                value,
+            )
+        })
     }
 }
 
@@ -204,99 +189,21 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorMut<'s, K, T> {
     type Item = (K, &'s mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
-    }
-}
-
-#[derive(Clone)]
-pub struct ArenaSet<K: IndexType, T: Eq + Hash + Clone> {
-    //TODO this implementation should also be optimized
-    //TODO this clone bound should be removed
-    map_fwd: IndexMap<usize, T>,
-    map_back: IndexMap<T, usize>,
-    next_i: usize,
-    ph: PhantomData<K>,
-}
-
-impl<K: IndexType, T: Eq + Hash + Clone + Debug> ArenaSet<K, T> {
-    pub fn lookup(&self, value: &T) -> Option<K> {
-        self.map_back.get(value).map(|&i| K::new(Idx::new(i)))
-    }
-
-    pub fn push(&mut self, value: T) -> K {
-        if let Some(&i) = self.map_back.get(&value) {
-            K::new(Idx::new(i))
-        } else {
-            let i = self.next_i;
-            self.next_i += 1;
-            self.map_fwd.insert(i, value.clone());
-            self.map_back.insert(value, i);
-            K::new(Idx::new(i))
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        debug_assert_eq!(self.map_fwd.len(), self.map_back.len());
-        self.map_fwd.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item=(K, &T)> {
-        self.into_iter()
-    }
-}
-
-impl<K: IndexType, T: Eq + Hash + Clone> Index<K> for ArenaSet<K, T> {
-    type Output = T;
-    fn index(&self, index: K) -> &Self::Output {
-        self.map_fwd.get(&index.idx().i)
-            .unwrap_or_else(|| panic!("Value {:?} not found", index))
-    }
-}
-
-impl<K: IndexType, T: Eq + Hash + Clone> Default for ArenaSet<K, T> {
-    fn default() -> Self {
-        Self {
-            map_fwd: Default::default(),
-            map_back: Default::default(),
-            next_i: 0,
-            ph: PhantomData,
-        }
-    }
-}
-
-impl<K: IndexType, T: Debug + Eq + Hash + Clone> Debug for ArenaSet<K, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.map_fwd.fmt(f)
-    }
-}
-
-pub struct ArenaSetIterator<'s, K, T> {
-    inner: indexmap::map::Iter<'s, usize, T>,
-    ph: PhantomData<K>,
-}
-
-impl<'s, K: IndexType, T: Eq + Hash + Clone> IntoIterator for &'s ArenaSet<K, T> {
-    type Item = (K, &'s T);
-    type IntoIter = ArenaSetIterator<'s, K, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ArenaSetIterator { inner: self.map_fwd.iter(), ph: PhantomData }
-    }
-}
-
-impl<'s, K: IndexType, T: 's> Iterator for ArenaSetIterator<'s, K, T> {
-    type Item = (K, &'s T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-            .map(|(&i, v)| (K::new(Idx::new(i)), v))
+        self.inner.next().map(|(index, value)| {
+            (
+                K::new(Idx {
+                    index,
+                    check: self.check,
+                }),
+                value,
+            )
+        })
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::util::arena::{Arena, ArenaSet};
+    use crate::util::arena::Arena;
 
     new_index_type!(TestIdx);
 
@@ -320,51 +227,14 @@ mod test {
     }
 
     #[test]
-    fn basic_set() {
-        let mut arena: ArenaSet<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        let bi = arena.push('b');
-        assert_eq!(arena[ai], 'a');
-        assert_eq!(arena[bi], 'b');
-    }
-
-    #[test]
-    fn duplicate_set() {
-        let mut arena: ArenaSet<TestIdx, char> = Default::default();
-        let ai0 = arena.push('a');
-        let ai1 = arena.push('a');
-        assert_eq!(arena[ai0], 'a');
-        assert_eq!(ai0, ai1)
-    }
-
-    #[test]
     fn iter() {
         let mut arena: Arena<TestIdx, char> = Default::default();
         let ai = arena.push('a');
         let bi = arena.push('b');
 
-        let expected = vec![
-            (ai, &'a'),
-            (bi, &'b'),
-        ];
+        let expected = vec![(ai, &'a'), (bi, &'b')];
         let mut actual: Vec<(TestIdx, &char)> = arena.iter().collect();
-        actual.sort_by_key(|x| (x.0).0.i);
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn iter_set() {
-        let mut arena: ArenaSet<TestIdx, char> = Default::default();
-        let ai = arena.push('a');
-        let bi = arena.push('b');
-
-        let expected = vec![
-            (ai, &'a'),
-            (bi, &'b'),
-        ];
-        let mut actual: Vec<(TestIdx, &char)> = arena.iter().collect();
-        actual.sort_by_key(|x| (x.0).0.i);
+        actual.sort_by_key(|(i, _)| i.0.index);
 
         assert_eq!(actual, expected);
     }

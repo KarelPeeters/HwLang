@@ -1,6 +1,6 @@
 import std.types.[
     bool, int_range, int, uint, natural,
-    int_bits, uint_bits, undefined
+    int_bits, uint_bits
 ];
 
 pub module top ports(

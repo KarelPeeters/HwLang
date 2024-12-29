@@ -1,730 +1,970 @@
-use crate::data::compiled::GenericParameter;
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::checking::TypeMismatch;
-use crate::front::common::{ExpressionContext, GenericContainer, GenericMap, ScopedEntry, ScopedEntryDirect, TypeOrValue, ValueDomain};
-use crate::front::driver::CompileState;
-use crate::front::module::MaybeDriverCollector;
+use crate::front::block::{TypedIrExpression, VariableValues};
+use crate::front::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
+use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
+use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
+use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{GenericArguments, GenericParameters, IntegerTypeInfo, MaybeConstructor, Type};
-use crate::front::values::{ArrayAccessIndex, BoundedRangeInfo, RangeInfo, Value};
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
+use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
-use crate::syntax::ast::{ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, IntPattern, RangeLiteral, Spanned, SyncDomain, UnaryOp};
+use crate::syntax::ast::{
+    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,
+    UnaryOp,
+};
 use crate::syntax::pos::Span;
-use crate::util::data::IndexMapExt;
-use annotate_snippets::Level;
-use itertools::{zip_eq, Itertools};
-use num_bigint::BigInt;
-use num_traits::One;
-use std::cmp::min;
+use crate::util::{Never, ResultDoubleExt};
+use itertools::{Either, Itertools};
+use num_bigint::{BigInt, BigUint};
+use num_traits::{One, Pow, ToPrimitive};
+use std::cmp::{max, min};
+use std::convert::identity;
+use std::ops::Sub;
 
-impl CompileState<'_, '_> {
-    // TODO this should support separate signature and value queries too
-    //    eg. if we want to implement a "typeof" operator that doesn't run code we need it
-    //    careful, think about how this interacts with the future type inference system
-    // TODO return a spanned value here
-    pub fn eval_expression(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> ScopedEntryDirect {
+impl CompileState<'_> {
+    pub fn eval_id(
+        &mut self,
+        scope: Scope,
+        id: &Identifier,
+    ) -> Result<Spanned<MaybeCompile<NamedValue>>, ErrorGuaranteed> {
+        let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
+        let def_span = found.defining_span;
+        let result = match found.value {
+            &ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
+            &ScopedEntry::Direct(value) => MaybeCompile::Other(value),
+        };
+        Ok(Spanned {
+            span: def_span,
+            inner: result,
+        })
+    }
+
+    // TODO return COW to save some allocations?
+    pub fn eval_expression<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: Scope,
+        vars: &VariableValues,
+        expr: &Expression,
+    ) -> Result<Spanned<MaybeCompile<TypedIrExpression>>, ErrorGuaranteed> {
         let diags = self.diags;
 
-        match expr.inner {
-            ExpressionKind::Dummy =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dummy expression")),
-            ExpressionKind::Any =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Type(Type::Any)),
-            ExpressionKind::Wrapped(ref inner) =>
-                self.eval_expression(ctx, collector, inner),
-            ExpressionKind::Id(ref id) => {
-                let entry = match self.compiled[ctx.scope].find(&self.compiled.scopes, diags, id, Visibility::Private) {
-                    Err(e) => return ScopedEntryDirect::Error(e),
-                    Ok(entry) => entry,
-                };
-                match entry.value {
-                    &ScopedEntry::Item(item) => self.resolve_item_signature(item).clone(),
-                    ScopedEntry::Direct(entry) => entry.clone(),
-                }
+        let result = match &expr.inner {
+            ExpressionKind::Dummy => {
+                // if dummy expressions were allowed, the caller would have checked for them already
+                Err(diags.report_simple(
+                    "dummy expression not allowed in this context",
+                    expr.span,
+                    "dummy expression used here",
+                ))
             }
-            ExpressionKind::TypeFunc(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "type func expression")),
-            ExpressionKind::IntPattern(ref pattern) => {
-                match pattern {
-                    IntPattern::Hex(_) =>
-                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "hex int-pattern expression")),
-                    IntPattern::Bin(_) =>
-                        ScopedEntryDirect::Error(diags.report_todo(expr.span, "bin int-pattern expression")),
-                    IntPattern::Dec(str_raw) => {
-                        let str_clean = str_raw.replace("_", "");
-                        let value = str_clean.parse::<BigInt>().unwrap();
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::IntConstant(value)))
-                    }
-                }
-            }
-            ExpressionKind::BoolLiteral(b) =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::BoolConstant(b))),
-            ExpressionKind::StringLiteral(ref s) =>
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::StringConstant(s.clone()))),
-            ExpressionKind::ArrayLiteral(ref elements) => {
-                let mut inner_ty = None;
-                let mut total_len = Value::IntConstant(BigInt::ZERO);
-                let mut operands = vec![];
-
-                for &ArrayLiteralElement { spread, ref value } in elements {
-                    let value_eval = self.eval_expression_as_value(ctx, collector, value);
-                    let value_ty = self.type_of_value(value.span, &value_eval);
-
-                    let (element_ty, element_len) = match spread {
-                        None => (value_ty, Value::IntConstant(BigInt::one())),
-                        Some(spread_span) => {
-                            match value_ty {
-                                Type::Error(e) => (Type::Error(e), Value::Error(e)),
-                                Type::Array(inner, len) => (*inner, *len),
-                                _ => {
-                                    let diag = Diagnostic::new("spread operator requires array type")
-                                        .add_error(spread_span, "for this spread operator")
-                                        .add_info(value.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
-                                        .finish();
-                                    let e = diags.report(diag);
-                                    (Type::Error(e), Value::Error(e))
+            ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
+            ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
+            ExpressionKind::Wrapped(inner) => Ok(self.eval_expression(ctx, ctx_block, scope, vars, inner)?.inner),
+            ExpressionKind::Id(id) => {
+                let eval = self.eval_id(scope, id)?;
+                match eval.inner {
+                    MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(c)),
+                    MaybeCompile::Other(value) => match value {
+                        NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
+                        NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
+                        NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
+                        NamedValue::Port(port) => {
+                            let port_info = &self.ports[port];
+                            match port_info.direction.inner {
+                                PortDirection::Input => Ok(MaybeCompile::Other(port_info.typed_ir_expr())),
+                                PortDirection::Output => {
+                                    Err(self.diags.report_todo(expr.span, "read back from output port"))
                                 }
                             }
                         }
-                    };
-
-                    // get the inner type from the first element, and check that all elements have the same type
-                    let inner_ty_next = match (inner_ty, element_ty) {
-                        (None, element_ty) => element_ty,
-                        (Some(Type::Error(e)), _) | (Some(_), Type::Error(e)) => Type::Error(e),
-                        (Some(inner_ty), element_ty) => {
-                            match self.require_type_match(None, &inner_ty, value.span, &element_ty, false) {
-                                Ok(Ok(())) => element_ty,
-                                Ok(Err(e)) => Type::Error(e),
-                                Err(e) => {
-                                    let _: TypeMismatch = e;
-                                    let diag = Diagnostic::new("array literal element type mismatch")
-                                        .add_error(value.span, format!("this element has type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &element_ty)))
-                                        .add_info(expr.span, format!("preceding elements have type `{}`", self.compiled.type_to_readable_str(self.source, self.parsed, &inner_ty)))
-                                        .finish();
-                                    Type::Error(diags.report(diag))
-                                },
-                            }
-                        },
-                    };
-                    inner_ty = Some(inner_ty_next);
-
-                    total_len = match (total_len, element_len) {
-                        (Value::Error(e), _) | (_, Value::Error(e)) => Value::Error(e),
-                        (total_len, element_len) => Value::Binary(BinaryOp::Add, Box::new(total_len), Box::new(element_len)),
-                    };
-
-                    operands.push(ArrayLiteralElement { spread, value: value_eval });
+                        NamedValue::Wire(wire) => Ok(MaybeCompile::Other(self.wires[wire].typed_ir_expr())),
+                        NamedValue::Register(reg) => Ok(MaybeCompile::Other(self.registers[reg].typed_ir_expr())),
+                    },
                 }
-
-                let result_ty = match inner_ty {
-                    // TODO we need at least _some_ forward type inference to implement this
-                    None => Type::Error(diags.report_todo(expr.span, "array literal expression")),
-                    Some(inner_ty) => inner_ty,
-                };
-
-                let result_ty = Type::Array(Box::new(result_ty), Box::new(total_len));
-                let result_value = Value::ArrayLiteral { result_ty: Box::new(result_ty), operands };
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result_value))
             }
-            ExpressionKind::TupleLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "tuple literal expression")),
-            ExpressionKind::StructLiteral(_) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "struct literal expression")),
-            ExpressionKind::RangeLiteral(ref range) => {
-                let &RangeLiteral { end_inclusive, ref start, end: ref end_raw } = range;
-
-                let mut map_point = |point: &Option<Box<Expression>>| {
-                    point.as_ref()
-                        .map(|p| Box::new(self.eval_expression_as_value(ctx, collector, p)))
-                };
-
-                let start_inc = map_point(start);
-                let end_raw = map_point(end_raw);
-
-                // check range valid (before incrementing end to get more intuitive error messages)
-                if let (Some(start), Some(end)) = (&start_inc, &end_raw) {
-                    let cond_op = if end_inclusive {
-                        BinaryOp::CmpLte
-                    } else {
-                        BinaryOp::CmpLt
-                    };
-                    match self.require_value_true_for_range(expr.span, &Value::Binary(cond_op, start.clone(), end.clone())) {
-                        Ok(()) => {}
-                        Err(e) => return ScopedEntryDirect::Error(e),
+            ExpressionKind::TypeFunc(_, _) => Err(diags.report_todo(expr.span, "expr kind TypeFunc")),
+            ExpressionKind::IntPattern(ref pattern) => match pattern {
+                IntPattern::Hex(_) => Err(diags.report_todo(expr.span, "hex int-pattern expression")),
+                IntPattern::Bin(_) => Err(diags.report_todo(expr.span, "bin int-pattern expression")),
+                IntPattern::Dec(pattern_raw) => {
+                    let pattern_clean = pattern_raw.replace("_", "");
+                    match pattern_clean.parse::<BigInt>() {
+                        Ok(value) => Ok(MaybeCompile::Compile(CompileValue::Int(value))),
+                        Err(_) => Err(self
+                            .diags
+                            .report_internal_error(expr.span, "failed to parse int-pattern")),
                     }
                 }
+            },
+            &ExpressionKind::BoolLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::Bool(literal))),
+            // TODO f-string formatting
+            ExpressionKind::StringLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::String(literal.clone()))),
 
-                // convert to inclusive range
-                let end_inc = if end_inclusive {
-                    end_raw
-                } else {
-                    end_raw.map(|e| Box::new(Value::Binary(BinaryOp::Sub, e, Box::new(Value::IntConstant(BigInt::one())))))
-                };
+            ExpressionKind::ArrayLiteral(_) => Err(diags.report_todo(expr.span, "expr kind ArrayLiteral")),
+            ExpressionKind::TupleLiteral(_) => Err(diags.report_todo(expr.span, "expr kind TupleLiteral")),
+            ExpressionKind::StructLiteral(_) => Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
+            ExpressionKind::RangeLiteral(literal) => {
+                let &ast::RangeLiteral {
+                    end_inclusive,
+                    ref start,
+                    ref end,
+                } = literal;
 
-                let value = Value::Range(RangeInfo { start_inc, end_inc });
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(value))
-            }
-            ExpressionKind::UnaryOp(op, ref inner) => {
-                let result = match op {
-                    UnaryOp::Neg => {
-                        Value::Binary(
-                            BinaryOp::Sub,
-                            Box::new(Value::IntConstant(BigInt::ZERO)),
-                            Box::new(self.eval_expression_as_value(ctx, collector, inner)),
-                        )
-                    }
-                    UnaryOp::Not =>
-                        Value::UnaryNot(Box::new(self.eval_expression_as_value(ctx, collector, inner))),
-                };
-
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
-            }
-            ExpressionKind::BinaryOp(op, ref left, ref right) => {
-                let left = self.eval_expression_as_value(ctx, collector, left);
-                let right = self.eval_expression_as_value(ctx, collector, right);
-
-                let result = Value::Binary(op, Box::new(left), Box::new(right));
-                ScopedEntryDirect::Immediate(TypeOrValue::Value(result))
-            }
-            ExpressionKind::TernarySelect(_, _, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "ternary select expression")),
-            ExpressionKind::ArrayIndex(ref base, ref args) => {
-                let base_span = base.span;
-                let base = self.eval_expression_as_ty_or_value(ctx, collector, base);
-
-                let args = args.map_inner(|arg| {
-                    Spanned { span: arg.span, inner: self.eval_expression_as_value(ctx, collector, arg) }
+                let start = start.as_ref().map(|start| {
+                    Ok(self
+                        .eval_expression_as_compile(scope, vars, start, "range start")?
+                        .inner)
                 });
-                let args_len = args.inner.len();
+                let end = end
+                    .as_ref()
+                    .map(|end| Ok(self.eval_expression_as_compile(scope, vars, end, "range end")?.inner));
 
-                match base {
-                    TypeOrValue::Error(e) => ScopedEntryDirect::Error(e),
-                    TypeOrValue::Type(base_ty) => {
-                        if args.inner.is_empty() {
-                            ScopedEntryDirect::Error(diags.report_simple(
-                                "array type definition requires at least one dimension",
-                                args.span,
-                                "array index",
-                            ))
-                        } else {
-                            // array dimensions are the other way around, the innermost type is the final dimension
-                            let result_ty = args.inner.into_iter().rev().fold(base_ty, |ty_acc, arg| {
-                                let ast::Arg { span: _, name, value } = arg;
+                // TODO reduce code duplication
+                let start_inc = match start.transpose() {
+                    Ok(None) => None,
+                    Ok(Some(CompileValue::Int(start))) => Some(start),
+                    Ok(Some(start)) => {
+                        let e = diags.report_simple(
+                            "range bound must be integer",
+                            expr.span,
+                            format!("got `{}`", start.to_diagnostic_string()),
+                        );
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                };
+                let end = match end.transpose() {
+                    Ok(None) => None,
+                    Ok(Some(CompileValue::Int(start))) => Some(start),
+                    Ok(Some(start)) => {
+                        let e = diags.report_simple(
+                            "range bound must be integer",
+                            expr.span,
+                            format!("got `{}`", start.to_diagnostic_string()),
+                        );
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                };
 
-                                let positive_range = RangeInfo {
-                                    start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                                    end_inc: None,
-                                };
-                                let positive_ty = Type::Integer(IntegerTypeInfo { range: Box::new(Value::Range(positive_range)) });
-
-                                let value_checked = match self.require_type_contains_value(None, value.span, &positive_ty, &value.inner) {
-                                    Ok(()) => value.inner,
-                                    Err(e) => Value::Error(e),
-                                };
-
-                                if let Some(name) = name {
-                                    Type::Error(diags.report_todo(name.span, "named array dimensions"))
-                                } else {
-                                    Type::Array(Box::new(ty_acc), Box::new(value_checked))
-                                }
-                            });
-
-                            ScopedEntryDirect::Immediate(TypeOrValue::Type(result_ty))
+                let end_inc = if end_inclusive {
+                    match end {
+                        Some(end) => Some(end),
+                        None => {
+                            let e = self
+                                .diags
+                                .report_internal_error(expr.span, "inclusive range must have end");
+                            return Err(e);
                         }
                     }
-                    TypeOrValue::Value(base) => {
-                        let base_ty = self.type_of_value(expr.span, &base);
+                } else {
+                    end.map(|end| end - 1)
+                };
 
-                        // check indices and get inner type
-                        let mut indices = vec![];
-                        let mut curr_ty = base_ty.clone();
-
-                        for (arg_i, arg) in args.inner.into_iter().enumerate() {
-                            let (next_ty, index) = self.eval_array_index(expr.span, base_span, curr_ty, args.span, args_len, arg_i, arg);
-                            curr_ty = next_ty;
-                            indices.push(index);
-                        };
-                        let inner_ty = curr_ty;
-
-                        // build result type
-                        let result_ty = indices.iter().rev().fold(inner_ty, |acc, index| {
-                            match index {
-                                &ArrayAccessIndex::Error(e) => Type::Error(e),
-                                ArrayAccessIndex::Single(_) => acc,
-                                ArrayAccessIndex::Range(BoundedRangeInfo { start_inc, end_inc }) => {
-                                    let length = Value::Binary(
-                                        BinaryOp::Add,
-                                        Box::new(Value::Binary(BinaryOp::Sub, end_inc.clone(), start_inc.clone())),
-                                        Box::new(Value::IntConstant(BigInt::one())),
-                                    );
-                                    Type::Array(Box::new(acc), Box::new(length))
-                                }
-                            }
-                        });
-
-                        // result
-                        ScopedEntryDirect::Immediate(TypeOrValue::Value(Value::ArrayAccess {
-                            result_ty: Box::new(result_ty),
-                            base: Box::new(base),
-                            indices,
-                        }))
-                    }
-                }
+                let range = IncRange { start_inc, end_inc };
+                Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
             }
-            ExpressionKind::DotIdIndex(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot id index expression")),
-            ExpressionKind::DotIntIndex(_, _) =>
-                ScopedEntryDirect::Error(diags.report_todo(expr.span, "dot int index expression")),
-            ExpressionKind::Call(ref target, ref args) => {
-                let target_entry = self.eval_expression(ctx, collector, target);
-                let args_entry = args.map_inner(|e| self.eval_expression_as_ty_or_value(ctx, collector, e));
+            ExpressionKind::UnaryOp(op, operand) => match op.inner {
+                UnaryOp::Neg => {
+                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, operand)?;
+                    let operand = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
 
-                match target_entry {
-                    ScopedEntryDirect::Constructor(constr) => {
-                        match self.eval_constructor_call(&constr.parameters, &constr.inner, args_entry, true) {
-                            Ok((v, _)) => MaybeConstructor::Immediate(v),
-                            Err(e) => MaybeConstructor::Error(e),
+                    match operand.inner {
+                        MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(CompileValue::Int(-c))),
+                        MaybeCompile::Other(v) => {
+                            let result_range = ClosedIncRange {
+                                start_inc: -v.ty.end_inc,
+                                end_inc: -v.ty.start_inc,
+                            };
+                            let result_expr = IrExpression::IntBinary(
+                                IrIntBinaryOp::Sub,
+                                Box::new(IrExpression::Int(BigInt::ZERO)),
+                                Box::new(v.expr),
+                            );
+
+                            let result = TypedIrExpression {
+                                ty: HardwareType::Int(result_range),
+                                domain: v.domain,
+                                expr: result_expr,
+                            };
+                            Ok(MaybeCompile::Other(result))
                         }
                     }
-                    ScopedEntryDirect::Immediate(entry) => {
-                        match entry {
-                            TypeOrValue::Type(_) => {
-                                let err = Diagnostic::new_simple("invalid call target", target.span, "invalid call target kind 'type'");
-                                ScopedEntryDirect::Error(diags.report(err))
-                            }
-                            TypeOrValue::Value(_) =>
-                                ScopedEntryDirect::Error(diags.report_todo(target.span, "value call target")),
-                            TypeOrValue::Error(e)
-                            => ScopedEntryDirect::Error(e),
-                        }
-                    }
-                    ScopedEntryDirect::Error(e) => ScopedEntryDirect::Error(e),
                 }
+                UnaryOp::Not => {
+                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, operand)?;
+
+                    check_type_contains_value(
+                        diags,
+                        TypeContainsReason::Operator(op.span),
+                        &Type::Bool,
+                        operand.as_ref(),
+                        false,
+                    )?;
+
+                    match operand.inner {
+                        MaybeCompile::Compile(c) => match c {
+                            CompileValue::Bool(b) => Ok(MaybeCompile::Compile(CompileValue::Bool(!b))),
+                            _ => Err(diags.report_internal_error(expr.span, "expected bool for unary not")),
+                        },
+                        MaybeCompile::Other(v) => {
+                            let result = TypedIrExpression {
+                                ty: HardwareType::Bool,
+                                domain: v.domain,
+                                expr: IrExpression::BoolNot(Box::new(v.expr)),
+                            };
+                            Ok(MaybeCompile::Other(result))
+                        }
+                    }
+                }
+            },
+            ExpressionKind::BinaryOp(op, left, right) => {
+                let left = self.eval_expression(ctx, ctx_block, scope, vars, left);
+                let right = self.eval_expression(ctx, ctx_block, scope, vars, right);
+                self.eval_binary_expression(expr.span, op, left?, right?)
+            }
+            ExpressionKind::TernarySelect(_, _, _) => Err(diags.report_todo(expr.span, "expr kind TernarySelect")),
+            ExpressionKind::ArrayIndex(base, args) => {
+                // eval base and args
+                let base = self.eval_expression(ctx, ctx_block, scope, vars, base);
+                let args = args.map_inner(|a| self.eval_expression(ctx, ctx_block, scope, vars, a));
+
+                let base = base?;
+                let args = args.try_map_inner(identity)?;
+
+                // disallow named args
+                let mut result_named = Ok(());
+                for arg in &args.inner {
+                    if let Some(name) = &arg.name {
+                        result_named = Err(diags.report_todo(name.span, "named array dimensions"));
+                    }
+                }
+                result_named?;
+
+                // loop over all indices, folding the indexing operations
+                let mut curr = base;
+                for arg in args.inner {
+                    let curr_span = curr.span;
+                    let curr_inner = match pair_compile(diags, curr, arg.value)? {
+                        MaybeCompile::Compile((curr, index)) => {
+                            match curr.inner {
+                                // declare new array type
+                                CompileValue::Type(curr) => {
+                                    let dim_len = match index.inner {
+                                        CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
+                                            diags.report_simple(
+                                                "array dimension length cannot be negative",
+                                                index.span,
+                                                format!("got value `{}`", e.into_original()),
+                                            )
+                                        })?,
+                                        _ => {
+                                            return Err(diags.report_simple(
+                                                "array dimension length must be an integer",
+                                                index.span,
+                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
+                                            ));
+                                        }
+                                    };
+
+                                    let result_ty = Type::Array(Box::new(curr), dim_len);
+                                    MaybeCompile::Compile(CompileValue::Type(result_ty))
+                                }
+                                // index into compile-time array
+                                CompileValue::Array(curr) => {
+                                    match index.inner {
+                                        CompileValue::Int(index_inner) => {
+                                            let valid_range = 0..curr.len();
+                                            let index = index_inner.to_usize()
+                                                .filter(|index| valid_range.contains(&index))
+                                                .ok_or_else(|| {
+                                                    diags.report_simple(
+                                                        "array index out of bounds",
+                                                        index.span,
+                                                        format!("got index `{index_inner}`, valid range for this array is `{valid_range:?}`"),
+                                                    )
+                                                })?;
+                                            // TODO avoid clone, both of this value and of the entire array?
+                                            MaybeCompile::Compile(curr[index].clone())
+                                        }
+                                        CompileValue::IntRange(range) => {
+                                            let check_valid = |x: &Option<BigInt>, default: usize| {
+                                                // for slices, the valid range is inclusive
+                                                let valid_range = 0..=curr.len();
+                                                match x {
+                                                    None => Ok(default),
+                                                    Some(x) => x.to_usize()
+                                                        .filter(|index| valid_range.contains(&index))
+                                                        .ok_or_else(|| {
+                                                            diags.report_simple(
+                                                                "array slice range out of bounds",
+                                                                index.span,
+                                                                format!("got slice range `{range:?}`, valid range for this array is `{valid_range:?}`"),
+                                                            )
+                                                        })
+                                                }
+                                            };
+
+                                            let start = check_valid(&range.start_inc, 0)?;
+                                            let end = check_valid(&range.end_inc, curr.len())?;
+
+                                            if start > end {
+                                                return Err(diags.report_internal_error(
+                                                    index.span,
+                                                    format!("invalid decreasing range `{range:?}`"),
+                                                ));
+                                            }
+
+                                            // TODO avoid clone, both of this slice and of the entire array?
+                                            MaybeCompile::Compile(CompileValue::Array(curr[start..end].to_vec()))
+                                        }
+                                        _ => {
+                                            return Err(diags.report_simple(
+                                                "array index must be an integer or an integer range",
+                                                index.span,
+                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
+                                            ));
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    return Err(diags.report_simple(
+                                        "array index on invalid target",
+                                        index.span,
+                                        format!("target `{}` here", curr.inner.to_diagnostic_string()),
+                                    ));
+                                }
+                            }
+                        }
+                        MaybeCompile::Other((curr, index)) => {
+                            let _ = (curr, index);
+                            return Err(diags.report_todo(arg.span, "runtime array indexing/slicing"));
+                        }
+                    };
+
+                    // TODO this is a bit of sketchy span, but maybe the best we can do
+                    curr = Spanned {
+                        span: curr_span.join(arg.span),
+                        inner: curr_inner,
+                    }
+                }
+
+                Ok(curr.inner)
+            }
+            ExpressionKind::DotIdIndex(_, _) => Err(diags.report_todo(expr.span, "expr kind DotIdIndex")),
+            ExpressionKind::DotIntIndex(_, _) => Err(diags.report_todo(expr.span, "expr kind DotIntIndex")),
+            ExpressionKind::Call(target, args) => {
+                // evaluate target and args
+                let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
+                let args = args.map_inner(|arg| self.eval_expression(ctx, ctx_block, scope, vars, arg));
+
+                // report errors for invalid target and args
+                //   (only after both have been evaluated to get all diagnostics)
+                let target = match target.inner {
+                    CompileValue::Function(f) => f,
+                    _ => {
+                        let e = diags.report_simple(
+                            "call target must be function",
+                            expr.span,
+                            format!("got `{}`", target.inner.to_diagnostic_string()),
+                        );
+                        return Err(e);
+                    }
+                };
+                let args = args.try_map_inner(identity)?;
+
+                // actually do the call
+                let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
+                let (result_block, result_value) = self
+                    .check_compile_loop(entry, |s| target.call(s, ctx, args))
+                    .flatten_err()?;
+
+                let result_block_spanned = Spanned {
+                    span: expr.span,
+                    inner: result_block,
+                };
+                ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+
+                Ok(result_value)
             }
             ExpressionKind::Builtin(ref args) => {
-                match self.eval_builtin_call(ctx, collector, expr.span, args) {
-                    Ok(result) => MaybeConstructor::Immediate(result),
-                    Err(e) => MaybeConstructor::Error(e),
-                }
+                Ok(MaybeCompile::Compile(self.eval_builtin(scope, vars, expr.span, args)?))
             }
-        }
+        };
+
+        result.map(|result| Spanned {
+            span: expr.span,
+            inner: result,
+        })
     }
 
-    fn eval_array_index(
+    // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
+    fn eval_binary_expression(
         &mut self,
         expr_span: Span,
-        base_span: Span,
-        base_ty: Type,
-        args_span: Span,
-        args_len: usize,
-        arg_i: usize,
-        arg: ast::Arg<Spanned<Value>>,
-    ) -> (Type, ArrayAccessIndex<Box<Value>>) {
+        op: &Spanned<BinaryOp>,
+        left: Spanned<MaybeCompile<TypedIrExpression>>,
+        right: Spanned<MaybeCompile<TypedIrExpression>>,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let diags = self.diags;
 
-        let ast::Arg { span: _, name, value: index } = arg;
+        let op_reason = TypeContainsReason::Operator(op.span);
 
-        if let Some(name) = name {
-            let e = diags.report_todo(name.span, "named array dimensions");
-            return (Type::Error(e), ArrayAccessIndex::Error(e));
-        }
+        // TODO extract even more common int boilerplate
+        let check_both_int = |left, right| {
+            let left = check_type_is_int(diags, op_reason, left);
+            let right = check_type_is_int(diags, op_reason, right);
+            Ok((left?, right?))
+        };
+        let ir_int_binary =
+            |range, left: Spanned<TypedIrExpression<_>>, right: Spanned<TypedIrExpression<_>>| TypedIrExpression {
+                ty: HardwareType::Int(range),
+                domain: left.inner.domain.join(&right.inner.domain),
+                expr: IrExpression::IntBinary(
+                    IrIntBinaryOp::Add,
+                    Box::new(left.inner.expr),
+                    Box::new(right.inner.expr),
+                ),
+            };
 
-        match base_ty {
-            Type::Error(e) => {
-                (Type::Error(e), ArrayAccessIndex::Error(e))
-            }
-            Type::Array(inner, len) => {
-                let valid_index_type = Type::Integer(IntegerTypeInfo {
-                    range: Box::new(Value::Range(RangeInfo {
-                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                        end_inc: Some(Box::new(Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))))),
-                    }))
-                });
-                let valid_range_type = Type::Integer(IntegerTypeInfo {
-                    range: Box::new(Value::Range(RangeInfo {
-                        start_inc: Some(Box::new(Value::IntConstant(BigInt::ZERO))),
-                        end_inc: Some(len.clone()),
-                    }))
-                });
+        let impl_bool_op = |left, right, op: IrBoolBinaryOp| {
+            let left = check_type_is_bool(diags, op_reason, left);
+            let right = check_type_is_bool(diags, op_reason, right);
 
-                match self.type_of_value(index.span, &index.inner) {
-                    Type::Error(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
-                    Type::Integer(_) => {
-                        match self.require_type_contains_value(None, index.span, &valid_index_type, &index.inner) {
-                            Ok(()) => (*inner, ArrayAccessIndex::Single(Box::new(index.inner))),
-                            Err(e) => (*inner, ArrayAccessIndex::Error(e)),
-                        }
-                    }
-                    Type::Range => {
-                        match self.require_int_range_direct(index.span, &index.inner) {
-                            Err(e) => (Type::Error(e), ArrayAccessIndex::Error(e)),
-                            Ok(RangeInfo { start_inc, end_inc }) => {
-                                let start_inc_checked = match start_inc {
-                                    None => Value::IntConstant(BigInt::ZERO),
-                                    Some(start_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &start_inc) {
-                                            Ok(()) => (**start_inc).clone(),
-                                            Err(e) => Value::Error(e),
-                                        }
-                                    }
-                                };
-                                let end_inc_checked = match end_inc {
-                                    None => Value::Binary(BinaryOp::Sub, len.clone(), Box::new(Value::IntConstant(BigInt::one()))),
-                                    Some(end_inc) => {
-                                        match self.require_type_contains_value(None, index.span, &valid_range_type, &end_inc) {
-                                            Ok(()) => (**end_inc).clone(),
-                                            Err(e) => Value::Error(e),
-                                        }
-                                    }
-                                };
+            let left = left?;
+            let right = right?;
 
-                                let index = ArrayAccessIndex::Range(BoundedRangeInfo {
-                                    start_inc: Box::new(start_inc_checked),
-                                    end_inc: Box::new(end_inc_checked),
-                                });
-
-                                (*inner, index)
-                            }
-                        }
-                    }
-                    value_ty => {
-                        let diag = Diagnostic::new("type mismatch: expected integer or range type for array index")
-                            .add_error(expr_span, "for this array indexing operation")
-                            .add_info(index.span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &value_ty)))
-                            .finish();
-                        let e = diags.report(diag);
-                        (Type::Error(e), ArrayAccessIndex::Error(e))
-                    }
-                }
-            }
-            _ => {
-                let diag = if arg_i == 0 {
-                    Diagnostic::new("type mismatch: expected array type for array indexing operator")
-                        .add_error(expr_span, "for this array indexing operation")
-                        .add_info(base_span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &base_ty)))
-                        .finish()
-                } else {
-                    Diagnostic::new(format!("type mismatch: expected array type with at least {} dimensions", args_len))
-                        .add_error(expr_span, "for this array indexing operation")
-                        .add_info(base_span, format!("actual type {}", self.compiled.type_to_readable_str(self.source, self.parsed, &base_ty)))
-                        .add_info(args_span, format!("got {} indices", args_len))
-                        .finish()
-                };
-
-                let e = diags.report(diag);
-                (Type::Error(e), ArrayAccessIndex::Error(e))
-            }
-        }
-    }
-
-    pub fn eval_constructor_call<T: GenericContainer>(
-        &mut self,
-        parameters: &GenericParameters,
-        inner: &T,
-        args: ast::Args<TypeOrValue>,
-        allow_positional: bool,
-    ) -> Result<(T::Result, GenericArguments), ErrorGuaranteed> {
-        let diags = self.diags;
-        let mut any_err = None;
-
-        // TODO allow different declaration and use orderings, be careful about interactions
-        // TODO add span where the parameters are defined
-        // check count match
-        if parameters.vec.len() != args.inner.len() {
-            let err = Diagnostic::new_simple(
-                format!("constructor argument count mismatch, expected {}, got {}", parameters.vec.len(), args.inner.len()),
-                args.span,
-                "arguments here",
-            );
-            any_err = Some(diags.report(err));
-        }
-        let min_len = min(parameters.vec.len(), args.inner.len());
-
-        // check kind and type match, and collect in replacement map
-        let mut map = GenericMap::empty();
-        let mut any_named = false;
-
-        let mut ordered_args = vec![];
-
-        for (&param, arg) in zip_eq(&parameters.vec[..min_len], args.inner.into_iter().take(min_len)) {
-            let ast::Arg { span: arg_span, name: arg_name, value: arg_value, } = arg;
-
-            // check positional allowed or name match
-            match arg_name {
-                None => {
-                    if !allow_positional {
-                        let err = Diagnostic::new_simple("positional arguments are not allowed here", arg_span, "positional argument");
-                        any_err = Some(diags.report(err));
-                    }
-                    if any_named {
-                        let err = Diagnostic::new_simple("positional argument is not allowed after named argument", arg_span, "positional argument");
-                        any_err = Some(diags.report(err));
-                    }
-                }
-                Some(arg_name) => {
-                    any_named = true;
-
-                    let param_id = match param {
-                        GenericParameter::Type(param) => &self.compiled[param].defining_id,
-                        GenericParameter::Value(param) => &self.compiled[param].defining_id,
+            match pair_compile_bool(left, right) {
+                MaybeCompile::Compile((left, right)) => Ok(MaybeCompile::Compile(CompileValue::Bool(
+                    op.eval(left.inner, right.inner),
+                ))),
+                MaybeCompile::Other((left, right)) => {
+                    let result = TypedIrExpression {
+                        ty: HardwareType::Bool,
+                        domain: left.inner.domain.join(&right.inner.domain),
+                        expr: IrExpression::BoolBinary(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
                     };
+                    Ok(MaybeCompile::Other(result))
+                }
+            }
+        };
 
-                    if arg_name.string != param_id.string {
-                        let err = Diagnostic::new("argument name mismatch")
-                            .add_info(param_id.span, format!("expected `{}`, defined here", param_id.string))
-                            .add_error(arg_span, format!("got `{}`", arg_name.string))
-                            .footer(Level::Note, "different parameter and argument orderings are not yet supported")
-                            .finish();
-                        any_err = Some(diags.report(err));
-
-                        // from now on generic replacement is broken, so we have to stop the loop
-                        break;
+        match op.inner {
+            // (int, int)
+            BinaryOp::Add => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner + right.inner)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        let range = ClosedIncRange {
+                            start_inc: &left.inner.ty.start_inc + &right.inner.ty.start_inc,
+                            end_inc: &left.inner.ty.end_inc + &right.inner.ty.end_inc,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
                     }
                 }
             }
-
-            // immediately use the existing generic params to replace the current one
-            // TODO call replace_generics instead?
-            match param {
-                GenericParameter::Type(param) => {
-                    let arg_ty = arg_value.unwrap_ty(diags, arg_span);
-
-                    // TODO use for bound-check (once we add type bounds)
-                    // TODO apply generic map to info, certainly for the bounds
-                    let _param_info = &self.compiled[param];
-                    map.generic_ty.insert_first(param, arg_ty.clone());
-                    ordered_args.push(TypeOrValue::Type(arg_ty));
-                }
-                GenericParameter::Value(param) => {
-                    let arg_value = arg_value.unwrap_value(diags, arg_span);
-
-                    let param_info = &self.compiled[param];
-                    let ty_span = param_info.ty_span;
-                    let ty_replaced = param_info.ty.clone()
-                        .replace_generics(&mut self.compiled, &map);
-
-                    match self.require_type_contains_value(Some(ty_span), arg_span, &ty_replaced, &arg_value) {
-                        Ok(()) => {}
-                        Err(e) => any_err = Some(e),
+            BinaryOp::Sub => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner - right.inner)))
                     }
-                    map.generic_value.insert_first(param, arg_value.clone());
-                    ordered_args.push(TypeOrValue::Value(arg_value));
+                    MaybeCompile::Other((left, right)) => {
+                        let range = ClosedIncRange {
+                            start_inc: &left.inner.ty.start_inc - &right.inner.ty.end_inc,
+                            end_inc: &left.inner.ty.end_inc - &right.inner.ty.start_inc,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                    }
                 }
             }
-        }
-
-        // only bail once all parameters have been checked
-        if let Some(e) = any_err {
-            return Err(e);
-        }
-
-        // at this point we know the generic arg count is right, and the order is correct
-        assert_eq!(parameters.vec.len(), ordered_args.len());
-        let generic_args = GenericArguments {
-            vec: ordered_args,
-        };
-
-        // do the actual replacement
-        let result = inner.replace_generics(&mut self.compiled, &map);
-
-        Ok((result, generic_args))
-    }
-
-    pub fn eval_expression_as_ty_or_value(&mut self, ctx: &ExpressionContext, collector: &mut MaybeDriverCollector, expr: &Expression) -> TypeOrValue {
-        let entry = self.eval_expression(ctx, collector, expr);
-
-        match entry {
-            ScopedEntryDirect::Immediate(entry) => entry,
-            ScopedEntryDirect::Constructor(_) => {
-                let diag = Diagnostic::new_simple("expected type or value, got constructor", expr.span, "constructor");
-                TypeOrValue::Error(self.diags.report(diag))
+            BinaryOp::Mul => {
+                let (left, right) = check_both_int(left, right)?;
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner * right.inner)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        // calculate valid range
+                        let extremes = [
+                            &left.inner.ty.start_inc * &right.inner.ty.start_inc,
+                            &left.inner.ty.start_inc * &right.inner.ty.end_inc,
+                            &left.inner.ty.end_inc * &right.inner.ty.start_inc,
+                            &left.inner.ty.end_inc * &right.inner.ty.end_inc,
+                        ];
+                        let range = ClosedIncRange {
+                            start_inc: extremes.iter().min().unwrap().clone(),
+                            end_inc: extremes.iter().max().unwrap().clone(),
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                    }
+                }
             }
-            ScopedEntryDirect::Error(e) => TypeOrValue::Error(e),
-        }
-    }
+            // (int, non-zero int)
+            BinaryOp::Div => Err(diags.report_todo(expr_span, "binary op Div")),
+            BinaryOp::Mod => Err(diags.report_todo(expr_span, "binary op Mod")),
+            // (nonzero int, non-negative int) or (non-negative int, positive int)
+            BinaryOp::Pow => {
+                let (base, exp) = check_both_int(left, right)?;
 
-    pub fn eval_expression_as_ty(&mut self, scope: Scope, expr: &Expression) -> Type {
-        let ctx = ExpressionContext::constant(expr.span, scope);
-        let entry = self.eval_expression(&ctx, &mut MaybeDriverCollector::None, expr);
+                let zero = BigInt::ZERO;
+                let base_range = base.inner.range();
+                let exp_range = exp.inner.range();
 
-        match entry {
-            // TODO unify these error strings somewhere
-            // TODO maybe move back to central error collection place for easier unit testing?
-            // TODO report span for the _reason_ why we expect one or the other
-            ScopedEntryDirect::Constructor(_) => {
-                let diag = Diagnostic::new_simple("expected type, got constructor", expr.span, "constructor");
-                Type::Error(self.diags.report(diag))
+                // check exp >= 0
+                if exp_range.start_inc < &zero {
+                    let diag = Diagnostic::new("invalid power operation")
+                        .add_error(expr_span, "exponent must be non-negative")
+                        .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+
+                // check not 0 ** 0
+                if base_range.contains(&&zero) && exp_range.contains(&&zero) {
+                    let diag = Diagnostic::new("invalid power operation `0 ** 0`")
+                        .add_error(expr_span, "base and exponent can both be zero")
+                        .add_info(base.span, format!("base range is `{}`", base_range))
+                        .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+
+                match pair_compile_int(base, exp) {
+                    MaybeCompile::Compile((base, exp)) => {
+                        let exp = BigUint::try_from(exp.inner)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp"))?;
+
+                        let result = base.inner.pow(&exp);
+                        Ok(MaybeCompile::Compile(CompileValue::Int(result)))
+                    }
+                    MaybeCompile::Other((base, exp)) => {
+                        let exp_start_inc = BigUint::try_from(&exp.inner.ty.start_inc)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp start"))?;
+                        let exp_end_inc = BigUint::try_from(&exp.inner.ty.end_inc)
+                            .map_err(|_| diags.report_internal_error(exp.span, "got negative exp end"))?;
+
+                        let mut result_min = min(
+                            base.inner.ty.start_inc.clone().pow(&exp_start_inc),
+                            base.inner.ty.start_inc.clone().pow(&exp_end_inc),
+                        );
+                        let mut result_max = max(
+                            base.inner.ty.start_inc.clone().pow(&exp_end_inc),
+                            base.inner.ty.end_inc.clone().pow(&exp_end_inc),
+                        );
+
+                        // If base is negative, even/odd powers can cause extremes.
+                        // To guard this, try the next highest exponent too if it exists.
+                        if exp_end_inc > BigUint::ZERO {
+                            let end_exp_sub_one = exp_end_inc.sub(&BigUint::one());
+                            result_min = min(result_min, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
+                            result_max = max(result_max, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
+                        }
+
+                        let range = ClosedIncRange {
+                            start_inc: result_min,
+                            end_inc: result_max,
+                        };
+                        Ok(MaybeCompile::Other(ir_int_binary(range, base, exp)))
+                    }
+                }
             }
-            ScopedEntryDirect::Immediate(entry) => entry.unwrap_ty(self.diags, expr.span),
-            ScopedEntryDirect::Error(e) => Type::Error(e),
+            // (bool, bool)
+            BinaryOp::BoolAnd => impl_bool_op(left, right, IrBoolBinaryOp::And),
+            BinaryOp::BoolOr => impl_bool_op(left, right, IrBoolBinaryOp::Or),
+            BinaryOp::BoolXor => impl_bool_op(left, right, IrBoolBinaryOp::Xor),
+            // (T, T)
+            BinaryOp::CmpEq => Err(diags.report_todo(expr_span, "binary op CmpEq")),
+            BinaryOp::CmpNeq => Err(diags.report_todo(expr_span, "binary op CmpNeq")),
+            BinaryOp::CmpLt => Err(diags.report_todo(expr_span, "binary op CmpLt")),
+            BinaryOp::CmpLte => Err(diags.report_todo(expr_span, "binary op CmpLte")),
+            BinaryOp::CmpGt => Err(diags.report_todo(expr_span, "binary op CmpGt")),
+            BinaryOp::CmpGte => Err(diags.report_todo(expr_span, "binary op CmpGte")),
+            // (int, range)
+            BinaryOp::In => Err(diags.report_todo(expr_span, "binary op In")),
+
+            // TODO boolean arrays?
+            BinaryOp::BitAnd => Err(diags.report_todo(expr_span, "binary op BitAnd")),
+            BinaryOp::BitOr => Err(diags.report_todo(expr_span, "binary op BitOr")),
+            BinaryOp::BitXor => Err(diags.report_todo(expr_span, "binary op BitXor")),
+            // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int)
+            BinaryOp::Shl => Err(diags.report_todo(expr_span, "binary op Shl")),
+            BinaryOp::Shr => Err(diags.report_todo(expr_span, "binary op Shr")),
         }
     }
 
-    pub fn eval_expression_as_value(
+    // TODO replace builtin+import+prelude with keywords?
+    fn eval_builtin(
         &mut self,
-        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
-        expr: &Expression,
-    ) -> Value {
-        let entry = self.eval_expression(ctx, collector, expr);
-
-        match entry {
-            ScopedEntryDirect::Constructor(_) => {
-                let err = Diagnostic::new_simple("expected value, got constructor", expr.span, "constructor");
-                Value::Error(self.diags.report(err))
-            }
-            ScopedEntryDirect::Immediate(entry) => entry.unwrap_value(self.diags, expr.span),
-            ScopedEntryDirect::Error(e) => Value::Error(e),
-        }
-    }
-
-    pub fn eval_domain(&mut self, scope: Scope, domain: Spanned<&DomainKind<Box<Expression>>>) -> DomainKind<Value> {
-        match domain.inner {
-            DomainKind::Async =>
-                DomainKind::Async,
-            DomainKind::Sync(sync_domain) => {
-                let sync = SyncDomain { clock: &*sync_domain.clock, reset: &*sync_domain.reset };
-                let sync = Spanned { span: domain.span, inner: sync };
-                DomainKind::Sync(self.eval_sync_domain(scope, sync))
-            }
-        }
-    }
-
-    pub fn eval_sync_domain(&mut self, scope: Scope, sync: Spanned<SyncDomain<&Expression>>) -> SyncDomain<Value> {
-        let Spanned { span: _, inner: sync } = sync;
-        let SyncDomain { clock, reset } = sync;
-
-        let ctx = ExpressionContext::passthrough(scope);
-        let mut collector = MaybeDriverCollector::None;
-        let clock_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, clock);
-        let reset_value_unchecked = self.eval_expression_as_value(&ctx, &mut collector, reset);
-
-        // check that clock is a clock
-        let clock_domain = self.domain_of_value(clock.span, &clock_value_unchecked);
-        let clock_value = match &clock_domain {
-            ValueDomain::Clock => clock_value_unchecked,
-            &ValueDomain::Error(e) => Value::Error(e),
-            _ => {
-                let title = format!("clock must be a clock, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &clock_domain));
-                let e = self.diags.report_simple(title, clock.span, "clock value");
-                Value::Error(e)
-            }
-        };
-
-        // check that reset is an async bool
-        // TODO allow sync reset
-        // TODO require that async reset still comes out of sync in phase with the clock
-        let reset_value_bool = match self.require_type_contains_value(None, reset.span, &Type::Boolean, &reset_value_unchecked) {
-            Ok(()) => reset_value_unchecked,
-            Err(e) => Value::Error(e),
-        };
-        let reset_domain = self.domain_of_value(reset.span, &reset_value_bool);
-        let reset_value = match &reset_domain {
-            ValueDomain::Async => reset_value_bool,
-            &ValueDomain::Error(e) => Value::Error(e),
-            _ => {
-                let title = format!("reset must be an async boolean, has domain {}", self.compiled.sync_kind_to_readable_string(self.source, self.parsed, &reset_domain));
-                let e = self.diags.report_simple(title, reset.span, "reset value");
-                Value::Error(e)
-            }
-        };
-
-        SyncDomain {
-            clock: clock_value,
-            reset: reset_value,
-        }
-    }
-
-    fn eval_builtin_call(
-        &mut self,
-        ctx: &ExpressionContext, collector: &mut MaybeDriverCollector,
+        scope: Scope,
+        vars: &VariableValues,
         expr_span: Span,
-        args: &ast::Args,
-    ) -> Result<TypeOrValue, ErrorGuaranteed> {
-        let diags = self.diags;
-
-        let args_span = args.span;
-        let args = args.inner.iter()
+        args: &Spanned<Vec<Expression>>,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        // evaluate args
+        let args_eval: Vec<CompileValue> = args
+            .inner
+            .iter()
             .map(|arg| {
-                let ast::Arg { span: _, name, value: arg_expr } = arg;
-                if let Some(name) = name {
-                    diags.report_simple("named arguments are not allowed for __builtin calls", name.span, "named argument");
-                }
-                let inner = self.eval_expression_as_ty_or_value(ctx, collector, arg_expr);
-                Spanned { span: arg.span, inner }
+                Ok(self
+                    .eval_expression_as_compile(scope, vars, arg, "builtin argument")?
+                    .inner)
             })
-            .collect_vec();
+            .try_collect()?;
 
-        let get_arg_str = |i: usize| -> Option<&str> {
-            args.get(i).and_then(|e| match &e.inner {
-                TypeOrValue::Value(Value::StringConstant(s)) => Some(s.as_str()),
-                _ => None,
-            })
-        };
-
-        if let (Some(first), Some(second)) = (get_arg_str(0), get_arg_str(1)) {
-            let rest = &args[2..];
-
-            match (first, second, rest) {
-                ("type", "unchecked", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Unchecked)),
-                ("value", "undefined", &[]) =>
-                    return Ok(TypeOrValue::Value(Value::Undefined)),
-                ("type", "bool", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Boolean)),
-                ("type", "int", &[]) => {
-                    let range = Box::new(Value::Range(RangeInfo::UNBOUNDED));
-                    return Ok(TypeOrValue::Type(Type::Integer(IntegerTypeInfo { range })));
-                }
+        if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
+            let rest = &args_eval[2..];
+            match (a0.as_str(), a1.as_str(), rest) {
+                ("type", "any", []) => return Ok(CompileValue::Type(Type::Any)),
+                ("type", "bool", []) => return Ok(CompileValue::Type(Type::Bool)),
+                ("type", "Range", []) => return Ok(CompileValue::Type(Type::Range)),
                 ("type", "int_range", [range]) => {
-                    // TODO typecheck (range must be integer)? or should we just trust stdlib?
-                    let range = Box::new(range.inner.clone().unwrap_value(diags, range.span));
-                    let ty_info = IntegerTypeInfo { range };
-                    return Ok(TypeOrValue::Type(Type::Integer(ty_info)));
+                    if let CompileValue::IntRange(range) = range {
+                        return Ok(CompileValue::Type(Type::Int(range.clone())));
+                    }
                 }
-                ("type", "Range", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Range)),
-                ("type", "bits_inf", &[]) =>
-                    return Ok(TypeOrValue::Type(Type::Bits(None))),
-                ("function", "print", [value]) => {
-                    let _: Value = value.inner.clone().unwrap_value(diags, value.span);
-                    return Ok(TypeOrValue::Value(Value::Unit));
-                }
-                // fallthrough into error
+                // fallthrough into err
                 _ => {}
             }
         }
 
-        let err = Diagnostic::new("invalid arguments for __builtin call")
+        let diag = Diagnostic::new("invalid builtin arguments")
             .snippet(expr_span)
-            .add_error(args_span, "invalid arguments")
+            .add_error(args.span, "invalid args")
             .finish()
-            .finish()
-            .into();
-        Err(self.diags.report(err))
+            .finish();
+        Err(self.diags.report(diag))
     }
-}
 
-impl TypeOrValue<Type, Value> {
-    pub fn unwrap_ty(self, diags: &Diagnostics, span: Span) -> Type {
-        match self {
-            TypeOrValue::Type(ty) => ty,
-            TypeOrValue::Value(_) => {
-                let diag = Diagnostic::new_simple("expected type, got value", span, "value");
-                Type::Error(diags.report(diag))
-            }
-            TypeOrValue::Error(e) => Type::Error(e),
+    pub fn eval_expression_as_compile(
+        &mut self,
+        scope: Scope,
+        vars: &VariableValues,
+        expr: &Expression,
+        reason: &str,
+    ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
+        let mut ctx = CompileTimeExpressionContext;
+        let mut ctx_block = ();
+
+        match self.eval_expression(&mut ctx, &mut ctx_block, scope, vars, expr)?.inner {
+            MaybeCompile::Compile(c) => Ok(Spanned {
+                span: expr.span,
+                inner: c,
+            }),
+            MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
+                format!("{reason} must be a compile-time value"),
+                expr.span,
+                format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
+            )),
         }
     }
 
-    pub fn unwrap_value(self, diags: &Diagnostics, span: Span) -> Value {
-        match self {
-            TypeOrValue::Type(_) => {
-                let diag = Diagnostic::new_simple("expected value, got type", span, "type");
-                Value::Error(diags.report(diag))
+    pub fn eval_expression_as_ty(
+        &mut self,
+        scope: Scope,
+        vars: &VariableValues,
+        expr: &Expression,
+    ) -> Result<Spanned<Type>, ErrorGuaranteed> {
+        // TODO unify this message with the one when a normal type-check fails
+        match self.eval_expression_as_compile(scope, vars, expr, "type")?.inner {
+            CompileValue::Type(ty) => Ok(Spanned {
+                span: expr.span,
+                inner: ty,
+            }),
+            _ => Err(self
+                .diags
+                .report_simple("expected type, got value", expr.span, "got value")),
+        }
+    }
+
+    pub fn eval_expression_as_ty_hardware(
+        &mut self,
+        scope: Scope,
+        vars: &VariableValues,
+        expr: &Expression,
+        reason: &str,
+    ) -> Result<Spanned<HardwareType>, ErrorGuaranteed> {
+        let ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
+        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+            self.diags.report_simple(
+                format!("{} type must be representable in hardware", reason),
+                expr.span,
+                format!("got `{}`", ty.to_diagnostic_string()),
+            )
+        })?;
+        Ok(Spanned {
+            span: expr.span,
+            inner: ty_hw,
+        })
+    }
+
+    pub fn eval_expression_as_assign_target(
+        &mut self,
+        scope: Scope,
+        expr: &Expression,
+    ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
+        let build_err = |actual: &str| {
+            self.diags
+                .report_simple("expected assignment target", expr.span, format!("got `{}`", actual))
+        };
+
+        let result = match &expr.inner {
+            ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
+                MaybeCompile::Compile(_) => Err(build_err("compile-time constant")),
+                MaybeCompile::Other(s) => match s {
+                    NamedValue::Constant(_) => Err(build_err("constant")),
+                    NamedValue::Parameter(_) => Err(build_err("parameter")),
+                    NamedValue::Variable(v) => Ok(AssignmentTarget::Variable(v)),
+                    NamedValue::Port(p) => {
+                        let direction = self.ports[p].direction;
+                        match direction.inner {
+                            PortDirection::Input => Err(build_err("input port")),
+                            PortDirection::Output => Ok(AssignmentTarget::Port(p)),
+                        }
+                    }
+                    NamedValue::Wire(w) => Ok(AssignmentTarget::Wire(w)),
+                    NamedValue::Register(r) => Ok(AssignmentTarget::Register(r)),
+                },
+            },
+            ExpressionKind::ArrayIndex(_, _) => {
+                Err(self.diags.report_todo(expr.span, "assignment target array index"))?
             }
-            TypeOrValue::Value(value) => value,
-            TypeOrValue::Error(e) => Value::Error(e),
+            ExpressionKind::DotIdIndex(_, _) => {
+                Err(self.diags.report_todo(expr.span, "assignment target dot id index"))?
+            }
+            ExpressionKind::DotIntIndex(_, _) => {
+                Err(self.diags.report_todo(expr.span, "assignment target dot int index"))?
+            }
+            _ => Err(build_err("other expression")),
+        };
+
+        Ok(Spanned {
+            span: expr.span,
+            inner: result?,
+        })
+    }
+
+    pub fn eval_expression_as_domain_signal(
+        &mut self,
+        scope: Scope,
+        expr: &Expression,
+    ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
+        let build_err = |actual: &str| {
+            self.diags
+                .report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
+        };
+        self.try_eval_expression_as_domain_signal(scope, expr, build_err)
+            .map_err(|e| e.into_inner())
+    }
+
+    pub fn try_eval_expression_as_domain_signal<E>(
+        &mut self,
+        scope: Scope,
+        expr: &Expression,
+        build_err: impl Fn(&str) -> E,
+    ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
+        // TODO expand to allow general expressions again (which then probably create implicit signals)?
+        let result = match &expr.inner {
+            ExpressionKind::UnaryOp(
+                Spanned {
+                    span: _,
+                    inner: UnaryOp::Not,
+                },
+                inner,
+            ) => {
+                let inner = self
+                    .eval_expression_as_domain_signal(scope, inner)
+                    .map_err(|e| Either::Right(e))?
+                    .inner;
+                Ok(inner.invert())
+            }
+            ExpressionKind::Id(id) => {
+                let value = self.eval_id(scope, id).map_err(|e| Either::Right(e))?;
+                match value.inner {
+                    MaybeCompile::Compile(_) => Err(build_err("compile-time value")),
+                    MaybeCompile::Other(s) => match s {
+                        NamedValue::Constant(_) => Err(build_err("constant")),
+                        NamedValue::Parameter(_) => Err(build_err("parameter")),
+                        NamedValue::Variable(_) => Err(build_err("variable")),
+                        NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
+                        NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
+                        NamedValue::Register(r) => Ok(Polarized::new(Signal::Register(r))),
+                    },
+                }
+            }
+            _ => Err(build_err("expression")),
+        };
+
+        let result = result.map_err(|e| Either::Left(e))?;
+        Ok(Spanned {
+            span: expr.span,
+            inner: result,
+        })
+    }
+
+    pub fn eval_domain_sync(
+        &mut self,
+        scope: Scope,
+        domain: &SyncDomain<Box<Expression>>,
+    ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
+        let clock = self.eval_expression_as_domain_signal(scope, &domain.clock);
+        let reset = self.eval_expression_as_domain_signal(scope, &domain.reset);
+
+        Ok(SyncDomain {
+            clock: clock?.inner,
+            reset: reset?.inner,
+        })
+    }
+
+    pub fn eval_domain(
+        &mut self,
+        scope: Scope,
+        domain: &Spanned<DomainKind<Box<Expression>>>,
+    ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
+        let result = match &domain.inner {
+            DomainKind::Async => Ok(DomainKind::Async),
+            DomainKind::Sync(domain) => self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
+        };
+
+        Ok(Spanned {
+            span: domain.span,
+            inner: result?,
+        })
+    }
+
+    pub fn eval_port_domain(
+        &mut self,
+        scope: Scope,
+        domain: &Spanned<DomainKind<Box<Expression>>>,
+    ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
+        let result = self.eval_domain(scope, domain)?;
+
+        Ok(Spanned {
+            span: result.span,
+            inner: match result.inner {
+                DomainKind::Async => DomainKind::Async,
+                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_inner(|signal| {
+                    signal.try_map_inner(|signal| match signal {
+                        Signal::Port(port) => Ok(port),
+                        Signal::Wire(_) => {
+                            Err(self.diags.report_internal_error(domain.span, "expected port, got wire"))
+                        }
+                        Signal::Register(_) => Err(self
+                            .diags
+                            .report_internal_error(domain.span, "expected port, got register")),
+                    })
+                })?),
+            },
+        })
+    }
+}
+
+// TODO reduce boilerplate with a trait?
+fn pair_compile(
+    diags: &Diagnostics,
+    left: Spanned<MaybeCompile<TypedIrExpression>>,
+    right: Spanned<MaybeCompile<TypedIrExpression>>,
+) -> Result<
+    MaybeCompile<
+        (Spanned<TypedIrExpression>, Spanned<TypedIrExpression>),
+        (Spanned<CompileValue>, Spanned<CompileValue>),
+    >,
+    ErrorGuaranteed,
+> {
+    pair_compile_general(left, right, |x| x.inner.to_ir_expression(diags, x.span))
+}
+
+fn pair_compile_int(
+    left: Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>,
+    right: Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>,
+) -> MaybeCompile<
+    (
+        Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
+        Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
+    ),
+    (Spanned<BigInt>, Spanned<BigInt>),
+> {
+    let result = pair_compile_general(left, right, |x| {
+        Result::<_, Never>::Ok(TypedIrExpression {
+            ty: ClosedIncRange::single(x.inner.clone()),
+            domain: ValueDomain::CompileTime,
+            expr: IrExpression::Int(x.inner),
+        })
+    });
+    match result {
+        Ok(result) => result,
+        Err(never) => never.unreachable(),
+    }
+}
+
+fn pair_compile_bool(
+    left: Spanned<MaybeCompile<TypedIrExpression<()>, bool>>,
+    right: Spanned<MaybeCompile<TypedIrExpression<()>, bool>>,
+) -> MaybeCompile<(Spanned<TypedIrExpression<()>>, Spanned<TypedIrExpression<()>>), (Spanned<bool>, Spanned<bool>)> {
+    let result = pair_compile_general(left, right, |x| {
+        Result::<_, Never>::Ok(TypedIrExpression {
+            ty: (),
+            domain: ValueDomain::CompileTime,
+            expr: IrExpression::Bool(x.inner),
+        })
+    });
+    match result {
+        Ok(result) => result,
+        Err(never) => never.unreachable(),
+    }
+}
+
+fn pair_compile_general<T, C, E>(
+    left: Spanned<MaybeCompile<T, C>>,
+    right: Spanned<MaybeCompile<T, C>>,
+    to_other: impl Fn(Spanned<C>) -> Result<T, E>,
+) -> Result<MaybeCompile<(Spanned<T>, Spanned<T>), (Spanned<C>, Spanned<C>)>, E> {
+    match (left.inner, right.inner) {
+        (MaybeCompile::Compile(left_inner), MaybeCompile::Compile(right_inner)) => Ok(MaybeCompile::Compile((
+            Spanned {
+                span: left.span,
+                inner: left_inner,
+            },
+            Spanned {
+                span: right.span,
+                inner: right_inner,
+            },
+        ))),
+        (left_inner, right_inner) => {
+            let left_inner = match left_inner {
+                MaybeCompile::Compile(left_inner) => to_other(Spanned {
+                    span: left.span,
+                    inner: left_inner,
+                }),
+                MaybeCompile::Other(left_inner) => Ok(left_inner),
+            };
+            let right_inner = match right_inner {
+                MaybeCompile::Compile(right_inner) => to_other(Spanned {
+                    span: right.span,
+                    inner: right_inner,
+                }),
+                MaybeCompile::Other(right_inner) => Ok(right_inner),
+            };
+
+            let left_inner = left_inner?;
+            let right_inner = right_inner?;
+
+            Ok(MaybeCompile::Other((
+                Spanned {
+                    span: left.span,
+                    inner: left_inner,
+                },
+                Spanned {
+                    span: right.span,
+                    inner: right_inner,
+                },
+            )))
         }
     }
 }
