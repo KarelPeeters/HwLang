@@ -92,8 +92,7 @@ def main():
         return RangedValue(
             val=a.val + b.val,
             min=a.min + b.min,
-            # max=a.max + b.max,
-            max=z3.If(a.max + b.max > 0, (a.max + b.max) * 2, a.max + b.max),
+            max=a.max + b.max,
         )
 
     def f_sub(a, b, _):
