@@ -36,7 +36,7 @@ pub struct IrModuleInfo {
     pub registers: Arena<IrRegister, IrRegisterInfo>,
     pub wires: Arena<IrWire, IrWireInfo>,
 
-    pub children: Vec<Spanned<IrModuleChild>>,
+    pub children: Vec<IrModuleChild>,
 
     pub debug_info_id: Identifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,

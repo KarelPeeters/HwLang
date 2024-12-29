@@ -386,7 +386,7 @@ fn lower_module_statements(
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
     wire_name_map: &IndexMap<IrWire, LoweredName>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    children: &[Spanned<IrModuleChild>],
+    children: &[IrModuleChild],
     newline: &mut NewlineGenerator,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
@@ -398,7 +398,7 @@ fn lower_module_statements(
 
         let mut newline = NewlineGenerator::new();
 
-        match &child.inner {
+        match &child {
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 

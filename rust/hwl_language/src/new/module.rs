@@ -8,7 +8,7 @@ use crate::new::compile::{
     CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
 use crate::new::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrModuleChild, IrModuleInfo,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleChild, IrModuleInfo,
     IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrVariables,
     IrWire, IrWireInfo, IrWireOrPort,
 };
@@ -46,10 +46,10 @@ struct BodyElaborationState<'a, 'b> {
     drivers: Drivers,
 
     register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
-    port_register_connections: IndexMap<Port, Register>,
+    out_port_register_connections: IndexMap<Port, Register>,
 
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    processes: Vec<Result<Spanned<IrModuleChild>, ErrorGuaranteed>>,
+    processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
 }
 
 impl CompileState<'_> {
@@ -237,7 +237,7 @@ impl CompileState<'_> {
             drivers: Drivers::default(),
 
             register_initial_values: IndexMap::new(),
-            port_register_connections: IndexMap::new(),
+            out_port_register_connections: IndexMap::new(),
             clocked_block_statement_index_to_process_index: IndexMap::new(),
             processes: vec![],
         };
@@ -275,6 +275,29 @@ impl CompileState<'_> {
         // TODO more checking: combinatorial blocks can't read values they will later write,
         //   unless they have already written them
         state.pass_2_check_drivers_and_populate_resets()?;
+
+        // create process for registered output ports
+        if !state.out_port_register_connections.is_empty() {
+            let mut statements = vec![];
+
+            for (&out_port, &reg) in &state.out_port_register_connections {
+                let out_port_ir = state.state.ports[out_port].ir;
+                let reg_info = &state.state.registers[reg];
+                let reg_ir = reg_info.ir;
+                let statement =
+                    IrStatement::Assign(IrAssignmentTarget::Port(out_port_ir), IrExpression::Register(reg_ir));
+                statements.push(Spanned {
+                    span: reg_info.id.span(),
+                    inner: statement,
+                })
+            }
+
+            let process = IrCombinatorialProcess {
+                locals: IrVariables::default(),
+                block: IrBlock { statements },
+            };
+            state.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
+        }
 
         // return result
         let processes = state.processes.into_iter().try_collect()?;
@@ -326,10 +349,7 @@ impl BodyElaborationState<'_, '_> {
                     }
 
                     if let Some(process) = process {
-                        self.processes.push(process.map(|p| Spanned {
-                            span: decl.span,
-                            inner: p,
-                        }));
+                        self.processes.push(process);
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
@@ -344,7 +364,7 @@ impl BodyElaborationState<'_, '_> {
                             self.drivers.output_port_drivers.insert_first(port, port_drivers);
                             self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                             self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
-                            self.port_register_connections.insert_first(port, reg_init.reg);
+                            self.out_port_register_connections.insert_first(port, reg_init.reg);
 
                             let entry = Ok(ScopedEntry::Direct(NamedValue::Register(reg_init.reg)));
                             self.state.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
@@ -409,10 +429,7 @@ impl BodyElaborationState<'_, '_> {
                         };
                         IrModuleChild::CombinatorialProcess(ir_body)
                     });
-                    self.processes.push(ir_process.map(|p| Spanned {
-                        span: block.span,
-                        inner: p,
-                    }));
+                    self.processes.push(ir_process);
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
                     let &ClockedBlock {
@@ -476,19 +493,13 @@ impl BodyElaborationState<'_, '_> {
                     });
 
                     let process_index = self.processes.len();
-                    self.processes.push(ir_process.map(|p| Spanned {
-                        span: block.span,
-                        inner: p,
-                    }));
+                    self.processes.push(ir_process);
                     self.clocked_block_statement_index_to_process_index
                         .insert_first(stmt_index, process_index);
                 }
                 ModuleStatementKind::Instance(instance) => {
                     let instance_ir = self.elaborate_instance(scope_body, stmt_index, instance);
-                    self.processes.push(instance_ir.map(|instance_ir| Spanned {
-                        span: instance.span,
-                        inner: IrModuleChild::ModuleInstance(instance_ir),
-                    }));
+                    self.processes.push(instance_ir.map(IrModuleChild::ModuleInstance));
                 }
             }
         }
@@ -860,9 +871,7 @@ impl BodyElaborationState<'_, '_> {
 
         if let Driver::ClockedBlock(stmt_index) = driver {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
-                if let IrModuleChild::ClockedProcess(process) =
-                    &mut self.processes[process_index].as_ref_mut_ok()?.inner
-                {
+                if let IrModuleChild::ClockedProcess(process) = &mut self.processes[process_index].as_ref_mut_ok()? {
                     if let Some(init) = self.register_initial_values.get(&reg) {
                         let init = init.as_ref_ok()?;
 
