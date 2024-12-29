@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
-
 use clap::Parser;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
@@ -10,6 +7,9 @@ use hwl_language::new::compile::compile;
 use hwl_language::new::lower_verilog::lower;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -32,6 +32,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let source = Rc::new(source);
 
     // build diagnostic handler
     let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediately {

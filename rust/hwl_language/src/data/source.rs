@@ -7,7 +7,6 @@ use itertools::{enumerate, Itertools};
 
 /// The full set of source files that are part of this compilation.
 /// Immutable once all files have been added.
-#[derive(Clone)]
 pub struct SourceDatabase {
     pub root_directory: Directory,
     files: IndexMap<FileId, FileSourceInfo>,
