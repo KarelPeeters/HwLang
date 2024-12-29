@@ -2,19 +2,17 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorG
 use crate::front::scope::{Scope, Visibility};
 use crate::new::check::{check_type_contains_value, TypeContainsReason};
 use crate::new::compile::{CompileState, Variable, VariableInfo};
-use crate::new::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo, IrVariables,
-};
+use crate::new::context::ExpressionContext;
+use crate::new::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
 use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
-use crate::new::types::{HardwareType, Type};
+use crate::new::types::{HardwareType, Type, Typed};
 use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, Spanned,
-    SyncDomain, VariableDeclaration,
+    Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, ReturnStatement,
+    Spanned, SyncDomain, VariableDeclaration,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
-use crate::util::data::VecExt;
 use crate::util::result_pair;
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -26,8 +24,15 @@ pub struct TypedIrExpression<T = HardwareType> {
     pub expr: IrExpression,
 }
 
+impl Typed for TypedIrExpression {
+    fn ty(&self) -> Type {
+        self.ty.as_type()
+    }
+}
+
 #[derive(Debug)]
 pub enum BlockDomain {
+    CompileTime,
     Combinatorial,
     Clocked(Spanned<SyncDomain<DomainSignal>>),
 }
@@ -129,23 +134,43 @@ impl VariableValues {
     }
 }
 
+#[derive(Debug)]
+pub enum BlockEnd {
+    Normal(VariableValues),
+    Return {
+        span_keyword: Span,
+        value: Option<Spanned<MaybeCompile<TypedIrExpression>>>,
+    },
+}
+
+impl BlockEnd {
+    pub fn unwrap_normal_in_if(self, diags: &Diagnostics) -> Result<VariableValues, ErrorGuaranteed> {
+        match self {
+            BlockEnd::Normal(vars) => Ok(vars),
+            BlockEnd::Return { span_keyword, value: _ } => {
+                Err(diags.report_todo(span_keyword, "return in non-compile-time `if` statement"))
+            }
+        }
+    }
+}
+
 impl CompileState<'_> {
-    pub fn elaborate_ir_block(
+    pub fn elaborate_block<C: ExpressionContext>(
         &mut self,
-        report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
-        ir_locals: &mut IrVariables,
+        ctx: &mut C,
         mut vars: VariableValues,
-        block_domain: &BlockDomain,
-        condition_domains: &mut Vec<Spanned<ValueDomain>>,
-        parent_scope: Scope,
+        scope_parent: Scope,
         block: &Block<BlockStatement>,
-    ) -> Result<(IrBlock, VariableValues), ErrorGuaranteed> {
+    ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let diags = self.diags;
+        let &Block {
+            span: _,
+            ref statements,
+        } = block;
 
-        let Block { span: _, statements } = block;
-
-        let scope = self.scopes.new_child(parent_scope, block.span, Visibility::Private);
-        let mut ir_statements = vec![];
+        let scope = self.scopes.new_child(scope_parent, block.span, Visibility::Private);
+        let mut result_block = ctx.new_ir_block();
+        let ctx_block = &mut result_block;
 
         for stmt in statements {
             let stmt_span = stmt.span;
@@ -167,7 +192,7 @@ impl CompileState<'_> {
                         .transpose();
                     let init = init
                         .as_ref()
-                        .map(|init| self.eval_expression(scope, &vars, init))
+                        .map(|init| self.eval_expression(ctx, ctx_block, scope, &vars, init))
                         .transpose();
 
                     // check init fits in type
@@ -207,42 +232,34 @@ impl CompileState<'_> {
                     self.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    let stmt = self.elaborate_assignment(
-                        report_assignment,
-                        ir_locals,
-                        &mut vars,
-                        block_domain,
-                        condition_domains,
-                        diags,
-                        scope,
-                        stmt,
-                    );
-
-                    if let Some(stmt) = stmt.transpose() {
-                        ir_statements.push(stmt.map(|stmt| Spanned {
-                            span: stmt_span,
-                            inner: stmt,
-                        }));
-                    }
-                }
-                BlockStatementKind::Expression(_) => throw!(diags.report_todo(stmt.span, "statement kind Expression")),
-                BlockStatementKind::Block(inner) => {
-                    let (inner_block, new_vars) = self.elaborate_ir_block(
-                        report_assignment,
-                        ir_locals,
-                        vars,
-                        block_domain,
-                        condition_domains,
-                        scope,
-                        inner,
-                    )?;
+                    let (stmt_ir, new_vars) = self.elaborate_assignment(ctx, ctx_block, vars, scope, stmt)?;
                     vars = new_vars;
 
-                    let stmt_ir = IrStatement::Block(inner_block);
-                    ir_statements.push(Ok(Spanned {
-                        span: stmt.span,
-                        inner: stmt_ir,
-                    }));
+                    if let Some(stmt_ir) = stmt_ir {
+                        let stmt_ir = Spanned {
+                            span: stmt_span,
+                            inner: stmt_ir,
+                        };
+                        ctx.push_ir_statement(diags, ctx_block, stmt_ir)?;
+                    }
+                }
+                BlockStatementKind::Expression(expr) => {
+                    let _: Spanned<MaybeCompile<TypedIrExpression>> =
+                        self.eval_expression(ctx, ctx_block, scope, &vars, expr)?;
+                }
+                BlockStatementKind::Block(inner_block) => {
+                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, vars, scope, inner_block)?;
+
+                    let inner_block_spanned = Spanned {
+                        span: inner_block.span,
+                        inner: inner_block_ir,
+                    };
+                    ctx.push_ir_statement_block(ctx_block, inner_block_spanned);
+
+                    match block_end {
+                        BlockEnd::Normal(new_vars) => vars = new_vars,
+                        ret @ BlockEnd::Return { .. } => return Ok((result_block, ret)),
+                    }
                 }
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement {
@@ -256,36 +273,26 @@ impl CompileState<'_> {
                     all_ifs.push(initial_if);
                     all_ifs.extend(else_ifs.iter());
 
-                    let lowered = self.elaborate_if_statement(
-                        report_assignment,
-                        block_domain,
-                        condition_domains,
-                        ir_locals,
-                        vars.clone(),
-                        scope,
-                        &mut ir_statements,
-                        &all_ifs,
-                        final_else,
-                    )?;
+                    let lowered =
+                        self.elaborate_if_statement(ctx, ctx_block, vars.clone(), scope, &all_ifs, final_else)?;
 
                     let next_vars = match lowered {
                         LoweredIfOutcome::Nothing(next_vars) => next_vars,
-                        LoweredIfOutcome::SingleBlock(ir_block, next_vars) => {
-                            let ir_stmt = IrStatement::Block(ir_block);
-                            ir_statements.push(Ok(Spanned {
-                                span: stmt.span,
-                                inner: ir_stmt,
-                            }));
-                            next_vars
+                        LoweredIfOutcome::SingleBlock(inner_block_ir, block_end) => {
+                            ctx.push_ir_statement_block(ctx_block, inner_block_ir);
+                            match block_end {
+                                BlockEnd::Normal(next_vars) => next_vars,
+                                ret @ BlockEnd::Return { .. } => return Ok((result_block, ret)),
+                            }
                         }
                         LoweredIfOutcome::IfStatement(lowered) => {
                             let (ir_if, next_vars) =
-                                self.convert_if_to_ir_by_merging_variables(vars, stmt.span, lowered, ir_locals)?;
-                            let ir_stmt = IrStatement::If(ir_if);
-                            ir_statements.push(Ok(Spanned {
+                                self.convert_if_to_ir_by_merging_variables(ctx, vars, stmt.span, lowered)?;
+                            let ir_stmt = Spanned {
                                 span: stmt.span,
-                                inner: ir_stmt,
-                            }));
+                                inner: IrStatement::If(ir_if),
+                            };
+                            ctx.push_ir_statement(diags, ctx_block, ir_stmt)?;
                             next_vars
                         }
                     };
@@ -293,47 +300,55 @@ impl CompileState<'_> {
                 }
                 BlockStatementKind::While(_) => throw!(diags.report_todo(stmt.span, "statement kind While")),
                 BlockStatementKind::For(_) => throw!(diags.report_todo(stmt.span, "statement kind For")),
-                BlockStatementKind::Return(_) => throw!(diags.report_todo(stmt.span, "statement kind Return")),
+                BlockStatementKind::Return(stmt) => {
+                    let &ReturnStatement {
+                        span_return: span_keyword,
+                        ref value,
+                    } = stmt;
+
+                    let value = value
+                        .as_ref()
+                        .map(|value| self.eval_expression(ctx, ctx_block, scope, &vars, value))
+                        .transpose()?;
+
+                    let end = BlockEnd::Return { span_keyword, value };
+                    return Ok((result_block, end));
+                }
                 BlockStatementKind::Break(_) => throw!(diags.report_todo(stmt.span, "statement kind Break")),
                 BlockStatementKind::Continue => throw!(diags.report_todo(stmt.span, "statement kind Continue")),
             };
         }
 
-        let result = IrBlock {
-            statements: ir_statements.into_iter().try_collect()?,
-        };
-        Ok((result, vars))
+        Ok((result_block, BlockEnd::Normal(vars)))
     }
 
-    fn elaborate_assignment(
+    fn elaborate_assignment<C: ExpressionContext>(
         &mut self,
-        report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
-        ir_locals: &mut IrVariables,
-        // TODO this breaks convention, replace with returned instance?
-        vars: &mut VariableValues,
-        block_domain: &BlockDomain,
-        condition_domains: &mut Vec<Spanned<ValueDomain>>,
-        diags: &Diagnostics,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        mut vars: VariableValues,
         scope: Scope,
         stmt: &Assignment,
-    ) -> Result<Option<IrStatement>, ErrorGuaranteed> {
+    ) -> Result<(Option<IrStatement>, VariableValues), ErrorGuaranteed> {
+        let diags = self.diags;
         let Assignment {
             span: _,
             op,
             target,
             value,
         } = stmt;
+
         if op.inner.is_some() {
             throw!(diags.report_todo(stmt.span, "compound assignment"));
         }
 
         let target = self.eval_expression_as_assign_target(scope, target);
-        let value = self.eval_expression(scope, vars, value);
+        let value = self.eval_expression(ctx, ctx_block, scope, &vars, value);
 
         let target = target?;
         let value = value?;
 
-        let condition_domains = &*condition_domains;
+        let condition_domains = ctx.condition_domains();
 
         let (target_ty, target_domain, ir_target) = match target.inner {
             AssignmentTarget::Port(port) => {
@@ -352,6 +367,7 @@ impl CompileState<'_> {
                 (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
             }
             AssignmentTarget::Variable(var) => {
+                // variable assignments are handled separately, they are evaluated at compile-time as much as possible
                 let VariableInfo { id, mutable, ty } = &mut self.variables[var];
 
                 // check mutable
@@ -378,10 +394,11 @@ impl CompileState<'_> {
                     MaybeCompile::Other(value) => {
                         // store value to an ir variable, to turn this assignment into "by value"
                         //   instead of some weird "by reference"
-                        let ir_variable = ir_locals.push(IrVariableInfo {
+                        let ir_variable_info = IrVariableInfo {
                             ty: value.ty.to_ir(),
                             debug_info_id: id.clone(),
-                        });
+                        };
+                        let ir_variable = ctx.new_ir_variable(diags, stmt.span, ir_variable_info)?;
                         let ir_statement = IrStatement::Assign(IrAssignmentTarget::Variable(ir_variable), value.expr);
 
                         let stored_value = TypedIrExpression {
@@ -401,7 +418,7 @@ impl CompileState<'_> {
                 };
                 vars.set(diags, target.span, var, MaybeAssignedValue::Assigned(assigned))?;
 
-                return Ok(ir_statement);
+                return Ok((ir_statement, vars));
             }
         };
 
@@ -428,7 +445,15 @@ impl CompileState<'_> {
             inner: value_domain,
         };
 
-        let check_domains = match block_domain {
+        let check_domains = match ctx.block_domain() {
+            BlockDomain::CompileTime => {
+                for d in [&target_domain, &value_domain] {
+                    if d.inner != &ValueDomain::CompileTime {
+                        throw!(diags.report_internal_error(d.span, "non-compile-time domain in compile-time context"))
+                    }
+                }
+                Ok(())
+            }
             BlockDomain::Combinatorial => {
                 let mut check = self.check_valid_domain_crossing(
                     stmt.span,
@@ -473,22 +498,20 @@ impl CompileState<'_> {
         check_domains?;
         check_ty?;
 
-        report_assignment(target.as_ref())?;
-        Ok(Some(IrStatement::Assign(ir_target, ir_value.expr)))
+        ctx.report_assignment(target.as_ref())?;
+        let stmt_ir = IrStatement::Assign(ir_target, ir_value.expr);
+        Ok((Some(stmt_ir), vars))
     }
 
-    fn elaborate_if_statement(
+    fn elaborate_if_statement<C: ExpressionContext>(
         &mut self,
-        report_assignment: &mut impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
-        block_domain: &BlockDomain,
-        condition_domains: &mut Vec<Spanned<ValueDomain>>,
-        ir_locals: &mut IrVariables,
+        ctx: &mut C,
+        ctx_cond_eval_block: &mut C::Block,
         vars: VariableValues,
         scope: Scope,
-        ir_statements: &mut Vec<Result<Spanned<IrStatement>, ErrorGuaranteed>>,
         ifs: &[&IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
         final_else: &Option<Block<BlockStatement>>,
-    ) -> Result<LoweredIfOutcome, ErrorGuaranteed> {
+    ) -> Result<LoweredIfOutcome<C::Block>, ErrorGuaranteed> {
         let diags = self.diags;
 
         let (initial_if, remaining_ifs) = match ifs.split_first() {
@@ -497,16 +520,12 @@ impl CompileState<'_> {
                 return match final_else {
                     None => Ok(LoweredIfOutcome::Nothing(vars)),
                     Some(final_else) => {
-                        let (block_ir, new_vars) = self.elaborate_ir_block(
-                            report_assignment,
-                            ir_locals,
-                            vars,
-                            block_domain,
-                            condition_domains,
-                            scope,
-                            final_else,
-                        )?;
-                        Ok(LoweredIfOutcome::SingleBlock(block_ir, new_vars))
+                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, vars, scope, final_else)?;
+                        let final_else_spanned = Spanned {
+                            span: final_else.span,
+                            inner: final_else_ir,
+                        };
+                        Ok(LoweredIfOutcome::SingleBlock(final_else_spanned, final_else_end))
                     }
                 };
             }
@@ -518,7 +537,8 @@ impl CompileState<'_> {
             cond,
             block,
         } = initial_if;
-        let cond = self.eval_expression(scope, &vars, cond)?;
+        // TODO is this cond_eval_block concept correct? are conditions always evaluated in the right place?
+        let cond = self.eval_expression(ctx, ctx_cond_eval_block, scope, &vars, cond)?;
 
         let reason = TypeContainsReason::Operator(*span_if);
         check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -533,35 +553,25 @@ impl CompileState<'_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, next_vars) = self.elaborate_ir_block(
-                        report_assignment,
-                        ir_locals,
-                        vars,
-                        block_domain,
-                        condition_domains,
-                        scope,
-                        block,
-                    )?;
-                    Ok(LoweredIfOutcome::SingleBlock(block_ir, next_vars))
+                    let (block_ir, next_vars) = self.elaborate_block(ctx, vars, scope, block)?;
+                    let block_ir_spanned = Spanned {
+                        span: block.span,
+                        inner: block_ir,
+                    };
+                    Ok(LoweredIfOutcome::SingleBlock(block_ir_spanned, next_vars))
                 } else {
-                    self.elaborate_if_statement(
-                        report_assignment,
-                        block_domain,
-                        condition_domains,
-                        ir_locals,
-                        vars,
-                        scope,
-                        ir_statements,
-                        remaining_ifs,
-                        final_else,
-                    )
+                    self.elaborate_if_statement(ctx, ctx_cond_eval_block, vars, scope, remaining_ifs, final_else)
                 }
             }
             // evaluate the if at runtime, generating IR
             MaybeCompile::Other(cond_eval) => {
                 // check condition domain
                 // TODO extract this to a common function?
-                let check_cond_domain = match block_domain {
+                let check_cond_domain = match ctx.block_domain() {
+                    BlockDomain::CompileTime => {
+                        throw!(diags
+                            .report_internal_error(cond.span, "non-compile-time condition in compile-time context"))
+                    }
                     BlockDomain::Combinatorial => Ok(()),
                     BlockDomain::Clocked(block_domain) => {
                         let cond_domain = Spanned {
@@ -583,35 +593,24 @@ impl CompileState<'_> {
                     span: cond.span,
                     inner: cond_eval.domain,
                 };
-                let (then_ir, then_vars, else_lowered) =
-                    condition_domains.with_pushed(cond_domain, |condition_domains| {
-                        // lower both branches
-                        let (then_ir, then_vars) = self.elaborate_ir_block(
-                            report_assignment,
-                            ir_locals,
-                            vars.clone(),
-                            block_domain,
-                            condition_domains,
-                            scope,
-                            block,
-                        )?;
-                        let else_lowered = self.elaborate_if_statement(
-                            report_assignment,
-                            block_domain,
-                            condition_domains,
-                            ir_locals,
-                            vars,
-                            scope,
-                            ir_statements,
-                            remaining_ifs,
-                            final_else,
-                        )?;
+                let (then_ir, then_end, else_lowered) = ctx.with_condition_domain(diags, cond_domain, |ctx_inner| {
+                    // lower both branches
+                    let (then_ir, then_end) = self.elaborate_block(ctx_inner, vars.clone(), scope, block)?;
+                    let else_lowered = self.elaborate_if_statement(
+                        ctx_inner,
+                        ctx_cond_eval_block,
+                        vars,
+                        scope,
+                        remaining_ifs,
+                        final_else,
+                    )?;
 
-                        Ok((then_ir, then_vars, else_lowered))
-                    })?;
+                    Ok((then_ir, then_end, else_lowered))
+                })?;
 
                 check_cond_domain?;
 
+                let then_vars = then_end.unwrap_normal_in_if(diags)?;
                 let initial_if = IfCondBlockPair {
                     span: cond.span,
                     span_if: *span_if,
@@ -619,7 +618,7 @@ impl CompileState<'_> {
                     block: (then_ir, then_vars),
                 };
 
-                let stmt = match else_lowered {
+                let stmt: LoweredIfStatement<C::Block> = match else_lowered {
                     LoweredIfOutcome::Nothing(else_vars) => {
                         // new simple if statement without any else-s
                         IfStatement {
@@ -628,12 +627,13 @@ impl CompileState<'_> {
                             final_else: (None, else_vars),
                         }
                     }
-                    LoweredIfOutcome::SingleBlock(else_block, else_vars) => {
+                    LoweredIfOutcome::SingleBlock(else_block, else_end) => {
                         // new simple if statement with opaque else
+                        let else_vars = else_end.unwrap_normal_in_if(diags)?;
                         IfStatement {
                             initial_if,
                             else_ifs: vec![],
-                            final_else: (Some(else_block), else_vars),
+                            final_else: (Some(else_block.inner), else_vars),
                         }
                     }
                     LoweredIfOutcome::IfStatement(else_if_stmt) => {
@@ -660,12 +660,12 @@ impl CompileState<'_> {
 
     // TODO this seems overcomplicated,
     //   maybe a better approach is to just always generate variable writes in IR if possible
-    fn convert_if_to_ir_by_merging_variables(
+    fn convert_if_to_ir_by_merging_variables<C: ExpressionContext>(
         &self,
+        ctx: &mut C,
         vars_before: VariableValues,
         span_stmt: Span,
-        lowered_if: LoweredIfStatement,
-        ir_locals: &mut IrVariables,
+        lowered_if: LoweredIfStatement<C::Block>,
     ) -> Result<(IrIfStatement, VariableValues), ErrorGuaranteed> {
         let diags = self.diags;
         let LoweredIfStatement {
@@ -726,21 +726,17 @@ impl CompileState<'_> {
                 })?;
 
                 // create ir variable
-                let var_ir = ir_locals.push(IrVariableInfo {
+                let var_ir_info = IrVariableInfo {
                     ty: ty_hw.to_ir(),
                     debug_info_id: var_info.id.clone(),
-                });
+                };
+                let var_ir = ctx.new_ir_variable(diags, span_stmt, var_ir_info)?;
 
                 // add assignments to all blocks, and join domains
                 let mut joined_domain = ValueDomain::CompileTime;
-                initial_if_block.statements.push(build_merge_store(
-                    diags,
-                    span_stmt,
-                    var,
-                    var_ir,
-                    &initial_if_vars,
-                    &mut joined_domain,
-                )?);
+                let initial_if_merge_store =
+                    build_merge_store(diags, span_stmt, var, var_ir, &initial_if_vars, &mut joined_domain)?;
+                ctx.push_ir_statement(diags, &mut initial_if_block, initial_if_merge_store)?;
 
                 for else_if in &mut else_ifs {
                     let IfCondBlockPair {
@@ -749,25 +745,15 @@ impl CompileState<'_> {
                         cond: _,
                         block: (else_if_block, else_if_vars),
                     } = else_if;
-                    else_if_block.statements.push(build_merge_store(
-                        diags,
-                        span_stmt,
-                        var,
-                        var_ir,
-                        else_if_vars,
-                        &mut joined_domain,
-                    )?)
+                    let else_if_merge_store =
+                        build_merge_store(diags, span_stmt, var, var_ir, else_if_vars, &mut joined_domain)?;
+                    ctx.push_ir_statement(diags, else_if_block, else_if_merge_store)?;
                 }
 
-                let final_else_block = final_else_block.get_or_insert_with(|| IrBlock { statements: vec![] });
-                final_else_block.statements.push(build_merge_store(
-                    diags,
-                    span_stmt,
-                    var,
-                    var_ir,
-                    &final_else_vars,
-                    &mut joined_domain,
-                )?);
+                let final_else_block = final_else_block.get_or_insert_with(|| ctx.new_ir_block());
+                let final_else_merge_store =
+                    build_merge_store(diags, span_stmt, var, var_ir, &final_else_vars, &mut joined_domain)?;
+                ctx.push_ir_statement(diags, final_else_block, final_else_merge_store)?;
 
                 // return the resulting variable
                 MaybeAssignedValue::Assigned(AssignedValue {
@@ -789,27 +775,30 @@ impl CompileState<'_> {
         }
 
         // return finished if statement
-        let stmt = IfStatement {
+        // (we unwrap all blocks, once we're in this function we know we're really in an IR context)
+        let stmt: IrIfStatement = IfStatement {
             initial_if: IfCondBlockPair {
                 span: initial_if.span,
                 span_if: initial_if.span_if,
                 cond: initial_if.cond,
-                block: initial_if_block,
+                block: ctx.unwrap_ir_block(diags, initial_if.span, initial_if_block)?,
             },
             else_ifs: else_ifs
                 .into_iter()
                 .map(|else_if| {
                     let (else_if_block, _else_if_vars) = else_if.block;
-                    IfCondBlockPair {
+                    Ok(IfCondBlockPair {
                         span: else_if.span,
                         span_if: else_if.span_if,
                         cond: else_if.cond,
-                        block: else_if_block,
-                    }
+                        block: ctx.unwrap_ir_block(diags, else_if.span, else_if_block)?,
+                    })
                 })
-                .collect_vec(),
+                .try_collect()?,
             // TODO allow creating new block, just for merging
-            final_else: final_else_block,
+            final_else: final_else_block
+                .map(|final_else_block| ctx.unwrap_ir_block(diags, span_stmt, final_else_block))
+                .transpose()?,
         };
         Ok((stmt, vars_after))
     }
@@ -887,10 +876,10 @@ fn build_merge_store(
 }
 
 #[derive(Debug)]
-enum LoweredIfOutcome {
+enum LoweredIfOutcome<B> {
     Nothing(VariableValues),
-    SingleBlock(IrBlock, VariableValues),
-    IfStatement(LoweredIfStatement),
+    SingleBlock(Spanned<B>, BlockEnd),
+    IfStatement(LoweredIfStatement<B>),
 }
 
-type LoweredIfStatement = IfStatement<IrExpression, (IrBlock, VariableValues), (Option<IrBlock>, VariableValues)>;
+type LoweredIfStatement<B> = IfStatement<IrExpression, (B, VariableValues), (Option<B>, VariableValues)>;

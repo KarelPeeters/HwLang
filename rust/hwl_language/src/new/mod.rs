@@ -7,6 +7,7 @@ pub mod value;
 pub mod block;
 pub mod check;
 pub mod compile;
+pub mod context;
 pub mod expression;
 pub mod function;
 pub mod item;

@@ -1,12 +1,13 @@
 use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::{BlockDomain, VariableValues};
+use crate::new::block::{BlockDomain, BlockEnd, TypedIrExpression, VariableValues};
 use crate::new::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
 use crate::new::compile::{
     CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
+use crate::new::context::{ExpressionContext, IrBuilderExpressionContext};
 use crate::new::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleChild, IrModuleInfo,
     IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrVariables,
@@ -92,7 +93,8 @@ impl CompileState<'_> {
             }
             (Some(params), Some(args)) => {
                 let span_params = Span::new(params.span.start, def_span.end);
-                let (params_scope, param_values) = self.match_args_to_params(params, &args, file_scope, span_params)?;
+                let (params_scope, param_values) =
+                    self.match_args_to_params_and_typecheck(params, &args, file_scope, span_params)?;
                 (params_scope, Some(param_values))
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
@@ -349,7 +351,7 @@ impl BodyElaborationState<'_, '_> {
                     }
 
                     if let Some(process) = process {
-                        self.processes.push(process);
+                        self.processes.push(process.map(IrModuleChild::CombinatorialProcess));
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
@@ -404,32 +406,37 @@ impl BodyElaborationState<'_, '_> {
                     } = block;
 
                     let block_domain = BlockDomain::Combinatorial;
-                    let mut ir_locals = Arena::default();
                     let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
                         self.drivers
                             .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
                     };
 
-                    let mut condition_domains = vec![];
-                    let ir_block = self.state.elaborate_ir_block(
-                        &mut report_assignment,
-                        &mut ir_locals,
-                        VariableValues::new(),
-                        &block_domain,
-                        &mut condition_domains,
-                        scope_body,
-                        block,
-                    );
-                    assert!(condition_domains.is_empty());
+                    let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
+                    let ir_block = self
+                        .state
+                        .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
 
-                    let ir_process = ir_block.map(|(block, _vars)| {
-                        let ir_body = IrCombinatorialProcess {
-                            locals: ir_locals,
-                            block,
-                        };
-                        IrModuleChild::CombinatorialProcess(ir_body)
+                    let ir_block = ir_block.and_then(|(ir_block, end)| {
+                        let ir_variables = ctx.finish();
+                        match end {
+                            BlockEnd::Normal(_) => {
+                                let process = IrCombinatorialProcess {
+                                    locals: ir_variables,
+                                    block: ir_block,
+                                };
+                                Ok(IrModuleChild::CombinatorialProcess(process))
+                            }
+                            BlockEnd::Return { span_keyword, .. } => {
+                                return Err(diags.report_simple(
+                                    "return statement not allowed in combinatorial block",
+                                    span_keyword,
+                                    "return statement here",
+                                ))
+                            }
+                        }
                     });
-                    self.processes.push(ir_process);
+
+                    self.processes.push(ir_block);
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
                     let &ClockedBlock {
@@ -445,7 +452,6 @@ impl BodyElaborationState<'_, '_> {
                         .transpose();
 
                     let ir_process = domain.and_then(|domain| {
-                        let mut ir_locals = Arena::default();
                         let ir_domain = SyncDomain {
                             clock: self.state.domain_signal_to_ir(&domain.inner.clock),
                             reset: self.state.domain_signal_to_ir(&domain.inner.reset),
@@ -461,35 +467,34 @@ impl BodyElaborationState<'_, '_> {
                                 .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
                         };
 
-                        let mut condition_domains = vec![];
-                        let (ir_block, _vars) = self.state.elaborate_ir_block(
-                            &mut report_assignment,
-                            &mut ir_locals,
-                            VariableValues::new(),
-                            &block_domain,
-                            &mut condition_domains,
-                            scope_body,
-                            block,
-                        )?;
+                        let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
+                        let ir_block = self
+                            .state
+                            .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
 
-                        if !condition_domains.is_empty() {
-                            throw!(diags.report_internal_error(
-                                stmt.span,
-                                "unexpected recorded condition domains in clocked block"
-                            ));
-                        }
-
-                        let ir_process = IrClockedProcess {
-                            locals: ir_locals,
-                            domain: Spanned {
-                                span: domain.span,
-                                inner: ir_domain,
-                            },
-                            on_clock: ir_block,
-                            // will be filled in later, during driver checking
-                            on_reset: IrBlock { statements: vec![] },
-                        };
-                        Ok(IrModuleChild::ClockedProcess(ir_process))
+                        ir_block.and_then(|(ir_block, end)| {
+                            let ir_variables = ctx.finish();
+                            match end {
+                                BlockEnd::Normal(_) => {
+                                    let process = IrClockedProcess {
+                                        domain: Spanned {
+                                            span: domain.span,
+                                            inner: ir_domain,
+                                        },
+                                        locals: ir_variables,
+                                        on_clock: ir_block,
+                                        // will be filled in later, during driver checking and merging
+                                        on_reset: IrBlock { statements: vec![] },
+                                    };
+                                    Ok(IrModuleChild::ClockedProcess(process))
+                                }
+                                BlockEnd::Return { span_keyword, value: _ } => Err(diags.report_simple(
+                                    "return statement not allowed in combinatorial block",
+                                    span_keyword,
+                                    "return statement here",
+                                )),
+                            }
+                        })
                     });
 
                     let process_index = self.processes.len();
@@ -616,11 +621,13 @@ impl BodyElaborationState<'_, '_> {
             id: ref port_id,
             direction: port_direction,
             domain: ref port_domain_raw,
-            ty: ref port_ty,
+            ty: ref port_ty_hw,
             ir: _,
         } = &self.state.ports[port];
 
-        let port_ty = port_ty.as_ref().map_inner(|ty| ty.as_type());
+        let port_id = port_id.clone();
+        let port_ty_hw = port_ty_hw.clone();
+        let port_ty = port_ty_hw.as_ref().map_inner(|ty| ty.as_type());
 
         // check id match
         if port_id.string != connection_id.string {
@@ -698,8 +705,14 @@ impl BodyElaborationState<'_, '_> {
                 }
 
                 // eval expr
+                let mut report_assignment = report_assignment_internal_error(diags, "module instance port connection");
+                let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
+                let mut ctx_block = ctx.new_ir_block();
+
                 let no_vars = VariableValues::new_no_vars();
-                let connection_value = self.state.eval_expression(scope, &no_vars, connection_expr)?;
+                let connection_value =
+                    self.state
+                        .eval_expression(&mut ctx, &mut ctx_block, scope, &no_vars, connection_expr)?;
 
                 // check type
                 let mut any_err = Ok(());
@@ -728,12 +741,45 @@ impl BodyElaborationState<'_, '_> {
                     "input port connection",
                 ));
 
-                // success, build connection
-                any_err?;
-                let connection_expr = connection_value
+                // convert value to ir
+                let connection_value_ir_raw = connection_value
+                    .as_ref()
                     .map_inner(|v| Ok(v.to_ir_expression(diags, connection_expr.span)?.expr))
                     .transpose()?;
-                IrPortConnection::Input(connection_expr)
+                any_err?;
+
+                // build extra wire and process if necessary
+                let connection_value_ir =
+                    if !ctx_block.statements.is_empty() || connection_value_ir_raw.inner.contains_variable() {
+                        let extra_ir_wire = self.ir_wires.push(IrWireInfo {
+                            ty: port_ty_hw.inner.to_ir(),
+                            debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
+                            debug_info_ty: port_ty_hw.inner.clone(),
+                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.state),
+                        });
+
+                        ctx_block.statements.push(Spanned {
+                            span: connection.span,
+                            inner: IrStatement::Assign(
+                                IrAssignmentTarget::Wire(extra_ir_wire),
+                                connection_value_ir_raw.inner,
+                            ),
+                        });
+                        let process = IrCombinatorialProcess {
+                            locals: ctx.finish(),
+                            block: ctx_block,
+                        };
+                        self.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
+
+                        IrExpression::Wire(extra_ir_wire)
+                    } else {
+                        connection_value_ir_raw.inner
+                    };
+
+                IrPortConnection::Input(Spanned {
+                    span: connection_expr.span,
+                    inner: connection_value_ir,
+                })
             }
             PortDirection::Output => {
                 // eval expr as dummy, wire or port
@@ -997,7 +1043,7 @@ impl BodyElaborationState<'_, '_> {
     fn elaborate_module_declaration_wire(
         &mut self,
         decl: &WireDeclaration,
-    ) -> Result<(Wire, Option<IrModuleChild>), ErrorGuaranteed> {
+    ) -> Result<(Wire, Option<IrCombinatorialProcess>), ErrorGuaranteed> {
         let state = &mut self.state;
         let scope_body = self.scope_body;
         let diags = state.diags;
@@ -1031,9 +1077,14 @@ impl BodyElaborationState<'_, '_> {
             }
         };
 
-        let value = value
+        // TODO move wire value creation/checking into pass 2, to better preserve the process order
+        let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
+        let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
+        let mut ctx_block = ctx.new_ir_block();
+
+        let value: Result<Option<Spanned<MaybeCompile<TypedIrExpression>>>, ErrorGuaranteed> = value
             .as_ref()
-            .map(|value| state.eval_expression(scope_body, &no_vars, value))
+            .map(|value| state.eval_expression(&mut ctx, &mut ctx_block, scope_body, &no_vars, value))
             .transpose();
 
         let domain = domain?;
@@ -1075,33 +1126,31 @@ impl BodyElaborationState<'_, '_> {
             ir: ir_wire,
         });
 
-        // build process
-        let mut ir_statements = vec![];
-        let process = value
-            .map(|value| {
-                let target = IrAssignmentTarget::Wire(ir_wire);
-                let source = match value.inner {
-                    MaybeCompile::Compile(_) => throw!(diags.report_todo(value.span, "compile-time wire value")),
-                    MaybeCompile::Other(v) => v.expr,
-                };
-                let stmt = IrStatement::Assign(target, source);
-                ir_statements.push(Ok(Spanned {
-                    span: value.span,
-                    inner: stmt,
-                }));
+        // append assignment to process
+        if let Some(value) = value {
+            let target = IrAssignmentTarget::Wire(ir_wire);
+            let source = match value.inner {
+                MaybeCompile::Compile(_) => throw!(diags.report_todo(value.span, "compile-time wire value")),
+                MaybeCompile::Other(v) => v.expr,
+            };
+            let stmt = IrStatement::Assign(target, source);
 
-                let ir_statements = ir_statements.into_iter().try_collect()?;
-                let ir_process = IrCombinatorialProcess {
-                    locals: IrVariables::default(),
-                    block: IrBlock {
-                        statements: ir_statements,
-                    },
-                };
-                let ir_process = IrModuleChild::CombinatorialProcess(ir_process);
+            let stmt = Spanned {
+                span: value.span,
+                inner: stmt,
+            };
+            ctx_block.statements.push(stmt);
+        }
 
-                Ok(ir_process)
+        // build final process if necessary
+        let process = if ctx_block.statements.is_empty() {
+            None
+        } else {
+            Some(IrCombinatorialProcess {
+                locals: ctx.finish(),
+                block: ctx_block,
             })
-            .transpose()?;
+        };
 
         Ok((wire, process))
     }
@@ -1329,5 +1378,14 @@ impl Drivers {
             &AssignmentTarget::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
             &AssignmentTarget::Variable(_) => Err(diags.report_todo(target.span, "variable assignment")),
         }
+    }
+}
+
+fn report_assignment_internal_error<'a>(
+    diags: &'a Diagnostics,
+    place: &'a str,
+) -> impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed> + 'a {
+    move |target: Spanned<&AssignmentTarget>| {
+        Err(diags.report_internal_error(target.span, format!("driving signal within {place}")))
     }
 }

@@ -1,12 +1,13 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::data::parsed::AstRefItem;
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::VariableValues;
-use crate::new::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
+use crate::new::block::{BlockEnd, TypedIrExpression, VariableValues};
+use crate::new::check::{check_type_contains_value, TypeContainsReason};
+use crate::new::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
+use crate::new::context::ExpressionContext;
 use crate::new::misc::ScopedEntry;
 use crate::new::types::Type;
-use crate::new::value::{CompileValue, NamedValue};
+use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned,
 };
@@ -29,7 +30,6 @@ pub struct FunctionValue {
     // TODO avoid ast cloning
     // TODO Eq+Hash are a bit weird for types containing ast nodes
     pub params: Spanned<Vec<GenericParameter>>,
-    pub ret_ty: ReturnType,
 
     pub body_span: Span,
     pub body: FunctionBody,
@@ -49,28 +49,24 @@ impl Hash for FunctionValue {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReturnType {
-    Evaluated(Type),
-    Expression(Box<Expression>),
-}
-
 #[derive(Debug, Clone)]
 pub enum FunctionBody {
-    Type(Box<Expression>),
-    Block(Block<BlockStatement>),
-    // Enum(/*TODO*/),
-    // Struct(/*TODO*/),
+    TypeAliasExpr(Box<Expression>),
+    FunctionBodyBlock {
+        body: Block<BlockStatement>,
+        ret_ty: Option<Box<Expression>>,
+    }, // Enum(/*TODO*/),
+       // Struct(/*TODO*/),
 }
 
 impl CompileState<'_> {
-    pub fn match_args_to_params<I>(
+    pub fn match_args_to_params_and_typecheck<I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
         &mut self,
         params: &Spanned<Vec<GenericParameter>>,
-        args: &Args<I, Spanned<CompileValue>>,
+        args: &Args<I, Spanned<V>>,
         scope_outer: Scope,
         span_scope_inner: Span,
-    ) -> Result<(Scope, Vec<(Identifier, CompileValue)>), ErrorGuaranteed>
+    ) -> Result<(Scope, Vec<(Identifier, V)>), ErrorGuaranteed>
     where
         for<'i> &'i I: Into<Option<&'i Identifier>>,
     {
@@ -160,6 +156,20 @@ impl CompileState<'_> {
             }
         }
 
+        // report missing args
+        for (_, param_id) in param_ids {
+            if !args_passed.contains_key(param_id.string.as_str()) {
+                let diag = Diagnostic::new("missing argument")
+                    .add_error(
+                        args.span,
+                        format!("missing argument for parameter `{}`", param_id.string),
+                    )
+                    .add_info(param_id.span, "parameter declared here")
+                    .finish();
+                return Err(diags.report(diag));
+            }
+        }
+
         // typecheck and final result building
         if params.inner.len() != args_passed.len() {
             return Err(diags.report_internal_error(args.span, "finished matching args, but got wrong final length"));
@@ -185,15 +195,16 @@ impl CompileState<'_> {
                 span_target: param_id.span,
                 span_target_ty: param_ty.span,
             };
-            check_type_contains_compile_value(diags, reason, &param_ty.inner, arg_value.as_ref(), true)?;
+            let arg_value_maybe = arg_value.as_ref().map_inner(|arg_value| arg_value.clone().into());
+            check_type_contains_value(diags, reason, &param_ty.inner, arg_value_maybe.as_ref(), true)?;
 
             // record value into vec
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
             // declare param in scope
-            let param = self.parameters.push(ConstantInfo {
+            let param = self.parameters.push(ParameterInfo {
                 id: MaybeIdentifier::Identifier(param_id.clone()),
-                value: arg_value.inner.clone(),
+                value: arg_value_maybe.inner,
             });
             let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
             self.scopes[scope_params].declare_already_checked(
@@ -208,18 +219,20 @@ impl CompileState<'_> {
     }
 }
 
-// TODO implement call_runtime which generates ir code
 impl FunctionValue {
-    pub fn call_compile_time(
+    pub fn call<C: ExpressionContext>(
         &self,
         state: &mut CompileState,
-        args: Args<Option<Identifier>, Spanned<CompileValue>>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+        ctx: &mut C,
+        args: Args<Option<Identifier>, Spanned<MaybeCompile<TypedIrExpression>>>,
+    ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
+        let diags = state.diags;
+
         // map params
         // TODO discard scope after use?
         let span_scope_inner = self.params.span.join(self.body_span);
         let (param_scope, param_values) =
-            state.match_args_to_params(&self.params, &args, self.outer_scope, span_scope_inner)?;
+            state.match_args_to_params_and_typecheck(&self.params, &args, self.outer_scope, span_scope_inner)?;
 
         // TODO cache function calls?
         // TODO we already do this for module elaborations, which are similar
@@ -230,15 +243,105 @@ impl FunctionValue {
                 // run the body
                 // TODO add execution limits?
                 match &self.body {
-                    FunctionBody::Type(expr) => {
+                    FunctionBody::TypeAliasExpr(expr) => {
                         let result = state
                             .eval_expression_as_compile(param_scope, &VariableValues::new_no_vars(), expr, "type body")?
                             .inner;
-                        Ok(result)
+
+                        let empty_block = ctx.new_ir_block();
+                        Ok((empty_block, MaybeCompile::Compile(result)))
                     }
-                    FunctionBody::Block(block) => Err(state.diags.report_todo(block.span, "run function body")),
+                    FunctionBody::FunctionBodyBlock { body, ret_ty } => {
+                        // evaluate return type
+                        let ret_ty = ret_ty
+                            .as_ref()
+                            .map(|ret_ty| {
+                                state.eval_expression_as_ty(param_scope, &VariableValues::new_no_vars(), ret_ty)
+                            })
+                            .transpose();
+
+                        // evaluate block
+                        let (ir_block, end) = state.elaborate_block(ctx, VariableValues::new(), param_scope, body)?;
+
+                        // check return type
+                        let ret_ty = ret_ty?;
+                        let ret_value = check_function_return_value(diags, body.span, &ret_ty, end)?;
+
+                        Ok((ir_block, ret_value))
+                    }
                 }
             })
             .flatten_err()
+    }
+}
+
+fn check_function_return_value(
+    diags: &Diagnostics,
+    body_span: Span,
+    ret_ty: &Option<Spanned<Type>>,
+    end: BlockEnd,
+) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+    match end {
+        BlockEnd::Normal(_next_vars) => {
+            // no return, only allowed for unit-returning functions
+            match ret_ty {
+                None => Ok(MaybeCompile::Compile(CompileValue::UNIT)),
+                Some(ret_ty) => {
+                    if ret_ty.inner == Type::UNIT {
+                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                    } else {
+                        let diag = Diagnostic::new("control flow reaches end of function with return type")
+                            .add_error(Span::single_at(body_span.end), "end of function is reached here")
+                            .add_info(
+                                ret_ty.span,
+                                format!("return type `{}` declared here", ret_ty.inner.to_diagnostic_string()),
+                            )
+                            .finish();
+                        Err(diags.report(diag))
+                    }
+                }
+            }
+        }
+        BlockEnd::Return { span_keyword, value } => {
+            // return, check type
+            match (ret_ty, value) {
+                (None, None) => Ok(MaybeCompile::Compile(CompileValue::UNIT)),
+                (Some(ret_ty), None) => {
+                    if ret_ty.inner == Type::UNIT {
+                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                    } else {
+                        let diag = Diagnostic::new("missing return value in function with return type")
+                            .add_error(span_keyword, "return here without value")
+                            .add_info(
+                                ret_ty.span,
+                                format!(
+                                    "function return type `{}` declared here",
+                                    ret_ty.inner.to_diagnostic_string()
+                                ),
+                            )
+                            .finish();
+                        Err(diags.report(diag))
+                    }
+                }
+                (None, Some(ret_value)) => {
+                    if ret_value.inner == MaybeCompile::Compile(CompileValue::UNIT) {
+                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                    } else {
+                        let diag = Diagnostic::new("return value in function without return type")
+                            .add_error(ret_value.span, "return value here")
+                            .finish();
+                        Err(diags.report(diag))
+                    }
+                }
+                (Some(ret_ty), Some(value)) => {
+                    let reason = TypeContainsReason::Return {
+                        span_keyword,
+                        span_return_ty: ret_ty.span,
+                    };
+                    check_type_contains_value(diags, reason, &ret_ty.inner, value.as_ref(), true)?;
+                    Ok(value.inner)
+                }
+            }
+        }
     }
 }

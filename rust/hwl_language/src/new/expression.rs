@@ -3,6 +3,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::new::block::{TypedIrExpression, VariableValues};
 use crate::new::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
 use crate::new::compile::{CompileState, ElaborationStackEntry, Port};
+use crate::new::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::new::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
 use crate::new::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
@@ -40,8 +41,10 @@ impl CompileState<'_> {
     }
 
     // TODO return COW to save some allocations?
-    pub fn eval_expression(
+    pub fn eval_expression<C: ExpressionContext>(
         &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
         scope: Scope,
         vars: &VariableValues,
         expr: &Expression,
@@ -59,14 +62,14 @@ impl CompileState<'_> {
             }
             ExpressionKind::Undefined => Ok(MaybeCompile::Compile(CompileValue::Undefined)),
             ExpressionKind::Type => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Type))),
-            ExpressionKind::Wrapped(inner) => Ok(self.eval_expression(scope, vars, inner)?.inner),
+            ExpressionKind::Wrapped(inner) => Ok(self.eval_expression(ctx, ctx_block, scope, vars, inner)?.inner),
             ExpressionKind::Id(id) => {
                 let eval = self.eval_id(scope, id)?;
                 match eval.inner {
                     MaybeCompile::Compile(c) => Ok(MaybeCompile::Compile(c)),
                     MaybeCompile::Other(value) => match value {
                         NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
-                        NamedValue::Parameter(param) => Ok(MaybeCompile::Compile(self.parameters[param].value.clone())),
+                        NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
                         NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
                         NamedValue::Port(port) => {
                             let port_info = &self.ports[port];
@@ -166,7 +169,7 @@ impl CompileState<'_> {
             }
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Neg => {
-                    let operand = self.eval_expression(scope, vars, operand)?;
+                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, operand)?;
                     let operand = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
 
                     match operand.inner {
@@ -192,7 +195,7 @@ impl CompileState<'_> {
                     }
                 }
                 UnaryOp::Not => {
-                    let operand = self.eval_expression(scope, vars, operand)?;
+                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, operand)?;
 
                     check_type_contains_value(
                         diags,
@@ -219,15 +222,15 @@ impl CompileState<'_> {
                 }
             },
             ExpressionKind::BinaryOp(op, left, right) => {
-                let left = self.eval_expression(scope, vars, left);
-                let right = self.eval_expression(scope, vars, right);
+                let left = self.eval_expression(ctx, ctx_block, scope, vars, left);
+                let right = self.eval_expression(ctx, ctx_block, scope, vars, right);
                 self.eval_binary_expression(expr.span, op, left?, right?)
             }
             ExpressionKind::TernarySelect(_, _, _) => Err(diags.report_todo(expr.span, "expr kind TernarySelect")),
             ExpressionKind::ArrayIndex(base, args) => {
                 // eval base and args
-                let base = self.eval_expression(scope, vars, base);
-                let args = args.map_inner(|a| self.eval_expression(scope, vars, a));
+                let base = self.eval_expression(ctx, ctx_block, scope, vars, base);
+                let args = args.map_inner(|a| self.eval_expression(ctx, ctx_block, scope, vars, a));
 
                 let base = base?;
                 let args = args.try_map_inner(identity)?;
@@ -356,8 +359,7 @@ impl CompileState<'_> {
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
                 let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
-                // TODO allow runtime expressions in arguments
-                let args = args.map_inner(|arg| self.eval_expression_as_compile(scope, vars, arg, "call argument"));
+                let args = args.map_inner(|arg| self.eval_expression(ctx, ctx_block, scope, vars, arg));
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
@@ -376,8 +378,17 @@ impl CompileState<'_> {
 
                 // actually do the call
                 let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
-                self.check_compile_loop(entry, |s| target.call_compile_time(s, args).map(MaybeCompile::Compile))
-                    .flatten_err()
+                let (result_block, result_value) = self
+                    .check_compile_loop(entry, |s| target.call(s, ctx, args))
+                    .flatten_err()?;
+
+                let result_block_spanned = Spanned {
+                    span: expr.span,
+                    inner: result_block,
+                };
+                ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+
+                Ok(result_value)
             }
             ExpressionKind::Builtin(ref args) => {
                 Ok(MaybeCompile::Compile(self.eval_builtin(scope, vars, expr.span, args)?))
@@ -638,7 +649,10 @@ impl CompileState<'_> {
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
-        match self.eval_expression(scope, vars, expr)?.inner {
+        let mut ctx = CompileTimeExpressionContext;
+        let mut ctx_block = ();
+
+        match self.eval_expression(&mut ctx, &mut ctx_block, scope, vars, expr)?.inner {
             MaybeCompile::Compile(c) => Ok(Spanned {
                 span: expr.span,
                 inner: c,

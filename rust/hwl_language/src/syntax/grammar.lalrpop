@@ -1,5 +1,5 @@
 use crate::syntax::ast::*;
-use crate::syntax::LocationBuilder;
+use crate::syntax::{Span, LocationBuilder};
 use crate::syntax::token::{TokenType, TokenError};
 
 // TODO move this boilerplate stuff to the bottom
@@ -245,13 +245,13 @@ BlockStatementKind: BlockStatementKind = {
     // block
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
     // control flow
-    <start:@L> <span_if:Spanned<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <end_if:@R>
+    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <end_if:@R>
     <else_ifs:ElseIfPair*>
     <final_else:("else" <Block<BlockStatement>>)?> => {
         BlockStatementKind::If(IfStatement {
             initial_if: IfCondBlockPair {
                 span: loc.span(start, end_if),
-                span_if: span_if.span,
+                span_if: span_if,
                 cond: cond,
                 block: then_block
             },
@@ -265,14 +265,15 @@ BlockStatementKind: BlockStatementKind = {
     "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { cond, body }),
     // control flow terminators
-    "return" <value:BoxExpr?> ";" => BlockStatementKind::Return(value),
+    <span_return:Span<"return">> <value:BoxExpr?> ";"
+        => BlockStatementKind::Return(ReturnStatement { span_return, value }),
     "break" <value:BoxExpr?> ";" => BlockStatementKind::Break(value),
     "continue" ";" => BlockStatementKind::Continue,
 }
 
 ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
-    <start:@L> "else" <span_if:Spanned<"if">> "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
-        => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if: span_if.span },
+    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
+        => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
 }
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
@@ -340,7 +341,7 @@ Expr: Expression = Spanned<ExprLevelIn>;
 BoxExpr: Box<Expression> = Box<Expr>;
 
 ExprLevelIn: ExpressionKind = {
-    <value:Spanned<ExprLevelRange>> <op:Spanned<"in">> <range:Spanned<ExprLevelRange>>
+    <value:Spanned<ExprLevelRange>> <op:Span<"in">> <range:Spanned<ExprLevelRange>>
         => build_binary_op(op, BinaryOp::In, value, range),
     ExprLevelRange,
 }
@@ -358,114 +359,114 @@ ExprLevelRange: ExpressionKind = {
 
 ExprLevelLogical: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelLogicalAnd>> <op:Spanned<"&&">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalAnd>> <op:Span<"&&">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolAnd, left, right),
-    <left:Spanned<ExprLevelLogicalOr>> <op:Spanned<"||">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalOr>> <op:Span<"||">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolOr, left, right),
-    <left:Spanned<ExprLevelLogicalXor>> <op:Spanned<"^^">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalXor>> <op:Span<"^^">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalAnd: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalAnd>> <op:Spanned<"&&">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalAnd>> <op:Span<"&&">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolAnd, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalOr: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalOr>> <op:Spanned<"||">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalOr>> <op:Span<"||">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolOr, left, right),
     ExprLevelEqual,
 }
 ExprLevelLogicalXor: ExpressionKind = {
-    <left:Spanned<ExprLevelLogicalXor>> <op:Spanned<"^^">> <right:Spanned<ExprLevelEqual>> =>
+    <left:Spanned<ExprLevelLogicalXor>> <op:Span<"^^">> <right:Spanned<ExprLevelEqual>> =>
         build_binary_op(op, BinaryOp::BoolXor, left, right),
     ExprLevelEqual,
 }
 
 ExprLevelEqual: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<"==">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"==">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpEq, left, right),
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<"!=">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"!=">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpNeq, left, right),
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<">=">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<">=">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpGte, left, right),
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<">">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<">">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpGt, left, right),
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<"<=">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"<=">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpLte, left, right),
-    <left:Spanned<ExprLevelBitWise>> <op:Spanned<"<">> <right:Spanned<ExprLevelBitWise>> =>
+    <left:Spanned<ExprLevelBitWise>> <op:Span<"<">> <right:Spanned<ExprLevelBitWise>> =>
         build_binary_op(op, BinaryOp::CmpLt, left, right),
     ExprLevelBitWise,
 }
 
 ExprLevelBitWise: ExpressionKind = {
     // assoc left, no mixing
-    <left:Spanned<ExprLevelBitAnd>> <op:Spanned<"&">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitAnd>> <op:Span<"&">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitAnd, left, right),
-    <left:Spanned<ExprLevelBitOr>> <op:Spanned<"|">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitOr>> <op:Span<"|">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitOr, left, right),
-    <left:Spanned<ExprLevelBitXor>> <op:Spanned<"^">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitXor>> <op:Span<"^">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitXor, left, right),
     ExprLevelShift,
 }
 ExprLevelBitAnd: ExpressionKind = {
-    <left:Spanned<ExprLevelBitAnd>> <op:Spanned<"&">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitAnd>> <op:Span<"&">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitAnd, left, right),
     ExprLevelShift,
 }
 ExprLevelBitOr: ExpressionKind = {
-    <left:Spanned<ExprLevelBitOr>> <op:Spanned<"|">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitOr>> <op:Span<"|">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitOr, left, right),
     ExprLevelShift,
 }
 ExprLevelBitXor: ExpressionKind = {
-    <left:Spanned<ExprLevelBitXor>> <op:Spanned<"^">> <right:Spanned<ExprLevelShift>> =>
+    <left:Spanned<ExprLevelBitXor>> <op:Span<"^">> <right:Spanned<ExprLevelShift>> =>
         build_binary_op(op, BinaryOp::BitXor, left, right),
     ExprLevelShift,
 }
 
 ExprLevelShift: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelAdd>> <op:Spanned<"<<">> <right:Spanned<ExprLevelAdd>> =>
+    <left:Spanned<ExprLevelAdd>> <op:Span<"<<">> <right:Spanned<ExprLevelAdd>> =>
         build_binary_op(op, BinaryOp::Shl, left, right),
-    <left:Spanned<ExprLevelAdd>> <op:Spanned<">>">> <right:Spanned<ExprLevelAdd>> =>
+    <left:Spanned<ExprLevelAdd>> <op:Span<">>">> <right:Spanned<ExprLevelAdd>> =>
         build_binary_op(op, BinaryOp::Shr, left, right),
     ExprLevelAdd,
 }
 
 ExprLevelAdd: ExpressionKind = {
     // assoc left
-    <left:Spanned<ExprLevelAdd>> <op:Spanned<"+">> <right:Spanned<ExprLevelMul>> =>
+    <left:Spanned<ExprLevelAdd>> <op:Span<"+">> <right:Spanned<ExprLevelMul>> =>
         build_binary_op(op, BinaryOp::Add, left, right),
-    <left:Spanned<ExprLevelAdd>> <op:Spanned<"-">> <right:Spanned<ExprLevelMul>> =>
+    <left:Spanned<ExprLevelAdd>> <op:Span<"-">> <right:Spanned<ExprLevelMul>> =>
         build_binary_op(op, BinaryOp::Sub, left, right),
     ExprLevelMul,
 }
 
 ExprLevelMul: ExpressionKind = {
     // assoc left
-    <left:Spanned<ExprLevelMul>> <op:Spanned<"*">> <right:Spanned<ExprLevelUnary>> =>
+    <left:Spanned<ExprLevelMul>> <op:Span<"*">> <right:Spanned<ExprLevelUnary>> =>
         build_binary_op(op, BinaryOp::Mul, left, right),
-    <left:Spanned<ExprLevelMul>> <op:Spanned<"/">> <right:Spanned<ExprLevelUnary>> =>
+    <left:Spanned<ExprLevelMul>> <op:Span<"/">> <right:Spanned<ExprLevelUnary>> =>
         build_binary_op(op, BinaryOp::Div, left, right),
     // TODO disallow mixing this with mul and/or div?
-    <left:Spanned<ExprLevelMul>> <op:Spanned<"%">> <right:Spanned<ExprLevelUnary>> =>
+    <left:Spanned<ExprLevelMul>> <op:Span<"%">> <right:Spanned<ExprLevelUnary>> =>
         build_binary_op(op, BinaryOp::Mod, left, right),
     ExprLevelUnary,
 }
 
 ExprLevelUnary: ExpressionKind = {
-    <op:Spanned<"!">> <inner:BoxSpanned<ExprLevelPower>> =>
-        ExpressionKind::UnaryOp(Spanned { span: op.span, inner: UnaryOp::Not }, inner),
-    <op:Spanned<"-">> <inner:BoxSpanned<ExprLevelPower>> =>
-        ExpressionKind::UnaryOp(Spanned { span: op.span, inner: UnaryOp::Neg }, inner),
+    <op:Span<"!">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
+    <op:Span<"-">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Neg }, inner),
     ExprLevelPower,
 }
 
 ExprLevelPower: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelCall>> <op:Spanned<"**">> <right:Spanned<ExprLevelCall>> =>
+    <left:Spanned<ExprLevelCall>> <op:Span<"**">> <right:Spanned<ExprLevelCall>> =>
         build_binary_op(op, BinaryOp::Pow, left, right),
     ExprLevelCall,
 }
@@ -514,8 +515,8 @@ ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     // TODO allow multiple stars to flatten multi-dimensional arrays?
-    <spread:Spanned<"*">?> <value:Expr> => ArrayLiteralElement {
-        spread: spread.map(|spanned| spanned.span),
+    <spread:Span<"*">?> <value:Expr> => ArrayLiteralElement {
+        spread,
         value
     },
 }
@@ -626,9 +627,14 @@ Box<T>: Box<T> = {
 }
 
 #[inline]
+BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
+
+#[inline]
 Spanned<T>: Spanned<T> = {
     <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
 #[inline]
-BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
+Span<T>: Span = {
+    <start:@L> <inner:T> <end:@R> => loc.span(start, end),
+}

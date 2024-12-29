@@ -21,6 +21,7 @@ use lazy_static::lazy_static;
 use num_bigint::{BigInt, BigUint};
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
+use std::hash::Hash;
 use std::num::NonZeroU32;
 
 #[derive(Debug, Clone)]
@@ -54,12 +55,12 @@ pub fn lower(
         lowered_modules: vec![],
     };
 
-    let top_name = lower_module(&mut ctx, compiled.top_module?)?;
+    let top_name = &lower_module(&mut ctx, compiled.top_module?)?.name;
 
     Ok(LoweredVerilog {
         verilog_source: ctx.lowered_modules.join("\n\n"),
-        top_module_name: top_name.0,
-        debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.0)).collect(),
+        top_module_name: top_name.0.clone(),
+        debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.name.0)).collect(),
     })
 }
 
@@ -67,13 +68,19 @@ struct LowerContext<'a> {
     diags: &'a Diagnostics,
     source: &'a SourceDatabase,
     compiled: &'a IrDatabase,
-    module_map: IndexMap<IrModule, LoweredName>,
+    module_map: IndexMap<IrModule, LoweredModule>,
     top_name_scope: LoweredNameScope,
     lowered_modules: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 struct LoweredName(String);
+
+#[derive(Debug, Clone)]
+struct LoweredModule {
+    name: LoweredName,
+    ports: IndexMap<IrPort, LoweredName>,
+}
 
 #[derive(Default)]
 struct LoweredNameScope {
@@ -182,10 +189,11 @@ struct NameMap<'a> {
     variables: &'a IndexMap<IrVariable, LoweredName>,
 }
 
-fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredName, ErrorGuaranteed> {
+fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModule, ErrorGuaranteed> {
     let diags = ctx.diags;
 
     if let Some(lowered) = ctx.module_map.get(&module) {
+        // TODO return a reference instead
         return Ok(lowered.clone());
     }
 
@@ -244,10 +252,15 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredName,
 
     swriteln!(f, "endmodule");
 
-    ctx.module_map.insert_first(module, module_name.clone());
-    ctx.lowered_modules.push(result_str);
+    let lowered_module = LoweredModule {
+        name: module_name,
+        ports: port_name_map,
+    };
 
-    Ok(module_name)
+    ctx.lowered_modules.push(result_str);
+    ctx.module_map.insert_first(module, lowered_module.clone());
+
+    Ok(lowered_module)
 }
 
 fn lower_module_ports(
@@ -501,14 +514,14 @@ fn lower_module_statements(
                     port_connections,
                 } = instance;
 
-                // TODO this messes up string concatenation, go back to string building per module with a final concat later
-                let module = lower_module(ctx, *module)?;
+                let inner_module = lower_module(ctx, *module)?;
+                let inner_module_name = &inner_module.name;
 
                 if let Some(name) = name {
                     let name_safe = LoweredName(name.clone());
-                    swrite!(f, "{I}{module} {name_safe}(");
+                    swrite!(f, "{I}{inner_module_name} {name_safe}(");
                 } else {
-                    swrite!(f, "{I}{module}(");
+                    swrite!(f, "{I}{inner_module_name}(");
                 }
 
                 if port_connections.is_empty() {
@@ -525,7 +538,7 @@ fn lower_module_statements(
                 };
 
                 for (port_index, (&port, connection)) in enumerate(port_connections) {
-                    let port_name = name_map.ports.get(&port).unwrap();
+                    let port_name = inner_module.ports.get(&port).unwrap();
                     swrite!(f, "{I}{I}.{port_name}(");
                     match connection {
                         IrPortConnection::Input(expr) => {
@@ -747,14 +760,25 @@ fn lower_expression(
     expr: &IrExpression,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
+    fn try_get<'m, K: Eq + Hash, V>(
+        diags: &Diagnostics,
+        span: Span,
+        map: &'m IndexMap<K, V>,
+        key: K,
+        kind: &str,
+    ) -> Result<&'m V, ErrorGuaranteed> {
+        map.get(&key)
+            .ok_or_else(|| diags.report_internal_error(span, format!("failed to find {kind} in name map")))
+    }
+
     match expr {
         &IrExpression::Bool(x) => swrite!(f, "{}", x as u8),
         IrExpression::Int(x) => swrite!(f, "{}", x),
 
-        &IrExpression::Port(port) => swrite!(f, "{}", name_map.ports.get(&port).unwrap()),
-        &IrExpression::Wire(wire) => swrite!(f, "{}", name_map.wires.get(&wire).unwrap()),
-        &IrExpression::Register(reg) => swrite!(f, "{}", name_map.registers.get(&reg).unwrap()),
-        &IrExpression::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
+        &IrExpression::Port(port) => swrite!(f, "{}", try_get(diags, span, name_map.ports, port, "port")?),
+        &IrExpression::Wire(wire) => swrite!(f, "{}", try_get(diags, span, name_map.wires, wire, "wire")?),
+        &IrExpression::Register(reg) => swrite!(f, "{}", try_get(diags, span, name_map.registers, reg, "register")?),
+        &IrExpression::Variable(var) => swrite!(f, "{}", try_get(diags, span, name_map.variables, var, "variable")?),
 
         IrExpression::BoolNot(inner) => {
             swrite!(f, "(!");
@@ -764,6 +788,7 @@ fn lower_expression(
         IrExpression::BoolBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary bool expression")),
         IrExpression::IntBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary int expression")),
 
+        IrExpression::TupleLiteral(_) => throw!(diags.report_todo(span, "lower tuple literal")),
         IrExpression::ArrayLiteral(_) => throw!(diags.report_todo(span, "lower array literal")),
         IrExpression::ArrayIndex { .. } => throw!(diags.report_todo(span, "lower array index")),
         IrExpression::ArraySlice { .. } => throw!(diags.report_todo(span, "lower array slice")),

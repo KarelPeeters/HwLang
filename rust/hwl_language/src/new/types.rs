@@ -46,6 +46,10 @@ pub struct ClosedIncRange<T> {
     pub end_inc: T,
 }
 
+pub trait Typed {
+    fn ty(&self) -> Type;
+}
+
 impl Type {
     pub const UNIT: Type = Type::Tuple(Vec::new());
 

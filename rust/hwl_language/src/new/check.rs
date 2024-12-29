@@ -2,7 +2,7 @@ use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, 
 use crate::new::block::TypedIrExpression;
 use crate::new::compile::CompileState;
 use crate::new::misc::ValueDomain;
-use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
+use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::new::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
@@ -81,6 +81,10 @@ pub enum TypeContainsReason {
         span_connection_signal_id: Span,
         span_signal_ty: Span,
     },
+    Return {
+        span_keyword: Span,
+        span_return_ty: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -118,6 +122,12 @@ impl TypeContainsReason {
                     format!("target signal has type `{}`", target_ty_str),
                 )
                 .add_info(span_signal_ty, "target signal type set here"),
+            TypeContainsReason::Return {
+                span_keyword,
+                span_return_ty,
+            } => diag
+                .add_info(span_keyword, format!("return requires type `{}`", target_ty_str))
+                .add_info(span_return_ty, format!("return type `{}` set here", target_ty_str)),
         }
     }
 }

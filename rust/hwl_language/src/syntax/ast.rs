@@ -1,5 +1,4 @@
 use crate::syntax::pos::Span;
-use crate::syntax::token::TokenType;
 use itertools::Itertools;
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
@@ -274,7 +273,7 @@ pub enum BlockStatementKind {
     While(WhileStatement),
     For(ForStatement),
     // control flow terminators
-    Return(Option<Box<Expression>>),
+    Return(ReturnStatement),
     Break(Option<Box<Expression>>),
     Continue,
     // TODO allow function/type definitions in blocks
@@ -307,6 +306,12 @@ pub struct ForStatement {
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,
     pub body: Block<BlockStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReturnStatement {
+    pub span_return: Span,
+    pub value: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -546,15 +551,10 @@ pub struct Identifier {
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(
-    op_span: Spanned<TokenType<&str>>,
-    op: BinaryOp,
-    left: Expression,
-    right: Expression,
-) -> ExpressionKind {
+pub fn build_binary_op(op_span: Span, op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
     ExpressionKind::BinaryOp(
         Spanned {
-            span: op_span.span,
+            span: op_span,
             inner: op,
         },
         Box::new(left),

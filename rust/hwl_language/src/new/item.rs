@@ -4,9 +4,8 @@ use crate::front::scope::{Scope, Visibility};
 use crate::new::block::VariableValues;
 use crate::new::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
-use crate::new::function::{FunctionBody, FunctionValue, ReturnType};
+use crate::new::function::{FunctionBody, FunctionValue};
 use crate::new::misc::ScopedEntry;
-use crate::new::types::Type;
 use crate::new::value::{CompileValue, NamedValue};
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::util::data::IndexMapExt;
@@ -100,9 +99,8 @@ impl CompileState<'_> {
                             outer_scope: file_scope.clone(),
                             item,
                             params: params.clone(),
-                            ret_ty: ReturnType::Evaluated(Type::Type),
                             body_span: inner.span,
-                            body: FunctionBody::Type(inner.clone()),
+                            body: FunctionBody::TypeAliasExpr(inner.clone()),
                         };
                         Ok(CompileValue::Function(func))
                     }
@@ -120,18 +118,15 @@ impl CompileState<'_> {
                     body,
                 } = item_inner;
 
-                let ret_ty = match ret_ty {
-                    None => ReturnType::Evaluated(Type::UNIT),
-                    Some(ret_ty) => ReturnType::Expression(Box::new(ret_ty.clone())),
-                };
-
                 let function = FunctionValue {
                     outer_scope: file_scope,
                     item,
                     params: params.clone(),
-                    ret_ty,
                     body_span: body.span,
-                    body: FunctionBody::Block(body.clone()),
+                    body: FunctionBody::FunctionBodyBlock {
+                        body: body.clone(),
+                        ret_ty: ret_ty.as_ref().map(|ret_ty| Box::new(ret_ty.clone())),
+                    },
                 };
                 Ok(CompileValue::Function(function))
             }

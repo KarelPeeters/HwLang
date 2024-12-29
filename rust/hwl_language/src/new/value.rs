@@ -5,7 +5,7 @@ use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::new::function::FunctionValue;
 use crate::new::ir::IrExpression;
 use crate::new::misc::ValueDomain;
-use crate::new::types::{ClosedIncRange, IncRange, Type};
+use crate::new::types::{ClosedIncRange, IncRange, Type, Typed};
 use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
 
@@ -37,6 +37,7 @@ pub enum CompileValue {
     Bool(bool),
     Int(BigInt),
     String(String),
+    Tuple(Vec<CompileValue>),
     Array(Vec<CompileValue>),
     IntRange(IncRange<BigInt>),
     Module(AstRefModule),
@@ -60,8 +61,8 @@ pub enum HardwareValueResult {
     Unrepresentable,
 }
 
-impl CompileValue {
-    pub fn ty(&self) -> Type {
+impl Typed for CompileValue {
+    fn ty(&self) -> Type {
         match self {
             CompileValue::Undefined => Type::Undefined,
             CompileValue::Type(_) => Type::Type,
@@ -71,6 +72,7 @@ impl CompileValue {
                 end_inc: Some(value.clone()),
             }),
             CompileValue::String(_) => Type::String,
+            CompileValue::Tuple(values) => Type::Tuple(values.iter().map(|v| v.ty()).collect()),
             CompileValue::Array(values) => {
                 let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty()));
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
@@ -80,10 +82,15 @@ impl CompileValue {
             CompileValue::Function(_) => Type::Function,
         }
     }
+}
+
+impl CompileValue {
+    pub const UNIT: CompileValue = CompileValue::Tuple(vec![]);
 
     pub fn contains_undefined(&self) -> bool {
         match self {
             CompileValue::Undefined => true,
+            CompileValue::Tuple(values) => values.iter().any(|v| v.contains_undefined()),
             CompileValue::Array(values) => values.iter().any(|v| v.contains_undefined()),
             CompileValue::Type(_)
             | CompileValue::Bool(_)
@@ -96,42 +103,48 @@ impl CompileValue {
     }
 
     pub fn as_hardware_value(&self) -> HardwareValueResult {
+        fn map_array(
+            values: &[CompileValue],
+            f: impl FnOnce(Vec<IrExpression>) -> IrExpression,
+        ) -> HardwareValueResult {
+            let mut hardware_values = vec![];
+            let mut all_undefined = true;
+            let mut any_undefined = false;
+
+            for value in values {
+                match value.as_hardware_value() {
+                    HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
+                    HardwareValueResult::Success(v) => {
+                        all_undefined = false;
+                        hardware_values.push(v)
+                    }
+                    HardwareValueResult::Undefined => {
+                        any_undefined = true;
+                    }
+                    HardwareValueResult::PartiallyUndefined => return HardwareValueResult::PartiallyUndefined,
+                }
+            }
+
+            match (any_undefined, all_undefined) {
+                (true, true) => HardwareValueResult::Undefined,
+                (true, false) => HardwareValueResult::PartiallyUndefined,
+                (false, false) => {
+                    assert_eq!(hardware_values.len(), values.len());
+                    HardwareValueResult::Success(f(hardware_values))
+                }
+                (false, true) => {
+                    assert!(hardware_values.is_empty());
+                    HardwareValueResult::Success(f(vec![]))
+                }
+            }
+        }
+
         match self {
             CompileValue::Undefined => HardwareValueResult::Undefined,
             &CompileValue::Bool(value) => HardwareValueResult::Success(IrExpression::Bool(value)),
             CompileValue::Int(value) => HardwareValueResult::Success(IrExpression::Int(value.clone())),
-            CompileValue::Array(values) => {
-                let mut hardware_values = vec![];
-                let mut all_undefined = true;
-                let mut any_undefined = false;
-
-                for value in values {
-                    match value.as_hardware_value() {
-                        HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
-                        HardwareValueResult::Success(v) => {
-                            all_undefined = false;
-                            hardware_values.push(v)
-                        }
-                        HardwareValueResult::Undefined => {
-                            any_undefined = true;
-                        }
-                        HardwareValueResult::PartiallyUndefined => return HardwareValueResult::PartiallyUndefined,
-                    }
-                }
-
-                match (any_undefined, all_undefined) {
-                    (true, true) => HardwareValueResult::Undefined,
-                    (true, false) => HardwareValueResult::PartiallyUndefined,
-                    (false, false) => {
-                        assert_eq!(hardware_values.len(), values.len());
-                        HardwareValueResult::Success(IrExpression::ArrayLiteral(hardware_values))
-                    }
-                    (false, true) => {
-                        assert!(hardware_values.is_empty());
-                        HardwareValueResult::Success(IrExpression::ArrayLiteral(vec![]))
-                    }
-                }
-            }
+            CompileValue::Tuple(values) => map_array(&values, IrExpression::TupleLiteral),
+            CompileValue::Array(values) => map_array(&values, IrExpression::ArrayLiteral),
             CompileValue::Type(_)
             | CompileValue::String(_)
             | CompileValue::IntRange(_)
@@ -187,6 +200,14 @@ impl CompileValue {
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
             CompileValue::String(value) => value.clone(),
+            CompileValue::Tuple(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| value.to_diagnostic_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", values)
+            }
             CompileValue::Array(values) => {
                 let values = values
                     .iter()
@@ -225,5 +246,20 @@ impl MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt> {
             MaybeCompile::Compile(v) => ClosedIncRange::single(v),
             MaybeCompile::Other(v) => v.ty.as_ref(),
         }
+    }
+}
+
+impl<T: Typed, C: Typed> Typed for MaybeCompile<T, C> {
+    fn ty(&self) -> Type {
+        match self {
+            MaybeCompile::Compile(v) => v.ty(),
+            MaybeCompile::Other(v) => v.ty(),
+        }
+    }
+}
+
+impl<T> From<CompileValue> for MaybeCompile<T, CompileValue> {
+    fn from(value: CompileValue) -> Self {
+        MaybeCompile::Compile(value)
     }
 }

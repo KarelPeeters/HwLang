@@ -174,6 +174,7 @@ pub enum IrExpression {
     BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>),
     IntBinary(IrIntBinaryOp, Box<IrExpression>, Box<IrExpression>),
 
+    TupleLiteral(Vec<IrExpression>),
     ArrayLiteral(Vec<IrExpression>),
     ArrayIndex {
         base: Box<IrExpression>,
@@ -273,6 +274,14 @@ impl IrExpression {
                 )
             }
 
+            IrExpression::TupleLiteral(x) => {
+                let inner = x
+                    .iter()
+                    .map(|x| x.to_diagnostic_string(m))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", inner)
+            }
             IrExpression::ArrayLiteral(x) => {
                 let inner = x
                     .iter()
@@ -293,6 +302,27 @@ impl IrExpression {
                     end_inc.to_diagnostic_string(m)
                 )
             }
+        }
+    }
+
+    pub fn contains_variable(&self) -> bool {
+        match self {
+            IrExpression::Bool(_)
+            | IrExpression::Int(_)
+            | IrExpression::Port(_)
+            | IrExpression::Wire(_)
+            | IrExpression::Register(_) => false,
+            IrExpression::Variable(_) => true,
+            IrExpression::BoolNot(x) => x.contains_variable(),
+            IrExpression::BoolBinary(_op, left, right) => left.contains_variable() || right.contains_variable(),
+            IrExpression::IntBinary(_op, left, right) => left.contains_variable() || right.contains_variable(),
+            IrExpression::TupleLiteral(x) => x.iter().any(|x| x.contains_variable()),
+            IrExpression::ArrayLiteral(x) => x.iter().any(|x| x.contains_variable()),
+            IrExpression::ArrayIndex { base, index } => base.contains_variable() || index.contains_variable(),
+            IrExpression::ArraySlice {
+                base,
+                range: ClosedIncRange { start_inc, end_inc },
+            } => base.contains_variable() || start_inc.contains_variable() || end_inc.contains_variable(),
         }
     }
 }

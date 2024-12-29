@@ -6,7 +6,7 @@ use crate::new::block::TypedIrExpression;
 use crate::new::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::new::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::new::types::{HardwareType, Type};
-use crate::new::value::CompileValue;
+use crate::new::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast;
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::pos::{FileId, Span};
@@ -144,7 +144,7 @@ pub struct CompileState<'a> {
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
     pub constants: Arena<Constant, ConstantInfo>,
-    pub parameters: Arena<Parameter, ConstantInfo>,
+    pub parameters: Arena<Parameter, ParameterInfo>,
     pub variables: Arena<Variable, VariableInfo>,
     pub ports: Arena<Port, PortInfo>,
     pub wires: Arena<Wire, WireInfo>,
@@ -171,7 +171,7 @@ pub enum ElaborationStackEntry {
     Item(AstRefItem),
     // TODO better names
     FunctionCall(Span, StackNotEq),
-    FunctionRun(AstRefItem, Vec<CompileValue>),
+    FunctionRun(AstRefItem, Vec<MaybeCompile<TypedIrExpression>>),
 }
 
 new_index_type!(pub Constant);
@@ -211,6 +211,12 @@ pub struct ModuleElaborationCacheKey {
 pub struct ConstantInfo {
     pub id: MaybeIdentifier,
     pub value: CompileValue,
+}
+
+#[derive(Debug)]
+pub struct ParameterInfo {
+    pub id: MaybeIdentifier,
+    pub value: MaybeCompile<TypedIrExpression>,
 }
 
 #[derive(Debug)]
