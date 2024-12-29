@@ -1,10 +1,10 @@
-use hwl_language::data::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::data::parsed::ParsedDatabase;
-use hwl_language::data::source::FilePath;
-use hwl_language::data::source::SourceDatabase;
-use hwl_language::new::compile::compile;
-use hwl_language::new::lower_verilog::lower;
+use hwl_language::front::compile::compile;
+use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::lower_verilog::lower;
+use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
+use hwl_language::syntax::source::FilePath;
+use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use strum::IntoEnumIterator;

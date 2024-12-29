@@ -1,8 +1,8 @@
-use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::new::block::BlockDomain;
-use crate::new::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
-use crate::new::misc::ValueDomain;
-use crate::new::value::AssignmentTarget;
+use crate::front::block::BlockDomain;
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
+use crate::front::misc::ValueDomain;
+use crate::front::value::AssignmentTarget;
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::throw;

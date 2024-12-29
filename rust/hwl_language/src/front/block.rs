@@ -1,12 +1,12 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::check::{check_type_contains_value, TypeContainsReason};
+use crate::front::compile::{CompileState, Variable, VariableInfo};
+use crate::front::context::ExpressionContext;
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
+use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::check::{check_type_contains_value, TypeContainsReason};
-use crate::new::compile::{CompileState, Variable, VariableInfo};
-use crate::new::context::ExpressionContext;
-use crate::new::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
-use crate::new::misc::{DomainSignal, ScopedEntry, ValueDomain};
-use crate::new::types::{HardwareType, Type, Typed};
-use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
+use crate::front::types::{HardwareType, Type, Typed};
+use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, IfCondBlockPair, IfStatement, ReturnStatement,
     Spanned, SyncDomain, VariableDeclaration,

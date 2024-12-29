@@ -2,13 +2,15 @@ use annotate_snippets::Level;
 use itertools::enumerate;
 use lalrpop_util::lalrpop_mod;
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 use pos::Pos;
 
 pub mod ast;
+pub mod parsed;
 pub mod pos;
+pub mod source;
 pub mod token;
 
 lalrpop_mod!(grammar, "/syntax/grammar.rs");

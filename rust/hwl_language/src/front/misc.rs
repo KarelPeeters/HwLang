@@ -1,7 +1,7 @@
-use crate::data::parsed::AstRefItem;
-use crate::new::compile::{CompileState, Port, Register, Wire};
-use crate::new::value::NamedValue;
+use crate::front::compile::{CompileState, Port, Register, Wire};
+use crate::front::value::NamedValue;
 use crate::syntax::ast::{DomainKind, SyncDomain};
+use crate::syntax::parsed::AstRefItem;
 
 // TODO move this to a better place
 #[derive(Debug, Clone)]

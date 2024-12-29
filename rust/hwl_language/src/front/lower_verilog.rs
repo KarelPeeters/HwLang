@@ -1,16 +1,16 @@
-use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::data::parsed::ParsedDatabase;
-use crate::data::source::SourceDatabase;
-use crate::new::ir::{
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule,
     IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
     IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::new::types::HardwareType;
+use crate::front::types::HardwareType;
 use crate::syntax::ast::{
     Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
 };
+use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;

@@ -1,8 +1,8 @@
 use annotate_snippets::Level;
 use std::fmt::{Debug, Display, Formatter};
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::new::misc::ScopedEntry;
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::misc::ScopedEntry;
 use crate::new_index_type;
 use crate::syntax::ast;
 use crate::syntax::ast::Identifier;

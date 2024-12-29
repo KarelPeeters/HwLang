@@ -1,4 +1,4 @@
-use crate::new::ir::IrType;
+use crate::front::ir::IrType;
 use crate::swrite;
 use itertools::{zip_eq, Itertools};
 use num_bigint::{BigInt, BigUint};

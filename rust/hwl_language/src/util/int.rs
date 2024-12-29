@@ -1,4 +1,4 @@
-use crate::new::types::ClosedIncRange;
+use crate::front::types::ClosedIncRange;
 use num_bigint::{BigInt, BigUint};
 use num_traits::Signed as _;
 use std::cmp::max;
@@ -51,7 +51,7 @@ impl IntRepresentation {
 
 #[cfg(test)]
 mod test {
-    use crate::new::types::ClosedIncRange;
+    use crate::front::types::ClosedIncRange;
     use crate::util::int::{IntRepresentation, Signed};
     use num_bigint::BigInt;
     use std::ops::Range;

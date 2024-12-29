@@ -1,6 +1,6 @@
-use crate::data::diagnostic::ErrorGuaranteed;
-use crate::new::types::{ClosedIncRange, HardwareType, Type};
-use crate::new::value::CompileValue;
+use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::types::{ClosedIncRange, HardwareType, Type};
+use crate::front::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;

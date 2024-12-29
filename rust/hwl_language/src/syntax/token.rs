@@ -328,7 +328,7 @@ pub enum TokenPriority {
     Low = 0,
 }
 
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use TokenCategory as TC;
 use TokenPriority as TP;
 

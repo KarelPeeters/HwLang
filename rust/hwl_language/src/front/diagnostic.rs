@@ -1,9 +1,9 @@
 //! This module is strongly inspired by the Rust compiler,
 //! see <https://rustc-dev-guide.rust-lang.org/diagnostics.html>.
 
-use crate::data::source::SourceDatabase;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
+use crate::syntax::source::SourceDatabase;
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;

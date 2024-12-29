@@ -1,16 +1,16 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::data::parsed::AstRefItem;
+use crate::front::block::{BlockEnd, TypedIrExpression, VariableValues};
+use crate::front::check::{check_type_contains_value, TypeContainsReason};
+use crate::front::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
+use crate::front::context::ExpressionContext;
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::misc::ScopedEntry;
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::{BlockEnd, TypedIrExpression, VariableValues};
-use crate::new::check::{check_type_contains_value, TypeContainsReason};
-use crate::new::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
-use crate::new::context::ExpressionContext;
-use crate::new::misc::ScopedEntry;
-use crate::new::types::Type;
-use crate::new::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::types::Type;
+use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned,
 };
+use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultDoubleExt;

@@ -1,7 +1,7 @@
-use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::data::source::SourceDatabase;
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, WireKind};
 use crate::syntax::pos::{FileId, Span};
+use crate::syntax::source::SourceDatabase;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;

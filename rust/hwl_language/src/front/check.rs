@@ -1,9 +1,9 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
-use crate::new::block::TypedIrExpression;
-use crate::new::compile::CompileState;
-use crate::new::misc::ValueDomain;
-use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::new::value::{CompileValue, MaybeCompile};
+use crate::front::block::TypedIrExpression;
+use crate::front::compile::CompileState;
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
+use crate::front::misc::ValueDomain;
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;

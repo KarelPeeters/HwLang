@@ -1,21 +1,21 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::scope::{Scope, Visibility};
-use crate::new::block::{BlockDomain, BlockEnd, TypedIrExpression, VariableValues};
-use crate::new::check::{
+use crate::front::block::{BlockDomain, BlockEnd, TypedIrExpression, VariableValues};
+use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
-use crate::new::compile::{
+use crate::front::compile::{
     CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
-use crate::new::context::{ExpressionContext, IrBuilderExpressionContext};
-use crate::new::ir::{
+use crate::front::context::{ExpressionContext, IrBuilderExpressionContext};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModuleChild, IrModuleInfo,
     IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrVariables,
     IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::new::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::new::types::{HardwareType, Type};
-use crate::new::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
+use crate::front::scope::{Scope, Visibility};
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,

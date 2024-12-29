@@ -1,10 +1,10 @@
 use clap::Parser;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
-use hwl_language::data::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
-use hwl_language::data::parsed::ParsedDatabase;
-use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
-use hwl_language::new::compile::compile;
-use hwl_language::new::lower_verilog::lower;
+use hwl_language::front::compile::compile;
+use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::lower_verilog::lower;
+use hwl_language::syntax::parsed::ParsedDatabase;
+use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
 use std::ffi::OsStr;

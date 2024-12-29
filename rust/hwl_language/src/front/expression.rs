@@ -1,13 +1,13 @@
-use crate::data::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::block::{TypedIrExpression, VariableValues};
+use crate::front::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
+use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
+use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
+use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::{TypedIrExpression, VariableValues};
-use crate::new::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
-use crate::new::compile::{CompileState, ElaborationStackEntry, Port};
-use crate::new::context::{CompileTimeExpressionContext, ExpressionContext};
-use crate::new::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
-use crate::new::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
-use crate::new::types::{ClosedIncRange, HardwareType, IncRange, Type};
-use crate::new::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
+use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,

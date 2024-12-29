@@ -1,11 +1,11 @@
-use crate::data::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::data::parsed::AstRefModule;
-use crate::new::block::TypedIrExpression;
-use crate::new::compile::{Constant, Parameter, Port, Register, Variable, Wire};
-use crate::new::function::FunctionValue;
-use crate::new::ir::IrExpression;
-use crate::new::misc::ValueDomain;
-use crate::new::types::{ClosedIncRange, IncRange, Type, Typed};
+use crate::front::block::TypedIrExpression;
+use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::function::FunctionValue;
+use crate::front::ir::IrExpression;
+use crate::front::misc::ValueDomain;
+use crate::front::types::{ClosedIncRange, IncRange, Type, Typed};
+use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
 

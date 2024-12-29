@@ -1,13 +1,13 @@
-use crate::data::diagnostic::ErrorGuaranteed;
-use crate::data::parsed::{AstRefItem, AstRefModule};
+use crate::front::block::VariableValues;
+use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
+use crate::front::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
+use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::function::{FunctionBody, FunctionValue};
+use crate::front::misc::ScopedEntry;
 use crate::front::scope::{Scope, Visibility};
-use crate::new::block::VariableValues;
-use crate::new::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::new::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
-use crate::new::function::{FunctionBody, FunctionValue};
-use crate::new::misc::ScopedEntry;
-use crate::new::value::{CompileValue, NamedValue};
+use crate::front::value::{CompileValue, NamedValue};
 use crate::syntax::ast::{ConstDeclaration, Item, ItemDefFunction, ItemDefType};
+use crate::syntax::parsed::{AstRefItem, AstRefModule};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 

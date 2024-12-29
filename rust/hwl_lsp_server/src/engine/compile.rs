@@ -5,12 +5,12 @@ use crate::server::settings::PositionEncoding;
 use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
-use hwl_language::data::diagnostic::{Annotation, Diagnostic, Diagnostics};
-use hwl_language::data::parsed::ParsedDatabase;
-use hwl_language::data::source::{FilePath, SourceDatabase, SourceSetError};
-use hwl_language::new::compile::compile;
-use hwl_language::new::lower_verilog::lower;
+use hwl_language::front::compile::compile;
+use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
+use hwl_language::front::lower_verilog::lower;
+use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
+use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
 use lsp_types::{
