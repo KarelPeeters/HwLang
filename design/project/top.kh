@@ -44,7 +44,10 @@ pub module top ports(
         out_async = identity(any, in_async);
     }
 
-    instance child generics(N=4) ports(
+    instance child generics(
+        N=4,
+        f=identity,
+    ) ports(
         .clk(clk_b),
         .rst(!rst_b),
         .x(select(bool[4], in_select, in_b, in_c)),
@@ -52,14 +55,17 @@ pub module top ports(
     );
 }
 
-module child generics(N: uint) ports(
+module child generics(
+    N: uint,
+    f: any,
+) ports(
     clk: in clock,
     rst: in async bool,
     x: in sync(clk, rst) bool[N],
     y: out sync(clk, rst) bool[N],
 ) body {
     combinatorial {
-        y = x;
+        y = f(bool[N], x);
     }
 }
 
