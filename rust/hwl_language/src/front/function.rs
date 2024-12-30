@@ -245,11 +245,12 @@ impl FunctionValue {
                 match &self.body {
                     FunctionBody::TypeAliasExpr(expr) => {
                         let result = state
-                            .eval_expression_as_compile(param_scope, &VariableValues::new_no_vars(), expr, "type body")?
+                            .eval_expression_as_ty(param_scope, &VariableValues::new_no_vars(), expr)?
                             .inner;
+                        let result = MaybeCompile::Compile(CompileValue::Type(result));
 
                         let empty_block = ctx.new_ir_block();
-                        Ok((empty_block, MaybeCompile::Compile(result)))
+                        Ok((empty_block, result))
                     }
                     FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                         // evaluate return type

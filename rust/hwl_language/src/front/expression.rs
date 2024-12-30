@@ -677,9 +677,11 @@ impl CompileState<'_> {
                 span: expr.span,
                 inner: ty,
             }),
-            _ => Err(self
-                .diags
-                .report_simple("expected type, got value", expr.span, "got value")),
+            value => Err(self.diags.report_simple(
+                "expected type, got value",
+                expr.span,
+                format!("got value `{}`", value.to_diagnostic_string()),
+            )),
         }
     }
 
