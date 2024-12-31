@@ -1,4 +1,4 @@
-use crate::front::block::{BlockEnd, TypedIrExpression, VariableValues};
+use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression, VariableValues};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
 use crate::front::context::ExpressionContext;
@@ -282,7 +282,7 @@ fn check_function_return_value(
     ret_ty: &Option<Spanned<Type>>,
     end: BlockEnd,
 ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-    match end {
+    match end.unwrap_normal_or_return_in_function(diags)? {
         BlockEnd::Normal(_next_vars) => {
             // no return, only allowed for unit-returning functions
             match ret_ty {
@@ -303,7 +303,7 @@ fn check_function_return_value(
                 }
             }
         }
-        BlockEnd::Return { span_keyword, value } => {
+        BlockEnd::Stopping(BlockEndReturn { span_keyword, value }) => {
             // return, check type
             match (ret_ty, value) {
                 (None, None) => Ok(MaybeCompile::Compile(CompileValue::UNIT)),

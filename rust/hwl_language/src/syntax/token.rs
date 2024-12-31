@@ -448,7 +448,7 @@ impl TokenError {
     pub fn to_diagnostic(self) -> Diagnostic {
         match self {
             TokenError::InvalidToken { pos, prefix: _ } => Diagnostic::new("tokenization error")
-                .add_error(Span::empty_at(pos), "invalid prefix")
+                .add_error(Span::empty_at(pos), "invalid start of token")
                 .finish(),
             TokenError::BlockCommentMissingEnd { start, eof } => Diagnostic::new("block comment missing end")
                 .add_info(Span::empty_at(start), "block comment started here")

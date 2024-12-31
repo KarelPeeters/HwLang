@@ -274,8 +274,8 @@ pub enum BlockStatementKind {
     For(ForStatement),
     // control flow terminators
     Return(ReturnStatement),
-    Break(Option<Box<Expression>>),
-    Continue,
+    Break(Span),
+    Continue(Span),
     // TODO allow function/type definitions in blocks
 }
 

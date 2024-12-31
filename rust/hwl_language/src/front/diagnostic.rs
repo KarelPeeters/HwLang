@@ -1,7 +1,6 @@
 //! This module is strongly inspired by the Rust compiler,
 //! see <https://rustc-dev-guide.rust-lang.org/diagnostics.html>.
 
-use crate::syntax::ast::Identifier;
 use crate::syntax::pos::{DifferentFile, Span};
 use crate::syntax::source::SourceDatabase;
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
@@ -72,7 +71,7 @@ impl Diagnostics {
 
     #[track_caller]
     pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
-        self.report(Diagnostic::new_todo(span, feature))
+        self.report(Diagnostic::new_todo(span, feature).finish())
     }
 
     // TODO rename to "report_bug"
@@ -141,7 +140,9 @@ impl Default for DiagnosticStringSettings {
     }
 }
 
-// TODO make it clear in which phase each diagnostic is reported: file loading, parsing, type checking, lowering
+// TODO make it clear in which phase each diagnostic was reported: file loading, parsing, type checking, lowering
+// TODO clarify constructor naming: start_ for builders and new_ for complete?
+//   what is the point of complete constructors in the first place?
 impl Diagnostic {
     pub fn new(title: impl Into<String>) -> DiagnosticBuilder {
         DiagnosticBuilder {
@@ -154,31 +155,21 @@ impl Diagnostic {
         }
     }
 
+    /// Utility diagnostic constructor for features that are not yet implemented.
+    #[track_caller]
+    pub fn new_todo(span: Span, feature: impl Into<String>) -> DiagnosticBuilder {
+        let message = format!("feature not yet implemented: '{}'", feature.into());
+        let backtrace = Backtrace::force_capture();
+
+        let mut builder = Diagnostic::new(&message).add_error(span, "used here");
+        builder.diagnostic.backtrace = Some(backtrace.to_string());
+        builder
+    }
+
     // TODO move this to a more logical place?
     /// Utility diagnostic constructor for a single error message with a single span.
     pub fn new_simple(title: impl Into<String>, span: Span, label: impl Into<String>) -> Diagnostic {
         Diagnostic::new(title).add_error(span, label).finish()
-    }
-
-    /// Utility diagnostic constructor for a duplicate identifier definition.
-    pub fn new_defined_twice(kind: &str, span: Span, prev: &Identifier, curr: &Identifier) -> Diagnostic {
-        Diagnostic::new(format!("duplicate {}", kind))
-            .snippet(span)
-            .add_info(prev.span, "previously defined here")
-            .add_error(curr.span, "defined for the second time here")
-            .finish()
-            .finish()
-    }
-
-    /// Utility diagnostic constructor for features that are not yet implemented.
-    #[track_caller]
-    pub fn new_todo(span: Span, feature: impl Into<String>) -> Diagnostic {
-        let message = format!("feature not yet implemented: '{}'", feature.into());
-        let backtrace = Backtrace::force_capture();
-
-        let mut diag = Diagnostic::new(&message).add_error(span, "used here").finish();
-        diag.backtrace = Some(backtrace.to_string());
-        diag
     }
 
     pub fn new_internal_error(span: Span, reason: impl Into<String>) -> Diagnostic {

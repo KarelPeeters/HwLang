@@ -3,6 +3,7 @@ use crate::swrite;
 use itertools::{zip_eq, Itertools};
 use num_bigint::{BigInt, BigUint};
 use std::fmt::{Display, Formatter};
+use std::ops::AddAssign;
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -40,6 +41,8 @@ pub struct IncRange<T> {
     pub end_inc: Option<T>,
 }
 
+// TODO can this represent the empty range? maybe exclusive is better after all...
+//   we don't really want empty ranges for int types, but for for loops and slices we do
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ClosedIncRange<T> {
     pub start_inc: T,
@@ -147,7 +150,7 @@ impl Type {
         match self {
             Type::Clock => Some(HardwareType::Clock),
             Type::Bool => Some(HardwareType::Bool),
-            Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int),
+            Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int).ok(),
             Type::Tuple(inner) => inner
                 .iter()
                 .map(Type::as_hardware_type)
@@ -223,12 +226,29 @@ impl<T> IncRange<T> {
         end_inc: None,
     };
 
-    pub fn try_into_closed(self) -> Option<ClosedIncRange<T>> {
+    pub fn try_into_closed(self) -> Result<ClosedIncRange<T>, Self> {
         let IncRange { start_inc, end_inc } = self;
-        Some(ClosedIncRange {
-            start_inc: start_inc?,
-            end_inc: end_inc?,
-        })
+
+        let start_inc = match start_inc {
+            Some(start_inc) => start_inc,
+            None => {
+                return Err(IncRange {
+                    start_inc: None,
+                    end_inc,
+                })
+            }
+        };
+        let end_inc = match end_inc {
+            Some(end_inc) => end_inc,
+            None => {
+                return Err(IncRange {
+                    start_inc: Some(start_inc),
+                    end_inc: None,
+                })
+            }
+        };
+
+        Ok(ClosedIncRange { start_inc, end_inc })
     }
 }
 
@@ -264,6 +284,22 @@ impl<T> ClosedIncRange<T> {
     {
         let ClosedIncRange { start_inc, end_inc } = self;
         start_inc <= value && value <= end_inc
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = T> + '_
+    where
+        T: Clone + AddAssign<u32> + Ord,
+    {
+        let mut next = self.start_inc.clone();
+        std::iter::from_fn(move || {
+            if next <= self.end_inc {
+                let curr = next.clone();
+                next += 1;
+                Some(curr)
+            } else {
+                None
+            }
+        })
     }
 }
 

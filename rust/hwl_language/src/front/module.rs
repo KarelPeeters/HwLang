@@ -1,4 +1,4 @@
-use crate::front::block::{BlockDomain, BlockEnd, TypedIrExpression, VariableValues};
+use crate::front::block::{BlockDomain, TypedIrExpression, VariableValues};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
@@ -418,22 +418,12 @@ impl BodyElaborationState<'_, '_> {
 
                     let ir_block = ir_block.and_then(|(ir_block, end)| {
                         let ir_variables = ctx.finish();
-                        match end {
-                            BlockEnd::Normal(_) => {
-                                let process = IrCombinatorialProcess {
-                                    locals: ir_variables,
-                                    block: ir_block,
-                                };
-                                Ok(IrModuleChild::CombinatorialProcess(process))
-                            }
-                            BlockEnd::Return { span_keyword, .. } => {
-                                return Err(diags.report_simple(
-                                    "return statement not allowed in combinatorial block",
-                                    span_keyword,
-                                    "return statement here",
-                                ))
-                            }
-                        }
+                        let _: VariableValues = end.unwrap_normal_in_process(diags)?;
+                        let process = IrCombinatorialProcess {
+                            locals: ir_variables,
+                            block: ir_block,
+                        };
+                        Ok(IrModuleChild::CombinatorialProcess(process))
                     });
 
                     self.processes.push(ir_block);
@@ -474,26 +464,19 @@ impl BodyElaborationState<'_, '_> {
 
                         ir_block.and_then(|(ir_block, end)| {
                             let ir_variables = ctx.finish();
-                            match end {
-                                BlockEnd::Normal(_) => {
-                                    let process = IrClockedProcess {
-                                        domain: Spanned {
-                                            span: domain.span,
-                                            inner: ir_domain,
-                                        },
-                                        locals: ir_variables,
-                                        on_clock: ir_block,
-                                        // will be filled in later, during driver checking and merging
-                                        on_reset: IrBlock { statements: vec![] },
-                                    };
-                                    Ok(IrModuleChild::ClockedProcess(process))
-                                }
-                                BlockEnd::Return { span_keyword, value: _ } => Err(diags.report_simple(
-                                    "return statement not allowed in combinatorial block",
-                                    span_keyword,
-                                    "return statement here",
-                                )),
-                            }
+                            let _: VariableValues = end.unwrap_normal_in_process(diags)?;
+
+                            let process = IrClockedProcess {
+                                domain: Spanned {
+                                    span: domain.span,
+                                    inner: ir_domain,
+                                },
+                                locals: ir_variables,
+                                on_clock: ir_block,
+                                // will be filled in later, during driver checking and merging
+                                on_reset: IrBlock { statements: vec![] },
+                            };
+                            Ok(IrModuleChild::ClockedProcess(process))
                         })
                     });
 

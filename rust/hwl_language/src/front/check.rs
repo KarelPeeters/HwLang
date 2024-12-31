@@ -85,6 +85,9 @@ pub enum TypeContainsReason {
         span_keyword: Span,
         span_return_ty: Span,
     },
+    ForIndexType {
+        span_ty: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -128,6 +131,10 @@ impl TypeContainsReason {
             } => diag
                 .add_info(span_keyword, format!("return requires type `{}`", target_ty_str))
                 .add_info(span_return_ty, format!("return type `{}` set here", target_ty_str)),
+            TypeContainsReason::ForIndexType { span_ty } => diag.add_info(
+                span_ty,
+                format!("for loop iteration variable type `{}` set here", target_ty_str),
+            ),
         }
     }
 }

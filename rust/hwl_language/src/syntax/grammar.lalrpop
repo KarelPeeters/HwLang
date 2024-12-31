@@ -267,8 +267,8 @@ BlockStatementKind: BlockStatementKind = {
     // control flow terminators
     <span_return:Span<"return">> <value:BoxExpr?> ";"
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),
-    "break" <value:BoxExpr?> ";" => BlockStatementKind::Break(value),
-    "continue" ";" => BlockStatementKind::Continue,
+    <span:Span<"break">> ";" => BlockStatementKind::Break(span),
+    <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
 }
 
 ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
