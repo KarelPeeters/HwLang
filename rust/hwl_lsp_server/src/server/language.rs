@@ -28,7 +28,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         let mut semantic_tokens = vec![];
         let mut prev_start_simple = lsp_types::Position { line: 0, character: 0 };
 
-        for token in Tokenizer::new(FileId::SINGLE, &source) {
+        for token in Tokenizer::new(FileId::SINGLE, &source).into_iter() {
             let token = match token {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?

@@ -59,32 +59,33 @@ impl<'s> Tokenizer<'s> {
         self.left.clone().next()
     }
 
-    fn skip_until(&mut self, f: impl Fn(char) -> bool) {
-        while let Some(c) = self.peek() {
-            if f(c) {
-                break;
-            }
-            self.pop();
-        }
-    }
-
     fn peek_second(&self) -> Option<char> {
         let mut iter = self.left.clone();
         iter.next()?;
         iter.next()
     }
 
+    #[must_use]
     fn pop(&mut self) -> Option<char> {
-        self.curr_byte += 1;
-        self.left.next()
+        self.left.next().inspect(|c| self.curr_byte += c.len_utf8())
     }
 
-    fn skip_chars(&mut self, n: usize) {
-        for _ in 0..n {
-            match self.left.next() {
-                None => panic!(),
-                Some(c) => self.curr_byte += c.len_utf8(),
+    fn skip(&mut self, chars: usize) {
+        for _ in 0..chars {
+            match self.pop() {
+                None => unreachable!(),
+                Some(_) => {}
             }
+        }
+    }
+
+    fn skip_until(&mut self, f: impl Fn(char) -> bool) {
+        while let Some(c) = self.peek() {
+            if f(c) {
+                break;
+            }
+            self.curr_byte += c.len_utf8();
+            self.left.next();
         }
     }
 
@@ -134,151 +135,56 @@ impl<'s> Tokenizer<'s> {
     //     None
     // }
 
-    // TODO try reordering to maximize performance
-    // TODO try generating a full character-based state machine at compile-time, that might be faster
+    // TODO generate this match state machine
     // TODO try memchr where it applies, see if it's actually faster
-    // TODO pop first 2/3 chars immediately, then match on the entire thing as a u32?
     fn next_inner(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
-        let ty = match self.peek() {
-            None => return Ok(None),
-            Some('=') => {
-                self.pop();
-                match self.peek() {
-                    Some('=') => {
-                        self.pop();
-                        TokenType::EqEq
-                    }
-                    _ => TokenType::Eq,
-                }
+        let peek = [
+            self.left.clone().nth(0).unwrap_or('\0'),
+            self.left.clone().nth(1).unwrap_or('\0'),
+        ];
+
+        let mut skip_fixed = |n: usize, ty: TokenType<&'static str>| {
+            self.skip(n);
+            ty
+        };
+
+        let ty = match peek {
+            ['\0', _] => return Ok(None),
+
+            // custom
+            // TODO replace with pattern, might be faster
+            [c, _] if is_whitespace(c) => {
+                self.skip(1);
+                self.skip_until(|c| !is_whitespace(c));
+                TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
             }
-            Some('.') => {
-                self.pop();
-                match self.peek() {
-                    Some('.') => {
-                        self.pop();
-                        match self.peek() {
-                            Some('=') => {
-                                self.pop();
-                                TokenType::DotsEq
-                            }
-                            Some('+') => {
-                                self.pop();
-                                TokenType::DotsPlus
-                            }
-                            _ => TokenType::Dots,
-                        }
-                    }
-                    _ => TokenType::Dot,
-                }
+            // TODO replace with pattern, might be faster
+            [c, _] if is_id_start(c) => {
+                self.skip(1);
+                self.skip_until(|c| !is_id_continue(c));
+                let id = &start_left_str[..self.curr_byte - start.byte];
+
+                // TODO speed up with runtime? literal tree
+                self.fixed_tokens
+                    .iter()
+                    .find_map(|(fixed, build, _)| if &id == fixed { Some(build(id)) } else { None })
+                    .unwrap_or(TokenType::Identifier(id))
+            }
+            [c, _] if is_decimal_digit(c) => {
+                self.skip(1);
+                self.skip_until(|c| !is_decimal_digit(c));
+                TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
             }
 
-            // TODO all of this would be a lot more compact if we just always popped and then went back
-            Some('(') => {
-                self.pop();
-                TokenType::OpenR
-            }
-            Some(')') => {
-                self.pop();
-                TokenType::CloseR
-            }
-            Some('{') => {
-                self.pop();
-                TokenType::OpenC
-            }
-            Some('}') => {
-                self.pop();
-                TokenType::CloseC
-            }
-            Some('[') => {
-                self.pop();
-                TokenType::OpenS
-            }
-            Some(']') => {
-                self.pop();
-                TokenType::CloseS
-            }
-            Some(',') => {
-                self.pop();
-                TokenType::Comma
-            }
-            Some(';') => {
-                self.pop();
-                TokenType::Semi
-            }
-            Some(':') => {
-                self.pop();
-                match self.peek() {
-                    Some(':') => {
-                        self.pop();
-                        TokenType::ColonColon
-                    }
-                    _ => TokenType::Colon,
-                }
-            }
-            Some('!') => {
-                self.pop();
-                match self.peek() {
-                    Some('=') => {
-                        self.pop();
-                        TokenType::Neq
-                    }
-                    _ => TokenType::Bang,
-                }
-            }
-            Some('-') => {
-                self.pop();
-                match self.peek() {
-                    Some('=') => {
-                        self.pop();
-                        TokenType::MinusEq
-                    }
-                    Some('>') => {
-                        self.pop();
-                        TokenType::Arrow
-                    }
-                    _ => TokenType::Minus,
-                }
-            }
-            Some('*') => {
-                self.pop();
-                match self.peek() {
-                    Some('=') => {
-                        self.pop();
-                        TokenType::StarEq
-                    }
-                    Some('*') => {
-                        self.pop();
-                        TokenType::StarStar
-                    }
-                    _ => TokenType::Star,
-                }
-            }
-
-            Some('/') => {
-                self.pop();
-                match self.peek() {
-                    Some('*') => todo!("block comment"),
-                    Some('/') => {
-                        self.pop();
-                        self.skip_until(|c| c == '\n' || c == '\r');
-                        TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
-                    }
-                    Some('=') => {
-                        self.pop();
-                        TokenType::SlashEq
-                    }
-                    _ => TokenType::Slash,
-                }
-            }
-            Some('"') => {
-                self.pop();
+            ['"', _] => {
+                self.skip(1);
                 self.skip_until(|c| c == '"');
                 match self.peek() {
                     Some('"') => {
-                        self.pop();
+                        self.skip(1);
                         TokenType::StringLiteral(&start_left_str[..self.curr_byte - start.byte])
                     }
                     None => {
@@ -290,36 +196,103 @@ impl<'s> Tokenizer<'s> {
                     _ => unreachable!(),
                 }
             }
-
-            // TODO replace with pattern, might be faster
-            Some(c) if is_whitespace(c) => {
-                self.pop();
-                while self.peek().map_or(false, is_whitespace) {
-                    self.pop();
+            ['/', '*'] => {
+                // block comments are allowed to nest
+                self.skip(2);
+                let mut depth: usize = 1;
+                while depth > 0 {
+                    match (self.peek(), self.peek_second()) {
+                        (Some('/'), Some('*')) => {
+                            depth += 1;
+                            self.skip(2);
+                        }
+                        (Some('*'), Some('/')) => {
+                            depth -= 1;
+                            self.skip(2);
+                        }
+                        (Some(_), _) => {
+                            self.skip(1);
+                        }
+                        (None, _) => {
+                            // hit end of source
+                            return Err(TokenError::BlockCommentMissingEnd {
+                                start,
+                                eof: self.curr_pos(),
+                            });
+                        }
+                    }
                 }
-                TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
+
+                // end of comment, depth is 0 again
+                TokenType::BlockComment(&start_left_str[..self.curr_byte - start.byte])
             }
-            // TODO replace with pattern, might be faster
-            Some(c) if is_id_start(c) => {
-                self.pop();
-                while self.peek().map_or(false, is_id_continue) {
-                    self.pop();
+            ['/', '/'] => {
+                self.skip(2);
+                self.skip_until(|c| c == '\n' || c == '\r');
+                TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
+            }
+
+            // simple fixed
+            // TODO re-order to match token types
+            ['=', '='] => skip_fixed(2, TokenType::EqEq),
+            ['=', _] => skip_fixed(1, TokenType::Eq),
+            ['!', '='] => skip_fixed(2, TokenType::Neq),
+            ['%', '='] => skip_fixed(2, TokenType::PercentEq),
+            ['%', _] => skip_fixed(1, TokenType::Percent),
+            ['!', _] => skip_fixed(1, TokenType::Bang),
+            ['>', '='] => skip_fixed(2, TokenType::Gte),
+            ['>', '>'] => skip_fixed(2, TokenType::GtGt),
+            ['>', _] => skip_fixed(1, TokenType::Gt),
+            ['<', '='] => skip_fixed(2, TokenType::Lte),
+            ['<', '<'] => skip_fixed(2, TokenType::LtLt),
+            ['<', _] => skip_fixed(1, TokenType::Lt),
+            ['&', '&'] => skip_fixed(2, TokenType::AmperAmper),
+            ['&', '='] => skip_fixed(2, TokenType::AmperEq),
+            ['&', _] => skip_fixed(1, TokenType::Amper),
+            ['|', '|'] => skip_fixed(2, TokenType::PipePipe),
+            ['|', '='] => skip_fixed(2, TokenType::BarEq),
+            ['|', _] => skip_fixed(1, TokenType::Pipe),
+            ['^', '^'] => skip_fixed(2, TokenType::CircumflexCircumflex),
+            ['^', '='] => skip_fixed(2, TokenType::CircumflexEq),
+            ['^', _] => skip_fixed(1, TokenType::Circumflex),
+            ['+', '='] => skip_fixed(2, TokenType::PlusEq),
+            ['+', _] => skip_fixed(1, TokenType::Plus),
+            ['-', '='] => skip_fixed(2, TokenType::MinusEq),
+            ['-', '>'] => skip_fixed(2, TokenType::Arrow),
+            ['-', _] => skip_fixed(1, TokenType::Minus),
+            ['*', '='] => skip_fixed(2, TokenType::StarEq),
+            ['*', '*'] => skip_fixed(2, TokenType::StarStar),
+            ['*', _] => skip_fixed(1, TokenType::Star),
+            ['/', '='] => skip_fixed(2, TokenType::SlashEq),
+            ['/', _] => skip_fixed(1, TokenType::Slash),
+            ['.', '.'] => {
+                self.skip(2);
+                match self.peek() {
+                    Some('=') => {
+                        self.skip(1);
+                        TokenType::DotsEq
+                    }
+                    Some('+') => {
+                        self.skip(1);
+                        TokenType::DotsPlus
+                    }
+                    _ => TokenType::Dots,
                 }
-                let id = &start_left_str[..self.curr_byte - start.byte];
-
-                // TODO speed up with runtime? literal tree
-                self.fixed_tokens
-                    .iter()
-                    .find_map(|(fixed, build, _)| if &id == fixed { Some(build(id)) } else { None })
-                    .unwrap_or(TokenType::Identifier(id))
             }
-            Some(c) if is_decimal_digit(c) => {
-                self.pop();
-                self.skip_until(|c| !is_decimal_digit(c));
-                TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
-            }
+            ['.', _] => skip_fixed(1, TokenType::Dot),
+            ['_', _] => skip_fixed(1, TokenType::Underscore),
+            [';', _] => skip_fixed(1, TokenType::Semi),
+            [':', ':'] => skip_fixed(2, TokenType::ColonColon),
+            [':', _] => skip_fixed(1, TokenType::Colon),
+            [',', _] => skip_fixed(1, TokenType::Comma),
+            ['(', _] => skip_fixed(1, TokenType::OpenR),
+            [')', _] => skip_fixed(1, TokenType::CloseR),
+            ['{', _] => skip_fixed(1, TokenType::OpenC),
+            ['}', _] => skip_fixed(1, TokenType::CloseC),
+            ['[', _] => skip_fixed(1, TokenType::OpenS),
+            [']', _] => skip_fixed(1, TokenType::CloseS),
 
-            Some(_) => {
+            [_, _] => {
                 return Err(TokenError::InvalidToken {
                     pos: start,
                     prefix: self.prefix_for_error_message(),
@@ -329,120 +302,6 @@ impl<'s> Tokenizer<'s> {
 
         let span = Span::new(start, self.curr_pos());
         Ok(Some(Token { span, ty }))
-
-        // // block comment
-        // if self.left.starts_with("/*") {
-        //     self.skip(2);
-        //
-        //     // block comments are allowed to nest
-        //     let mut depth: usize = 1;
-        //     while depth > 0 {
-        //         if self.left.starts_with("/*") {
-        //             depth += 1;
-        //             self.skip(2);
-        //         } else if self.left.starts_with("*/") {
-        //             depth -= 1;
-        //             self.skip(2);
-        //         } else if let Some(c) = self.left.chars().next() {
-        //             self.skip(c.len_utf8())
-        //         } else {
-        //             // hit end of source
-        //             return Err(TokenError::BlockCommentMissingEnd {
-        //                 start,
-        //                 eof: self.curr_pos(),
-        //             });
-        //         }
-        //     }
-        //
-        //     let span = Span::new(start, self.curr_pos());
-        //     return Ok(Token {
-        //         ty: TokenType::BlockComment(&left_start[..span.len_bytes()]),
-        //         span,
-        //     });
-        // }
-        // if self.left.starts_with("*/") {
-        //     return Err(TokenError::BlockCommentUnexpectedEnd {
-        //         pos: start,
-        //         prefix: self.prefix_for_error_message(),
-        //     });
-        // }
-        //
-        // // line comment
-        // // TODO should it include the trailing newline? \n\r handling becomes a bit tricky then
-        // if self.left.starts_with("//") {
-        //     let len = memchr::memchr2(b'\n', b'\r', self.left.as_bytes()).map_or(self.left.len(), |end| end);
-        //     self.skip(len);
-        //
-        //     let span = Span::new(start, self.curr_pos());
-        //     return Ok(Token {
-        //         ty: TokenType::LineComment(&left_start[..len]),
-        //         span,
-        //     });
-        // }
-        //
-        // let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
-        // if let Some(token) = self.parse_start_continue(is_whitespace, is_whitespace, TokenType::WhiteSpace) {
-        //     return Ok(token);
-        // }
-        //
-        // let is_id_start = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z');
-        // let is_id_continue = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9');
-        // let build_id = move |id| {
-        //     check_id_fixed_token(fixed_tokens, id)
-        // };
-        // if let Some(token) = self.parse_start_continue(is_id_start, is_id_continue, build_id) {
-        //     return Ok(token);
-        // }
-        //
-        // // string literal
-        // // TODO escape codes
-        // // TODO f-strings, also needs parser
-        // // TODO we're actually already parsing here, it would be better if we could pass the inner string to the parser
-        // if self.left.starts_with('"') {
-        //     let end_pos = memchr::memchr(b'"', &self.left.as_bytes()[1..]);
-        //     return match end_pos {
-        //         None => {
-        //             self.skip(self.left.len());
-        //             Err(TokenError::StringLiteralMissingEnd {
-        //                 start,
-        //                 eof: self.curr_pos(),
-        //             })
-        //         }
-        //         Some(end_pos) => {
-        //             let len_bytes = 1 + end_pos + 1;
-        //             self.skip(len_bytes);
-        //             let span = Span::new(start, self.curr_pos());
-        //             Ok(Token {
-        //                 ty: TokenType::StringLiteral(&left_start[..len_bytes]),
-        //                 span,
-        //             })
-        //         }
-        //     };
-        // }
-        //
-        // // integer literal/pattern
-        // // TODO parse hex/bin
-        // // TODO store the actually parsed int in the token to get more type safety
-        // let is_decimal_digit = |c| matches!(c, '0'..='9');
-        // if let Some(token) = self.parse_start_continue(is_decimal_digit, is_decimal_digit, TokenType::IntLiteral) {
-        //     return Ok(token);
-        // }
-        //
-        // // fixed token (needs to be after identifiers to ensure ids that start with a fixed prefix get matched as ids)
-        // if let Some((len, token)) = check_start_fixed_token(fixed_tokens, self.left) {
-        //     self.skip(len);
-        //     let span = Span::new(start, self.curr_pos());
-        //     return Ok(Token {
-        //         ty: token,
-        //         span,
-        //     });
-        // }
-        //
-        // // failed to match anything
-        // Err(TokenError::InvalidToken {
-        //     pos: self.curr_pos(),
-        //     prefix: self.prefix_for_error_message(),
-        // })
     }
 
     fn next(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
@@ -468,36 +327,6 @@ fn is_id_continue(c: char) -> bool {
 
 fn is_decimal_digit(c: char) -> bool {
     matches!(c, '0'..='9')
-}
-
-#[inline(never)]
-fn check_id_fixed_token<'s>(
-    fixed_tokens: &[(&str, fn(&str) -> TokenType<&str>, &str)],
-    id: &'s str,
-) -> TokenType<&'s str> {
-    // check for fixed matches, they might overlap with IDs
-    // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
-    for (fixed, build, _) in fixed_tokens {
-        if &id == fixed {
-            return build(id);
-        }
-    }
-    TokenType::Identifier(id)
-}
-
-#[inline(never)]
-fn check_start_fixed_token<'s>(
-    fixed_tokens: &[(&str, fn(&str) -> TokenType<&str>, &str)],
-    start: &'s str,
-) -> Option<(usize, TokenType<&'s str>)> {
-    // check for fixed matches, they might overlap with IDs
-    // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
-    for (fixed, build, _) in fixed_tokens {
-        if start.starts_with(fixed) {
-            return Some((fixed.len(), build(&start[..fixed.len()])));
-        }
-    }
-    None
 }
 
 pub struct TokenizerIterator<'s> {
@@ -762,6 +591,37 @@ mod test {
         );
 
         assert!(tokenize(file, "/*/**/").is_err());
+    }
+
+    #[test]
+    fn tokens_covered() {
+        let mut any_error = false;
+
+        for (literal, build, name) in UNSORTED_FIXED_TOKENS {
+            let file = FileId::SINGLE;
+
+            let result = tokenize(file, literal);
+            let span = Span::new(
+                Pos { file, byte: 0 },
+                Pos {
+                    file,
+                    byte: literal.len(),
+                },
+            );
+            let expected = Ok(vec![Token {
+                ty: build(literal),
+                span,
+            }]);
+
+            if result != expected {
+                any_error = true;
+                eprintln!("Failed to parse literal token {:?} {:?}:", name, literal);
+                eprintln!("  Expected: {:?}", expected);
+                eprintln!("  Got:      {:?}", result);
+            }
+        }
+
+        assert!(!any_error);
     }
 
     // TODO turn this into a test case that checks whether the grammer is up-to-date
