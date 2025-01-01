@@ -11,6 +11,7 @@ pub struct SourceDatabase {
     pub root_directory: Directory,
     files: IndexMap<FileId, FileSourceInfo>,
     directories: Arena<Directory, DirectoryInfo>,
+    total_lines_of_code: u64,
 }
 
 // TODO rename
@@ -62,11 +63,16 @@ impl SourceDatabase {
             files: IndexMap::default(),
             directories,
             root_directory,
+            total_lines_of_code: 0,
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    pub fn total_lines_of_code(&self) -> u64 {
+        self.total_lines_of_code
     }
 
     /// Get the list of files, in a platform-independent sorted order.
@@ -92,6 +98,8 @@ impl SourceDatabase {
             offsets: LineOffsets::new(&source),
             source,
         };
+
+        self.total_lines_of_code += info.offsets.line_count() as u64;
 
         let slot = &mut self.directories[directory].file;
         if slot.is_some() {

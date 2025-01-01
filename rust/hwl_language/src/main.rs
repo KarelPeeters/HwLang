@@ -17,6 +17,8 @@ struct Args {
     root: PathBuf,
     #[arg(long)]
     print_diagnostics_immediately: bool,
+    #[arg(long)]
+    profile: bool,
 }
 
 fn main() {
@@ -34,9 +36,12 @@ fn main_inner() {
     let Args {
         root,
         print_diagnostics_immediately,
+        profile,
     } = Args::parse();
 
     // collect source
+    let start_all = Instant::now();
+    let start_source = Instant::now();
     let source = match build_source_database(&root) {
         Ok(db) => db,
         Err(e) => {
@@ -45,6 +50,7 @@ fn main_inner() {
         }
     };
     let source = Rc::new(source);
+    let time_source = start_source.elapsed();
 
     // build diagnostic handler
     let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediately {
@@ -59,14 +65,22 @@ fn main_inner() {
     } else {
         None
     };
+    let diags = Diagnostics::new_with_handler(handler);
 
     // run compilation
-    let time_start = Instant::now();
-    let diags = Diagnostics::new_with_handler(handler);
+    let start_parse = Instant::now();
     let parsed = ParsedDatabase::new(&diags, &source);
+    let time_parse = start_parse.elapsed();
+
+    let start_compile = Instant::now();
     let compiled = compile(&diags, &source, &parsed);
+    let time_compile = start_compile.elapsed();
+
+    let start_lower = Instant::now();
     let lowered = lower(&diags, &source, &parsed, &compiled);
-    let time_end = Instant::now();
+    let time_lower = start_lower.elapsed();
+
+    let time_all = start_all.elapsed();
 
     // print diagnostics
     let diagnostics = diags.finish();
@@ -81,19 +95,35 @@ fn main_inner() {
     // print result
     if let Ok(lowered) = lowered {
         println!("top module name: {:?}", lowered.top_module_name);
-        println!("verilog source:");
-        println!("----------------------------------------");
-        print!("{}", lowered.verilog_source);
-        if !lowered.verilog_source.ends_with("\n") {
-            println!();
+        if !profile {
+            println!("verilog source:");
+            println!("----------------------------------------");
+            print!("{}", lowered.verilog_source);
+            if !lowered.verilog_source.ends_with("\n") {
+                println!();
+            }
+            println!("----------------------------------------");
         }
-        println!("----------------------------------------");
     }
 
-    // profile profile
-    let time_elapsed = time_end - time_start;
-    println!("compilation took: {:?}", time_elapsed);
+    // print profiling info
+    if profile {
+        println!();
+        println!("profiling info:");
+        println!("----------------------------------------");
+        println!("input files: {}", source.file_count());
+        println!("input lines: {}", source.total_lines_of_code());
+        println!("----------------------------------------");
+        println!("read source: {:?}", time_source);
+        println!("parse:       {:?}", time_parse);
+        println!("compile:     {:?}", time_compile);
+        println!("lower:       {:?}", time_lower);
+        println!("----------------------------------------");
+        println!("total:       {:?}", time_all);
+        println!();
+    }
 
+    // proper exit code
     if any_error {
         std::process::exit(1);
     }
@@ -122,7 +152,7 @@ fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> 
     })
     .unwrap();
 
-    if source_database.len() == 0 {
+    if source_database.file_count() == 0 {
         println!("Warning: no input files found");
     }
 
