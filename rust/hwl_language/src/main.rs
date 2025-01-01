@@ -5,6 +5,7 @@ use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diag
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
+use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
 use itertools::Itertools;
 use std::ffi::OsStr;
@@ -67,6 +68,17 @@ fn main_inner() {
     };
     let diags = Diagnostics::new_with_handler(handler);
 
+    // profile tokenization separately
+    let start_tokenize = Instant::now();
+    if profile {
+        let mut total_tokens = 0;
+        for file in source.files() {
+            total_tokens += Tokenizer::new(file, &source[file].source).count();
+        }
+        println!("total tokens: {}", total_tokens);
+    }
+    let time_tokenize = start_tokenize.elapsed();
+
     // run compilation
     let start_parse = Instant::now();
     let parsed = ParsedDatabase::new(&diags, &source);
@@ -110,16 +122,17 @@ fn main_inner() {
     if profile {
         println!();
         println!("profiling info:");
+        println!("-----------------------------------------------");
+        println!("input files:      {}", source.file_count());
+        println!("input lines:      {}", source.total_lines_of_code());
         println!("----------------------------------------");
-        println!("input files: {}", source.file_count());
-        println!("input lines: {}", source.total_lines_of_code());
-        println!("----------------------------------------");
-        println!("read source: {:?}", time_source);
-        println!("parse:       {:?}", time_parse);
-        println!("compile:     {:?}", time_compile);
-        println!("lower:       {:?}", time_lower);
-        println!("----------------------------------------");
-        println!("total:       {:?}", time_all);
+        println!("read source:      {:?}", time_source);
+        println!("tokenize:         {:?}", time_tokenize);
+        println!("parse + tokenize: {:?}", time_parse);
+        println!("compile:          {:?}", time_compile);
+        println!("lower:            {:?}", time_lower);
+        println!("-----------------------------------------------");
+        println!("total:            {:?}", time_all);
         println!();
     }
 
