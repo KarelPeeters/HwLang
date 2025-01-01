@@ -10,6 +10,7 @@ use itertools::Itertools;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -19,6 +20,17 @@ struct Args {
 }
 
 fn main() {
+    // spawn a new thread with a larger stack size
+    // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024 * 1024)
+        .spawn(main_inner)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn main_inner() {
     let Args {
         root,
         print_diagnostics_immediately,
@@ -49,10 +61,12 @@ fn main() {
     };
 
     // run compilation
+    let time_start = Instant::now();
     let diags = Diagnostics::new_with_handler(handler);
     let parsed = ParsedDatabase::new(&diags, &source);
     let compiled = compile(&diags, &source, &parsed);
     let lowered = lower(&diags, &source, &parsed, &compiled);
+    let time_end = Instant::now();
 
     // print diagnostics
     let diagnostics = diags.finish();
@@ -75,6 +89,10 @@ fn main() {
         }
         println!("----------------------------------------");
     }
+
+    // profile profile
+    let time_elapsed = time_end - time_start;
+    println!("compilation took: {:?}", time_elapsed);
 
     if any_error {
         std::process::exit(1);
