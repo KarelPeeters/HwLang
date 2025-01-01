@@ -46,7 +46,7 @@ impl ValueDomain {
         // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
             (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other.clone(),
-            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left.clone()),
+            (&ValueDomain::Sync(left), &ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left),
             _ => ValueDomain::Async,
         }
     }
@@ -171,7 +171,6 @@ impl SyncDomain<Polarized<Signal>> {
 
 impl SyncDomain<Polarized<Port>> {
     pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
-        self.map_inner(|p| p.map_inner(|p| Signal::Port(p)))
-            .to_diagnostic_string(s)
+        self.map_inner(|p| p.map_inner(Signal::Port)).to_diagnostic_string(s)
     }
 }

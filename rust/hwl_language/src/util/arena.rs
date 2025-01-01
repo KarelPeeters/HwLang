@@ -15,12 +15,12 @@ use rand::random;
 macro_rules! new_index_type {
     ($vis:vis $name:ident) => {
         #[derive(Copy, Clone, Eq, PartialEq, Hash)]
-        $vis struct $name(crate::util::arena::Idx);
+        $vis struct $name($crate::util::arena::Idx);
 
         //trick to make the imports not leak outside of the macro
         const _: () = {
-            use crate::util::arena::IndexType;
-            use crate::util::arena::Idx;
+            use $crate::util::arena::IndexType;
+            use $crate::util::arena::Idx;
 
             impl IndexType for $name {
                 fn new(idx: Idx) -> Self {

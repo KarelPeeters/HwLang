@@ -50,9 +50,7 @@ pub struct CompileTimeExpressionContext;
 impl ExpressionContext for CompileTimeExpressionContext {
     type Block = ();
 
-    fn new_ir_block(&self) -> () {
-        ()
-    }
+    fn new_ir_block(&self) {}
 
     fn push_ir_statement(
         &self,
@@ -71,7 +69,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
     }
 
     fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> Result<IrBlock, ErrorGuaranteed> {
-        let _ = block;
+        let () = block;
         Err(diags.report_internal_error(span, "trying to unwrap IR block in compile-time context"))
     }
 
@@ -165,9 +163,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
             return;
         }
 
-        block_parent
-            .statements
-            .push(block_inner.map_inner(|block_inner| IrStatement::Block(block_inner)));
+        block_parent.statements.push(block_inner.map_inner(IrStatement::Block));
     }
 
     fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> Result<IrBlock, ErrorGuaranteed> {

@@ -73,10 +73,6 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
-    pub fn into_iter(self) -> TokenizerIterator<'s> {
-        TokenizerIterator { tokenizer: self }
-    }
-
     fn peek(&self) -> Option<char> {
         self.left.clone().next()
     }
@@ -163,6 +159,7 @@ impl<'s> Tokenizer<'s> {
             }
             [pattern_decimal_digit!(), _] => {
                 self.skip(1);
+                #[allow(clippy::manual_is_ascii_check)]
                 self.skip_until(|c| !matches!(c, pattern_decimal_digit!()));
                 TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
             }
@@ -298,6 +295,15 @@ impl<'s> Tokenizer<'s> {
             "Cannot continue calling next on tokenizer that returned an error"
         );
         self.next_inner().inspect_err(|_| self.errored = true)
+    }
+}
+
+impl<'s> IntoIterator for Tokenizer<'s> {
+    type Item = Result<Token<&'s str>, TokenError>;
+    type IntoIter = TokenizerIterator<'s>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TokenizerIterator { tokenizer: self }
     }
 }
 
@@ -585,13 +591,13 @@ mod test {
     fn literal_tokens_unique() {
         let mut set = HashSet::new();
         for info in FIXED_TOKENS {
-            assert!(info.literal.len() > 0);
+            assert!(!info.literal.is_empty());
             assert!(set.insert(info.literal));
         }
     }
 
     #[test]
-    fn literla_tokens_covered() {
+    fn literal_tokens_covered() {
         let mut any_error = false;
 
         for info in FIXED_TOKENS {

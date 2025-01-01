@@ -150,7 +150,7 @@ impl LoweredNameScope {
 fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> Result<(), ErrorGuaranteed> {
     let s = id.inner;
 
-    if s.len() == 0 {
+    if s.is_empty() {
         throw!(diags.report_simple(
             "invalid verilog identifier: identifier cannot be empty",
             id.span,
@@ -464,8 +464,8 @@ fn lower_module_statements(
                     diags,
                     module_name_scope,
                     reg_name_map,
-                    &registers,
-                    &mut written_regs,
+                    registers,
+                    &written_regs,
                     f,
                     &mut newline,
                 )?;
@@ -532,7 +532,7 @@ fn lower_module_statements(
 
                 let name_map = NameMap {
                     ports: port_name_map,
-                    registers: &reg_name_map,
+                    registers: reg_name_map,
                     wires: wire_name_map,
                     variables: &IndexMap::new(),
                 };
@@ -700,11 +700,11 @@ fn lower_block(
 
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let target = match target {
-                    &IrAssignmentTarget::Port(port) => name_map.ports.get(&port).unwrap(),
-                    &IrAssignmentTarget::Wire(wire) => name_map.wires.get(&wire).unwrap(),
-                    &IrAssignmentTarget::Register(reg) => name_map.registers.get(&reg).unwrap(),
-                    &IrAssignmentTarget::Variable(var) => name_map.variables.get(&var).unwrap(),
+                let target = match *target {
+                    IrAssignmentTarget::Port(port) => name_map.ports.get(&port).unwrap(),
+                    IrAssignmentTarget::Wire(wire) => name_map.wires.get(&wire).unwrap(),
+                    IrAssignmentTarget::Register(reg) => name_map.registers.get(&reg).unwrap(),
+                    IrAssignmentTarget::Variable(var) => name_map.variables.get(&var).unwrap(),
                 };
 
                 swrite!(f, "{indent}{target} = ");

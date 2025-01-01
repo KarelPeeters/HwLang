@@ -19,7 +19,7 @@ impl CompileState<'_> {
                 .check_compile_loop(ElaborationStackEntry::Item(item), |s| {
                     s.eval_item_as_ty_or_value_new(item)
                 })
-                .unwrap_or_else(|e| Err(e));
+                .unwrap_or_else(Err);
 
             self.items.insert_first(item, result).as_ref_ok()
         } else {
@@ -96,7 +96,7 @@ impl CompileState<'_> {
                     }
                     Some(params) => {
                         let func = FunctionValue {
-                            outer_scope: file_scope.clone(),
+                            outer_scope: file_scope,
                             item,
                             params: params.clone(),
                             body_span: inner.span,

@@ -46,3 +46,19 @@ wasm-bindgen = "0.2.84"
 
 [profile.release]
 debug = 2
+
+[workspace.lints.clippy]
+# Things that are not yet implemented should report diagnostics, not crash the compiler.
+todo = "warn"
+unimplemented = "warn"
+
+# Some overly pedantic lints.
+type_complexity = "allow"
+too_many_arguments = "allow"
+len_without_is_empty = "allow"
+new_without_default = "allow"
+get_first = "allow"
+
+# These should be investigated and fixed and some point.
+result_large_err = "allow"
+large_enum_variant = "allow"

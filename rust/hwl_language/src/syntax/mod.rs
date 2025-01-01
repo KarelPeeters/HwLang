@@ -1,6 +1,5 @@
 use annotate_snippets::Level;
 use itertools::enumerate;
-use lalrpop_util::lalrpop_mod;
 
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, Span};
@@ -14,7 +13,14 @@ pub mod pos;
 pub mod source;
 pub mod token;
 
-lalrpop_mod!(grammar, "/syntax/grammar.rs");
+#[allow(clippy::redundant_field_names)]
+mod grammar_wrapper {
+    use lalrpop_util::lalrpop_mod;
+
+    lalrpop_mod!(pub grammar, "/syntax/grammar.rs");
+}
+
+use grammar_wrapper::grammar;
 
 pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, TokenError>;
 
@@ -52,7 +58,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
     let location_builder = LocationBuilder { file };
 
     // actual parsing
-    let result = grammar::FileContentParser::new().parse(&location_builder, &src, tokenizer);
+    let result = grammar::FileContentParser::new().parse(&location_builder, src, tokenizer);
 
     // convert the error back to our own formats
     result.map_err(|e| {
@@ -114,7 +120,7 @@ fn format_expected(expected: &[String]) -> String {
         }
         result.push_str(format_expected_single(e));
     }
-    result.push_str("]");
+    result.push(']');
     result
 }
 

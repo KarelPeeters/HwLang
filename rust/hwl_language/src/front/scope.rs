@@ -55,7 +55,7 @@ pub struct Scopes {
 // TODO rethink: have a separate scope builder that needs all declarations to be provided before any lookups can start?
 //   more safe and elegant, but makes "a bunch of nested scopes" like in generic params much slower
 impl Scopes {
-    pub fn default() -> Self {
+    pub fn new() -> Self {
         Self {
             arena: Arena::default(),
         }
@@ -88,7 +88,7 @@ impl ScopeInfo {
     /// This function always appears to succeed, errors are instead reported as diagnostics.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'a>(
+    pub fn declare(
         &mut self,
         diagnostics: &Diagnostics,
         id: &Identifier,

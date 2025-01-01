@@ -32,7 +32,7 @@ pub fn recurse_for_each_file_impl(
                 recurse_for_each_file_impl(&next, stack, f)?;
                 stack.pop();
             } else {
-                f(&stack, &entry)?;
+                f(stack, &entry)?;
             }
         }
     }

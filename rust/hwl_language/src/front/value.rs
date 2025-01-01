@@ -143,8 +143,8 @@ impl CompileValue {
             CompileValue::Undefined => HardwareValueResult::Undefined,
             &CompileValue::Bool(value) => HardwareValueResult::Success(IrExpression::Bool(value)),
             CompileValue::Int(value) => HardwareValueResult::Success(IrExpression::Int(value.clone())),
-            CompileValue::Tuple(values) => map_array(&values, IrExpression::TupleLiteral),
-            CompileValue::Array(values) => map_array(&values, IrExpression::ArrayLiteral),
+            CompileValue::Tuple(values) => map_array(values, IrExpression::TupleLiteral),
+            CompileValue::Array(values) => map_array(values, IrExpression::ArrayLiteral),
             CompileValue::Type(_)
             | CompileValue::String(_)
             | CompileValue::IntRange(_)

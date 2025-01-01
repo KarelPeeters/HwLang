@@ -30,9 +30,9 @@ impl CompileState<'_> {
     ) -> Result<Spanned<MaybeCompile<NamedValue>>, ErrorGuaranteed> {
         let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
-        let result = match found.value {
-            &ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
-            &ScopedEntry::Direct(value) => MaybeCompile::Other(value),
+        let result = match *found.value {
+            ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
+            ScopedEntry::Direct(value) => MaybeCompile::Other(value),
         };
         Ok(Spanned {
             span: def_span,
@@ -279,7 +279,7 @@ impl CompileState<'_> {
                                         CompileValue::Int(index_inner) => {
                                             let valid_range = 0..curr.len();
                                             let index = index_inner.to_usize()
-                                                .filter(|index| valid_range.contains(&index))
+                                                .filter(|index| valid_range.contains(index))
                                                 .ok_or_else(|| {
                                                     diags.report_simple(
                                                         "array index out of bounds",
@@ -297,7 +297,7 @@ impl CompileState<'_> {
                                                 match x {
                                                     None => Ok(default),
                                                     Some(x) => x.to_usize()
-                                                        .filter(|index| valid_range.contains(&index))
+                                                        .filter(|index| valid_range.contains(index))
                                                         .ok_or_else(|| {
                                                             diags.report_simple(
                                                                 "array slice range out of bounds",
@@ -648,10 +648,8 @@ impl CompileState<'_> {
                 ("type", "any", []) => return Ok(CompileValue::Type(Type::Any)),
                 ("type", "bool", []) => return Ok(CompileValue::Type(Type::Bool)),
                 ("type", "Range", []) => return Ok(CompileValue::Type(Type::Range)),
-                ("type", "int_range", [range]) => {
-                    if let CompileValue::IntRange(range) = range {
-                        return Ok(CompileValue::Type(Type::Int(range.clone())));
-                    }
+                ("type", "int_range", [CompileValue::IntRange(range)]) => {
+                    return Ok(CompileValue::Type(Type::Int(range.clone())));
                 }
                 // fallthrough into err
                 _ => {}

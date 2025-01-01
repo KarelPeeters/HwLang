@@ -145,7 +145,7 @@ fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> 
 
     // TODO proper error handling for IO and string conversion errors
     // TODO make parsing a separate step?
-    recurse_for_each_file(&root, &mut |stack, f| {
+    recurse_for_each_file(root, &mut |stack, f| {
         let path = f.path();
         if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
             return Ok(());

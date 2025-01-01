@@ -140,15 +140,15 @@ impl CompileState<'_> {
                         WireKind::Normal { domain, ty } => {
                             let no_vars = VariableValues::new_no_vars();
                             (
-                                self.eval_port_domain(ports_scope, &domain)
-                                    .map(|d| d.map_inner(|d| PortDomain::Kind(d))),
+                                self.eval_port_domain(ports_scope, domain)
+                                    .map(|d| d.map_inner(PortDomain::Kind)),
                                 self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port"),
                             )
                         }
                     };
 
                     // build entry
-                    let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
+                    let entry = result_pair(domain, ty).map(|(domain, ty)| {
                         let ir_port = ir_ports.push(IrPortInfo {
                             direction: direction.inner,
                             ty: ty.inner.to_ir(),
@@ -164,7 +164,7 @@ impl CompileState<'_> {
                             ir: ir_port,
                         });
                         ports_vec.push(port);
-                        Ok(ScopedEntry::Direct(NamedValue::Port(port)))
+                        ScopedEntry::Direct(NamedValue::Port(port))
                     });
 
                     self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -174,8 +174,8 @@ impl CompileState<'_> {
 
                     // eval domain
                     let domain = self
-                        .eval_port_domain(ports_scope, &domain)
-                        .map(|d| d.map_inner(|d| PortDomain::Kind(d)));
+                        .eval_port_domain(ports_scope, domain)
+                        .map(|d| d.map_inner(PortDomain::Kind));
 
                     for port in ports {
                         let ModulePortInBlock {
@@ -190,7 +190,7 @@ impl CompileState<'_> {
                         let ty = self.eval_expression_as_ty_hardware(ports_scope, &no_vars, ty, "port");
 
                         // build entry
-                        let entry = result_pair(domain.as_ref_ok(), ty).and_then(|(domain, ty)| {
+                        let entry = result_pair(domain.as_ref_ok(), ty).map(|(&domain, ty)| {
                             let ir_port = ir_ports.push(IrPortInfo {
                                 direction: direction.inner,
                                 ty: ty.inner.to_ir(),
@@ -201,12 +201,12 @@ impl CompileState<'_> {
                             let port = self.ports.push(PortInfo {
                                 id: id.clone(),
                                 direction: *direction,
-                                domain: domain.clone(),
+                                domain,
                                 ty,
                                 ir: ir_port,
                             });
                             ports_vec.push(port);
-                            Ok(ScopedEntry::Direct(NamedValue::Port(port)))
+                            ScopedEntry::Direct(NamedValue::Port(port))
                         });
 
                         self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -256,11 +256,7 @@ impl CompileState<'_> {
                     // do nothing
                 }
                 PortDirection::Output => {
-                    state
-                        .drivers
-                        .output_port_drivers
-                        .entry(port)
-                        .or_insert_with(IndexMap::new);
+                    state.drivers.output_port_drivers.entry(port).or_default();
                 }
             }
         }
@@ -399,10 +395,10 @@ impl BodyElaborationState<'_, '_> {
                 ModuleStatementKind::RegOutPortMarker(_) => {}
                 // blocks, handle now
                 ModuleStatementKind::CombinatorialBlock(block) => {
-                    let &CombinatorialBlock {
+                    let CombinatorialBlock {
                         span: _,
                         span_keyword: _,
-                        ref block,
+                        block,
                     } = block;
 
                     let block_domain = BlockDomain::Combinatorial;
@@ -449,7 +445,7 @@ impl BodyElaborationState<'_, '_> {
 
                         let block_domain = Spanned {
                             span: span_keyword.join(domain.span),
-                            inner: domain.inner.clone(),
+                            inner: domain.inner,
                         };
                         let block_domain = BlockDomain::Clocked(block_domain);
                         let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
@@ -779,8 +775,8 @@ impl BodyElaborationState<'_, '_> {
                     ExpressionKind::Id(id) => {
                         let named = self.state.eval_id(scope, id)?;
 
-                        let (signal_ir, signal_target, signal_ty, signal_domain) = match &named.inner {
-                            &MaybeCompile::Other(NamedValue::Wire(wire)) => {
+                        let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
+                            MaybeCompile::Other(NamedValue::Wire(wire)) => {
                                 let wire_info = &self.state.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
@@ -789,15 +785,13 @@ impl BodyElaborationState<'_, '_> {
                                     &wire_info.domain,
                                 )
                             }
-                            &MaybeCompile::Other(NamedValue::Port(port)) => {
+                            MaybeCompile::Other(NamedValue::Port(port)) => {
                                 let port_info = &self.state.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
                                     AssignmentTarget::Port(port),
                                     &port_info.ty,
-                                    &port_info
-                                        .domain
-                                        .map_inner(|port_domain| ValueDomain::from_port_domain(port_domain)),
+                                    &port_info.domain.map_inner(ValueDomain::from_port_domain),
                                 )
                             }
                             _ => throw!(build_error()),
@@ -1054,7 +1048,7 @@ impl BodyElaborationState<'_, '_> {
             WireKind::Normal { domain, ty } => {
                 let domain = state
                     .eval_domain(scope_body, domain)
-                    .map(|d| d.map_inner(|d| ValueDomain::from_domain_kind(d)));
+                    .map(|d| d.map_inner(ValueDomain::from_domain_kind));
                 let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "wire");
                 (domain, ty)
             }
@@ -1355,11 +1349,11 @@ impl Drivers {
             Ok(())
         }
 
-        match target.inner {
-            &AssignmentTarget::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
-            &AssignmentTarget::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
-            &AssignmentTarget::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
-            &AssignmentTarget::Variable(_) => Err(diags.report_todo(target.span, "variable assignment")),
+        match *target.inner {
+            AssignmentTarget::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
+            AssignmentTarget::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
+            AssignmentTarget::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
+            AssignmentTarget::Variable(_) => Err(diags.report_todo(target.span, "variable assignment")),
         }
     }
 }

@@ -64,10 +64,10 @@ pub enum AssignmentEvent {
 
 impl AssignmentEvent {
     pub fn span(&self) -> Span {
-        match self {
-            &AssignmentEvent::SimpleAssignment(span) => span,
-            &AssignmentEvent::IfMerge(span) => span,
-            &AssignmentEvent::ForIndex(span) => span,
+        match *self {
+            AssignmentEvent::SimpleAssignment(span) => span,
+            AssignmentEvent::IfMerge(span) => span,
+            AssignmentEvent::ForIndex(span) => span,
         }
     }
 }
@@ -230,10 +230,7 @@ impl CompileState<'_> {
         block: &Block<BlockStatement>,
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let diags = self.diags;
-        let &Block {
-            span: _,
-            ref statements,
-        } = block;
+        let Block { span: _, statements } = block;
 
         let scope = self.scopes.new_child(scope_parent, block.span, Visibility::Private);
         let mut ctx_block = ctx.new_ir_block();
@@ -439,7 +436,7 @@ impl CompileState<'_> {
         let (target_ty, target_domain, ir_target) = match target.inner {
             AssignmentTarget::Port(port) => {
                 let info = &self.ports[port];
-                let domain = ValueDomain::from_port_domain(info.domain.inner.clone());
+                let domain = ValueDomain::from_port_domain(info.domain.inner);
                 (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
             }
             AssignmentTarget::Wire(wire) => {
@@ -449,7 +446,7 @@ impl CompileState<'_> {
             }
             AssignmentTarget::Register(reg) => {
                 let info = &self.registers[reg];
-                let domain = ValueDomain::Sync(info.domain.inner.clone());
+                let domain = ValueDomain::Sync(info.domain.inner);
                 (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
             }
             AssignmentTarget::Variable(var) => {
@@ -561,7 +558,7 @@ impl CompileState<'_> {
                 check
             }
             BlockDomain::Clocked(block_domain) => {
-                let block_domain = block_domain.as_ref().map_inner(|d| ValueDomain::Sync(d.clone()));
+                let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
 
                 let check_target_domain = self.check_valid_domain_crossing(
                     stmt.span,
@@ -664,7 +661,7 @@ impl CompileState<'_> {
                             span: cond.span,
                             inner: &cond_eval.domain,
                         };
-                        let block_domain = block_domain.as_ref().map_inner(|d| ValueDomain::Sync(d.clone()));
+                        let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
                         self.check_valid_domain_crossing(
                             cond.span,
                             block_domain.as_ref(),
@@ -773,7 +770,7 @@ impl CompileState<'_> {
                 cond: _,
                 block: (_else_if_block, else_if_vars),
             } = else_if;
-            record_merge_info(&mut info, &vars_before, &else_if_vars);
+            record_merge_info(&mut info, &vars_before, else_if_vars);
         }
 
         let (mut final_else_block, final_else_vars) = final_else;
@@ -932,7 +929,7 @@ impl CompileState<'_> {
                 self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
             }
             MaybeCompile::Compile(CompileValue::Array(iter)) => {
-                let iter = iter.into_iter().map(|v| MaybeCompile::Compile(v));
+                let iter = iter.into_iter().map(MaybeCompile::Compile);
                 self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
             }
             MaybeCompile::Other(TypedIrExpression {
@@ -1125,7 +1122,7 @@ fn build_merge_store(
     // TODO use better span here
     let value_ir = value.value.to_ir_expression(diags, span_stmt)?;
 
-    *domain = domain.join(&value.value.domain());
+    *domain = domain.join(value.value.domain());
 
     let target = IrAssignmentTarget::Variable(var_ir);
     let assign = IrStatement::Assign(target, value_ir.expr);

@@ -23,12 +23,12 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
 
         let source = self.vfs.inner()?.get_text(&uri)?;
         // TODO cache offsets somewhere
-        let offsets = LineOffsets::new(&source);
+        let offsets = LineOffsets::new(source);
 
         let mut semantic_tokens = vec![];
         let mut prev_start_simple = lsp_types::Position { line: 0, character: 0 };
 
-        for token in Tokenizer::new(FileId::SINGLE, &source).into_iter() {
+        for token in Tokenizer::new(FileId::SINGLE, source) {
             let token = match token {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?
@@ -43,7 +43,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                 if self.settings.supports_multi_line_semantic_tokens {
                     semantic_tokens.push(to_semantic_token(
                         self.settings.position_encoding,
-                        &source,
+                        source,
                         &offsets,
                         &mut prev_start_simple,
                         token.span,
@@ -53,7 +53,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                     for span in offsets.split_lines(offsets.expand_span(token.span), false) {
                         semantic_tokens.push(to_semantic_token(
                             self.settings.position_encoding,
-                            &source,
+                            source,
                             &offsets,
                             &mut prev_start_simple,
                             span.span(),

@@ -144,6 +144,7 @@ impl Default for DiagnosticStringSettings {
 // TODO clarify constructor naming: start_ for builders and new_ for complete?
 //   what is the point of complete constructors in the first place?
 impl Diagnostic {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(title: impl Into<String>) -> DiagnosticBuilder {
         DiagnosticBuilder {
             diagnostic: Diagnostic {

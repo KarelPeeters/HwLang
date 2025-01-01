@@ -28,7 +28,7 @@ use itertools::{enumerate, Itertools};
 pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> IrDatabase {
     // populate file scopes
     let mut map_file_scopes = IndexMap::new();
-    let mut scopes = Scopes::default();
+    let mut scopes = Scopes::new();
 
     let files = source.files();
     let mut all_items_except_imports = vec![];
@@ -82,7 +82,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
                 if let ast::Item::Import(item) = item {
                     add_import_to_scope(
                         diags,
-                        &source,
+                        source,
                         &mut scopes,
                         &map_file_scopes,
                         file_scopes.scope_inner_import,
@@ -255,7 +255,7 @@ impl PortInfo {
     pub fn typed_ir_expr(&self) -> TypedIrExpression {
         TypedIrExpression {
             ty: self.ty.inner.clone(),
-            domain: ValueDomain::from_port_domain(self.domain.inner.clone()),
+            domain: ValueDomain::from_port_domain(self.domain.inner),
             expr: IrExpression::Port(self.ir),
         }
     }
@@ -275,7 +275,7 @@ impl RegisterInfo {
     pub fn typed_ir_expr(&self) -> TypedIrExpression {
         TypedIrExpression {
             ty: self.ty.inner.clone(),
-            domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner.clone())),
+            domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner)),
             expr: IrExpression::Register(self.ir),
         }
     }
@@ -312,7 +312,7 @@ fn add_import_to_scope(
         // TODO allow private visibility into child scopes?
         let entry = parent_scope.and_then(|parent_scope| {
             scopes[parent_scope]
-                .find(&scopes, diags, id, Visibility::Public)
+                .find(scopes, diags, id, Visibility::Public)
                 .map(|entry| entry.value.clone())
         });
 

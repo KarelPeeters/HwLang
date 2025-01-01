@@ -86,7 +86,7 @@ pub fn codemirror_tokenize_to_tree(src: &str) -> Vec<u32> {
     let token_category_to_index = token_category_to_index();
     let top_node_index = codemirror_node_types().len();
 
-    for token in Tokenizer::new(FileId::SINGLE, src).into_iter() {
+    for token in Tokenizer::new(FileId::SINGLE, src) {
         match token {
             Ok(token) => {
                 if let Some(category_index) = token_category_to_index[token.ty.category().index()] {
@@ -114,7 +114,7 @@ pub fn codemirror_tokenize_to_tree(src: &str) -> Vec<u32> {
 #[wasm_bindgen]
 pub fn codemirror_node_types() -> Vec<String> {
     TokenCategory::iter()
-        .filter_map(|tc| token_category_to_tag(tc))
+        .filter_map(token_category_to_tag)
         .map(str::to_owned)
         .collect_vec()
 }

@@ -7,13 +7,12 @@ use hwl_lsp_server::server::state::{HandleMessageOutcome, OrSendError, RequestEr
 use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
-use std::any::Any;
 use std::path::Path;
 
 fn main() -> Result<(), TopError> {
-    std::panic::catch_unwind(|| main_inner()).unwrap_or_else(|e| {
+    std::panic::catch_unwind(main_inner).unwrap_or_else(|e| {
         let s = match e.downcast::<String>() {
-            Err(e) => format!("{:?} with type {:?}", e, e.type_id()),
+            Err(e) => format!("{:?} with type {:?}", e, (*e).type_id()),
             Ok(e_str) => format!("{:?}", e_str),
         };
 

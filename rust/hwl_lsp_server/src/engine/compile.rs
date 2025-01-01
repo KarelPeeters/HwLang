@@ -101,7 +101,7 @@ impl ServerState {
             let text = content.get_text(path)?;
             let file_id =
                 try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
-            abs_path_map.insert(file_id, vfs_root.join(&path));
+            abs_path_map.insert(file_id, vfs_root.join(path));
         }
 
         Ok(Ok((source, abs_path_map)))
