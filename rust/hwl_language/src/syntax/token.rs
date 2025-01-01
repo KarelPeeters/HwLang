@@ -1,8 +1,6 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use logos::Source;
-use std::cmp::Reverse;
 use strum::EnumIter;
 
 use crate::syntax::pos::{FileId, Pos, Span};
@@ -37,7 +35,31 @@ pub struct Tokenizer<'s> {
     curr_byte: usize,
     left: std::str::Chars<'s>,
     errored: bool,
-    fixed_tokens: &'static [(&'static str, fn(&str) -> TokenType<&str>, &'static str)],
+    fixed_tokens_grouped_by_length: &'static [Vec<FixedTokenInfo>],
+}
+
+macro_rules! pattern_whitespace {
+    () => {
+        ' ' | '\t' | '\n' | '\r'
+    };
+}
+
+macro_rules! pattern_id_start {
+    () => {
+        '_' | 'a'..='z' | 'A'..='Z'
+    };
+}
+
+macro_rules! pattern_id_continue {
+    () => {
+        '_' | 'a'..='z' | 'A'..='Z' | '0'..='9'
+    };
+}
+
+macro_rules! pattern_decimal_digit {
+    () => {
+        '0'..='9'
+    };
 }
 
 impl<'s> Tokenizer<'s> {
@@ -47,7 +69,7 @@ impl<'s> Tokenizer<'s> {
             curr_byte: 0,
             left: source.chars(),
             errored: false,
-            fixed_tokens: &FIXED_TOKENS,
+            fixed_tokens_grouped_by_length: &FIXED_TOKENS_GROUPED_BY_LENGTH,
         }
     }
 
@@ -100,41 +122,6 @@ impl<'s> Tokenizer<'s> {
         self.left.clone().take(ERROR_CONTEXT_LENGTH).collect()
     }
 
-    // fn parse_start_continue(
-    //     &mut self,
-    //     is_start: impl Fn(char) -> bool,
-    //     is_continue: impl Fn(char) -> bool,
-    //     build: impl Fn(&'s str) -> TokenType<&'s str>,
-    // ) -> Option<Token<&'s str>> {
-    //     let start = self.curr_pos();
-    //
-    //     let mut chars = self.left.chars();
-    //     if let Some(first) = chars.next() {
-    //         if is_start(first) {
-    //             let mut len = 0;
-    //             len += first.len_utf8();
-    //
-    //             while let Some(c) = chars.next() {
-    //                 if is_continue(c) {
-    //                     len += c.len_utf8();
-    //                 } else {
-    //                     break;
-    //                 }
-    //             }
-    //
-    //             self.skip(len);
-    //             let span = Span::new(start, self.curr_pos());
-    //
-    //             return Some(Token {
-    //                 span,
-    //                 ty: build(&left_start[..len]),
-    //             });
-    //         }
-    //     }
-    //
-    //     None
-    // }
-
     // TODO generate this match state machine
     // TODO try memchr where it applies, see if it's actually faster
     fn next_inner(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
@@ -155,27 +142,28 @@ impl<'s> Tokenizer<'s> {
             ['\0', _] => return Ok(None),
 
             // custom
-            // TODO replace with pattern, might be faster
-            [c, _] if is_whitespace(c) => {
+            [pattern_whitespace!(), _] => {
                 self.skip(1);
-                self.skip_until(|c| !is_whitespace(c));
+                self.skip_until(|c| !matches!(c, pattern_whitespace!()));
                 TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
             }
-            // TODO replace with pattern, might be faster
-            [c, _] if is_id_start(c) => {
+            [pattern_id_start!(), _] => {
                 self.skip(1);
-                self.skip_until(|c| !is_id_continue(c));
+                self.skip_until(|c| !matches!(c, pattern_id_continue!()));
                 let id = &start_left_str[..self.curr_byte - start.byte];
 
                 // TODO speed up with runtime? literal tree
-                self.fixed_tokens
-                    .iter()
-                    .find_map(|(fixed, build, _)| if &id == fixed { Some(build(id)) } else { None })
-                    .unwrap_or(TokenType::Identifier(id))
+                match self.fixed_tokens_grouped_by_length.get(id.len()) {
+                    None => TokenType::Identifier(id),
+                    Some(potential) => potential
+                        .iter()
+                        .find_map(|info| if info.literal == id { Some(info.ty) } else { None })
+                        .unwrap_or(TokenType::Identifier(id)),
+                }
             }
-            [c, _] if is_decimal_digit(c) => {
+            [pattern_decimal_digit!(), _] => {
                 self.skip(1);
-                self.skip_until(|c| !is_decimal_digit(c));
+                self.skip_until(|c| !matches!(c, pattern_decimal_digit!()));
                 TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
             }
 
@@ -232,8 +220,23 @@ impl<'s> Tokenizer<'s> {
                 TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
             }
 
+            // trigram
+            ['.', '.'] => {
+                self.skip(2);
+                match self.peek() {
+                    Some('=') => {
+                        self.skip(1);
+                        TokenType::DotsEq
+                    }
+                    Some('+') => {
+                        self.skip(1);
+                        TokenType::DotsPlus
+                    }
+                    _ => TokenType::Dots,
+                }
+            }
+
             // simple fixed
-            // TODO re-order to match token types
             ['=', '='] => skip_fixed(2, TokenType::EqEq),
             ['=', _] => skip_fixed(1, TokenType::Eq),
             ['!', '='] => skip_fixed(2, TokenType::Neq),
@@ -265,22 +268,7 @@ impl<'s> Tokenizer<'s> {
             ['*', _] => skip_fixed(1, TokenType::Star),
             ['/', '='] => skip_fixed(2, TokenType::SlashEq),
             ['/', _] => skip_fixed(1, TokenType::Slash),
-            ['.', '.'] => {
-                self.skip(2);
-                match self.peek() {
-                    Some('=') => {
-                        self.skip(1);
-                        TokenType::DotsEq
-                    }
-                    Some('+') => {
-                        self.skip(1);
-                        TokenType::DotsPlus
-                    }
-                    _ => TokenType::Dots,
-                }
-            }
             ['.', _] => skip_fixed(1, TokenType::Dot),
-            ['_', _] => skip_fixed(1, TokenType::Underscore),
             [';', _] => skip_fixed(1, TokenType::Semi),
             [':', ':'] => skip_fixed(2, TokenType::ColonColon),
             [':', _] => skip_fixed(1, TokenType::Colon),
@@ -311,22 +299,6 @@ impl<'s> Tokenizer<'s> {
         );
         self.next_inner().inspect_err(|_| self.errored = true)
     }
-}
-
-fn is_whitespace(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r')
-}
-
-fn is_id_start(c: char) -> bool {
-    matches!(c, '_' | 'a'..='z' | 'A'..='Z')
-}
-
-fn is_id_continue(c: char) -> bool {
-    matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9')
-}
-
-fn is_decimal_digit(c: char) -> bool {
-    matches!(c, '0'..='9')
 }
 
 pub struct TokenizerIterator<'s> {
@@ -360,8 +332,8 @@ macro_rules! declare_tokens {
         const CUSTOM_TOKENS: &[(fn (&str) -> TokenType<&str>, &'static str)] = &[
             $((|s| TokenType::$c_token(s), stringify!($c_token)),)*
         ];
-        const UNSORTED_FIXED_TOKENS: &[(&'static str, fn (&str) -> TokenType<&str>, &'static str)] = &[
-            $(($f_string, |_| TokenType::$f_token, stringify!($f_token)),)*
+        const FIXED_TOKENS: &[FixedTokenInfo] = &[
+            $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
         ];
 
         // TODO function vs array?
@@ -510,12 +482,27 @@ declare_tokens! {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+struct FixedTokenInfo {
+    #[allow(dead_code)]
+    name: &'static str,
+    literal: &'static str,
+    ty: TokenType<&'static str>,
+}
+
 lazy_static! {
-    /// Sorted from long to short, so that longer literals are matched first
-    static ref FIXED_TOKENS: Vec<(&'static str, fn (&str) -> TokenType<&str>, &'static str)> = {
-        let mut tokens = UNSORTED_FIXED_TOKENS.to_vec();
-        tokens.sort_by_key(|(lit, _, _)| Reverse(lit.len()));
-        tokens
+    static ref FIXED_TOKENS_GROUPED_BY_LENGTH: Vec<Vec<FixedTokenInfo>> = {
+        let mut result = vec![];
+
+        for &token in FIXED_TOKENS {
+            let i = token.literal.len();
+            if i >= result.len() {
+                result.resize_with(i + 1, Vec::new);
+            }
+            result[i].push(token);
+        }
+
+        result
     };
 }
 
@@ -545,7 +532,8 @@ impl TokenError {
 #[cfg(test)]
 mod test {
     use crate::syntax::pos::{FileId, Pos, Span};
-    use crate::syntax::token::{tokenize, Token, TokenType, CUSTOM_TOKENS, UNSORTED_FIXED_TOKENS};
+    use crate::syntax::token::{tokenize, Token, TokenType, CUSTOM_TOKENS, FIXED_TOKENS};
+    use std::collections::HashSet;
 
     #[test]
     fn basic_tokenize() {
@@ -594,28 +582,34 @@ mod test {
     }
 
     #[test]
-    fn tokens_covered() {
+    fn literal_tokens_unique() {
+        let mut set = HashSet::new();
+        for info in FIXED_TOKENS {
+            assert!(info.literal.len() > 0);
+            assert!(set.insert(info.literal));
+        }
+    }
+
+    #[test]
+    fn literla_tokens_covered() {
         let mut any_error = false;
 
-        for (literal, build, name) in UNSORTED_FIXED_TOKENS {
+        for info in FIXED_TOKENS {
             let file = FileId::SINGLE;
 
-            let result = tokenize(file, literal);
+            let result = tokenize(file, info.literal);
             let span = Span::new(
                 Pos { file, byte: 0 },
                 Pos {
                     file,
-                    byte: literal.len(),
+                    byte: info.literal.len(),
                 },
             );
-            let expected = Ok(vec![Token {
-                ty: build(literal),
-                span,
-            }]);
+            let expected = Ok(vec![Token { ty: info.ty, span }]);
 
             if result != expected {
                 any_error = true;
-                eprintln!("Failed to parse literal token {:?} {:?}:", name, literal);
+                eprintln!("Failed to parse literal token {:?} {:?}:", info.name, info.literal);
                 eprintln!("  Expected: {:?}", expected);
                 eprintln!("  Got:      {:?}", result);
             }
@@ -630,8 +624,8 @@ mod test {
         for (_build, name) in CUSTOM_TOKENS {
             println!("Token{name} => TokenType::{name}(<&'s str>),")
         }
-        for (literal, _build, name) in UNSORTED_FIXED_TOKENS {
-            println!("{literal:?} => TokenType::{name},")
+        for info in FIXED_TOKENS {
+            println!("{:?} => TokenType::{},", info.literal, info.name)
         }
     }
 }
