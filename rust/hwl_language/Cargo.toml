@@ -6,18 +6,13 @@ edition.workspace = true
 [dependencies]
 annotate-snippets.workspace = true
 clap.workspace = true
-derivative.workspace = true
-derive_more.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
 lalrpop-util.workspace = true
 lazy_static.workspace = true
-logos.workspace = true
-memchr.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
 rand.workspace = true
-regex.workspace = true
 strum.workspace = true
 unwrap-match.workspace = true
 

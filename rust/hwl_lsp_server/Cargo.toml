@@ -5,13 +5,11 @@ edition.workspace = true
 
 [dependencies]
 annotate-snippets.workspace = true
-anyhow.workspace = true
 crossbeam-channel.workspace = true
 fluent-uri.workspace = true
 hwl_language.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
-log.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
