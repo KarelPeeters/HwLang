@@ -785,8 +785,9 @@ fn lower_expression(
             lower_expression(diags, name_map, span, inner, f)?;
             swrite!(f, ")");
         }
-        IrExpression::BoolBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary bool expression")),
-        IrExpression::IntBinary(_, _, _) => throw!(diags.report_todo(span, "lower binary int expression")),
+        IrExpression::BoolBinary(_, _, _) => throw!(diags.report_todo(span, "lower bool binary expression")),
+        IrExpression::IntArithmetic(_, _, _) => throw!(diags.report_todo(span, "lower int arithmetic expression")),
+        IrExpression::IntCompare(_, _, _) => throw!(diags.report_todo(span, "lower int compare expression")),
 
         IrExpression::TupleLiteral(_) => throw!(diags.report_todo(span, "lower tuple literal")),
         IrExpression::ArrayLiteral(_) => throw!(diags.report_todo(span, "lower array literal")),

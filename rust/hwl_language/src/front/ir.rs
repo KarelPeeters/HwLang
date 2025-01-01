@@ -164,15 +164,18 @@ pub enum IrExpression {
     // constants
     Bool(bool),
     Int(BigInt),
+
     // "signals"
     Port(IrPort),
     Wire(IrWire),
     Register(IrRegister),
     Variable(IrVariable),
+
     // actual expressions
     BoolNot(Box<IrExpression>),
     BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>),
-    IntBinary(IrIntBinaryOp, Box<IrExpression>, Box<IrExpression>),
+    IntArithmetic(IrIntArithmeticOp, Box<IrExpression>, Box<IrExpression>),
+    IntCompare(IrIntCompareOp, Box<IrExpression>, Box<IrExpression>),
 
     TupleLiteral(Vec<IrExpression>),
     ArrayLiteral(Vec<IrExpression>),
@@ -194,12 +197,22 @@ pub enum IrBoolBinaryOp {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum IrIntBinaryOp {
+pub enum IrIntArithmeticOp {
     Add,
     Sub,
     Mul,
     Div,
     Mod,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IrIntCompareOp {
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 impl IrBoolBinaryOp {
@@ -208,6 +221,19 @@ impl IrBoolBinaryOp {
             IrBoolBinaryOp::And => left && right,
             IrBoolBinaryOp::Or => left || right,
             IrBoolBinaryOp::Xor => left ^ right,
+        }
+    }
+}
+
+impl IrIntCompareOp {
+    pub fn eval(&self, left: &BigInt, right: &BigInt) -> bool {
+        match self {
+            IrIntCompareOp::Eq => left == right,
+            IrIntCompareOp::Neq => left != right,
+            IrIntCompareOp::Lt => left < right,
+            IrIntCompareOp::Lte => left <= right,
+            IrIntCompareOp::Gt => left > right,
+            IrIntCompareOp::Gte => left >= right,
         }
     }
 }
@@ -258,14 +284,31 @@ impl IrExpression {
                     right.to_diagnostic_string(m)
                 )
             }
-            IrExpression::IntBinary(op, left, right) => {
+            IrExpression::IntArithmetic(op, left, right) => {
                 let op_str = match op {
-                    IrIntBinaryOp::Add => "+",
-                    IrIntBinaryOp::Sub => "-",
-                    IrIntBinaryOp::Mul => "*",
-                    IrIntBinaryOp::Div => "/",
-                    IrIntBinaryOp::Mod => "%",
+                    IrIntArithmeticOp::Add => "+",
+                    IrIntArithmeticOp::Sub => "-",
+                    IrIntArithmeticOp::Mul => "*",
+                    IrIntArithmeticOp::Div => "/",
+                    IrIntArithmeticOp::Mod => "%",
                 };
+                format!(
+                    "({} {} {})",
+                    left.to_diagnostic_string(m),
+                    op_str,
+                    right.to_diagnostic_string(m)
+                )
+            }
+            IrExpression::IntCompare(op, left, right) => {
+                let op_str = match op {
+                    IrIntCompareOp::Eq => "==",
+                    IrIntCompareOp::Neq => "!=",
+                    IrIntCompareOp::Lt => "<",
+                    IrIntCompareOp::Lte => "<=",
+                    IrIntCompareOp::Gt => ">",
+                    IrIntCompareOp::Gte => ">=",
+                };
+
                 format!(
                     "({} {} {})",
                     left.to_diagnostic_string(m),
@@ -315,7 +358,8 @@ impl IrExpression {
             IrExpression::Variable(_) => true,
             IrExpression::BoolNot(x) => x.contains_variable(),
             IrExpression::BoolBinary(_op, left, right) => left.contains_variable() || right.contains_variable(),
-            IrExpression::IntBinary(_op, left, right) => left.contains_variable() || right.contains_variable(),
+            IrExpression::IntArithmetic(_op, left, right) => left.contains_variable() || right.contains_variable(),
+            IrExpression::IntCompare(_op, left, right) => left.contains_variable() || right.contains_variable(),
             IrExpression::TupleLiteral(x) => x.iter().any(|x| x.contains_variable()),
             IrExpression::ArrayLiteral(x) => x.iter().any(|x| x.contains_variable()),
             IrExpression::ArrayIndex { base, index } => base.contains_variable() || index.contains_variable(),

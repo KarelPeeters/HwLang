@@ -3,7 +3,7 @@ use crate::front::check::{check_type_contains_value, check_type_is_bool, check_t
 use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntBinaryOp};
+use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp};
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
@@ -179,8 +179,8 @@ impl CompileState<'_> {
                                 start_inc: -v.ty.end_inc,
                                 end_inc: -v.ty.start_inc,
                             };
-                            let result_expr = IrExpression::IntBinary(
-                                IrIntBinaryOp::Sub,
+                            let result_expr = IrExpression::IntArithmetic(
+                                IrIntArithmeticOp::Sub,
                                 Box::new(IrExpression::Int(BigInt::ZERO)),
                                 Box::new(v.expr),
                             );
@@ -423,8 +423,8 @@ impl CompileState<'_> {
             |range, left: Spanned<TypedIrExpression<_>>, right: Spanned<TypedIrExpression<_>>| TypedIrExpression {
                 ty: HardwareType::Int(range),
                 domain: left.inner.domain.join(&right.inner.domain),
-                expr: IrExpression::IntBinary(
-                    IrIntBinaryOp::Add,
+                expr: IrExpression::IntArithmetic(
+                    IrIntArithmeticOp::Add,
                     Box::new(left.inner.expr),
                     Box::new(right.inner.expr),
                 ),
@@ -446,6 +446,30 @@ impl CompileState<'_> {
                         ty: HardwareType::Bool,
                         domain: left.inner.domain.join(&right.inner.domain),
                         expr: IrExpression::BoolBinary(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
+                    };
+                    Ok(MaybeCompile::Other(result))
+                }
+            }
+        };
+
+        let impl_int_compare_op = |left, right, op: IrIntCompareOp| {
+            let left = check_type_is_int(diags, op_reason, left);
+            let right = check_type_is_int(diags, op_reason, right);
+
+            let left = left?;
+            let right = right?;
+
+            match pair_compile_int(left, right) {
+                MaybeCompile::Compile((left, right)) => Ok(MaybeCompile::Compile(CompileValue::Bool(
+                    op.eval(&left.inner, &right.inner),
+                ))),
+                MaybeCompile::Other((left, right)) => {
+                    // TODO warning if the result is always true/false (depending on the ranges)
+                    //   or maybe just return a compile-time value again?
+                    let result = TypedIrExpression {
+                        ty: HardwareType::Bool,
+                        domain: left.inner.domain.join(&right.inner.domain),
+                        expr: IrExpression::IntCompare(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
                     };
                     Ok(MaybeCompile::Other(result))
                 }
@@ -580,12 +604,12 @@ impl CompileState<'_> {
             BinaryOp::BoolOr => impl_bool_op(left, right, IrBoolBinaryOp::Or),
             BinaryOp::BoolXor => impl_bool_op(left, right, IrBoolBinaryOp::Xor),
             // (T, T)
-            BinaryOp::CmpEq => Err(diags.report_todo(expr_span, "binary op CmpEq")),
-            BinaryOp::CmpNeq => Err(diags.report_todo(expr_span, "binary op CmpNeq")),
-            BinaryOp::CmpLt => Err(diags.report_todo(expr_span, "binary op CmpLt")),
-            BinaryOp::CmpLte => Err(diags.report_todo(expr_span, "binary op CmpLte")),
-            BinaryOp::CmpGt => Err(diags.report_todo(expr_span, "binary op CmpGt")),
-            BinaryOp::CmpGte => Err(diags.report_todo(expr_span, "binary op CmpGte")),
+            BinaryOp::CmpEq => impl_int_compare_op(left, right, IrIntCompareOp::Eq),
+            BinaryOp::CmpNeq => impl_int_compare_op(left, right, IrIntCompareOp::Neq),
+            BinaryOp::CmpLt => impl_int_compare_op(left, right, IrIntCompareOp::Lt),
+            BinaryOp::CmpLte => impl_int_compare_op(left, right, IrIntCompareOp::Lte),
+            BinaryOp::CmpGt => impl_int_compare_op(left, right, IrIntCompareOp::Gt),
+            BinaryOp::CmpGte => impl_int_compare_op(left, right, IrIntCompareOp::Gte),
             // (int, range)
             BinaryOp::In => Err(diags.report_todo(expr_span, "binary op In")),
 
