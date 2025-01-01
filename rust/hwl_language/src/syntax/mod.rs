@@ -5,6 +5,7 @@ use lalrpop_util::lalrpop_mod;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{FileId, Span};
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
+use crate::util::iter::IterExt;
 use pos::Pos;
 
 pub mod ast;
@@ -73,7 +74,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
 
             Diagnostic::new("unexpected eof")
                 .add_error(span, "invalid token")
-                .footer(Level::Info, format!("expected one of {}", format_expected(&expected)))
+                .footer(Level::Info, format_expected(&expected))
                 .finish()
         }
         ParseError::UnrecognizedToken { token, expected } => {
@@ -84,7 +85,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
 
             Diagnostic::new("unexpected token")
                 .add_error(span, format!("unexpected token {:?}", ty_formatted))
-                .footer(Level::Info, format!("expected one of {}", format_expected(&expected)))
+                .footer(Level::Info, format_expected(&expected))
                 .finish()
         }
         ParseError::ExtraToken { token } => {
@@ -101,18 +102,22 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
 
 // Workaround for lalrpop using strings instead of a real token type
 fn format_expected(expected: &[String]) -> String {
+    if let Some(expected) = expected.iter().single() {
+        return format!("expected {}", format_expected_single(expected));
+    }
+
     let mut result = String::new();
-    result.push_str("[");
+    result.push_str("expected one of [");
     for (i, e) in enumerate(expected) {
         if i > 0 {
             result.push_str(", ");
         }
-        if let Some(suffix) = e.strip_prefix("Token") {
-            result.push_str(suffix);
-        } else {
-            result.push_str(e);
-        }
+        result.push_str(format_expected_single(e));
     }
     result.push_str("]");
     result
+}
+
+fn format_expected_single(expected: &str) -> &str {
+    expected.strip_prefix("Token").unwrap_or(expected)
 }
