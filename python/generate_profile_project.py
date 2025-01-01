@@ -76,7 +76,7 @@ pub module top ports(
 
 
 def main():
-    n = 1024
+    n = 1024 * 32
     output_path = Path("profile_test")
 
     source = generate_source(n=n)
