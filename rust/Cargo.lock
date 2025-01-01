@@ -352,6 +352,7 @@ dependencies = [
  "lalrpop-util",
  "lazy_static",
  "logos",
+ "memchr",
  "num-bigint",
  "num-traits",
  "rand",

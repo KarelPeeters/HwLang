@@ -76,11 +76,13 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
                 .finish()
         }
         ParseError::UnrecognizedToken { token, expected } => {
-            let (start, _, end) = token;
+            let (start, ty, end) = token;
             let span = Span::new(start, end);
 
+            let ty_formatted = format!("{:?}", ty.map(|_| ())).replace("(())", "");
+
             Diagnostic::new("unexpected token")
-                .add_error(span, "unexpected token")
+                .add_error(span, format!("unexpected token {:?}", ty_formatted))
                 .footer(Level::Info, format!("expected one of {}", format_expected(&expected)))
                 .finish()
         }

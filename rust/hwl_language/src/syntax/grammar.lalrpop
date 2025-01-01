@@ -15,9 +15,7 @@ extern {
         TokenLineComment => TokenType::LineComment(<&'s str>),
         TokenBlockComment => TokenType::BlockComment(<&'s str>),
         TokenIdentifier => TokenType::Identifier(<&'s str>),
-        TokenIntLiteralDecimal => TokenType::IntLiteralDecimal(<&'s str>),
-        TokenIntPatternHexadecimal => TokenType::IntPatternHexadecimal(<&'s str>),
-        TokenIntPatternBinary => TokenType::IntPatternBinary(<&'s str>),
+        TokenIntLiteral => TokenType::IntLiteral(<&'s str>),
         TokenStringLiteral => TokenType::StringLiteral(<&'s str>),
         "import" => TokenType::Import,
         "as" => TokenType::As,
@@ -500,7 +498,7 @@ ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
     // assoc left
     <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Id>
         => ExpressionKind::DotIdIndex(target, index),
-    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<TokenIntLiteralDecimal>>
+    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<TokenIntLiteral>>
         => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
     ExprLevelStructureInit<AtomicInner>,
 }
@@ -547,13 +545,10 @@ ExprLevelAtomic: ExpressionKind = {
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
     "undefined" => ExpressionKind::Undefined,
-    <string:TokenIntPatternHexadecimal>
-        => ExpressionKind::IntPattern(IntPattern::Hex(string[2..].to_owned())),
-    <string:TokenIntPatternBinary>
-        => ExpressionKind::IntPattern(IntPattern::Bin(string[2..].to_owned())),
-    <string:TokenIntLiteralDecimal>
+    <string:TokenIntLiteral>
         => ExpressionKind::IntPattern(IntPattern::Dec(string.to_owned())),
     // TODO escape sequences and string formatting expressions
+    // TODO assert that the first and last char are indeed '"'
     <full:TokenStringLiteral> => {
         let string = full[1..full.len()-1].to_owned();
         ExpressionKind::StringLiteral(string.to_owned())

@@ -1,6 +1,8 @@
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use regex::{Regex, RegexSet, SetMatches};
+use logos::Source;
+use std::cmp::Reverse;
 use strum::EnumIter;
 
 use crate::syntax::pos::{FileId, Pos, Span};
@@ -17,6 +19,7 @@ pub enum TokenError {
     InvalidToken { pos: Pos, prefix: String },
     BlockCommentMissingEnd { start: Pos, eof: Pos },
     BlockCommentUnexpectedEnd { pos: Pos, prefix: String },
+    StringLiteralMissingEnd { start: Pos, eof: Pos },
 }
 
 const ERROR_CONTEXT_LENGTH: usize = 16;
@@ -30,21 +33,21 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenErr
 //   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
 // TODO remove string here? only deal with offset, simplifying the lifetime
 pub struct Tokenizer<'s> {
-    compiled: &'static CompiledRegex,
     file: FileId,
     curr_byte: usize,
     left: &'s str,
     errored: bool,
+    fixed_tokens: &'static [(&'static str, fn(&str) -> TokenType<&str>, &'static str)],
 }
 
 impl<'s> Tokenizer<'s> {
     pub fn new(file: FileId, source: &'s str) -> Self {
         Tokenizer {
-            compiled: CompiledRegex::instance(),
             file,
             curr_byte: 0,
             left: source,
             errored: false,
+            fixed_tokens: &FIXED_TOKENS,
         }
     }
 
@@ -64,21 +67,54 @@ impl<'s> Tokenizer<'s> {
         self.left.chars().take(ERROR_CONTEXT_LENGTH).collect()
     }
 
-    /// Block comments are handled separately. They're allowed to nest, which means they're not a regular language and
-    /// they can't be parsed using a Regex engine.
-    fn handle_block_comment(&mut self) -> Option<Result<Token<&'s str>, TokenError>> {
+    fn parse_start_continue(
+        &mut self,
+        is_start: impl Fn(char) -> bool,
+        is_continue: impl Fn(char) -> bool,
+        build: impl Fn(&'s str) -> TokenType<&'s str>,
+    ) -> Option<Token<&'s str>> {
         let start = self.curr_pos();
+        let left_start = self.left;
 
-        if self.left.starts_with("*/") {
-            self.errored = true;
-            return Some(Err(TokenError::BlockCommentUnexpectedEnd {
-                pos: start,
-                prefix: self.prefix(),
-            }));
-        } else if self.left.starts_with("/*") {
-            let left_start = self.left;
+        let mut chars = self.left.chars();
+        if let Some(first) = chars.next() {
+            if is_start(first) {
+                let mut len = 0;
+                len += first.len_utf8();
+
+                while let Some(c) = chars.next() {
+                    if is_continue(c) {
+                        len += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+
+                self.skip(len);
+                let span = Span::new(start, self.curr_pos());
+
+                return Some(Token {
+                    span,
+                    ty: build(&left_start[..len]),
+                });
+            }
+        }
+
+        None
+    }
+
+    // TODO try reordering to maximize performance
+    // TODO try generating a full character-based state machine at compile-time, that might be faster
+    fn next_impl(&mut self) -> Result<Token<&'s str>, TokenError> {
+        let start = self.curr_pos();
+        let left_start = self.left;
+        let fixed_tokens = self.fixed_tokens;
+
+        // block comment
+        if self.left.starts_with("/*") {
             self.skip(2);
 
+            // block comments are allowed to nest
             let mut depth: usize = 1;
             while depth > 0 {
                 if self.left.starts_with("/*") {
@@ -87,51 +123,115 @@ impl<'s> Tokenizer<'s> {
                 } else if self.left.starts_with("*/") {
                     depth -= 1;
                     self.skip(2);
-                } else if self.left.len() > 0 {
-                    let c = self.left.chars().next().expect("nonempty string must contain char");
+                } else if let Some(c) = self.left.chars().next() {
                     self.skip(c.len_utf8())
                 } else {
                     // hit end of source
-                    self.errored = true;
-                    return Some(Err(TokenError::BlockCommentMissingEnd {
+                    return Err(TokenError::BlockCommentMissingEnd {
                         start,
                         eof: self.curr_pos(),
-                    }));
+                    });
                 }
             }
 
             let span = Span::new(start, self.curr_pos());
-            return Some(Ok(Token {
+            return Ok(Token {
                 ty: TokenType::BlockComment(&left_start[..span.len_bytes()]),
                 span,
-            }));
+            });
+        }
+        if self.left.starts_with("*/") {
+            return Err(TokenError::BlockCommentUnexpectedEnd {
+                pos: start,
+                prefix: self.prefix(),
+            });
         }
 
-        None
-    }
+        // line comment
+        // TODO should it include the trailing newline? \n\r handling becomes a bit tricky then
+        if self.left.starts_with("//") {
+            let len = memchr::memchr2(b'\n', b'\r', self.left.as_bytes()).map_or(self.left.len(), |end| end);
+            self.skip(len);
 
-    fn handle_pattern_token(&mut self) -> Result<Token<&'s str>, TokenError> {
-        let start = self.curr_pos();
-        let matches = self.compiled.set.matches(self.left);
+            let span = Span::new(start, self.curr_pos());
+            return Ok(Token {
+                ty: TokenType::LineComment(&left_start[..len]),
+                span,
+            });
+        }
 
-        let m = match pick_match(matches, &self.compiled.vec, self.left) {
-            None => {
-                self.errored = true;
-                return Err(TokenError::InvalidToken {
-                    pos: self.curr_pos(),
-                    prefix: self.prefix(),
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
+        if let Some(token) = self.parse_start_continue(is_whitespace, is_whitespace, TokenType::WhiteSpace) {
+            return Ok(token);
+        }
+
+        let is_id_start = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z');
+        let is_id_continue = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9');
+        let build_id = move |id| {
+            // check for fixed matches, they might overlap with IDs
+            // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
+            for (fixed, build, _) in fixed_tokens {
+                if &id == fixed {
+                    return build(id);
+                }
+            }
+            return TokenType::Identifier(id);
+        };
+        if let Some(token) = self.parse_start_continue(is_id_start, is_id_continue, build_id) {
+            return Ok(token);
+        }
+
+        // string literal
+        // TODO escape codes
+        // TODO f-strings, also needs parser
+        // TODO we're actually already parsing here, it would be better if we could pass the inner string to the parser
+        if self.left.starts_with('"') {
+            let end_pos = memchr::memchr(b'"', &self.left.as_bytes()[1..]);
+            return match end_pos {
+                None => {
+                    self.skip(self.left.len());
+                    Err(TokenError::StringLiteralMissingEnd {
+                        start,
+                        eof: self.curr_pos(),
+                    })
+                }
+                Some(end_pos) => {
+                    let len_bytes = 1 + end_pos + 1;
+                    self.skip(len_bytes);
+                    let span = Span::new(start, self.curr_pos());
+                    Ok(Token {
+                        ty: TokenType::StringLiteral(&left_start[..len_bytes]),
+                        span,
+                    })
+                }
+            };
+        }
+
+        // integer literal/pattern
+        // TODO parse hex/bin
+        // TODO store the actually parsed int in the token to get more type safety
+        let is_decimal_digit = |c| matches!(c, '0'..='9');
+        if let Some(token) = self.parse_start_continue(is_decimal_digit, is_decimal_digit, TokenType::IntLiteral) {
+            return Ok(token);
+        }
+
+        // fixed token (needs to be after identifiers to ensure ids that start with a fixed prefix get matched as ids)
+        for (fixed, build, _) in self.fixed_tokens {
+            if self.left.starts_with(fixed) {
+                self.skip(fixed.len());
+
+                let span = Span::new(start, self.curr_pos());
+                return Ok(Token {
+                    ty: build(&left_start[..fixed.len()]),
+                    span,
                 });
             }
-            Some(match_index) => match_index,
-        };
+        }
 
-        let match_str = &self.left[..m.len];
-        self.skip(m.len);
-        let span = Span::new(start, self.curr_pos());
-
-        Ok(Token {
-            ty: TOKEN_PATTERNS[m.index].0(match_str),
-            span,
+        // failed to match anything
+        Err(TokenError::InvalidToken {
+            pos: self.curr_pos(),
+            prefix: self.prefix(),
         })
     }
 }
@@ -145,110 +245,17 @@ impl<'s> Iterator for Tokenizer<'s> {
             "Cannot continue calling next on tokenizer that returned an error"
         );
         if self.left.is_empty() {
-            return None;
-        }
-
-        let start = self.curr_pos();
-        if let Some(result) = self.handle_block_comment() {
-            return Some(result);
-        }
-        assert_eq!(start, self.curr_pos());
-        Some(self.handle_pattern_token())
-    }
-}
-
-#[derive(Clone)]
-struct CompiledRegex {
-    set: RegexSet,
-    vec: Vec<Regex>,
-}
-
-impl CompiledRegex {
-    fn new() -> Self {
-        let patterns = TOKEN_PATTERNS
-            .iter()
-            .map(|(_, pattern, kind, _)| {
-                let bare = match kind {
-                    PatternKind::Regex => pattern.to_string(),
-                    PatternKind::Literal => regex::escape(pattern),
-                };
-                // surround in non-capturing group to make sure that the start-of-string "^" binds correctly
-                format!("^(?:{bare})")
-            })
-            .collect_vec();
-
-        let set = RegexSet::new(&patterns).unwrap();
-        let vec = patterns.iter().map(|p| Regex::new(p).unwrap()).collect_vec();
-
-        CompiledRegex { set, vec }
-    }
-
-    fn instance() -> &'static Self {
-        // TODO https://docs.rs/regex/latest/regex/#sharing-a-regex-across-threads-can-result-in-contention.
-        lazy_static! {
-            static ref INSTANCE: CompiledRegex = CompiledRegex::new();
-        }
-        &*INSTANCE
-    }
-}
-
-struct PickedMatch {
-    index: usize,
-    len: usize,
-    prio: TokenPriority,
-}
-
-fn pick_match(matches: SetMatches, regex_vec: &[Regex], left: &str) -> Option<PickedMatch> {
-    let mut unique = false;
-    let mut result: Option<PickedMatch> = None;
-    let mut match_count = 0;
-
-    for index in matches.iter() {
-        match_count += 1;
-
-        let range = regex_vec[index]
-            .find(left)
-            .expect("regex should match, it was one of the matching indices")
-            .range();
-        assert_eq!(range.start, 0);
-        let len = range.end;
-
-        let (_, _, _, prio) = TOKEN_PATTERNS[index];
-        match prio {
-            TP::Unique => unique = true,
-            TP::Normal | TP::Low => {}
-        }
-
-        let better = match result {
-            Some(PickedMatch {
-                index: prev_index,
-                len: prev_len,
-                prio: prev_prio,
-            }) => {
-                let key = (len, prio);
-                let prev_key = (prev_len, prev_prio);
-                assert_ne!(
-                    key,
-                    prev_key,
-                    "tokens {:?} and {:?} both with priority {:?} match same prefix {:?}",
-                    TOKEN_PATTERNS[prev_index].0,
-                    TOKEN_PATTERNS[index].0,
-                    prio,
-                    &left[..len],
-                );
-                key > prev_key
+            None
+        } else {
+            match self.next_impl() {
+                Ok(t) => Some(Ok(t)),
+                Err(e) => {
+                    self.errored = true;
+                    Some(Err(e))
+                }
             }
-            None => true,
-        };
-        if better {
-            result = Some(PickedMatch { index, len, prio });
         }
     }
-
-    if unique {
-        assert_eq!(match_count, 1);
-    }
-    result
 }
 
 macro_rules! declare_tokens {
@@ -256,24 +263,22 @@ macro_rules! declare_tokens {
         custom {
             $($c_token:ident($c_cat:expr),)*
         }
-        regex {
-            $($r_token:ident($r_string:literal, $r_cat:expr, $r_prio:expr),)*
-        }
-        literal {
-            $($l_token:ident($l_string:literal, $l_cat:expr, $l_prio:expr),)*
+        fixed {
+            $($f_token:ident($f_string:literal, $f_cat:expr),)*
         }
     ) => {
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
         pub enum TokenType<S> {
             $($c_token(S),)*
-            $($r_token(S),)*
-            $($l_token,)*
+            $($f_token,)*
         }
 
-        const TOKEN_PATTERNS: &[(fn (&str) -> TokenType<&str>, &'static str, PatternKind, TokenPriority)] = &[
-            // intentionally omit custom
-            $((|s| TokenType::$r_token(s), $r_string, PatternKind::Regex, $r_prio),)*
-            $((|_| TokenType::$l_token, $l_string, PatternKind::Literal, $l_prio),)*
+        #[cfg(test)]
+        const CUSTOM_TOKENS: &[(fn (&str) -> TokenType<&str>, &'static str)] = &[
+            $((|s| TokenType::$c_token(s), stringify!($c_token)),)*
+        ];
+        const UNSORTED_FIXED_TOKENS: &[(&'static str, fn (&str) -> TokenType<&str>, &'static str)] = &[
+            $(($f_string, |_| TokenType::$f_token, stringify!($f_token)),)*
         ];
 
         // TODO function vs array?
@@ -281,26 +286,18 @@ macro_rules! declare_tokens {
             pub fn category(self) -> TokenCategory {
                 match self {
                     $(TokenType::$c_token(_) => $c_cat,)*
-                    $(TokenType::$r_token(_) => $r_cat,)*
-                    $(TokenType::$l_token => $l_cat,)*
+                    $(TokenType::$f_token => $f_cat,)*
                 }
             }
 
             pub fn map<T>(self, f: impl FnOnce(S) -> T) -> TokenType<T> {
                 match self {
                     $(TokenType::$c_token(s) => TokenType::$c_token(f(s)),)*
-                    $(TokenType::$r_token(s) => TokenType::$r_token(f(s)),)*
-                    $(TokenType::$l_token => TokenType::$l_token,)*
+                    $(TokenType::$f_token => TokenType::$f_token,)*
                 }
             }
         }
     };
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum PatternKind {
-    Regex,
-    Literal,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, strum::Display)]
@@ -320,128 +317,122 @@ impl TokenCategory {
     }
 }
 
-/// Priority is only used to tiebreak equal-length matches.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum TokenPriority {
-    Unique = 2,
-    Normal = 1,
-    Low = 0,
-}
-
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use TokenCategory as TC;
-use TokenPriority as TP;
 
 declare_tokens! {
     custom {
-        BlockComment(TC::Comment),
-    }
-    regex {
         // ignored
-        WhiteSpace(r"[ \t\n\r]+", TC::WhiteSpace, TP::Unique),
-        LineComment(r"//[^\n\r]*", TC::Comment, TP::Normal),
+        WhiteSpace(TC::WhiteSpace),
+        BlockComment(TC::Comment),
+        LineComment(TC::Comment),
 
         // patterns
-        Identifier(r"(_[a-zA-Z_0-9]+)|([a-zA-Z][a-zA-Z_0-9]*)", TC::Identifier, TP::Low),
-        IntLiteralDecimal(r"[0-9]+", TC::IntegerLiteral, TP::Unique),
-        IntPatternHexadecimal(r"0x[0-9a-fA-F_?]+", TC::IntegerLiteral, TP::Unique),
-        IntPatternBinary(r"0b[0-9a-fA-F_?]+", TC::IntegerLiteral, TP::Unique),
-
+        Identifier(TC::Identifier),
+        IntLiteral(TC::IntegerLiteral),
         // TODO better string literal pattern with escape codes and string formatting expressions
-        StringLiteral(r#""[^"]*""#, TC::StringLiteral, TP::Unique),
+        StringLiteral(TC::StringLiteral),
     }
-    literal {
+    fixed {
         // keywords
-        Import("import", TC::Keyword, TP::Normal),
-        As("as", TC::Keyword, TP::Normal),
-        Type("type", TC::Keyword, TP::Normal),
-        Struct("struct", TC::Keyword, TP::Normal),
-        Enum("enum", TC::Keyword, TP::Normal),
-        Generics("generics", TC::Keyword, TP::Normal),
-        Ports("ports", TC::Keyword, TP::Normal),
-        Body("body", TC::Keyword, TP::Normal),
-        Module("module", TC::Keyword, TP::Normal),
-        Instance("instance", TC::Keyword, TP::Normal),
-        Function("function", TC::Keyword, TP::Normal),
-        Combinatorial("combinatorial", TC::Keyword, TP::Normal),
-        Clock("clock", TC::Keyword, TP::Normal),
-        Clocked("clocked", TC::Keyword, TP::Normal),
-        Const("const", TC::Keyword, TP::Normal),
-        Val("val", TC::Keyword, TP::Normal),
-        Var("var", TC::Keyword, TP::Normal),
-        Wire("wire", TC::Keyword, TP::Normal),
-        Reg("reg", TC::Keyword, TP::Normal),
-        In("in", TC::Keyword, TP::Normal),
-        Out("out", TC::Keyword, TP::Normal),
-        Async("async", TC::Keyword, TP::Normal),
-        Sync("sync", TC::Keyword, TP::Normal),
-        Return("return", TC::Keyword, TP::Normal),
-        Break("break", TC::Keyword, TP::Normal),
-        Continue("continue", TC::Keyword, TP::Normal),
-        True("true", TC::IntegerLiteral, TP::Normal),
-        False("false", TC::IntegerLiteral, TP::Normal),
-        Undefined("undefined", TC::IntegerLiteral, TP::Normal),
-        If("if", TC::Keyword, TP::Normal),
-        Else("else", TC::Keyword, TP::Normal),
-        Loop("loop", TC::Keyword, TP::Normal),
-        For("for", TC::Keyword, TP::Normal),
-        While("while", TC::Keyword, TP::Normal),
-        Public("pub", TC::Keyword, TP::Normal),
-        Builtin("__builtin", TC::Keyword, TP::Normal),
+        Import("import", TC::Keyword),
+        Type("type", TC::Keyword),
+        Struct("struct", TC::Keyword),
+        Enum("enum", TC::Keyword),
+        Generics("generics", TC::Keyword),
+        Ports("ports", TC::Keyword),
+        Body("body", TC::Keyword),
+        Module("module", TC::Keyword),
+        Instance("instance", TC::Keyword),
+        Function("function", TC::Keyword),
+        Combinatorial("combinatorial", TC::Keyword),
+        Clock("clock", TC::Keyword),
+        Clocked("clocked", TC::Keyword),
+        Const("const", TC::Keyword),
+        Val("val", TC::Keyword),
+        Var("var", TC::Keyword),
+        Wire("wire", TC::Keyword),
+        Reg("reg", TC::Keyword),
+        In("in", TC::Keyword),
+        Out("out", TC::Keyword),
+        Async("async", TC::Keyword),
+        Sync("sync", TC::Keyword),
+        Return("return", TC::Keyword),
+        Break("break", TC::Keyword),
+        Continue("continue", TC::Keyword),
+        True("true", TC::IntegerLiteral),
+        False("false", TC::IntegerLiteral),
+        Undefined("undefined", TC::IntegerLiteral),
+        If("if", TC::Keyword),
+        Else("else", TC::Keyword),
+        Loop("loop", TC::Keyword),
+        For("for", TC::Keyword),
+        While("while", TC::Keyword),
+        Public("pub", TC::Keyword),
+        Builtin("__builtin", TC::Keyword),
+        As("as", TC::Keyword),
 
         // misc symbols
-        Semi(";", TC::Symbol, TP::Normal),
-        Colon(":", TC::Symbol, TP::Normal),
-        Comma(",", TC::Symbol, TP::Normal),
-        Arrow("->", TC::Symbol, TP::Normal),
-        Underscore("_", TC::Symbol, TP::Normal),
-        ColonColon("::", TC::Symbol, TP::Normal),
+        Semi(";", TC::Symbol),
+        Colon(":", TC::Symbol),
+        Comma(",", TC::Symbol),
+        Arrow("->", TC::Symbol),
+        Underscore("_", TC::Symbol),
+        ColonColon("::", TC::Symbol),
 
         // braces
-        OpenC("{", TC::Symbol, TP::Normal),
-        CloseC("}", TC::Symbol, TP::Normal),
-        OpenR("(", TC::Symbol, TP::Normal),
-        CloseR(")", TC::Symbol, TP::Normal),
-        OpenS("[", TC::Symbol, TP::Normal),
-        CloseS("]", TC::Symbol, TP::Normal),
+        OpenC("{", TC::Symbol),
+        CloseC("}", TC::Symbol),
+        OpenR("(", TC::Symbol),
+        CloseR(")", TC::Symbol),
+        OpenS("[", TC::Symbol),
+        CloseS("]", TC::Symbol),
 
         // operators
-        Dot(".", TC::Symbol, TP::Normal),
-        Dots("..", TC::Symbol, TP::Normal),
-        DotsEq("..=", TC::Symbol, TP::Normal),
-        AmperAmper("&&", TC::Symbol, TP::Normal),
-        PipePipe("||", TC::Symbol, TP::Normal),
-        CircumflexCircumflex("^^", TC::Symbol, TP::Normal),
-        EqEq("==", TC::Symbol, TP::Normal),
-        Neq("!=", TC::Symbol, TP::Normal),
-        Gte(">=", TC::Symbol, TP::Normal),
-        Gt(">", TC::Symbol, TP::Normal),
-        Lte("<=", TC::Symbol, TP::Normal),
-        Lt("<", TC::Symbol, TP::Normal),
-        Amper("&", TC::Symbol, TP::Normal),
-        Pipe("|", TC::Symbol, TP::Normal),
-        Circumflex("^", TC::Symbol, TP::Normal),
-        LtLt("<<", TC::Symbol, TP::Normal),
-        GtGt(">>", TC::Symbol, TP::Normal),
-        Plus("+", TC::Symbol, TP::Normal),
-        Minus("-", TC::Symbol, TP::Normal),
-        Star("*", TC::Symbol, TP::Normal),
-        Slash("/", TC::Symbol, TP::Normal),
-        Percent("%", TC::Symbol, TP::Normal),
-        Bang("!", TC::Symbol, TP::Normal),
-        StarStar("**", TC::Symbol, TP::Normal),
+        Dot(".", TC::Symbol),
+        Dots("..", TC::Symbol),
+        DotsEq("..=", TC::Symbol),
+        AmperAmper("&&", TC::Symbol),
+        PipePipe("||", TC::Symbol),
+        CircumflexCircumflex("^^", TC::Symbol),
+        EqEq("==", TC::Symbol),
+        Neq("!=", TC::Symbol),
+        Gte(">=", TC::Symbol),
+        Gt(">", TC::Symbol),
+        Lte("<=", TC::Symbol),
+        Lt("<", TC::Symbol),
+        Amper("&", TC::Symbol),
+        Pipe("|", TC::Symbol),
+        Circumflex("^", TC::Symbol),
+        LtLt("<<", TC::Symbol),
+        GtGt(">>", TC::Symbol),
+        Plus("+", TC::Symbol),
+        Minus("-", TC::Symbol),
+        Star("*", TC::Symbol),
+        Slash("/", TC::Symbol),
+        Percent("%", TC::Symbol),
+        Bang("!", TC::Symbol),
+        StarStar("**", TC::Symbol),
 
         // assignment operators
-        Eq("=", TC::Symbol, TP::Normal),
-        PlusEq("+=", TC::Symbol, TP::Normal),
-        MinusEq("-=", TC::Symbol, TP::Normal),
-        StarEq("*=", TC::Symbol, TP::Normal),
-        SlashEq("/=", TC::Symbol, TP::Normal),
-        PercentEq("%=", TC::Symbol, TP::Normal),
-        AmperEq("&=", TC::Symbol, TP::Normal),
-        CircumflexEq("^=", TC::Symbol, TP::Normal),
-        BarEq("|=", TC::Symbol, TP::Normal),
+        Eq("=", TC::Symbol),
+        PlusEq("+=", TC::Symbol),
+        MinusEq("-=", TC::Symbol),
+        StarEq("*=", TC::Symbol),
+        SlashEq("/=", TC::Symbol),
+        PercentEq("%=", TC::Symbol),
+        AmperEq("&=", TC::Symbol),
+        CircumflexEq("^=", TC::Symbol),
+        BarEq("|=", TC::Symbol),
     }
+}
+
+lazy_static! {
+    /// Sorted from long to short, so that longer literals are matched first
+    static ref FIXED_TOKENS: Vec<(&'static str, fn (&str) -> TokenType<&str>, &'static str)> = {
+        let mut tokens = UNSORTED_FIXED_TOKENS.to_vec();
+        tokens.sort_by_key(|(lit, _, _)| Reverse(lit.len()));
+        tokens
+    };
 }
 
 impl TokenError {
@@ -459,6 +450,10 @@ impl TokenError {
                     .add_error(Span::empty_at(pos), "end of comment here")
                     .finish()
             }
+            TokenError::StringLiteralMissingEnd { start, eof } => Diagnostic::new("string literal missing end")
+                .add_info(Span::empty_at(start), "string literal started here")
+                .add_error(Span::empty_at(eof), "end of file reached")
+                .finish(),
         }
     }
 }
@@ -466,7 +461,7 @@ impl TokenError {
 #[cfg(test)]
 mod test {
     use crate::syntax::pos::{FileId, Pos, Span};
-    use crate::syntax::token::{tokenize, PatternKind, Token, TokenType, TOKEN_PATTERNS};
+    use crate::syntax::token::{tokenize, Token, TokenType, CUSTOM_TOKENS, UNSORTED_FIXED_TOKENS};
 
     #[test]
     fn basic_tokenize() {
@@ -517,15 +512,11 @@ mod test {
     // TODO turn this into a test case that checks whether the grammer is up-to-date
     #[test]
     fn print_grammer_enum() {
-        for (token_type, pattern, pattern_kind, _) in TOKEN_PATTERNS {
-            match pattern_kind {
-                PatternKind::Regex => {
-                    println!("Token{:?} => TokenType::{:?},", token_type, token_type)
-                }
-                PatternKind::Literal => {
-                    println!("{:?} => TokenType::{:?},", pattern, token_type)
-                }
-            }
+        for (_build, name) in CUSTOM_TOKENS {
+            println!("Token{name} => TokenType::{name}(<&'s str>),")
+        }
+        for (literal, _build, name) in UNSORTED_FIXED_TOKENS {
+            println!("{literal:?} => TokenType::{name},")
         }
     }
 }

@@ -13,6 +13,7 @@ itertools.workspace = true
 lalrpop-util.workspace = true
 lazy_static.workspace = true
 logos.workspace = true
+memchr.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
 rand.workspace = true
