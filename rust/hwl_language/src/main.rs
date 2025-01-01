@@ -68,17 +68,6 @@ fn main_inner() {
     };
     let diags = Diagnostics::new_with_handler(handler);
 
-    // profile tokenization separately
-    let start_tokenize = Instant::now();
-    if profile {
-        let mut total_tokens = 0;
-        for file in source.files() {
-            total_tokens += Tokenizer::new(file, &source[file].source).count();
-        }
-        println!("total tokens: {}", total_tokens);
-    }
-    let time_tokenize = start_tokenize.elapsed();
-
     // run compilation
     let start_parse = Instant::now();
     let parsed = ParsedDatabase::new(&diags, &source);
@@ -120,11 +109,20 @@ fn main_inner() {
 
     // print profiling info
     if profile {
+        // profile tokenization separately
+        let start_tokenize = Instant::now();
+        let mut total_tokens = 0;
+        for file in source.files() {
+            total_tokens += Tokenizer::new(file, &source[file].source).into_iter().count();
+        }
+        let time_tokenize = start_tokenize.elapsed();
+
         println!();
         println!("profiling info:");
         println!("-----------------------------------------------");
         println!("input files:      {}", source.file_count());
         println!("input lines:      {}", source.total_lines_of_code());
+        println!("input tokens:     {}", total_tokens);
         println!("----------------------------------------");
         println!("read source:      {:?}", time_source);
         println!("tokenize:         {:?}", time_tokenize);
