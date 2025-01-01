@@ -25,7 +25,7 @@ pub enum TokenError {
 const ERROR_CONTEXT_LENGTH: usize = 16;
 
 pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenError> {
-    Tokenizer::new(file, source).try_collect()
+    Tokenizer::new(file, source).into_iter().try_collect()
 }
 
 // TODO implement recovery by matching without start anchor?
@@ -35,7 +35,7 @@ pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenErr
 pub struct Tokenizer<'s> {
     file: FileId,
     curr_byte: usize,
-    left: &'s str,
+    left: std::str::Chars<'s>,
     errored: bool,
     fixed_tokens: &'static [(&'static str, fn(&str) -> TokenType<&str>, &'static str)],
 }
@@ -45,15 +45,47 @@ impl<'s> Tokenizer<'s> {
         Tokenizer {
             file,
             curr_byte: 0,
-            left: source,
+            left: source.chars(),
             errored: false,
             fixed_tokens: &FIXED_TOKENS,
         }
     }
 
-    fn skip(&mut self, n: usize) {
-        self.left = &self.left[n..];
-        self.curr_byte += n;
+    pub fn into_iter(self) -> TokenizerIterator<'s> {
+        TokenizerIterator { tokenizer: self }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.left.clone().next()
+    }
+
+    fn skip_until(&mut self, f: impl Fn(char) -> bool) {
+        while let Some(c) = self.peek() {
+            if f(c) {
+                break;
+            }
+            self.pop();
+        }
+    }
+
+    fn peek_second(&self) -> Option<char> {
+        let mut iter = self.left.clone();
+        iter.next()?;
+        iter.next()
+    }
+
+    fn pop(&mut self) -> Option<char> {
+        self.curr_byte += 1;
+        self.left.next()
+    }
+
+    fn skip_chars(&mut self, n: usize) {
+        for _ in 0..n {
+            match self.left.next() {
+                None => panic!(),
+                Some(c) => self.curr_byte += c.len_utf8(),
+            }
+        }
     }
 
     fn curr_pos(&self) -> Pos {
@@ -63,198 +95,420 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
-    fn prefix(&self) -> String {
-        self.left.chars().take(ERROR_CONTEXT_LENGTH).collect()
+    fn prefix_for_error_message(&self) -> String {
+        self.left.clone().take(ERROR_CONTEXT_LENGTH).collect()
     }
 
-    fn parse_start_continue(
-        &mut self,
-        is_start: impl Fn(char) -> bool,
-        is_continue: impl Fn(char) -> bool,
-        build: impl Fn(&'s str) -> TokenType<&'s str>,
-    ) -> Option<Token<&'s str>> {
-        let start = self.curr_pos();
-        let left_start = self.left;
-
-        let mut chars = self.left.chars();
-        if let Some(first) = chars.next() {
-            if is_start(first) {
-                let mut len = 0;
-                len += first.len_utf8();
-
-                while let Some(c) = chars.next() {
-                    if is_continue(c) {
-                        len += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-
-                self.skip(len);
-                let span = Span::new(start, self.curr_pos());
-
-                return Some(Token {
-                    span,
-                    ty: build(&left_start[..len]),
-                });
-            }
-        }
-
-        None
-    }
+    // fn parse_start_continue(
+    //     &mut self,
+    //     is_start: impl Fn(char) -> bool,
+    //     is_continue: impl Fn(char) -> bool,
+    //     build: impl Fn(&'s str) -> TokenType<&'s str>,
+    // ) -> Option<Token<&'s str>> {
+    //     let start = self.curr_pos();
+    //
+    //     let mut chars = self.left.chars();
+    //     if let Some(first) = chars.next() {
+    //         if is_start(first) {
+    //             let mut len = 0;
+    //             len += first.len_utf8();
+    //
+    //             while let Some(c) = chars.next() {
+    //                 if is_continue(c) {
+    //                     len += c.len_utf8();
+    //                 } else {
+    //                     break;
+    //                 }
+    //             }
+    //
+    //             self.skip(len);
+    //             let span = Span::new(start, self.curr_pos());
+    //
+    //             return Some(Token {
+    //                 span,
+    //                 ty: build(&left_start[..len]),
+    //             });
+    //         }
+    //     }
+    //
+    //     None
+    // }
 
     // TODO try reordering to maximize performance
     // TODO try generating a full character-based state machine at compile-time, that might be faster
-    fn next_impl(&mut self) -> Result<Token<&'s str>, TokenError> {
+    // TODO try memchr where it applies, see if it's actually faster
+    // TODO pop first 2/3 chars immediately, then match on the entire thing as a u32?
+    fn next_inner(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
         let start = self.curr_pos();
-        let left_start = self.left;
-        let fixed_tokens = self.fixed_tokens;
+        let start_left_str = self.left.as_str();
 
-        // block comment
-        if self.left.starts_with("/*") {
-            self.skip(2);
-
-            // block comments are allowed to nest
-            let mut depth: usize = 1;
-            while depth > 0 {
-                if self.left.starts_with("/*") {
-                    depth += 1;
-                    self.skip(2);
-                } else if self.left.starts_with("*/") {
-                    depth -= 1;
-                    self.skip(2);
-                } else if let Some(c) = self.left.chars().next() {
-                    self.skip(c.len_utf8())
-                } else {
-                    // hit end of source
-                    return Err(TokenError::BlockCommentMissingEnd {
-                        start,
-                        eof: self.curr_pos(),
-                    });
+        let ty = match self.peek() {
+            None => return Ok(None),
+            Some('=') => {
+                self.pop();
+                match self.peek() {
+                    Some('=') => {
+                        self.pop();
+                        TokenType::EqEq
+                    }
+                    _ => TokenType::Eq,
+                }
+            }
+            Some('.') => {
+                self.pop();
+                match self.peek() {
+                    Some('.') => {
+                        self.pop();
+                        match self.peek() {
+                            Some('=') => {
+                                self.pop();
+                                TokenType::DotsEq
+                            }
+                            Some('+') => {
+                                self.pop();
+                                TokenType::DotsPlus
+                            }
+                            _ => TokenType::Dots,
+                        }
+                    }
+                    _ => TokenType::Dot,
                 }
             }
 
-            let span = Span::new(start, self.curr_pos());
-            return Ok(Token {
-                ty: TokenType::BlockComment(&left_start[..span.len_bytes()]),
-                span,
-            });
-        }
-        if self.left.starts_with("*/") {
-            return Err(TokenError::BlockCommentUnexpectedEnd {
-                pos: start,
-                prefix: self.prefix(),
-            });
-        }
-
-        // line comment
-        // TODO should it include the trailing newline? \n\r handling becomes a bit tricky then
-        if self.left.starts_with("//") {
-            let len = memchr::memchr2(b'\n', b'\r', self.left.as_bytes()).map_or(self.left.len(), |end| end);
-            self.skip(len);
-
-            let span = Span::new(start, self.curr_pos());
-            return Ok(Token {
-                ty: TokenType::LineComment(&left_start[..len]),
-                span,
-            });
-        }
-
-        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
-        if let Some(token) = self.parse_start_continue(is_whitespace, is_whitespace, TokenType::WhiteSpace) {
-            return Ok(token);
-        }
-
-        let is_id_start = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z');
-        let is_id_continue = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9');
-        let build_id = move |id| {
-            // check for fixed matches, they might overlap with IDs
-            // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
-            for (fixed, build, _) in fixed_tokens {
-                if &id == fixed {
-                    return build(id);
+            // TODO all of this would be a lot more compact if we just always popped and then went back
+            Some('(') => {
+                self.pop();
+                TokenType::OpenR
+            }
+            Some(')') => {
+                self.pop();
+                TokenType::CloseR
+            }
+            Some('{') => {
+                self.pop();
+                TokenType::OpenC
+            }
+            Some('}') => {
+                self.pop();
+                TokenType::CloseC
+            }
+            Some('[') => {
+                self.pop();
+                TokenType::OpenS
+            }
+            Some(']') => {
+                self.pop();
+                TokenType::CloseS
+            }
+            Some(',') => {
+                self.pop();
+                TokenType::Comma
+            }
+            Some(';') => {
+                self.pop();
+                TokenType::Semi
+            }
+            Some(':') => {
+                self.pop();
+                match self.peek() {
+                    Some(':') => {
+                        self.pop();
+                        TokenType::ColonColon
+                    }
+                    _ => TokenType::Colon,
                 }
             }
-            return TokenType::Identifier(id);
+            Some('!') => {
+                self.pop();
+                match self.peek() {
+                    Some('=') => {
+                        self.pop();
+                        TokenType::Neq
+                    }
+                    _ => TokenType::Bang,
+                }
+            }
+            Some('-') => {
+                self.pop();
+                match self.peek() {
+                    Some('=') => {
+                        self.pop();
+                        TokenType::MinusEq
+                    }
+                    Some('>') => {
+                        self.pop();
+                        TokenType::Arrow
+                    }
+                    _ => TokenType::Minus,
+                }
+            }
+            Some('*') => {
+                self.pop();
+                match self.peek() {
+                    Some('=') => {
+                        self.pop();
+                        TokenType::StarEq
+                    }
+                    Some('*') => {
+                        self.pop();
+                        TokenType::StarStar
+                    }
+                    _ => TokenType::Star,
+                }
+            }
+
+            Some('/') => {
+                self.pop();
+                match self.peek() {
+                    Some('*') => todo!("block comment"),
+                    Some('/') => {
+                        self.pop();
+                        self.skip_until(|c| c == '\n' || c == '\r');
+                        TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
+                    }
+                    Some('=') => {
+                        self.pop();
+                        TokenType::SlashEq
+                    }
+                    _ => TokenType::Slash,
+                }
+            }
+            Some('"') => {
+                self.pop();
+                self.skip_until(|c| c == '"');
+                match self.peek() {
+                    Some('"') => {
+                        self.pop();
+                        TokenType::StringLiteral(&start_left_str[..self.curr_byte - start.byte])
+                    }
+                    None => {
+                        return Err(TokenError::StringLiteralMissingEnd {
+                            start,
+                            eof: self.curr_pos(),
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            // TODO replace with pattern, might be faster
+            Some(c) if is_whitespace(c) => {
+                self.pop();
+                while self.peek().map_or(false, is_whitespace) {
+                    self.pop();
+                }
+                TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
+            }
+            // TODO replace with pattern, might be faster
+            Some(c) if is_id_start(c) => {
+                self.pop();
+                while self.peek().map_or(false, is_id_continue) {
+                    self.pop();
+                }
+                let id = &start_left_str[..self.curr_byte - start.byte];
+
+                // TODO speed up with runtime? literal tree
+                self.fixed_tokens
+                    .iter()
+                    .find_map(|(fixed, build, _)| if &id == fixed { Some(build(id)) } else { None })
+                    .unwrap_or(TokenType::Identifier(id))
+            }
+            Some(c) if is_decimal_digit(c) => {
+                self.pop();
+                self.skip_until(|c| !is_decimal_digit(c));
+                TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
+            }
+
+            Some(_) => {
+                return Err(TokenError::InvalidToken {
+                    pos: start,
+                    prefix: self.prefix_for_error_message(),
+                })
+            }
         };
-        if let Some(token) = self.parse_start_continue(is_id_start, is_id_continue, build_id) {
-            return Ok(token);
-        }
 
-        // string literal
-        // TODO escape codes
-        // TODO f-strings, also needs parser
-        // TODO we're actually already parsing here, it would be better if we could pass the inner string to the parser
-        if self.left.starts_with('"') {
-            let end_pos = memchr::memchr(b'"', &self.left.as_bytes()[1..]);
-            return match end_pos {
-                None => {
-                    self.skip(self.left.len());
-                    Err(TokenError::StringLiteralMissingEnd {
-                        start,
-                        eof: self.curr_pos(),
-                    })
-                }
-                Some(end_pos) => {
-                    let len_bytes = 1 + end_pos + 1;
-                    self.skip(len_bytes);
-                    let span = Span::new(start, self.curr_pos());
-                    Ok(Token {
-                        ty: TokenType::StringLiteral(&left_start[..len_bytes]),
-                        span,
-                    })
-                }
-            };
-        }
+        let span = Span::new(start, self.curr_pos());
+        Ok(Some(Token { span, ty }))
 
-        // integer literal/pattern
-        // TODO parse hex/bin
-        // TODO store the actually parsed int in the token to get more type safety
-        let is_decimal_digit = |c| matches!(c, '0'..='9');
-        if let Some(token) = self.parse_start_continue(is_decimal_digit, is_decimal_digit, TokenType::IntLiteral) {
-            return Ok(token);
-        }
-
-        // fixed token (needs to be after identifiers to ensure ids that start with a fixed prefix get matched as ids)
-        for (fixed, build, _) in self.fixed_tokens {
-            if self.left.starts_with(fixed) {
-                self.skip(fixed.len());
-
-                let span = Span::new(start, self.curr_pos());
-                return Ok(Token {
-                    ty: build(&left_start[..fixed.len()]),
-                    span,
-                });
-            }
-        }
-
-        // failed to match anything
-        Err(TokenError::InvalidToken {
-            pos: self.curr_pos(),
-            prefix: self.prefix(),
-        })
+        // // block comment
+        // if self.left.starts_with("/*") {
+        //     self.skip(2);
+        //
+        //     // block comments are allowed to nest
+        //     let mut depth: usize = 1;
+        //     while depth > 0 {
+        //         if self.left.starts_with("/*") {
+        //             depth += 1;
+        //             self.skip(2);
+        //         } else if self.left.starts_with("*/") {
+        //             depth -= 1;
+        //             self.skip(2);
+        //         } else if let Some(c) = self.left.chars().next() {
+        //             self.skip(c.len_utf8())
+        //         } else {
+        //             // hit end of source
+        //             return Err(TokenError::BlockCommentMissingEnd {
+        //                 start,
+        //                 eof: self.curr_pos(),
+        //             });
+        //         }
+        //     }
+        //
+        //     let span = Span::new(start, self.curr_pos());
+        //     return Ok(Token {
+        //         ty: TokenType::BlockComment(&left_start[..span.len_bytes()]),
+        //         span,
+        //     });
+        // }
+        // if self.left.starts_with("*/") {
+        //     return Err(TokenError::BlockCommentUnexpectedEnd {
+        //         pos: start,
+        //         prefix: self.prefix_for_error_message(),
+        //     });
+        // }
+        //
+        // // line comment
+        // // TODO should it include the trailing newline? \n\r handling becomes a bit tricky then
+        // if self.left.starts_with("//") {
+        //     let len = memchr::memchr2(b'\n', b'\r', self.left.as_bytes()).map_or(self.left.len(), |end| end);
+        //     self.skip(len);
+        //
+        //     let span = Span::new(start, self.curr_pos());
+        //     return Ok(Token {
+        //         ty: TokenType::LineComment(&left_start[..len]),
+        //         span,
+        //     });
+        // }
+        //
+        // let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
+        // if let Some(token) = self.parse_start_continue(is_whitespace, is_whitespace, TokenType::WhiteSpace) {
+        //     return Ok(token);
+        // }
+        //
+        // let is_id_start = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z');
+        // let is_id_continue = |c| matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9');
+        // let build_id = move |id| {
+        //     check_id_fixed_token(fixed_tokens, id)
+        // };
+        // if let Some(token) = self.parse_start_continue(is_id_start, is_id_continue, build_id) {
+        //     return Ok(token);
+        // }
+        //
+        // // string literal
+        // // TODO escape codes
+        // // TODO f-strings, also needs parser
+        // // TODO we're actually already parsing here, it would be better if we could pass the inner string to the parser
+        // if self.left.starts_with('"') {
+        //     let end_pos = memchr::memchr(b'"', &self.left.as_bytes()[1..]);
+        //     return match end_pos {
+        //         None => {
+        //             self.skip(self.left.len());
+        //             Err(TokenError::StringLiteralMissingEnd {
+        //                 start,
+        //                 eof: self.curr_pos(),
+        //             })
+        //         }
+        //         Some(end_pos) => {
+        //             let len_bytes = 1 + end_pos + 1;
+        //             self.skip(len_bytes);
+        //             let span = Span::new(start, self.curr_pos());
+        //             Ok(Token {
+        //                 ty: TokenType::StringLiteral(&left_start[..len_bytes]),
+        //                 span,
+        //             })
+        //         }
+        //     };
+        // }
+        //
+        // // integer literal/pattern
+        // // TODO parse hex/bin
+        // // TODO store the actually parsed int in the token to get more type safety
+        // let is_decimal_digit = |c| matches!(c, '0'..='9');
+        // if let Some(token) = self.parse_start_continue(is_decimal_digit, is_decimal_digit, TokenType::IntLiteral) {
+        //     return Ok(token);
+        // }
+        //
+        // // fixed token (needs to be after identifiers to ensure ids that start with a fixed prefix get matched as ids)
+        // if let Some((len, token)) = check_start_fixed_token(fixed_tokens, self.left) {
+        //     self.skip(len);
+        //     let span = Span::new(start, self.curr_pos());
+        //     return Ok(Token {
+        //         ty: token,
+        //         span,
+        //     });
+        // }
+        //
+        // // failed to match anything
+        // Err(TokenError::InvalidToken {
+        //     pos: self.curr_pos(),
+        //     prefix: self.prefix_for_error_message(),
+        // })
     }
-}
 
-impl<'s> Iterator for Tokenizer<'s> {
-    type Item = Result<Token<&'s str>, TokenError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
         assert!(
             !self.errored,
             "Cannot continue calling next on tokenizer that returned an error"
         );
-        if self.left.is_empty() {
-            None
-        } else {
-            match self.next_impl() {
-                Ok(t) => Some(Ok(t)),
-                Err(e) => {
-                    self.errored = true;
-                    Some(Err(e))
-                }
-            }
+        self.next_inner().inspect_err(|_| self.errored = true)
+    }
+}
+
+fn is_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
+fn is_id_start(c: char) -> bool {
+    matches!(c, '_' | 'a'..='z' | 'A'..='Z')
+}
+
+fn is_id_continue(c: char) -> bool {
+    matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9')
+}
+
+fn is_decimal_digit(c: char) -> bool {
+    matches!(c, '0'..='9')
+}
+
+#[inline(never)]
+fn check_id_fixed_token<'s>(
+    fixed_tokens: &[(&str, fn(&str) -> TokenType<&str>, &str)],
+    id: &'s str,
+) -> TokenType<&'s str> {
+    // check for fixed matches, they might overlap with IDs
+    // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
+    for (fixed, build, _) in fixed_tokens {
+        if &id == fixed {
+            return build(id);
         }
+    }
+    TokenType::Identifier(id)
+}
+
+#[inline(never)]
+fn check_start_fixed_token<'s>(
+    fixed_tokens: &[(&str, fn(&str) -> TokenType<&str>, &str)],
+    start: &'s str,
+) -> Option<(usize, TokenType<&'s str>)> {
+    // check for fixed matches, they might overlap with IDs
+    // TODO create a separate sublist of fixed tokens that also match identifiers to speed this up a bit more
+    for (fixed, build, _) in fixed_tokens {
+        if start.starts_with(fixed) {
+            return Some((fixed.len(), build(&start[..fixed.len()])));
+        }
+    }
+    None
+}
+
+pub struct TokenizerIterator<'s> {
+    tokenizer: Tokenizer<'s>,
+}
+
+impl<'s> Iterator for TokenizerIterator<'s> {
+    type Item = Result<Token<&'s str>, TokenError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.tokenizer.next().transpose()
     }
 }
 
@@ -391,6 +645,7 @@ declare_tokens! {
         Dot(".", TC::Symbol),
         Dots("..", TC::Symbol),
         DotsEq("..=", TC::Symbol),
+        DotsPlus("..+", TC::Symbol),
         AmperAmper("&&", TC::Symbol),
         PipePipe("||", TC::Symbol),
         CircumflexCircumflex("^^", TC::Symbol),
