@@ -1,4 +1,4 @@
-use crate::front::check::{check_type_contains_value, TypeContainsReason};
+use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
@@ -9,7 +9,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
-    ReturnStatement, Spanned, SyncDomain, VariableDeclaration,
+    ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -336,8 +336,9 @@ impl CompileState<'_> {
                     all_ifs.push(initial_if);
                     all_ifs.extend(else_ifs.iter());
 
+                    let vars_before = vars.clone();
                     let lowered =
-                        self.elaborate_if_statement(ctx, &mut ctx_block, vars.clone(), scope, &all_ifs, final_else)?;
+                        self.elaborate_if_statement(ctx, &mut ctx_block, vars, scope, &all_ifs, final_else)?;
 
                     let next_vars = match lowered {
                         LoweredIfOutcome::Nothing(next_vars) => next_vars,
@@ -350,7 +351,7 @@ impl CompileState<'_> {
                         }
                         LoweredIfOutcome::IfStatement(lowered) => {
                             let (ir_if, next_vars) =
-                                self.convert_if_to_ir_by_merging_variables(ctx, vars, stmt.span, lowered)?;
+                                self.convert_if_to_ir_by_merging_variables(ctx, vars_before, stmt.span, lowered)?;
                             let ir_stmt = Spanned {
                                 span: stmt.span,
                                 inner: IrStatement::If(ir_if),
@@ -361,7 +362,57 @@ impl CompileState<'_> {
                     };
                     vars = next_vars;
                 }
-                BlockStatementKind::While(_) => throw!(diags.report_todo(stmt.span, "while statement")),
+                BlockStatementKind::While(stmt_while) => {
+                    let &WhileStatement {
+                        span_keyword,
+                        ref cond,
+                        ref body,
+                    } = stmt_while;
+
+                    loop {
+                        // eval cond
+                        let cond = self.eval_expression_as_compile(scope, &vars, cond, "while loop condition")?;
+
+                        let reason = TypeContainsReason::WhileCondition { span_keyword };
+                        check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
+                        let cond = match &cond.inner {
+                            &CompileValue::Bool(b) => b,
+                            _ => throw!(diags
+                                .report_internal_error(cond.span, "expected bool, should have been checked already")),
+                        };
+
+                        // handle cond
+                        if !cond {
+                            break;
+                        }
+
+                        // visit body
+                        let (body_ir, end) = self.elaborate_block(ctx, vars, scope, body)?;
+                        let body_ir_spanned = Spanned {
+                            span: body.span,
+                            inner: body_ir,
+                        };
+                        ctx.push_ir_statement_block(&mut ctx_block, body_ir_spanned);
+
+                        // handle end
+                        match end {
+                            BlockEnd::Normal(new_vars) => vars = new_vars,
+                            BlockEnd::Stopping(end) => match end {
+                                BlockEndStopping::Return(ret) => {
+                                    return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::Return(ret))));
+                                }
+                                BlockEndStopping::Break(_, new_vars) => {
+                                    vars = new_vars;
+                                    break;
+                                }
+                                BlockEndStopping::Continue(_, new_vars) => {
+                                    vars = new_vars;
+                                    continue;
+                                }
+                            },
+                        }
+                    }
+                }
                 BlockStatementKind::For(stmt_for) => {
                     let stmt_for = Spanned {
                         span: stmt.span,
@@ -465,7 +516,7 @@ impl CompileState<'_> {
                 // check type
                 if let Some(ty) = ty {
                     let reason = TypeContainsReason::Assignment {
-                        span_target: id.span(),
+                        span_target: target.span,
                         span_target_ty: ty.span,
                     };
                     check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true)?;

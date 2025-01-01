@@ -296,6 +296,7 @@ pub struct IfCondBlockPair<C, B> {
 
 #[derive(Debug, Clone)]
 pub struct WhileStatement {
+    pub span_keyword: Span,
     pub cond: Box<Expression>,
     pub body: Block<BlockStatement>,
 }

@@ -260,8 +260,8 @@ BlockStatementKind: BlockStatementKind = {
     "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")"
     <body:Block<BlockStatement>>
         => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
-    "while" "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
-        => BlockStatementKind::While(WhileStatement { cond, body }),
+    <span_keyword:Span<"while">> "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
+        => BlockStatementKind::While(WhileStatement { span_keyword, cond, body }),
     // control flow terminators
     <span_return:Span<"return">> <value:BoxExpr?> ";"
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),

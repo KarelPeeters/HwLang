@@ -88,6 +88,9 @@ pub enum TypeContainsReason {
     ForIndexType {
         span_ty: Span,
     },
+    WhileCondition {
+        span_keyword: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -134,6 +137,10 @@ impl TypeContainsReason {
             TypeContainsReason::ForIndexType { span_ty } => diag.add_info(
                 span_ty,
                 format!("for loop iteration variable type `{}` set here", target_ty_str),
+            ),
+            TypeContainsReason::WhileCondition { span_keyword } => diag.add_info(
+                span_keyword,
+                format!("while condition requires type `{}`", target_ty_str),
             ),
         }
     }
