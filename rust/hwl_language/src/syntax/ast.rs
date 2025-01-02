@@ -633,6 +633,12 @@ impl<T, E> Spanned<Result<T, E>> {
     }
 }
 
+impl<T> Spanned<Option<T>> {
+    pub fn transpose(self) -> Option<Spanned<T>> {
+        self.inner.map(|inner| Spanned { span: self.span, inner })
+    }
+}
+
 impl<I> MaybeIdentifier<I> {
     pub fn as_ref(&self) -> MaybeIdentifier<&I> {
         match self {

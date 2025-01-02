@@ -468,16 +468,26 @@ impl CompileState<'_> {
         let Assignment {
             span: _,
             op,
-            target,
+            target: target_expr,
             value,
         } = stmt;
 
-        if op.inner.is_some() {
-            throw!(diags.report_todo(stmt.span, "compound assignment"));
-        }
+        let target = self.eval_expression_as_assign_target(scope, target_expr);
+        let value_right = self.eval_expression(ctx, ctx_block, scope, &vars, value);
 
-        let target = self.eval_expression_as_assign_target(scope, target);
-        let value = self.eval_expression(ctx, ctx_block, scope, &vars, value);
+        let value = if let Some(op) = op.transpose() {
+            let value_left = self.eval_expression(ctx, ctx_block, scope, &vars, target_expr);
+
+            result_pair(value_left, value_right).and_then(|(left, right)| {
+                let result = self.eval_binary_expression(stmt.span, op, left, right)?;
+                Ok(Spanned {
+                    span: stmt.span,
+                    inner: result,
+                })
+            })
+        } else {
+            value_right
+        };
 
         let target = target?;
         let value = value?;

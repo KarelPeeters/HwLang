@@ -221,7 +221,7 @@ impl CompileState<'_> {
                     }
                 }
             },
-            ExpressionKind::BinaryOp(op, left, right) => {
+            &ExpressionKind::BinaryOp(op, ref left, ref right) => {
                 let left = self.eval_expression(ctx, ctx_block, scope, vars, left);
                 let right = self.eval_expression(ctx, ctx_block, scope, vars, right);
                 self.eval_binary_expression(expr.span, op, left?, right?)
@@ -402,10 +402,10 @@ impl CompileState<'_> {
     }
 
     // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
-    fn eval_binary_expression(
+    pub fn eval_binary_expression(
         &mut self,
         expr_span: Span,
-        op: &Spanned<BinaryOp>,
+        op: Spanned<BinaryOp>,
         left: Spanned<MaybeCompile<TypedIrExpression>>,
         right: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
