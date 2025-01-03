@@ -413,7 +413,7 @@ pub enum ExpressionKind {
     Id(Identifier),
 
     // Literals
-    IntPattern(IntPattern),
+    IntLiteral(IntLiteral),
     BoolLiteral(bool),
     StringLiteral(String),
 
@@ -525,13 +525,13 @@ pub struct SyncExpression {
 //     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum IntPattern {
-    // [0-9a-fA-F_]+
-    Hex(String),
-    // [01_]+
-    Bin(String),
+pub enum IntLiteral {
+    // 0b[01_]+
+    Binary(String),
     // [0-9_]+
-    Dec(String),
+    Decimal(String),
+    // 0x[0-9a-fA-F_]+
+    Hexadecimal(String),
 }
 
 #[derive(Debug, Clone)]

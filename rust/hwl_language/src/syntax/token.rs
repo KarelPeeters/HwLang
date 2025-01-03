@@ -15,6 +15,7 @@ pub struct Token<S> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum TokenError {
     InvalidToken { pos: Pos, prefix: String },
+    InvalidIntLiteral { span: Span },
     BlockCommentMissingEnd { start: Pos, eof: Pos },
     BlockCommentUnexpectedEnd { pos: Pos, prefix: String },
     StringLiteralMissingEnd { start: Pos, eof: Pos },
@@ -97,9 +98,9 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
-    fn skip_until(&mut self, f: impl Fn(char) -> bool) {
+    fn skip_while(&mut self, f: impl Fn(char) -> bool) {
         while let Some(c) = self.peek() {
-            if f(c) {
+            if !f(c) {
                 break;
             }
             self.curr_byte += c.len_utf8();
@@ -140,12 +141,12 @@ impl<'s> Tokenizer<'s> {
             // custom
             [pattern_whitespace!(), _] => {
                 self.skip(1);
-                self.skip_until(|c| !matches!(c, pattern_whitespace!()));
+                self.skip_while(|c| matches!(c, pattern_whitespace!()));
                 TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
             }
             [pattern_id_start!(), _] => {
                 self.skip(1);
-                self.skip_until(|c| !matches!(c, pattern_id_continue!()));
+                self.skip_while(|c| matches!(c, pattern_id_continue!()));
                 let id = &start_left_str[..self.curr_byte - start.byte];
 
                 // TODO speed up with runtime? literal tree
@@ -157,16 +158,50 @@ impl<'s> Tokenizer<'s> {
                         .unwrap_or(TokenType::Identifier(id)),
                 }
             }
+
             [pattern_decimal_digit!(), _] => {
                 self.skip(1);
                 #[allow(clippy::manual_is_ascii_check)]
-                self.skip_until(|c| !matches!(c, pattern_decimal_digit!()));
-                TokenType::IntLiteral(&start_left_str[..self.curr_byte - start.byte])
+                self.skip_while(|c| matches!(c, pattern_decimal_digit!() | '_' | 'b' | 'x' | 'a'..='f'));
+
+                let token_str = &start_left_str[..self.curr_byte - start.byte];
+                let invalid = || {
+                    Err(TokenError::InvalidIntLiteral {
+                        span: Span::new(start, self.curr_pos()),
+                    })
+                };
+
+                match peek {
+                    ['0', 'b'] => {
+                        if token_str[2..].chars().all(|c| matches!(c, '_' | '0' | '1')) {
+                            TokenType::IntLiteralBinary(token_str)
+                        } else {
+                            return invalid();
+                        }
+                    }
+                    ['0', 'x'] => {
+                        if token_str[2..]
+                            .chars()
+                            .all(|c| matches!(c, pattern_decimal_digit!() | '_' | 'a'..='f'))
+                        {
+                            TokenType::IntLiteralHexadecimal(token_str)
+                        } else {
+                            return invalid();
+                        }
+                    }
+                    _ => {
+                        if token_str.chars().all(|c| matches!(c, pattern_decimal_digit!() | '_')) {
+                            TokenType::IntLiteralDecimal(token_str)
+                        } else {
+                            return invalid();
+                        }
+                    }
+                }
             }
 
             ['"', _] => {
                 self.skip(1);
-                self.skip_until(|c| c == '"');
+                self.skip_while(|c| c != '"');
                 match self.peek() {
                     Some('"') => {
                         self.skip(1);
@@ -213,7 +248,7 @@ impl<'s> Tokenizer<'s> {
             }
             ['/', '/'] => {
                 self.skip(2);
-                self.skip_until(|c| c == '\n' || c == '\r');
+                self.skip_while(|c| c != '\n' && c != '\r');
                 TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
             }
 
@@ -389,7 +424,9 @@ declare_tokens! {
 
         // patterns
         Identifier(TC::Identifier),
-        IntLiteral(TC::IntegerLiteral),
+        IntLiteralBinary(TC::IntegerLiteral),
+        IntLiteralDecimal(TC::IntegerLiteral),
+        IntLiteralHexadecimal(TC::IntegerLiteral),
         // TODO better string literal pattern with escape codes and string formatting expressions
         StringLiteral(TC::StringLiteral),
     }
@@ -517,6 +554,9 @@ impl TokenError {
         match self {
             TokenError::InvalidToken { pos, prefix: _ } => Diagnostic::new("tokenization error")
                 .add_error(Span::empty_at(pos), "invalid start of token")
+                .finish(),
+            TokenError::InvalidIntLiteral { span } => Diagnostic::new("invalid integer literal")
+                .add_error(span, "here")
                 .finish(),
             TokenError::BlockCommentMissingEnd { start, eof } => Diagnostic::new("block comment missing end")
                 .add_info(Span::empty_at(start), "block comment started here")

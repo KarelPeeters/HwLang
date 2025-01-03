@@ -10,7 +10,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,
+    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral, PortDirection, Spanned, SyncDomain,
     UnaryOp,
 };
 use crate::syntax::pos::Span;
@@ -18,7 +18,7 @@ use crate::util::{Never, ResultDoubleExt};
 use itertools::{Either, Itertools};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
-use num_traits::{One, Pow, Signed, ToPrimitive};
+use num_traits::{Num, One, Pow, Signed, ToPrimitive};
 use std::cmp::{max, min};
 use std::convert::identity;
 use std::ops::Sub;
@@ -102,19 +102,23 @@ impl CompileState<'_> {
                 }
             }
             ExpressionKind::TypeFunction => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Function))),
-            ExpressionKind::IntPattern(ref pattern) => match pattern {
-                IntPattern::Hex(_) => Err(diags.report_todo(expr.span, "hex int-pattern expression")),
-                IntPattern::Bin(_) => Err(diags.report_todo(expr.span, "bin int-pattern expression")),
-                IntPattern::Dec(pattern_raw) => {
-                    let pattern_clean = pattern_raw.replace("_", "");
-                    match pattern_clean.parse::<BigInt>() {
-                        Ok(value) => Ok(MaybeCompile::Compile(CompileValue::Int(value))),
-                        Err(_) => Err(self
-                            .diags
-                            .report_internal_error(expr.span, "failed to parse int-pattern")),
+            ExpressionKind::IntLiteral(ref pattern) => {
+                let value = match pattern {
+                    IntLiteral::Binary(s_raw) => {
+                        let s_clean = s_raw[2..].replace('_', "");
+                        BigUint::from_str_radix(&s_clean, 2).unwrap()
                     }
-                }
-            },
+                    IntLiteral::Decimal(s_raw) => {
+                        let s_clean = s_raw.replace('_', "");
+                        BigUint::from_str_radix(&s_clean, 10).unwrap()
+                    }
+                    IntLiteral::Hexadecimal(s) => {
+                        let s_hex = s[2..].replace('_', "");
+                        BigUint::from_str_radix(&s_hex, 16).unwrap()
+                    }
+                };
+                Ok(MaybeCompile::Compile(CompileValue::Int(BigInt::from(value))))
+            }
             &ExpressionKind::BoolLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::Bool(literal))),
             // TODO f-string formatting
             ExpressionKind::StringLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::String(literal.clone()))),
