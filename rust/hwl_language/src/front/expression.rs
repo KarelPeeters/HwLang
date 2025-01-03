@@ -7,7 +7,7 @@ use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCom
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
-use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntPattern, PortDirection, Spanned, SyncDomain,
@@ -40,7 +40,6 @@ impl CompileState<'_> {
         })
     }
 
-    // TODO return COW to save some allocations?
     pub fn eval_expression<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -49,9 +48,25 @@ impl CompileState<'_> {
         vars: &VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<MaybeCompile<TypedIrExpression>>, ErrorGuaranteed> {
+        self.eval_expression_inner(ctx, ctx_block, scope, vars, expr)
+            .map(|result| Spanned {
+                span: expr.span,
+                inner: result,
+            })
+    }
+
+    // TODO return COW to save some allocations?
+    fn eval_expression_inner<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: Scope,
+        vars: &VariableValues,
+        expr: &Expression,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let diags = self.diags;
 
-        let result = match &expr.inner {
+        match &expr.inner {
             ExpressionKind::Dummy => {
                 // if dummy expressions were allowed, the caller would have checked for them already
                 Err(diags.report_simple(
@@ -102,9 +117,66 @@ impl CompileState<'_> {
             &ExpressionKind::BoolLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::Bool(literal))),
             // TODO f-string formatting
             ExpressionKind::StringLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::String(literal.clone()))),
-
             ExpressionKind::ArrayLiteral(_) => Err(diags.report_todo(expr.span, "expr kind ArrayLiteral")),
-            ExpressionKind::TupleLiteral(_) => Err(diags.report_todo(expr.span, "expr kind TupleLiteral")),
+            ExpressionKind::TupleLiteral(values) => {
+                let values = values
+                    .iter()
+                    .map(|v| self.eval_expression(ctx, ctx_block, scope, vars, v))
+                    .collect_vec();
+                let values: Vec<_> = values.into_iter().try_collect()?;
+
+                // TODO allow mixed-compile/ir tuples (and arrays)?
+                let mut all_compile = vec![];
+                let mut values_iter = values.into_iter();
+                for curr in &mut values_iter {
+                    match curr.inner {
+                        MaybeCompile::Compile(curr_inner) => all_compile.push(Spanned {
+                            span: curr.span,
+                            inner: curr_inner,
+                        }),
+                        MaybeCompile::Other(curr_inner) => {
+                            // give up, convert everything to IR
+                            let reason = HardwareReason::TupleWithOtherHardwareValue {
+                                span_tuple: expr.span,
+                                span_other_value: curr.span,
+                            };
+
+                            let mut all_ir = all_compile
+                                .into_iter()
+                                .map(|other| other.inner.to_ir_expression(diags, other.span, reason))
+                                .collect_vec();
+                            all_ir.push(Ok(curr_inner));
+                            all_ir.extend(
+                                values_iter.map(|other| other.inner.to_ir_expression(diags, other.span, reason)),
+                            );
+
+                            let all_ir: Vec<_> = all_ir.into_iter().try_collect()?;
+                            return Ok(MaybeCompile::Other(TypedIrExpression {
+                                ty: HardwareType::Tuple(all_ir.iter().map(|v| v.ty.clone()).collect_vec()),
+                                domain: all_ir.iter().fold(ValueDomain::CompileTime, |a, d| a.join(&d.domain)),
+                                expr: IrExpression::TupleLiteral(all_ir.into_iter().map(|v| v.expr).collect_vec()),
+                            }));
+                        }
+                    }
+                }
+
+                // all values are compile-time, the entire tuple can also be!
+                //   it can still be either a value or a type
+                // TODO this is weird, can we remove the distinction between tuple values and types?
+                let all_type: Result<Vec<_>, ()> = all_compile
+                    .iter()
+                    .map(|v| match &v.inner {
+                        CompileValue::Type(ty) => Ok(ty.clone()),
+                        _ => Err(()),
+                    })
+                    .try_collect();
+                match all_type {
+                    Ok(all_type) => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Tuple(all_type)))),
+                    Err(()) => Ok(MaybeCompile::Compile(CompileValue::Tuple(
+                        all_compile.into_iter().map(|v| v.inner).collect_vec(),
+                    ))),
+                }
+            }
             ExpressionKind::StructLiteral(_) => Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
                 let &ast::RangeLiteral {
@@ -248,7 +320,8 @@ impl CompileState<'_> {
                 let mut curr = base;
                 for arg in args.inner {
                     let curr_span = curr.span;
-                    let curr_inner = match pair_compile(diags, curr, arg.value)? {
+                    let potential_hw_reason = HardwareReason::RuntimeArrayIndexing(expr.span);
+                    let curr_inner = match pair_compile(diags, potential_hw_reason, curr, arg.value)? {
                         MaybeCompile::Compile((curr, index)) => {
                             match curr.inner {
                                 // declare new array type
@@ -393,12 +466,7 @@ impl CompileState<'_> {
             ExpressionKind::Builtin(ref args) => {
                 Ok(MaybeCompile::Compile(self.eval_builtin(scope, vars, expr.span, args)?))
             }
-        };
-
-        result.map(|result| Spanned {
-            span: expr.span,
-            inner: result,
-        })
+        }
     }
 
     // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
@@ -892,6 +960,7 @@ impl CompileState<'_> {
 // TODO reduce boilerplate with a trait?
 fn pair_compile(
     diags: &Diagnostics,
+    potential_hw_reason: HardwareReason,
     left: Spanned<MaybeCompile<TypedIrExpression>>,
     right: Spanned<MaybeCompile<TypedIrExpression>>,
 ) -> Result<
@@ -901,7 +970,9 @@ fn pair_compile(
     >,
     ErrorGuaranteed,
 > {
-    pair_compile_general(left, right, |x| x.inner.to_ir_expression(diags, x.span))
+    pair_compile_general(left, right, |x| {
+        x.inner.to_ir_expression(diags, x.span, potential_hw_reason)
+    })
 }
 
 fn pair_compile_int(

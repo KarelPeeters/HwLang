@@ -1,6 +1,6 @@
 use crate::front::block::TypedIrExpression;
 use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
 use crate::front::ir::IrExpression;
 use crate::front::misc::ValueDomain;
@@ -59,6 +59,20 @@ pub enum HardwareValueResult {
     Undefined,
     PartiallyUndefined,
     Unrepresentable,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum HardwareReason {
+    AssignmentToPort(Span),
+    AssignmentToWire(Span),
+    AssignmentToRegister(Span),
+
+    InstancePortConnection(Span),
+    RuntimeArrayIndexing(Span),
+
+    IfMerge { span_stmt: Span },
+
+    TupleWithOtherHardwareValue { span_tuple: Span, span_other_value: Span },
 }
 
 impl Typed for CompileValue {
@@ -153,18 +167,48 @@ impl CompileValue {
         }
     }
 
-    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    pub fn to_ir_expression(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        reason: HardwareReason,
+    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         let ty = self.ty();
         let ty_hw = ty.as_hardware_type().ok_or_else(|| {
-            diags.report_simple(
-                "value type must be representable in hardware",
+            let diag = Diagnostic::new("value must be representable in hardware").add_error(
                 span,
                 format!(
                     "value `{}` with type `{}` is not representable in hardware",
                     self.to_diagnostic_string(),
                     ty.to_diagnostic_string()
                 ),
-            )
+            );
+
+            let diag = match reason {
+                HardwareReason::AssignmentToPort(span) => diag.add_info(span, "because it is assigned to a port here"),
+                HardwareReason::AssignmentToWire(span) => diag.add_info(span, "because it is assigned to a wire here"),
+                HardwareReason::AssignmentToRegister(span) => {
+                    diag.add_info(span, "because it is assigned to a register here")
+                }
+                HardwareReason::InstancePortConnection(span) => {
+                    diag.add_info(span, "because it is connected to this port")
+                }
+                // TODO this one should maybe be an internal error instead
+                HardwareReason::RuntimeArrayIndexing(span) => {
+                    diag.add_info(span, "because it is used in an runtime array indexing expression")
+                }
+                HardwareReason::IfMerge { span_stmt } => {
+                    diag.add_info(span_stmt, "because it is merged in this if statement")
+                }
+                HardwareReason::TupleWithOtherHardwareValue {
+                    span_tuple,
+                    span_other_value,
+                } => diag
+                    .add_info(span_tuple, "because it it part of this tuple")
+                    .add_info(span_other_value, "which also contains a non-compile-time value here"),
+            };
+
+            diags.report(diag.finish())
         })?;
 
         match self.as_hardware_value() {
@@ -178,17 +222,13 @@ impl CompileValue {
                 span,
                 "value is undefined",
             )),
-            HardwareValueResult::Unrepresentable => {
-                let reason = "compile time value must be representable in hardware";
-                Err(diags.report_simple(
-                    reason,
-                    span,
-                    format!(
-                        "value `{}` is not representable in hardware",
-                        self.to_diagnostic_string()
-                    ),
-                ))
-            }
+            HardwareValueResult::Unrepresentable => Err(diags.report_internal_error(
+                span,
+                format!(
+                    "value `{}` has hardware type but is itself not representable",
+                    self.to_diagnostic_string()
+                ),
+            )),
         }
     }
 
@@ -232,9 +272,14 @@ impl MaybeCompile<TypedIrExpression> {
         }
     }
 
-    pub fn to_ir_expression(&self, diags: &Diagnostics, span: Span) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    pub fn to_ir_expression(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        reason: HardwareReason,
+    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self {
-            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span),
+            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span, reason),
             MaybeCompile::Other(v) => Ok(v.clone()),
         }
     }

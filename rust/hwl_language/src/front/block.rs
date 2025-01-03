@@ -6,7 +6,7 @@ use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatem
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
     ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
@@ -56,20 +56,8 @@ pub struct AssignedValue {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum AssignmentEvent {
-    SimpleAssignment(Span),
-    IfMerge(Span),
-    ForIndex(Span),
-}
-
-impl AssignmentEvent {
-    pub fn span(&self) -> Span {
-        match *self {
-            AssignmentEvent::SimpleAssignment(span) => span,
-            AssignmentEvent::IfMerge(span) => span,
-            AssignmentEvent::ForIndex(span) => span,
-        }
-    }
+pub struct AssignmentEvent {
+    assigned_value_span: Span,
 }
 
 // TODO move
@@ -283,7 +271,9 @@ impl CompileState<'_> {
                         let assigned = match init {
                             None => MaybeAssignedValue::NotYetAssigned,
                             Some(init) => MaybeAssignedValue::Assigned(AssignedValue {
-                                event: AssignmentEvent::SimpleAssignment(decl.span),
+                                event: AssignmentEvent {
+                                    assigned_value_span: init.span,
+                                },
                                 value: init.inner,
                             }),
                         };
@@ -494,21 +484,36 @@ impl CompileState<'_> {
 
         let condition_domains = ctx.condition_domains();
 
-        let (target_ty, target_domain, ir_target) = match target.inner {
+        let (target_ty, target_domain, ir_target, hw_reason) = match target.inner {
             AssignmentTarget::Port(port) => {
                 let info = &self.ports[port];
                 let domain = ValueDomain::from_port_domain(info.domain.inner);
-                (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
+                (
+                    &info.ty,
+                    domain,
+                    IrAssignmentTarget::Port(info.ir),
+                    HardwareReason::AssignmentToPort(target.span),
+                )
             }
             AssignmentTarget::Wire(wire) => {
                 let info = &self.wires[wire];
                 let domain = info.domain.inner.clone();
-                (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
+                (
+                    &info.ty,
+                    domain,
+                    IrAssignmentTarget::Wire(info.ir),
+                    HardwareReason::AssignmentToWire(target.span),
+                )
             }
             AssignmentTarget::Register(reg) => {
                 let info = &self.registers[reg];
                 let domain = ValueDomain::Sync(info.domain.inner);
-                (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
+                (
+                    &info.ty,
+                    domain,
+                    IrAssignmentTarget::Register(self.registers[reg].ir),
+                    HardwareReason::AssignmentToRegister(target.span),
+                )
             }
             AssignmentTarget::Variable(var) => {
                 // variable assignments are handled separately, they are evaluated at compile-time as much as possible
@@ -557,7 +562,9 @@ impl CompileState<'_> {
 
                 // save the value
                 let assigned = AssignedValue {
-                    event: AssignmentEvent::SimpleAssignment(stmt.span),
+                    event: AssignmentEvent {
+                        assigned_value_span: value.span,
+                    },
                     value: stored_value,
                 };
                 vars.set(diags, target.span, var, MaybeAssignedValue::Assigned(assigned))?;
@@ -576,7 +583,7 @@ impl CompileState<'_> {
 
         // convert to value
         let value_domain = value.inner.domain();
-        let ir_value = value.inner.to_ir_expression(diags, value.span);
+        let ir_value = value.inner.to_ir_expression(diags, value.span, hw_reason);
 
         // check domains
         // TODO better error messages with more explanation
@@ -901,7 +908,10 @@ impl CompileState<'_> {
 
                 // return the resulting variable
                 MaybeAssignedValue::Assigned(AssignedValue {
-                    event: AssignmentEvent::IfMerge(span_stmt),
+                    // TODO this span is probably not correct
+                    event: AssignmentEvent {
+                        assigned_value_span: span_stmt,
+                    },
                     value: MaybeCompile::Other(TypedIrExpression {
                         ty: ty_hw,
                         domain: joined_domain,
@@ -1083,8 +1093,11 @@ impl CompileState<'_> {
             }
 
             // set index value
+            // TODO this span is a bit weird
             let assigned = AssignedValue {
-                event: AssignmentEvent::ForIndex(index_id.span()),
+                event: AssignmentEvent {
+                    assigned_value_span: index_id.span(),
+                },
                 value: index_value,
             };
             vars.set(
@@ -1180,8 +1193,11 @@ fn build_merge_store(
         Some(MaybeAssignedValue::Assigned(value)) => value,
         _ => throw!(diags.report_internal_error(span_stmt, "expected assigned value")),
     };
-    // TODO use better span here
-    let value_ir = value.value.to_ir_expression(diags, span_stmt)?;
+
+    let hw_reason = HardwareReason::IfMerge { span_stmt };
+    let value_ir = value
+        .value
+        .to_ir_expression(diags, value.event.assigned_value_span, hw_reason)?;
 
     *domain = domain.join(value.value.domain());
 

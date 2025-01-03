@@ -15,7 +15,9 @@ use crate::front::ir::{
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::front::value::{
+    AssignmentTarget, CompileValue, HardwareReason, HardwareValueResult, MaybeCompile, NamedValue,
+};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,
@@ -721,9 +723,10 @@ impl BodyElaborationState<'_, '_> {
                 ));
 
                 // convert value to ir
+                let hw_reason = HardwareReason::InstancePortConnection(connection_id.span);
                 let connection_value_ir_raw = connection_value
                     .as_ref()
-                    .map_inner(|v| Ok(v.to_ir_expression(diags, connection_expr.span)?.expr))
+                    .map_inner(|v| Ok(v.to_ir_expression(diags, connection_expr.span, hw_reason)?.expr))
                     .transpose()?;
                 any_err?;
 
