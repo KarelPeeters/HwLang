@@ -101,7 +101,7 @@ impl CompileState<'_> {
                     },
                 }
             }
-            ExpressionKind::TypeFunc(_, _) => Err(diags.report_todo(expr.span, "expr kind TypeFunc")),
+            ExpressionKind::TypeFunction => Ok(MaybeCompile::Compile(CompileValue::Type(Type::Function))),
             ExpressionKind::IntPattern(ref pattern) => match pattern {
                 IntPattern::Hex(_) => Err(diags.report_todo(expr.span, "hex int-pattern expression")),
                 IntPattern::Bin(_) => Err(diags.report_todo(expr.span, "bin int-pattern expression")),

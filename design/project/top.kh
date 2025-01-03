@@ -58,7 +58,7 @@ pub module top ports(
 
 module child generics(
     N: uint,
-    f: any,
+    f: function,
 ) ports(
     clk: in clock,
     rst: in async bool,

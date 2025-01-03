@@ -21,8 +21,10 @@ pub enum Type {
     Tuple(Vec<Type>),
     Array(Box<Type>, BigUint),
     Range,
-    Module,   // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
-    Function, // TODO make this (optionally) more specific, with arg and return types
+    // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
+    Module,
+    // TODO make this (optionally) more specific, with arg and return types
+    Function,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

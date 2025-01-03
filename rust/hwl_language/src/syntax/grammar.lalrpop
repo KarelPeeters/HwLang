@@ -540,6 +540,7 @@ ExprLevelAtomic: ExpressionKind = {
     <id:Id> => ExpressionKind::Id(id),
     // type
     "type" => ExpressionKind::Type,
+    "function" => ExpressionKind::TypeFunction,
     "_" => ExpressionKind::Dummy,
     // literals
     "true" => ExpressionKind::BoolLiteral(true),

@@ -103,7 +103,7 @@ impl TypeContainsReason {
                 span_target_ty,
             } => diag
                 .add_info(span_target, format!("target requires type `{}`", target_ty_str))
-                .add_info(span_target_ty, format!("target type `{}` set here", target_ty_str)),
+                .add_info(span_target_ty, "target type set here"),
             TypeContainsReason::Operator(span) => {
                 diag.add_info(span, format!("operator requires type `{}`", target_ty_str))
             }

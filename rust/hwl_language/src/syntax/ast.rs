@@ -406,14 +406,11 @@ pub enum ExpressionKind {
     Dummy,
     Undefined,
     Type,
-
+    TypeFunction,
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
     Id(Identifier),
-
-    // Function type signature
-    TypeFunc(Vec<Expression>, Box<Expression>),
 
     // Literals
     IntPattern(IntPattern),
