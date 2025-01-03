@@ -203,6 +203,7 @@ pub enum IrIntArithmeticOp {
     Mul,
     Div,
     Mod,
+    Pow,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -291,6 +292,7 @@ impl IrExpression {
                     IrIntArithmeticOp::Mul => "*",
                     IrIntArithmeticOp::Div => "/",
                     IrIntArithmeticOp::Mod => "%",
+                    IrIntArithmeticOp::Pow => "**",
                 };
                 format!(
                     "({} {} {})",

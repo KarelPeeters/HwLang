@@ -60,7 +60,7 @@ def check_op_range(name: str, f: Callable[[RangedValue, RangedValue, List[z3.Boo
         print(f"      above max: {m.eval(reason_below_max)}")
         return False
     elif solved == z3.unsat:
-        print("  Success, proved that result range is always valid")
+        print("  Success, proved that result range always contains the result")
     else:
         print(f"  Failed: Unknown solver result {solved}")
         print(f"     {s.reason_unknown()}")
@@ -83,6 +83,54 @@ def z3_min(values: List[z3.ArithRef]) -> z3.ArithRef:
 
 def z3_max(values: List[z3.ArithRef]) -> z3.ArithRef:
     return -z3_min([-v for v in values])
+
+
+def z3_floor_div(a: z3.ArithRef, b: z3.ArithRef) -> z3.ArithRef:
+    return z3.If(b > 0, a / b, (a - b - 1) / b)
+
+
+def z3_floor_mod(a: z3.ArithRef, b: z3.ArithRef) -> z3.ArithRef:
+    return a - b * z3_floor_div(a, b)
+
+
+def z3_eval_binary_f(f, *args):
+    solver = z3.Solver()
+
+    v_args = [z3.Int(f"x{i}") for i in range(len(args))]
+    for i in range(len(args)):
+        solver.add(v_args[i] == args[i])
+
+    v_result = z3.Int("y")
+    solver.add(v_result == f(*v_args))
+
+    assert solver.check() == z3.sat
+    result = solver.model()[v_result]
+    solver.add(v_result != result)
+    assert solver.check() == z3.unsat
+
+    return result
+
+
+def check_z3_floor_div_mod():
+    print("Checking floor_div impl")
+    for a in reversed(range(-5, 5 + 1)):
+        for b in reversed(range(-5, 5 + 1)):
+            if b == 0:
+                continue
+            d = z3_eval_binary_f(z3_floor_div, a, b)
+            m = z3_eval_binary_f(z3_floor_mod, a, b)
+            assert d == a // b and m == a % b, f"expected ({a}, {b}) -> /={a // b}, %={a % b}, got /={d} %={m}"
+
+
+def interactive_div():
+    x_range = range(-10, 9)
+    y_range = range(-6, 4)
+
+    possible = set()
+    for x in x_range:
+        for y in y_range:
+            if y != 0:
+                possible.add(x / y)
 
 
 def main():
@@ -149,11 +197,46 @@ def main():
             ]),
         )
 
+    def f_div(a, b, req):
+        # b's range cannot contain zero
+        # (this also allows the if conditions below to be valid, the range is either entirely positive or negative)
+        req.append(z3.Not(z3.And(b.min <= 0, 0 <= b.max)))
+
+        return RangedValue(
+            val=z3_floor_div(a.val, b.val),
+            min=z3.If(
+                b.min > 0,
+                z3_min([z3_floor_div(a.min, b.max), z3_floor_div(a.min, b.min)]),
+                z3_min([z3_floor_div(a.max, b.max), z3_floor_div(a.max, b.min)]),
+            ),
+            max=z3.If(
+                b.min > 0,
+                z3_max([z3_floor_div(a.max, b.max), z3_floor_div(a.max, b.min)]),
+                z3_max([z3_floor_div(a.min, b.max), z3_floor_div(a.min, b.min)]),
+            ),
+        )
+
+    def f_mod(a, b, req):
+        # b's range cannot contain zero
+        # (this also allows the if conditions below to be valid, the range is either entirely positive or negative)
+        req.append(z3.Not(z3.And(b.min <= 0, 0 <= b.max)))
+
+        # TODO this could be tighter, eg. if b's range does not cover the entire mod interval
+        return RangedValue(
+            val=z3_floor_mod(a.val, b.val),
+            min=z3.If(b.min > 0, 0, b.min + 1),
+            max=z3.If(b.min > 0, b.max - 1, 0),
+        )
+
     start = time.perf_counter()
+
     success &= check_op_range("add", f_add)
     success &= check_op_range("sub", f_sub)
     success &= check_op_range("mul", f_mul)
     success &= check_op_range("pow", f_pow)
+    check_z3_floor_div_mod()
+    success &= check_op_range("div", f_div)
+    success &= check_op_range("mod", f_mod)
 
     print(f"Took {time.perf_counter() - start:.2f}s")
 

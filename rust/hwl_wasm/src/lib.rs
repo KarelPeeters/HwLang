@@ -24,6 +24,7 @@ pub struct CompileAndLowerResult {
 
 const SRC_TOP: &str = include_str!("../../../design/project/top.kh");
 const SRC_STD_TYPES: &str = include_str!("../../../design/project/std/types.kh");
+const SRC_STD_MATH: &str = include_str!("../../../design/project/std/math.kh");
 
 #[wasm_bindgen]
 pub fn initial_source() -> String {
@@ -38,6 +39,13 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
             FilePath(vec!["std".to_owned(), "types".to_owned()]),
             "std/types.kh".to_owned(),
             SRC_STD_TYPES.to_owned(),
+        )
+        .unwrap();
+    source
+        .add_file(
+            FilePath(vec!["std".to_owned(), "math".to_owned()]),
+            "std/math.kh".to_owned(),
+            SRC_STD_MATH.to_owned(),
         )
         .unwrap();
     source

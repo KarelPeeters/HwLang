@@ -1,0 +1,28 @@
+import std.types.[int, int_range];
+
+pub function min(x: int, y: int) -> int {
+    if (x < y) {
+        return x;
+    } else {
+        return y;
+    }
+}
+
+pub function max(x: int, y: int) -> int {
+    if (y > x) {
+        return y;
+    } else {
+        return x;
+    }
+}
+
+pub function gcd(a: int_range(1..), b: int_range(1..)) -> int_range(1..) {
+    var a = a;
+    var b = b;
+    while (b != 0) {
+        var t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}

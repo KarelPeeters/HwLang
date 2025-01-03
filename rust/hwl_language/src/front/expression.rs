@@ -17,7 +17,8 @@ use crate::syntax::pos::Span;
 use crate::util::{Never, ResultDoubleExt};
 use itertools::{Either, Itertools};
 use num_bigint::{BigInt, BigUint};
-use num_traits::{One, Pow, ToPrimitive};
+use num_integer::Integer;
+use num_traits::{One, Pow, Signed, ToPrimitive};
 use std::cmp::{max, min};
 use std::convert::identity;
 use std::ops::Sub;
@@ -487,16 +488,14 @@ impl CompileState<'_> {
             let right = check_type_is_int(diags, op_reason, right);
             Ok((left?, right?))
         };
-        let ir_int_binary =
-            |range, left: Spanned<TypedIrExpression<_>>, right: Spanned<TypedIrExpression<_>>| TypedIrExpression {
-                ty: HardwareType::Int(range),
-                domain: left.inner.domain.join(&right.inner.domain),
-                expr: IrExpression::IntArithmetic(
-                    IrIntArithmeticOp::Add,
-                    Box::new(left.inner.expr),
-                    Box::new(right.inner.expr),
-                ),
-            };
+        let ir_binary_arith = |op: IrIntArithmeticOp,
+                               range,
+                               left: Spanned<TypedIrExpression<_>>,
+                               right: Spanned<TypedIrExpression<_>>| TypedIrExpression {
+            ty: HardwareType::Int(range),
+            domain: left.inner.domain.join(&right.inner.domain),
+            expr: IrExpression::IntArithmetic(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
+        };
 
         let impl_bool_op = |left, right, op: IrBoolBinaryOp| {
             let left = check_type_is_bool(diags, op_reason, left);
@@ -557,7 +556,12 @@ impl CompileState<'_> {
                             start_inc: &left.inner.ty.start_inc + &right.inner.ty.start_inc,
                             end_inc: &left.inner.ty.end_inc + &right.inner.ty.end_inc,
                         };
-                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Add,
+                            range,
+                            left,
+                            right,
+                        )))
                     }
                 }
             }
@@ -572,7 +576,12 @@ impl CompileState<'_> {
                             start_inc: &left.inner.ty.start_inc - &right.inner.ty.end_inc,
                             end_inc: &left.inner.ty.end_inc - &right.inner.ty.start_inc,
                         };
-                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Sub,
+                            range,
+                            left,
+                            right,
+                        )))
                     }
                 }
             }
@@ -594,13 +603,112 @@ impl CompileState<'_> {
                             start_inc: extremes.iter().min().unwrap().clone(),
                             end_inc: extremes.iter().max().unwrap().clone(),
                         };
-                        Ok(MaybeCompile::Other(ir_int_binary(range, left, right)))
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Mul,
+                            range,
+                            left,
+                            right,
+                        )))
                     }
                 }
             }
             // (int, non-zero int)
-            BinaryOp::Div => Err(diags.report_todo(expr_span, "binary op Div")),
-            BinaryOp::Mod => Err(diags.report_todo(expr_span, "binary op Mod")),
+            BinaryOp::Div => {
+                let (left, right) = check_both_int(left, right)?;
+
+                // check nonzero
+                if right.inner.range().contains(&&BigInt::ZERO) {
+                    let diag = Diagnostic::new("division by zero is not allowed")
+                        .add_error(
+                            right.span,
+                            format!(
+                                "right hand side has range `{}` which contains zero",
+                                right.inner.range()
+                            ),
+                        )
+                        .add_info(op.span, "for operator here")
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+                let right_positive = right.inner.range().start_inc.is_positive();
+
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        let result = left.inner.div_floor(&right.inner);
+                        Ok(MaybeCompile::Compile(CompileValue::Int(result)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        let a_min = &left.inner.ty.start_inc;
+                        let a_max = &left.inner.ty.end_inc;
+                        let b_min = &right.inner.ty.start_inc;
+                        let b_max = &right.inner.ty.end_inc;
+                        let range = if right_positive {
+                            ClosedIncRange {
+                                start_inc: min(a_min.div_floor(b_max), a_min.div_floor(b_min)),
+                                end_inc: max(a_max.div_floor(b_max), a_max.div_floor(b_min)),
+                            }
+                        } else {
+                            ClosedIncRange {
+                                start_inc: min(a_max.div_floor(b_max), a_max.div_floor(b_min)),
+                                end_inc: max(a_min.div_floor(b_max), a_min.div_floor(b_min)),
+                            }
+                        };
+
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Div,
+                            range,
+                            left,
+                            right,
+                        )))
+                    }
+                }
+            }
+            BinaryOp::Mod => {
+                let (left, right) = check_both_int(left, right)?;
+
+                // check nonzero
+                if right.inner.range().contains(&&BigInt::ZERO) {
+                    let diag = Diagnostic::new("modulo by zero is not allowed")
+                        .add_error(
+                            right.span,
+                            format!(
+                                "right hand side has range `{}` which contains zero",
+                                right.inner.range()
+                            ),
+                        )
+                        .add_info(op.span, "for operator here")
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+                let right_positive = right.inner.range().start_inc.is_positive();
+
+                match pair_compile_int(left, right) {
+                    MaybeCompile::Compile((left, right)) => {
+                        let result = left.inner.mod_floor(&right.inner);
+                        Ok(MaybeCompile::Compile(CompileValue::Int(result)))
+                    }
+                    MaybeCompile::Other((left, right)) => {
+                        let range = if right_positive {
+                            ClosedIncRange {
+                                start_inc: BigInt::ZERO,
+                                end_inc: &right.inner.ty.end_inc - 1,
+                            }
+                        } else {
+                            ClosedIncRange {
+                                start_inc: &right.inner.ty.start_inc + 1,
+                                end_inc: BigInt::ZERO,
+                            }
+                        };
+
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Mod,
+                            range,
+                            left,
+                            right,
+                        )))
+                    }
+                }
+            }
             // (nonzero int, non-negative int) or (non-negative int, positive int)
             BinaryOp::Pow => {
                 let (base, exp) = check_both_int(left, right)?;
@@ -663,7 +771,12 @@ impl CompileState<'_> {
                             start_inc: result_min,
                             end_inc: result_max,
                         };
-                        Ok(MaybeCompile::Other(ir_int_binary(range, base, exp)))
+                        Ok(MaybeCompile::Other(ir_binary_arith(
+                            IrIntArithmeticOp::Pow,
+                            range,
+                            base,
+                            exp,
+                        )))
                     }
                 }
             }
