@@ -86,7 +86,10 @@ impl CompileState<'_> {
                     MaybeCompile::Other(value) => match value {
                         NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
                         NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
-                        NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
+                        NamedValue::Variable(var) => match vars.get(diags, expr.span, var)?.value.clone() {
+                            MaybeCompile::Compile(value) => Ok(MaybeCompile::Compile(value)),
+                            MaybeCompile::Other(value) => Ok(MaybeCompile::Other(value.to_general_expression())),
+                        },
                         NamedValue::Port(port) => {
                             let port_info = &self.ports[port];
                             match port_info.direction.inner {

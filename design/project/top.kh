@@ -35,8 +35,9 @@ pub module top ports(
     reg pass: sync(clk_a, !rst_a) bool = false;
     reg out out_a = undefined;
     clocked(clk_a, !rst_a) {
+        var t = pass;
         pass = !pass;
-        if (pass) {
+        if (t) {
             out_a = in_a;
         }
     }

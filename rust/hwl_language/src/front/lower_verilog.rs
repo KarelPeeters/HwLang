@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrModule,
-    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
-    IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
+    IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister,
+    IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{
@@ -785,7 +785,21 @@ fn lower_expression(
             lower_expression(diags, name_map, span, inner, f)?;
             swrite!(f, ")");
         }
-        IrExpression::BoolBinary(_, _, _) => throw!(diags.report_todo(span, "lower bool binary expression")),
+        &IrExpression::BoolBinary(op, ref left, ref right) => {
+            // logical and bitwise operators would both work,
+            //   bitwise is more consistent since it also has an xor operator
+            let op_str = match op {
+                IrBoolBinaryOp::And => "&",
+                IrBoolBinaryOp::Or => "|",
+                IrBoolBinaryOp::Xor => "^",
+            };
+
+            swrite!(f, "(");
+            lower_expression(diags, name_map, span, left, f)?;
+            swrite!(f, " {} ", op_str);
+            lower_expression(diags, name_map, span, right, f)?;
+            swrite!(f, ")");
+        }
         IrExpression::IntArithmetic(_, _, _) => throw!(diags.report_todo(span, "lower int arithmetic expression")),
         IrExpression::IntCompare(_, _, _) => throw!(diags.report_todo(span, "lower int compare expression")),
 

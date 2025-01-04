@@ -9,7 +9,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
-    ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
+    MaybeIdentifier, ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -20,15 +20,25 @@ use num_bigint::{BigInt, BigUint};
 use num_traits::{CheckedSub, One};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TypedIrExpression<T = HardwareType> {
+pub struct TypedIrExpression<T = HardwareType, E = IrExpression> {
     pub ty: T,
     pub domain: ValueDomain,
-    pub expr: IrExpression,
+    pub expr: E,
 }
 
 impl Typed for TypedIrExpression {
     fn ty(&self) -> Type {
         self.ty.as_type()
+    }
+}
+
+impl<T> TypedIrExpression<T, IrVariable> {
+    pub fn to_general_expression(self) -> TypedIrExpression<T, IrExpression> {
+        TypedIrExpression {
+            ty: self.ty,
+            domain: self.domain,
+            expr: IrExpression::Variable(self.expr),
+        }
     }
 }
 
@@ -52,7 +62,7 @@ pub enum MaybeAssignedValue {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AssignedValue {
     pub event: AssignmentEvent,
-    pub value: MaybeCompile<TypedIrExpression>,
+    pub value: MaybeCompile<TypedIrExpression<HardwareType, IrVariable>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -270,12 +280,22 @@ impl CompileState<'_> {
                         // store value
                         let assigned = match init {
                             None => MaybeAssignedValue::NotYetAssigned,
-                            Some(init) => MaybeAssignedValue::Assigned(AssignedValue {
-                                event: AssignmentEvent {
-                                    assigned_value_span: init.span,
-                                },
-                                value: init.inner,
-                            }),
+                            Some(init) => {
+                                let init_stored = store_value_in_dedicated_variable(
+                                    ctx,
+                                    &mut ctx_block,
+                                    diags,
+                                    stmt_span,
+                                    id,
+                                    init.inner,
+                                )?;
+                                MaybeAssignedValue::Assigned(AssignedValue {
+                                    event: AssignmentEvent {
+                                        assigned_value_span: init.span,
+                                    },
+                                    value: init_stored,
+                                })
+                            }
                         };
                         vars.set(diags, id.span(), variable, assigned)?;
 
@@ -285,16 +305,8 @@ impl CompileState<'_> {
                     self.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    let (stmt_ir, new_vars) = self.elaborate_assignment(ctx, &mut ctx_block, vars, scope, stmt)?;
+                    let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, scope, stmt)?;
                     vars = new_vars;
-
-                    if let Some(stmt_ir) = stmt_ir {
-                        let stmt_ir = Spanned {
-                            span: stmt_span,
-                            inner: stmt_ir,
-                        };
-                        ctx.push_ir_statement(diags, &mut ctx_block, stmt_ir)?;
-                    }
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<MaybeCompile<TypedIrExpression>> =
@@ -453,7 +465,7 @@ impl CompileState<'_> {
         mut vars: VariableValues,
         scope: Scope,
         stmt: &Assignment,
-    ) -> Result<(Option<IrStatement>, VariableValues), ErrorGuaranteed> {
+    ) -> Result<VariableValues, ErrorGuaranteed> {
         let diags = self.diags;
         let Assignment {
             span: _,
@@ -537,39 +549,18 @@ impl CompileState<'_> {
                     check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true)?;
                 }
 
-                // implement by-value semantics
-                let (ir_statement, stored_value) = match value.inner {
-                    MaybeCompile::Compile(value) => (None, MaybeCompile::Compile(value)),
-                    MaybeCompile::Other(value) => {
-                        // store value to an ir variable, to turn this assignment into "by value"
-                        //   instead of some weird "by reference"
-                        let ir_variable_info = IrVariableInfo {
-                            ty: value.ty.to_ir(),
-                            debug_info_id: id.clone(),
-                        };
-                        let ir_variable = ctx.new_ir_variable(diags, stmt.span, ir_variable_info)?;
-                        let ir_statement = IrStatement::Assign(IrAssignmentTarget::Variable(ir_variable), value.expr);
-
-                        let stored_value = TypedIrExpression {
-                            ty: value.ty,
-                            domain: value.domain,
-                            expr: IrExpression::Variable(ir_variable),
-                        };
-
-                        (Some(ir_statement), MaybeCompile::Other(stored_value))
-                    }
-                };
-
                 // save the value
+                let value_stored =
+                    store_value_in_dedicated_variable(ctx, ctx_block, diags, stmt.span, id, value.inner)?;
                 let assigned = AssignedValue {
                     event: AssignmentEvent {
                         assigned_value_span: value.span,
                     },
-                    value: stored_value,
+                    value: value_stored,
                 };
                 vars.set(diags, target.span, var, MaybeAssignedValue::Assigned(assigned))?;
 
-                return Ok((ir_statement, vars));
+                return Ok(vars);
             }
         };
 
@@ -650,8 +641,18 @@ impl CompileState<'_> {
         check_ty?;
 
         ctx.report_assignment(target.as_ref())?;
+
         let stmt_ir = IrStatement::Assign(ir_target, ir_value.expr);
-        Ok((Some(stmt_ir), vars))
+        ctx.push_ir_statement(
+            diags,
+            ctx_block,
+            Spanned {
+                span: stmt.span,
+                inner: stmt_ir,
+            },
+        )?;
+
+        Ok(vars)
     }
 
     fn elaborate_if_statement<C: ExpressionContext>(
@@ -915,7 +916,7 @@ impl CompileState<'_> {
                     value: MaybeCompile::Other(TypedIrExpression {
                         ty: ty_hw,
                         domain: joined_domain,
-                        expr: IrExpression::Variable(var_ir),
+                        expr: var_ir,
                     }),
                 })
             } else {
@@ -1094,11 +1095,13 @@ impl CompileState<'_> {
 
             // set index value
             // TODO this span is a bit weird
+            let index_stored =
+                store_value_in_dedicated_variable(ctx, ctx_block, diags, index_id.span(), index_id, index_value)?;
             let assigned = AssignedValue {
                 event: AssignmentEvent {
                     assigned_value_span: index_id.span(),
                 },
-                value: index_value,
+                value: index_stored,
             };
             vars.set(
                 diags,
@@ -1178,6 +1181,53 @@ fn record_merge_info(
             }
         }
     }
+}
+
+fn store_value_in_dedicated_variable<C: ExpressionContext>(
+    ctx: &mut C,
+    ctx_block: &mut C::Block,
+    diags: &Diagnostics,
+    span_stmt: Span,
+    id: &MaybeIdentifier,
+    value: MaybeCompile<TypedIrExpression>,
+) -> Result<MaybeCompile<TypedIrExpression<HardwareType, IrVariable>>, ErrorGuaranteed> {
+    match value {
+        MaybeCompile::Compile(value) => Ok(MaybeCompile::Compile(value)),
+        MaybeCompile::Other(value) => Ok(MaybeCompile::Other(store_ir_expression_in_dedicated_variable(
+            ctx, ctx_block, diags, span_stmt, id, value,
+        )?)),
+    }
+}
+
+fn store_ir_expression_in_dedicated_variable<C: ExpressionContext>(
+    ctx: &mut C,
+    ctx_block: &mut C::Block,
+    diags: &Diagnostics,
+    span_stmt: Span,
+    id: &MaybeIdentifier,
+    value: TypedIrExpression,
+) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
+    let ir_variable_info = IrVariableInfo {
+        ty: value.ty.to_ir(),
+        debug_info_id: id.clone(),
+    };
+    let ir_variable = ctx.new_ir_variable(diags, span_stmt, ir_variable_info)?;
+    let ir_statement = IrStatement::Assign(IrAssignmentTarget::Variable(ir_variable), value.expr);
+    ctx.push_ir_statement(
+        diags,
+        ctx_block,
+        Spanned {
+            span: span_stmt,
+            inner: ir_statement,
+        },
+    )?;
+
+    let stored_value = TypedIrExpression {
+        ty: value.ty,
+        domain: value.domain,
+        expr: ir_variable,
+    };
+    Ok(stored_value)
 }
 
 fn build_merge_store(

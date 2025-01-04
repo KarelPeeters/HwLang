@@ -2,9 +2,9 @@ use crate::front::block::TypedIrExpression;
 use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
-use crate::front::ir::IrExpression;
+use crate::front::ir::{IrExpression, IrVariable};
 use crate::front::misc::ValueDomain;
-use crate::front::types::{ClosedIncRange, IncRange, Type, Typed};
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
 use num_bigint::{BigInt, BigUint};
@@ -264,14 +264,16 @@ impl CompileValue {
     }
 }
 
-impl MaybeCompile<TypedIrExpression> {
+impl<T, E> MaybeCompile<TypedIrExpression<T, E>> {
     pub fn domain(&self) -> &ValueDomain {
         match self {
             MaybeCompile::Compile(_) => &ValueDomain::CompileTime,
             MaybeCompile::Other(value) => &value.domain,
         }
     }
+}
 
+impl MaybeCompile<TypedIrExpression> {
     pub fn to_ir_expression(
         &self,
         diags: &Diagnostics,
@@ -281,6 +283,20 @@ impl MaybeCompile<TypedIrExpression> {
         match self {
             MaybeCompile::Compile(v) => v.to_ir_expression(diags, span, reason),
             MaybeCompile::Other(v) => Ok(v.clone()),
+        }
+    }
+}
+
+impl MaybeCompile<TypedIrExpression<HardwareType, IrVariable>> {
+    pub fn to_ir_expression(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        reason: HardwareReason,
+    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
+        match self {
+            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span, reason),
+            MaybeCompile::Other(v) => Ok(v.clone().to_general_expression()),
         }
     }
 }
