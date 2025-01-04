@@ -20,6 +20,7 @@ class RangedValue:
 
 def check_op_range(name: str, f: Callable[[RangedValue, RangedValue, List[z3.BoolRef]], RangedValue]) -> bool:
     print(f"Checking {name}")
+    z3.set_param(proof=True)
 
     a = RangedValue(val=z3.Int("a"), min=z3.Int("al"), max=z3.Int("ah"))
     b = RangedValue(val=z3.Int("b"), min=z3.Int("bl"), max=z3.Int("bh"))
@@ -167,10 +168,12 @@ def main():
             # exp must be positive
             exp.min >= 0,
             exp.val >= 0,
-            # base and cannot both be zero
-            z3.Not(
-                z3.And(base.min <= 0, 0 <= base.max),
-                z3.And(exp.min <= 0, 0 <= exp.max),
+            # base and exp cannot both include zero
+            z3.Or(
+                base.min > 0,
+                base.max < 0,
+                exp.min > 0,
+                exp.max < 0,
             ),
             # limitation of z3: limit exp (the redundant extra constraint speeds up solving)
             exp.val <= max_exp,
