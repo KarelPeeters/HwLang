@@ -159,11 +159,17 @@ pub enum IrAssignmentTarget {
 }
 
 // TODO maybe IrExpression should always have explicit types, that would make lowering easier
+//   * how should integer arithmetic be typed? shared field (like TypedIrExpression) or in the enum where needed?
+//   * should the creator of the IrExpression be responsible for filling in the type? what if they're wrong?
+//   * how should extra knowledge of int ranges be expressed?
+//     do expressions implicitly cast their result to their type?
+//   * mostly think about what lowering wants there, front knows everything so can fill in information
+//   * should empty array literals have types? it doesn't really matter since they're 0-bit anyway
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants
     Bool(bool),
-    Int(BigInt),
+    Int(BigInt), // TODO type!
 
     // "signals"
     Port(IrPort),
@@ -173,20 +179,20 @@ pub enum IrExpression {
 
     // actual expressions
     BoolNot(Box<IrExpression>),
-    BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>),
-    IntArithmetic(IrIntArithmeticOp, Box<IrExpression>, Box<IrExpression>),
+    BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>), // TODO type
+    IntArithmetic(IrIntArithmeticOp, Box<IrExpression>, Box<IrExpression>), // TODO type
     IntCompare(IrIntCompareOp, Box<IrExpression>, Box<IrExpression>),
 
-    TupleLiteral(Vec<IrExpression>),
-    ArrayLiteral(Vec<IrExpression>),
+    TupleLiteral(Vec<IrExpression>), // TODO type
+    ArrayLiteral(Vec<IrExpression>), // TODO type
     ArrayIndex {
         base: Box<IrExpression>,
         index: Box<IrExpression>,
-    },
+    }, // TODO type?
     ArraySlice {
         base: Box<IrExpression>,
         range: ClosedIncRange<Box<IrExpression>>,
-    },
+    }, // TODO type?
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
