@@ -327,6 +327,7 @@ impl CompileState<'_> {
                     }
                 }
                 BlockStatementKind::If(stmt_if) => {
+                    // TODO rewrite this with more eager storing to hardware values
                     let IfStatement {
                         initial_if,
                         else_ifs,

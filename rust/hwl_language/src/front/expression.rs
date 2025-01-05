@@ -86,6 +86,9 @@ impl CompileState<'_> {
                     MaybeCompile::Other(value) => match value {
                         NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
                         NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
+                        // TODO always copy to new variable, other parts of the expression might change the value
+                        //   this also allows cleaning up the assigment statement implementation
+                        //   (also do this for othe named?values that might change if any)
                         NamedValue::Variable(var) => match vars.get(diags, expr.span, var)?.value.clone() {
                             MaybeCompile::Compile(value) => Ok(MaybeCompile::Compile(value)),
                             MaybeCompile::Other(value) => Ok(MaybeCompile::Other(value.to_general_expression())),
