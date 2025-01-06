@@ -3,15 +3,18 @@ use crate::front::check::{check_type_contains_value, check_type_is_bool, check_t
 use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp};
+use crate::front::ir::{
+    IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp, IrStatement, IrVariable,
+    IrVariableInfo,
+};
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral, PortDirection, Spanned, SyncDomain,
-    UnaryOp,
+    BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral, MaybeIdentifier, PortDirection, Spanned,
+    SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::util::{Never, ResultDoubleExt};
@@ -86,13 +89,7 @@ impl CompileState<'_> {
                     MaybeCompile::Other(value) => match value {
                         NamedValue::Constant(cst) => Ok(MaybeCompile::Compile(self.constants[cst].value.clone())),
                         NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
-                        // TODO always copy to new variable, other parts of the expression might change the value
-                        //   this also allows cleaning up the assigment statement implementation
-                        //   (also do this for othe named?values that might change if any)
-                        NamedValue::Variable(var) => match vars.get(diags, expr.span, var)?.value.clone() {
-                            MaybeCompile::Compile(value) => Ok(MaybeCompile::Compile(value)),
-                            MaybeCompile::Other(value) => Ok(MaybeCompile::Other(value.to_general_expression())),
-                        },
+                        NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
                         NamedValue::Port(port) => {
                             let port_info = &self.ports[port];
                             match port_info.direction.inner {
@@ -102,8 +99,30 @@ impl CompileState<'_> {
                                 }
                             }
                         }
-                        NamedValue::Wire(wire) => Ok(MaybeCompile::Other(self.wires[wire].typed_ir_expr())),
-                        NamedValue::Register(reg) => Ok(MaybeCompile::Other(self.registers[reg].typed_ir_expr())),
+                        NamedValue::Wire(wire) => {
+                            let wire_info = &self.wires[wire];
+                            let value_stored = store_ir_expression_in_dedicated_variable(
+                                ctx,
+                                ctx_block,
+                                diags,
+                                expr.span,
+                                &wire_info.id,
+                                wire_info.typed_ir_expr(),
+                            )?;
+                            Ok(MaybeCompile::Other(value_stored.to_general_expression()))
+                        }
+                        NamedValue::Register(reg) => {
+                            let reg_info = &self.registers[reg];
+                            let value_stored = store_ir_expression_in_dedicated_variable(
+                                ctx,
+                                ctx_block,
+                                diags,
+                                expr.span,
+                                &reg_info.id,
+                                reg_info.typed_ir_expr(),
+                            )?;
+                            Ok(MaybeCompile::Other(value_stored.to_general_expression()))
+                        }
                     },
                 }
             }
@@ -1185,4 +1204,35 @@ fn pair_compile_general<T, C, E>(
             )))
         }
     }
+}
+
+fn store_ir_expression_in_dedicated_variable<C: ExpressionContext>(
+    ctx: &mut C,
+    ctx_block: &mut C::Block,
+    diags: &Diagnostics,
+    span_expr: Span,
+    id: &MaybeIdentifier,
+    value: TypedIrExpression,
+) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
+    let ir_variable_info = IrVariableInfo {
+        ty: value.ty.to_ir(),
+        debug_info_id: id.clone(),
+    };
+    let ir_variable = ctx.new_ir_variable(diags, span_expr, ir_variable_info)?;
+    let ir_statement = IrStatement::Assign(IrAssignmentTarget::Variable(ir_variable), value.expr);
+    ctx.push_ir_statement(
+        diags,
+        ctx_block,
+        Spanned {
+            span: span_expr,
+            inner: ir_statement,
+        },
+    )?;
+
+    let stored_value = TypedIrExpression {
+        ty: value.ty,
+        domain: value.domain,
+        expr: ir_variable,
+    };
+    Ok(stored_value)
 }
