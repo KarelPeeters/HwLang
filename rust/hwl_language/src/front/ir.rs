@@ -165,6 +165,26 @@ pub enum IrAssignmentTarget {
 //     do expressions implicitly cast their result to their type?
 //   * mostly think about what lowering wants there, front knows everything so can fill in information
 //   * should empty array literals have types? it doesn't really matter since they're 0-bit anyway
+
+
+// More thoughts about typing:
+// * `r = a + 5`
+//      * r and a should definitely have integer ranges
+//      * it doesn't really make sense to give "5" a type, the backend should just implement the addition correctly
+// * `r = (a, b)` (equivalent to concat)
+//      * a, b, r should have full types, this is a concat operation and everything needs clear bit-widths
+// * `r = [a, b, c]`
+//      * a, b, c, r should all have full types, this is again a concat operation
+//
+// => This is the core conflict that makes deciding on how typed the IR should be confusing!
+//    Integer literals sometimes need types (eg. in tuples) and sometimes they don't (eg. in arithmetic).
+//
+// Maybe the solution is to just type literals at their minimal type (ie. ~0 bits)
+//   and then expand them as necessary when doing assignments or constructing array/tuple literals.
+// 
+// TODO think about how array literals, and especially empty array literals, work
+
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants
