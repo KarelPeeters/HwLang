@@ -14,14 +14,12 @@ pub struct Token<S> {
 // TODO remove string from this? we have better error infrastructure by now
 #[derive(Debug, Eq, PartialEq)]
 pub enum TokenError {
-    InvalidToken { pos: Pos, prefix: String },
+    InvalidToken { pos: Pos },
     InvalidIntLiteral { span: Span },
     BlockCommentMissingEnd { start: Pos, eof: Pos },
-    BlockCommentUnexpectedEnd { pos: Pos, prefix: String },
+    BlockCommentUnexpectedEnd { pos: Pos },
     StringLiteralMissingEnd { start: Pos, eof: Pos },
 }
-
-const ERROR_CONTEXT_LENGTH: usize = 16;
 
 pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenError> {
     Tokenizer::new(file, source).into_iter().try_collect()
@@ -113,10 +111,6 @@ impl<'s> Tokenizer<'s> {
             file: self.file,
             byte: self.curr_byte,
         }
-    }
-
-    fn prefix_for_error_message(&self) -> String {
-        self.left.clone().take(ERROR_CONTEXT_LENGTH).collect()
     }
 
     // TODO generate this match state machine
@@ -312,12 +306,7 @@ impl<'s> Tokenizer<'s> {
             ['[', _] => skip_fixed(1, TokenType::OpenS),
             [']', _] => skip_fixed(1, TokenType::CloseS),
 
-            [_, _] => {
-                return Err(TokenError::InvalidToken {
-                    pos: start,
-                    prefix: self.prefix_for_error_message(),
-                })
-            }
+            [_, _] => return Err(TokenError::InvalidToken { pos: start }),
         };
 
         let span = Span::new(start, self.curr_pos());
@@ -552,7 +541,7 @@ lazy_static! {
 impl TokenError {
     pub fn to_diagnostic(self) -> Diagnostic {
         match self {
-            TokenError::InvalidToken { pos, prefix: _ } => Diagnostic::new("tokenization error")
+            TokenError::InvalidToken { pos } => Diagnostic::new("tokenization error")
                 .add_error(Span::empty_at(pos), "invalid start of token")
                 .finish(),
             TokenError::InvalidIntLiteral { span } => Diagnostic::new("invalid integer literal")
@@ -562,11 +551,9 @@ impl TokenError {
                 .add_info(Span::empty_at(start), "block comment started here")
                 .add_error(Span::empty_at(eof), "end of file reached")
                 .finish(),
-            TokenError::BlockCommentUnexpectedEnd { pos, prefix: _ } => {
-                Diagnostic::new("unexpected end of block comment")
-                    .add_error(Span::empty_at(pos), "end of comment here")
-                    .finish()
-            }
+            TokenError::BlockCommentUnexpectedEnd { pos } => Diagnostic::new("unexpected end of block comment")
+                .add_error(Span::empty_at(pos), "end of comment here")
+                .finish(),
             TokenError::StringLiteralMissingEnd { start, eof } => Diagnostic::new("string literal missing end")
                 .add_info(Span::empty_at(start), "string literal started here")
                 .add_error(Span::empty_at(eof), "end of file reached")
