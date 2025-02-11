@@ -468,24 +468,25 @@ impl CompileState<'_> {
                 let mut curr = base;
                 for arg in args.inner {
                     let curr_span = curr.span;
-                    let curr_inner = match pair_compile(diags, curr, arg.value)? {
-                        MaybeCompile::Compile((curr, index)) => {
-                            match curr.inner {
+
+                    let next_inner = match (curr.inner, arg.value.inner) {
+                        (MaybeCompile::Compile(curr_inner), MaybeCompile::Compile(arg_inner)) => {
+                            match curr_inner {
                                 // declare new array type
                                 CompileValue::Type(curr) => {
-                                    let dim_len = match index.inner {
+                                    let dim_len = match arg_inner {
                                         CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
                                             diags.report_simple(
                                                 "array dimension length cannot be negative",
-                                                index.span,
+                                                arg.span,
                                                 format!("got value `{}`", e.into_original()),
                                             )
                                         })?,
                                         _ => {
                                             return Err(diags.report_simple(
                                                 "array dimension length must be an integer",
-                                                index.span,
-                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
+                                                arg.span,
+                                                format!("got value `{}`", arg_inner.to_diagnostic_string()),
                                             ));
                                         }
                                     };
@@ -495,7 +496,7 @@ impl CompileState<'_> {
                                 }
                                 // index into compile-time array
                                 CompileValue::Array(curr) => {
-                                    match index.inner {
+                                    match arg_inner {
                                         CompileValue::Int(index_inner) => {
                                             let valid_range = 0..curr.len();
                                             let index = index_inner.to_usize()
@@ -503,7 +504,7 @@ impl CompileState<'_> {
                                                 .ok_or_else(|| {
                                                     diags.report_simple(
                                                         "array index out of bounds",
-                                                        index.span,
+                                                        arg.span,
                                                         format!("got index `{index_inner}`, valid range for this array is `{valid_range:?}`"),
                                                     )
                                                 })?;
@@ -521,7 +522,7 @@ impl CompileState<'_> {
                                                         .ok_or_else(|| {
                                                             diags.report_simple(
                                                                 "array slice range out of bounds",
-                                                                index.span,
+                                                                arg.span,
                                                                 format!("got slice range `{range:?}`, valid range for this array is `{valid_range:?}`"),
                                                             )
                                                         })
@@ -533,7 +534,7 @@ impl CompileState<'_> {
 
                                             if start > end {
                                                 return Err(diags.report_internal_error(
-                                                    index.span,
+                                                    arg.span,
                                                     format!("invalid decreasing range `{range:?}`"),
                                                 ));
                                             }
@@ -544,8 +545,8 @@ impl CompileState<'_> {
                                         _ => {
                                             return Err(diags.report_simple(
                                                 "array index must be an integer or an integer range",
-                                                index.span,
-                                                format!("got value `{}`", index.inner.to_diagnostic_string()),
+                                                arg.span,
+                                                format!("got value `{}`", arg_inner.to_diagnostic_string()),
                                             ));
                                         }
                                     }
@@ -553,14 +554,13 @@ impl CompileState<'_> {
                                 _ => {
                                     return Err(diags.report_simple(
                                         "array index on invalid target",
-                                        index.span,
-                                        format!("target `{}` here", curr.inner.to_diagnostic_string()),
+                                        arg.span,
+                                        format!("target `{}` here", curr_inner.to_diagnostic_string()),
                                     ));
                                 }
                             }
                         }
-                        MaybeCompile::Other((curr, index)) => {
-                            let _ = (curr, index);
+                        _ => {
                             return Err(diags.report_todo(arg.span, "runtime array indexing/slicing"));
                         }
                     };
@@ -568,7 +568,7 @@ impl CompileState<'_> {
                     // TODO this is a bit of sketchy span, but maybe the best we can do
                     curr = Spanned {
                         span: curr_span.join(arg.span),
-                        inner: curr_inner,
+                        inner: next_inner,
                     }
                 }
 
@@ -1224,21 +1224,6 @@ impl CompileState<'_> {
             },
         })
     }
-}
-
-// TODO reduce boilerplate with a trait?
-fn pair_compile(
-    diags: &Diagnostics,
-    left: Spanned<MaybeCompile<TypedIrExpression>>,
-    right: Spanned<MaybeCompile<TypedIrExpression>>,
-) -> Result<
-    MaybeCompile<
-        (Spanned<TypedIrExpression>, Spanned<TypedIrExpression>),
-        (Spanned<CompileValue>, Spanned<CompileValue>),
-    >,
-    ErrorGuaranteed,
-> {
-    pair_compile_general(left, right, |x| x.inner.as_ir_expression(diags, x.span, todo!()))
 }
 
 fn pair_compile_int(
