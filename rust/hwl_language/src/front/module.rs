@@ -14,10 +14,8 @@ use crate::front::ir::{
 };
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{HardwareType, Type};
-use crate::front::value::{
-    AssignmentTarget, CompileValue, HardwareReason, HardwareValueResult, MaybeCompile, NamedValue,
-};
+use crate::front::types::{HardwareType, Type, Typed};
+use crate::front::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,
@@ -591,7 +589,7 @@ impl BodyElaborationState<'_, '_> {
         prev_port_signals: &IndexMap<Port, ConnectionSignal>,
         port: Port,
         connection: &Spanned<PortConnection>,
-    ) -> Result<(ConnectionSignal, IrPortConnection), ErrorGuaranteed> {
+    ) -> Result<(ConnectionSignal, Spanned<IrPortConnection>), ErrorGuaranteed> {
         let diags = self.state.diags;
 
         let PortConnection {
@@ -691,9 +689,14 @@ impl BodyElaborationState<'_, '_> {
                 let mut ctx_block = ctx.new_ir_block();
 
                 let no_vars = VariableValues::new_no_vars();
-                let connection_value =
-                    self.state
-                        .eval_expression(&mut ctx, &mut ctx_block, scope, &no_vars, connection_expr)?;
+                let connection_value = self.state.eval_expression(
+                    &mut ctx,
+                    &mut ctx_block,
+                    scope,
+                    &no_vars,
+                    &port_ty.inner,
+                    connection_expr,
+                )?;
 
                 // check type
                 let mut any_err = Ok(());
@@ -707,6 +710,7 @@ impl BodyElaborationState<'_, '_> {
                     &port_ty.inner,
                     connection_value.as_ref(),
                     true,
+                    false,
                 ));
 
                 // check domain
@@ -723,10 +727,9 @@ impl BodyElaborationState<'_, '_> {
                 ));
 
                 // convert value to ir
-                let hw_reason = HardwareReason::InstancePortConnection(connection_id.span);
                 let connection_value_ir_raw = connection_value
                     .as_ref()
-                    .map_inner(|v| Ok(v.to_ir_expression(diags, connection_expr.span, hw_reason)?.expr))
+                    .map_inner(|v| Ok(v.as_ir_expression(diags, connection_expr.span, &port_ty_hw.inner)?.expr))
                     .transpose()?;
                 any_err?;
 
@@ -814,6 +817,7 @@ impl BodyElaborationState<'_, '_> {
                                 span: connection_id.span,
                                 inner: &port_ty.inner,
                             },
+                            false,
                         ));
 
                         // check domain
@@ -844,7 +848,11 @@ impl BodyElaborationState<'_, '_> {
             }
         };
 
-        Ok((signal, ir_connection))
+        let spanned_ir_connection = Spanned {
+            span: connection.span,
+            inner: ir_connection,
+        };
+        Ok((signal, spanned_ir_connection))
     }
 
     fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
@@ -873,7 +881,8 @@ impl BodyElaborationState<'_, '_> {
 
             any_err = any_err.and(self.check_drivers_for_reg(decl_span, drivers));
 
-            // TODO allow zero drivers for registers, just create a dummy process for the reset value?
+            // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
+            //  (still emit a warning)
             match self.check_exactly_one_driver("register", self.state.registers[reg].id.span(), drivers) {
                 Err(e) => any_err = Err(e),
                 Ok(driver) => any_err = any_err.and(self.pull_register_init_into_process(reg, driver)),
@@ -901,19 +910,30 @@ impl BodyElaborationState<'_, '_> {
                     if let Some(init) = self.register_initial_values.get(&reg) {
                         let init = init.as_ref_ok()?;
 
-                        // TODO fix duplication with lowering in block
-                        let init_ir = match init.inner.as_hardware_value() {
+                        // TODO fix duplication with CompileValue::to_ir_expression
+                        // TODO move this to where the register is initially visited
+                        let init_ir = match init.inner.as_hardware_value(&reg_info.ty.inner) {
                             HardwareValueResult::Success(v) => Some(v),
                             HardwareValueResult::Undefined => None,
                             HardwareValueResult::PartiallyUndefined => {
                                 return Err(diags.report_todo(init.span, "partially undefined register reset value"))
                             }
-                            HardwareValueResult::Unrepresentable => {
-                                // TODO fix this duplication
-                                let reason =
-                                    "compile time value fits in hardware type but is not convertible to hardware value";
-                                return Err(diags.report_internal_error(init.span, reason));
-                            }
+                            HardwareValueResult::Unrepresentable => throw!(diags.report_internal_error(
+                                init.span,
+                                format!(
+                                    "value `{}` has hardware type but is itself not representable",
+                                    init.inner.to_diagnostic_string()
+                                ),
+                            )),
+                            HardwareValueResult::InvalidType => throw!(diags.report_internal_error(
+                                init.span,
+                                format!(
+                                    "value `{}` with type `{}` cannot be represented as hardware type `{}`",
+                                    init.inner.to_diagnostic_string(),
+                                    init.inner.ty().to_diagnostic_string(),
+                                    reg_info.ty.inner.as_type().to_diagnostic_string()
+                                ),
+                            )),
                         };
 
                         if let Some(init_ir) = init_ir {
@@ -1062,35 +1082,50 @@ impl BodyElaborationState<'_, '_> {
         let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
         let mut ctx_block = ctx.new_ir_block();
 
+        let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
         let value: Result<Option<Spanned<MaybeCompile<TypedIrExpression>>>, ErrorGuaranteed> = value
             .as_ref()
-            .map(|value| state.eval_expression(&mut ctx, &mut ctx_block, scope_body, &no_vars, value))
+            .map(|value| state.eval_expression(&mut ctx, &mut ctx_block, scope_body, &no_vars, &expected_ty, value))
             .transpose();
 
         let domain = domain?;
         let ty = ty?;
         let value = value?;
 
-        if let Some(value) = &value {
-            // check type
-            let reason = TypeContainsReason::Assignment {
-                span_target: id.span(),
-                span_target_ty: ty.span,
-            };
-            let check_ty = check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref(), true);
+        let value = value
+            .map(|value| {
+                // check type
+                let reason = TypeContainsReason::Assignment {
+                    span_target: id.span(),
+                    span_target_ty: ty.span,
+                };
+                let check_ty =
+                    check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref(), true, false);
 
-            // check domain
-            let value_domain = value.inner.domain();
-            let value_domain_spanned = Spanned {
-                span: value.span,
-                inner: value_domain,
-            };
-            let check_domain =
-                state.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
+                // check domain
+                let value_domain = value.inner.domain();
+                let value_domain_spanned = Spanned {
+                    span: value.span,
+                    inner: value_domain,
+                };
+                let check_domain = state.check_valid_domain_crossing(
+                    decl.span,
+                    domain.as_ref(),
+                    value_domain_spanned,
+                    "value to wire",
+                );
 
-            check_ty?;
-            check_domain?;
-        }
+                check_ty?;
+                check_domain?;
+
+                // convert to IR
+                let value_ir = value.inner.as_ir_expression(diags, value.span, &ty.inner)?;
+                Ok(Spanned {
+                    span: value.span,
+                    inner: value_ir,
+                })
+            })
+            .transpose()?;
 
         // build wire
         let ir_wire = self.ir_wires.push(IrWireInfo {
@@ -1109,11 +1144,7 @@ impl BodyElaborationState<'_, '_> {
         // append assignment to process
         if let Some(value) = value {
             let target = IrAssignmentTarget::Wire(ir_wire);
-            let source = match value.inner {
-                MaybeCompile::Compile(_) => throw!(diags.report_todo(value.span, "compile-time wire value")),
-                MaybeCompile::Other(v) => v.expr,
-            };
-            let stmt = IrStatement::Assign(target, source);
+            let stmt = IrStatement::Assign(target, value.inner.expr);
 
             let stmt = Spanned {
                 span: value.span,

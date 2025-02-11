@@ -58,7 +58,7 @@ pub trait Typed {
 impl Type {
     pub const UNIT: Type = Type::Tuple(Vec::new());
 
-    pub fn union(&self, other: &Type) -> Type {
+    pub fn union(&self, other: &Type, allow_compound_subtype: bool) -> Type {
         match (self, other) {
             // top and bottom
             (Type::Any, _) | (_, Type::Any) => Type::Any,
@@ -102,7 +102,19 @@ impl Type {
             // tuple
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
-                    Type::Tuple(zip_eq(a, b).map(|(a, b)| a.union(b)).collect_vec())
+                    Type::Tuple(
+                        zip_eq(a, b)
+                            .map(|(a, b)| {
+                                if allow_compound_subtype {
+                                    a.union(b, allow_compound_subtype)
+                                } else if a == b {
+                                    a.clone()
+                                } else {
+                                    Type::Any
+                                }
+                            })
+                            .collect_vec(),
+                    )
                 } else {
                     Type::Any
                 }
@@ -110,7 +122,13 @@ impl Type {
             // array
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
-                    let inner = a_inner.union(b_inner);
+                    let inner = if allow_compound_subtype {
+                        a_inner.union(b_inner, allow_compound_subtype)
+                    } else if a_inner == b_inner {
+                        *a_inner.clone()
+                    } else {
+                        Type::Any
+                    };
                     Type::Array(Box::new(inner), a_len.clone())
                 } else {
                     // TODO into list?
@@ -144,8 +162,8 @@ impl Type {
         }
     }
 
-    pub fn contains_type(&self, ty: &Type) -> bool {
-        self == &self.union(ty)
+    pub fn contains_type(&self, ty: &Type, allow_compound_subtype: bool) -> bool {
+        self == &self.union(ty, allow_compound_subtype)
     }
 
     pub fn as_hardware_type(&self) -> Option<HardwareType> {
@@ -286,6 +304,18 @@ impl<T> ClosedIncRange<T> {
     {
         let ClosedIncRange { start_inc, end_inc } = self;
         start_inc <= value && value <= end_inc
+    }
+
+    pub fn contains_range(&self, other: &ClosedIncRange<T>) -> bool
+    where
+        T: PartialOrd,
+    {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        let ClosedIncRange {
+            start_inc: other_start_inc,
+            end_inc: other_end_inc,
+        } = other;
+        start_inc <= other_start_inc && other_end_inc <= end_inc
     }
 
     pub fn iter(&self) -> impl Iterator<Item = T> + '_

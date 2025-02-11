@@ -2,26 +2,28 @@ use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{
+    ArrayLiteralElement, Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
+};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
 
-/// Variant of `Type` that can only represent types that are valid in hardware.
 #[derive(Debug)]
+pub struct IrDatabase {
+    pub modules: Arena<IrModule, IrModuleInfo>,
+    pub top_module: Result<IrModule, ErrorGuaranteed>,
+}
+
+/// Variant of [Type] that can only represent types that are valid in hardware.
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {
     Bool,
     Int(ClosedIncRange<BigInt>),
     Tuple(Vec<IrType>),
     Array(Box<IrType>, BigUint),
-}
-
-#[derive(Debug)]
-pub struct IrDatabase {
-    pub modules: Arena<IrModule, IrModuleInfo>,
-    pub top_module: Result<IrModule, ErrorGuaranteed>,
 }
 
 new_index_type!(pub IrModule);
@@ -40,13 +42,6 @@ pub struct IrModuleInfo {
 
     pub debug_info_id: Identifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
-}
-
-impl IrModuleInfo {
-    pub fn instantiated_submodules(&self) -> Vec<IrModule> {
-        // TODO fill in once instantiations are implemented
-        vec![]
-    }
 }
 
 #[derive(Debug)]
@@ -115,7 +110,7 @@ pub struct IrCombinatorialProcess {
 pub struct IrModuleInstance {
     pub name: Option<String>,
     pub module: IrModule,
-    pub port_connections: IndexMap<IrPort, IrPortConnection>,
+    pub port_connections: IndexMap<IrPort, Spanned<IrPortConnection>>,
 }
 
 #[derive(Debug)]
@@ -158,38 +153,11 @@ pub enum IrAssignmentTarget {
     Variable(IrVariable),
 }
 
-// TODO maybe IrExpression should always have explicit types, that would make lowering easier
-//   * how should integer arithmetic be typed? shared field (like TypedIrExpression) or in the enum where needed?
-//   * should the creator of the IrExpression be responsible for filling in the type? what if they're wrong?
-//   * how should extra knowledge of int ranges be expressed?
-//     do expressions implicitly cast their result to their type?
-//   * mostly think about what lowering wants there, front knows everything so can fill in information
-//   * should empty array literals have types? it doesn't really matter since they're 0-bit anyway
-
-
-// More thoughts about typing:
-// * `r = a + 5`
-//      * r and a should definitely have integer ranges
-//      * it doesn't really make sense to give "5" a type, the backend should just implement the addition correctly
-// * `r = (a, b)` (equivalent to concat)
-//      * a, b, r should have full types, this is a concat operation and everything needs clear bit-widths
-// * `r = [a, b, c]`
-//      * a, b, c, r should all have full types, this is again a concat operation
-//
-// => This is the core conflict that makes deciding on how typed the IR should be confusing!
-//    Integer literals sometimes need types (eg. in tuples) and sometimes they don't (eg. in arithmetic).
-//
-// Maybe the solution is to just type literals at their minimal type (ie. ~0 bits)
-//   and then expand them as necessary when doing assignments or constructing array/tuple literals.
-// 
-// TODO think about how array literals, and especially empty array literals, work
-
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants
     Bool(bool),
-    Int(BigInt), // TODO type!
+    Int(BigInt),
 
     // "signals"
     Port(IrPort),
@@ -199,20 +167,35 @@ pub enum IrExpression {
 
     // actual expressions
     BoolNot(Box<IrExpression>),
-    BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>), // TODO type
-    IntArithmetic(IrIntArithmeticOp, Box<IrExpression>, Box<IrExpression>), // TODO type
+    BoolBinary(IrBoolBinaryOp, Box<IrExpression>, Box<IrExpression>),
+    IntArithmetic(
+        IrIntArithmeticOp,
+        ClosedIncRange<BigInt>,
+        Box<IrExpression>,
+        Box<IrExpression>,
+    ),
     IntCompare(IrIntCompareOp, Box<IrExpression>, Box<IrExpression>),
 
-    TupleLiteral(Vec<IrExpression>), // TODO type
-    ArrayLiteral(Vec<IrExpression>), // TODO type
+    // concat
+    TupleLiteral(Vec<IrExpression>),
+    // TODO remove spread operator from this, replace with concat operator?
+    ArrayLiteral(IrType, Vec<ArrayLiteralElement<IrExpression>>),
+
+    // slice
     ArrayIndex {
         base: Box<IrExpression>,
         index: Box<IrExpression>,
-    }, // TODO type?
+    },
+    // TODO require constant range?
     ArraySlice {
         base: Box<IrExpression>,
         range: ClosedIncRange<Box<IrExpression>>,
-    }, // TODO type?
+    },
+
+    // casting
+    IntToBits(ClosedIncRange<BigInt>, Box<IrExpression>),
+    IntFromBits(ClosedIncRange<BigInt>, Box<IrExpression>),
+    ExpandIntRange(ClosedIncRange<BigInt>, Box<IrExpression>),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -286,6 +269,43 @@ impl IrType {
 }
 
 impl IrExpression {
+    // TODO avoid clones
+    pub fn ty(&self, module: &IrModuleInfo, locals: &IrVariables) -> IrType {
+        match self {
+            IrExpression::Bool(_) => IrType::Bool,
+            IrExpression::Int(v) => IrType::Int(ClosedIncRange::single(v.clone())),
+
+            IrExpression::Port(port) => module.ports[*port].ty.clone(),
+            IrExpression::Wire(wire) => module.wires[*wire].ty.clone(),
+            IrExpression::Register(reg) => module.registers[*reg].ty.clone(),
+            IrExpression::Variable(var) => locals[*var].ty.clone(),
+
+            IrExpression::BoolNot(_) => IrType::Bool,
+            IrExpression::BoolBinary(_, left, _) => left.ty(module, locals),
+            IrExpression::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
+            IrExpression::IntCompare(_, _, _) => IrType::Bool,
+
+            IrExpression::TupleLiteral(v) => IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect()),
+            IrExpression::ArrayLiteral(ty, values) => IrType::Array(Box::new(ty.clone()), BigUint::from(values.len())),
+
+            // TODO cache resulting type?
+            IrExpression::ArrayIndex { base, .. } => match base.ty(module, locals) {
+                IrType::Array(inner, _) => *inner,
+                _ => unreachable!(),
+            },
+            IrExpression::ArraySlice { base, .. } => match base.ty(module, locals) {
+                IrType::Array(inner, _) => *inner,
+                _ => unreachable!(),
+            },
+
+            IrExpression::IntToBits(ty, _) => {
+                IrType::Array(Box::new(IrType::Bool), IntRepresentation::for_range(ty).width)
+            }
+            IrExpression::IntFromBits(ty, _) => IrType::Int(ty.clone()),
+            IrExpression::ExpandIntRange(ty, _) => IrType::Int(ty.clone()),
+        }
+    }
+
     pub fn to_diagnostic_string(&self, m: &IrModuleInfo) -> String {
         match self {
             IrExpression::Bool(x) => x.to_string(),
@@ -311,7 +331,7 @@ impl IrExpression {
                     right.to_diagnostic_string(m)
                 )
             }
-            IrExpression::IntArithmetic(op, left, right) => {
+            IrExpression::IntArithmetic(op, ty, left, right) => {
                 let op_str = match op {
                     IrIntArithmeticOp::Add => "+",
                     IrIntArithmeticOp::Sub => "-",
@@ -321,7 +341,8 @@ impl IrExpression {
                     IrIntArithmeticOp::Pow => "**",
                 };
                 format!(
-                    "({} {} {})",
+                    "({}; {} {} {})",
+                    ty,
                     left.to_diagnostic_string(m),
                     op_str,
                     right.to_diagnostic_string(m)
@@ -345,21 +366,27 @@ impl IrExpression {
                 )
             }
 
-            IrExpression::TupleLiteral(x) => {
-                let inner = x
+            IrExpression::TupleLiteral(v) => {
+                let v_str = v
                     .iter()
                     .map(|x| x.to_diagnostic_string(m))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("({})", inner)
+                format!("({})", v_str)
             }
-            IrExpression::ArrayLiteral(x) => {
-                let inner = x
+            IrExpression::ArrayLiteral(ty, v) => {
+                let ty_str = ty.as_type().to_diagnostic_string();
+                let v_str = v
                     .iter()
-                    .map(|x| x.to_diagnostic_string(m))
+                    .map(|x| {
+                        let ArrayLiteralElement { value, spread } = x;
+                        let value_str = value.to_diagnostic_string(m);
+                        let spread_str = if spread.is_some() { "*" } else { "" };
+                        format!("{}{}", spread_str, value_str)
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("[{inner}]")
+                format!("[{ty_str}; {v_str}]")
             }
             IrExpression::ArrayIndex { base, index } => {
                 format!("({}[{}])", base.to_diagnostic_string(m), index.to_diagnostic_string(m))
@@ -373,28 +400,62 @@ impl IrExpression {
                     end_inc.to_diagnostic_string(m)
                 )
             }
+            IrExpression::IntToBits(ty, x) => format!("int_to_bits({}, {})", ty, x.to_diagnostic_string(m)),
+            IrExpression::IntFromBits(ty, x) => format!("int_from_bits({}, {})", ty, x.to_diagnostic_string(m)),
+            IrExpression::ExpandIntRange(ty, x) => format!("expand_int_range({}, {})", ty, x.to_diagnostic_string(m)),
         }
     }
 
-    pub fn contains_variable(&self) -> bool {
+    pub fn for_each_expression_operand(&self, f: &mut impl FnMut(&IrExpression)) {
         match self {
             IrExpression::Bool(_)
             | IrExpression::Int(_)
             | IrExpression::Port(_)
             | IrExpression::Wire(_)
-            | IrExpression::Register(_) => false,
-            IrExpression::Variable(_) => true,
-            IrExpression::BoolNot(x) => x.contains_variable(),
-            IrExpression::BoolBinary(_op, left, right) => left.contains_variable() || right.contains_variable(),
-            IrExpression::IntArithmetic(_op, left, right) => left.contains_variable() || right.contains_variable(),
-            IrExpression::IntCompare(_op, left, right) => left.contains_variable() || right.contains_variable(),
-            IrExpression::TupleLiteral(x) => x.iter().any(|x| x.contains_variable()),
-            IrExpression::ArrayLiteral(x) => x.iter().any(|x| x.contains_variable()),
-            IrExpression::ArrayIndex { base, index } => base.contains_variable() || index.contains_variable(),
+            | IrExpression::Register(_)
+            | IrExpression::Variable(_) => {}
+
+            IrExpression::BoolNot(x) => f(x),
+            IrExpression::BoolBinary(_op, left, right) => {
+                f(left);
+                f(right);
+            }
+            IrExpression::IntArithmetic(_op, _ty, left, right) => {
+                f(left);
+                f(right);
+            }
+            IrExpression::IntCompare(_op, left, right) => {
+                f(left);
+                f(right);
+            }
+            IrExpression::TupleLiteral(x) => x.iter().for_each(f),
+            IrExpression::ArrayLiteral(_ty, x) => x.iter().for_each(|a| f(&a.value)),
+            IrExpression::ArrayIndex { base, index } => {
+                f(base);
+                f(index);
+            }
             IrExpression::ArraySlice {
                 base,
                 range: ClosedIncRange { start_inc, end_inc },
-            } => base.contains_variable() || start_inc.contains_variable() || end_inc.contains_variable(),
+            } => {
+                f(base);
+                f(start_inc);
+                f(end_inc);
+            }
+            IrExpression::IntToBits(_ty, x) | IrExpression::IntFromBits(_ty, x) => f(x),
+            IrExpression::ExpandIntRange(_ty, x) => f(x),
         }
+    }
+
+    pub fn contains_variable(&self) -> bool {
+        if let IrExpression::Variable(_) = self {
+            return true;
+        }
+
+        let mut any = false;
+        self.for_each_expression_operand(&mut |expr| {
+            any |= expr.contains_variable();
+        });
+        any
     }
 }

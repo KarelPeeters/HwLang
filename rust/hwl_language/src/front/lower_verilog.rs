@@ -540,7 +540,7 @@ fn lower_module_statements(
                 for (port_index, (&port, connection)) in enumerate(port_connections) {
                     let port_name = inner_module.ports.get(&port).unwrap();
                     swrite!(f, "{I}{I}.{port_name}(");
-                    match connection {
+                    match &connection.inner {
                         IrPortConnection::Input(expr) => {
                             lower_expression(diags, name_map, expr.span, &expr.inner, f)?;
                         }
@@ -800,13 +800,16 @@ fn lower_expression(
             lower_expression(diags, name_map, span, right, f)?;
             swrite!(f, ")");
         }
-        IrExpression::IntArithmetic(_, _, _) => throw!(diags.report_todo(span, "lower int arithmetic expression")),
+        IrExpression::IntArithmetic(_, _, _, _) => throw!(diags.report_todo(span, "lower int arithmetic expression")),
         IrExpression::IntCompare(_, _, _) => throw!(diags.report_todo(span, "lower int compare expression")),
 
         IrExpression::TupleLiteral(_) => throw!(diags.report_todo(span, "lower tuple literal")),
-        IrExpression::ArrayLiteral(_) => throw!(diags.report_todo(span, "lower array literal")),
+        IrExpression::ArrayLiteral(_, _) => throw!(diags.report_todo(span, "lower array literal")),
         IrExpression::ArrayIndex { .. } => throw!(diags.report_todo(span, "lower array index")),
         IrExpression::ArraySlice { .. } => throw!(diags.report_todo(span, "lower array slice")),
+        IrExpression::IntToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
+        IrExpression::IntFromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
+        IrExpression::ExpandIntRange(_, _) => throw!(diags.report_todo(span, "lower expand int range")),
     }
 
     Ok(())

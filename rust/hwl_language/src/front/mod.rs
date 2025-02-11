@@ -11,6 +11,7 @@ pub mod context;
 pub mod diagnostic;
 pub mod expression;
 pub mod function;
+pub mod ir_validate;
 pub mod item;
 pub mod module;
 pub mod scope;

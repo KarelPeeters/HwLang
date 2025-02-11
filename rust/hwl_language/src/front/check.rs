@@ -152,6 +152,7 @@ pub fn check_type_contains_value(
     target_ty: &Type,
     value: Spanned<&MaybeCompile<TypedIrExpression>>,
     accept_undefined: bool,
+    allow_compound_subtype: bool,
 ) -> Result<(), ErrorGuaranteed> {
     match value.inner {
         MaybeCompile::Compile(value_inner) => {
@@ -166,7 +167,7 @@ pub fn check_type_contains_value(
                 span: value.span,
                 inner: &value_inner.ty.as_type(),
             };
-            check_type_contains_type(diags, reason, target_ty, value_ty)
+            check_type_contains_type(diags, reason, target_ty, value_ty, allow_compound_subtype)
         }
     }
 }
@@ -178,7 +179,7 @@ pub fn check_type_contains_compile_value(
     value: Spanned<&CompileValue>,
     accept_undefined: bool,
 ) -> Result<(), ErrorGuaranteed> {
-    let ty_contains_value = target_ty.contains_type(&value.inner.ty());
+    let ty_contains_value = target_ty.contains_type(&value.inner.ty(), true);
     let value_is_undefined = value.inner.contains_undefined();
 
     if ty_contains_value && (accept_undefined || !value_is_undefined) {
@@ -201,12 +202,21 @@ pub fn check_type_contains_type(
     reason: TypeContainsReason,
     target_ty: &Type,
     value_ty: Spanned<&Type>,
+    allow_compound_subtype: bool,
 ) -> Result<(), ErrorGuaranteed> {
-    if target_ty.contains_type(value_ty.inner) {
+    if target_ty.contains_type(value_ty.inner, allow_compound_subtype) {
         Ok(())
     } else {
         let mut diag = Diagnostic::new("value does not fit in type");
         diag = reason.add_diag_info(diag, target_ty);
+
+        if !allow_compound_subtype && target_ty.contains_type(value_ty.inner, true) {
+            diag = diag.footer(
+                Level::Info,
+                "compound subtyping is not allowed for hardware values, if it was the value would have fit",
+            );
+        }
+
         let diag = diag
             .add_error(
                 value_ty.span,
@@ -226,7 +236,7 @@ pub fn check_type_is_int(
     reason: TypeContainsReason,
     value: Spanned<MaybeCompile<TypedIrExpression>>,
 ) -> Result<Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>, ErrorGuaranteed> {
-    check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false)?;
+    check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false, true)?;
 
     match value.inner {
         MaybeCompile::Compile(value_inner) => match value_inner {
@@ -255,7 +265,7 @@ pub fn check_type_is_bool(
     reason: TypeContainsReason,
     value: Spanned<MaybeCompile<TypedIrExpression>>,
 ) -> Result<Spanned<MaybeCompile<TypedIrExpression<()>, bool>>, ErrorGuaranteed> {
-    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false)?;
+    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false)?;
 
     match value.inner {
         MaybeCompile::Compile(value_inner) => match value_inner {

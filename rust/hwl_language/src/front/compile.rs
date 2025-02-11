@@ -129,10 +129,20 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
 
     // return result
     assert!(state.elaboration_stack.is_empty());
-    IrDatabase {
+    let mut db = IrDatabase {
         top_module,
         modules: state.ir_modules,
+    };
+
+    // validate
+    match db.validate(diags) {
+        Ok(()) => {}
+        Err(e) => {
+            db.top_module = Err(e);
+        }
     }
+
+    db
 }
 
 pub struct CompileState<'a> {

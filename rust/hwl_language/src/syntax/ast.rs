@@ -418,7 +418,7 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
+    ArrayLiteral(Vec<Spanned<ArrayLiteralElement<Expression>>>),
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
     RangeLiteral(RangeLiteral),
@@ -492,6 +492,15 @@ impl<N, T> Args<N, T> {
 pub struct ArrayLiteralElement<V> {
     pub spread: Option<Span>,
     pub value: V,
+}
+
+impl<T> ArrayLiteralElement<Spanned<T>> {
+    pub fn span(&self) -> Span {
+        match self.spread {
+            Some(spread_span) => spread_span.join(self.value.span),
+            None => self.value.span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

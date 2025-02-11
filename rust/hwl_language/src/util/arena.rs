@@ -17,7 +17,7 @@ macro_rules! new_index_type {
         #[derive(Copy, Clone, Eq, PartialEq, Hash)]
         $vis struct $name($crate::util::arena::Idx);
 
-        //trick to make the imports not leak outside of the macro
+        // trick to make the imports not leak outside of the macro
         const _: () = {
             use $crate::util::arena::IndexType;
             use $crate::util::arena::Idx;
@@ -33,7 +33,7 @@ macro_rules! new_index_type {
 
             impl std::fmt::Debug for $name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "{:?} {}", self.0, stringify!($name))
+                    write!(f, "<{} {}>", stringify!($name), self.0.index())
                 }
             }
         };
@@ -45,15 +45,15 @@ pub trait IndexType: Sized + Debug + Copy + Eq + Hash {
     fn inner(&self) -> Idx;
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Idx {
     index: usize,
     check: u64,
 }
 
-impl Debug for Idx {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<{}>", self.index)
+impl Idx {
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
@@ -102,14 +102,24 @@ impl<K: IndexType, T> Arena<K, T> {
 impl<K: IndexType, T> Index<K> for Arena<K, T> {
     type Output = T;
     fn index(&self, index: K) -> &Self::Output {
-        assert_eq!(self.check, index.inner().check);
+        assert_eq!(
+            self.check,
+            index.inner().check,
+            "Arena index {:?} used in arena which did not create it",
+            index
+        );
         &self.values[index.inner().index]
     }
 }
 
 impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
     fn index_mut(&mut self, index: K) -> &mut Self::Output {
-        assert_eq!(self.check, index.inner().check);
+        assert_eq!(
+            self.check,
+            index.inner().check,
+            "Arena index {:?} used in arena which did not create it",
+            index
+        );
         &mut self.values[index.inner().index]
     }
 }

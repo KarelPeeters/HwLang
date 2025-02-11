@@ -6,14 +6,14 @@ use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatem
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{AssignmentTarget, CompileValue, HardwareReason, MaybeCompile, NamedValue};
+use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
     ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
-use crate::util::result_pair;
+use crate::util::{result_pair, ResultExt};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use num_bigint::{BigInt, BigUint};
@@ -246,16 +246,23 @@ impl CompileState<'_> {
                     } = decl;
                     let mutable = *mutable;
 
+                    // eval ty
                     let ty = ty
                         .as_ref()
                         .map(|ty| self.eval_expression_as_ty(scope, &vars, ty))
                         .transpose();
+
+                    // eval init
+                    let eval_expected_ty = ty
+                        .as_ref_ok()
+                        .ok()
+                        .and_then(|t| t.as_ref().map(|t| &t.inner))
+                        .unwrap_or(&Type::Any);
                     let init = init
                         .as_ref()
-                        .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, &vars, init))
+                        .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, &vars, eval_expected_ty, init))
                         .transpose();
 
-                    // check init fits in type
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
                         // check init fits in type
                         if let Some(ty) = &ty {
@@ -264,7 +271,7 @@ impl CompileState<'_> {
                                     span_target: id.span(),
                                     span_target_ty: ty.span,
                                 };
-                                check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true)?;
+                                check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
                             }
                         }
 
@@ -299,7 +306,7 @@ impl CompileState<'_> {
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<MaybeCompile<TypedIrExpression>> =
-                        self.eval_expression(ctx, &mut ctx_block, scope, &vars, expr)?;
+                        self.eval_expression(ctx, &mut ctx_block, scope, &vars, &Type::Type, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
                     let (inner_block_ir, block_end) = self.elaborate_block(ctx, vars, scope, inner_block)?;
@@ -426,9 +433,11 @@ impl CompileState<'_> {
                         ref value,
                     } = stmt;
 
+                    // we don't use the return type for the expected type here,
+                    //  checking happens in the function call, and expanding at the call expression
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, &vars, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, &vars, &Type::Type, value))
                         .transpose()?;
 
                     let end = BlockEnd::Stopping(BlockEndStopping::Return(BlockEndReturn { span_keyword, value }));
@@ -464,11 +473,19 @@ impl CompileState<'_> {
             value,
         } = stmt;
 
+        // TODO stop evaluating `left` twice, if there are side effects that is observably wrong
+        //   instead, add a way to turn targets into their "read value" form
         let target = self.eval_expression_as_assign_target(scope, target_expr);
-        let value_right = self.eval_expression(ctx, ctx_block, scope, &vars, value);
+
+        let expected_ty = target
+            .as_ref_ok()
+            .ok()
+            .and_then(|target| target.inner.ty(self).map(|ty| ty.inner))
+            .unwrap_or(Type::Any);
+        let value_right = self.eval_expression(ctx, ctx_block, scope, &vars, &expected_ty, value);
 
         let value = if let Some(op) = op.transpose() {
-            let value_left = self.eval_expression(ctx, ctx_block, scope, &vars, target_expr);
+            let value_left = self.eval_expression(ctx, ctx_block, scope, &vars, &expected_ty, target_expr);
 
             result_pair(value_left, value_right).and_then(|(left, right)| {
                 let result = self.eval_binary_expression(stmt.span, op, left, right)?;
@@ -486,36 +503,21 @@ impl CompileState<'_> {
 
         let condition_domains = ctx.condition_domains();
 
-        let (target_ty, target_domain, ir_target, hw_reason) = match target.inner {
+        let (target_ty, target_domain, ir_target) = match target.inner {
             AssignmentTarget::Port(port) => {
                 let info = &self.ports[port];
                 let domain = ValueDomain::from_port_domain(info.domain.inner);
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTarget::Port(info.ir),
-                    HardwareReason::AssignmentToPort(target.span),
-                )
+                (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
             }
             AssignmentTarget::Wire(wire) => {
                 let info = &self.wires[wire];
                 let domain = info.domain.inner.clone();
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTarget::Wire(info.ir),
-                    HardwareReason::AssignmentToWire(target.span),
-                )
+                (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
             }
             AssignmentTarget::Register(reg) => {
                 let info = &self.registers[reg];
                 let domain = ValueDomain::Sync(info.domain.inner);
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTarget::Register(self.registers[reg].ir),
-                    HardwareReason::AssignmentToRegister(target.span),
-                )
+                (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
             }
             AssignmentTarget::Variable(var) => {
                 // variable assignments are handled separately, they are evaluated at compile-time as much as possible
@@ -536,7 +538,7 @@ impl CompileState<'_> {
                         span_target: target.span,
                         span_target_ty: ty.span,
                     };
-                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true)?;
+                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true, true)?;
                 }
 
                 // save the value
@@ -557,14 +559,11 @@ impl CompileState<'_> {
             span_target: target.span,
             span_target_ty: target_ty.span,
         };
-        let target_ty = target_ty.inner.as_type();
-        let check_ty = check_type_contains_value(diags, reason, &target_ty, value.as_ref(), true);
-
-        // convert to value
-        let value_domain = value.inner.domain();
-        let ir_value = value.inner.to_ir_expression(diags, value.span, hw_reason);
+        let check_ty =
+            check_type_contains_value(diags, reason, &target_ty.inner.as_type(), value.as_ref(), true, false);
 
         // check domains
+        let value_domain = value.inner.domain();
         // TODO better error messages with more explanation
         let target_domain = Spanned {
             span: target.span,
@@ -624,6 +623,9 @@ impl CompileState<'_> {
             }
         };
 
+        // convert to value
+        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_ty.inner);
+
         let ir_value = ir_value?;
         check_domains?;
         check_ty?;
@@ -678,10 +680,10 @@ impl CompileState<'_> {
             block,
         } = initial_if;
         // TODO is this cond_eval_block concept correct? are conditions always evaluated in the right place?
-        let cond = self.eval_expression(ctx, ctx_cond_eval_block, scope, &vars, cond)?;
+        let cond = self.eval_expression(ctx, ctx_cond_eval_block, scope, &vars, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::Operator(*span_if);
-        check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
+        check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false, true)?;
 
         match cond.inner {
             // evaluate the if at compile-time
@@ -874,8 +876,15 @@ impl CompileState<'_> {
 
                 // add assignments to all blocks, and join domains
                 let mut joined_domain = ValueDomain::CompileTime;
-                let initial_if_merge_store =
-                    build_merge_store(diags, span_stmt, var, var_ir, &initial_if_vars, &mut joined_domain)?;
+                let initial_if_merge_store = build_merge_store(
+                    diags,
+                    span_stmt,
+                    var,
+                    var_ir,
+                    &ty_hw,
+                    &initial_if_vars,
+                    &mut joined_domain,
+                )?;
                 ctx.push_ir_statement(diags, &mut initial_if_block, initial_if_merge_store)?;
 
                 for else_if in &mut else_ifs {
@@ -886,13 +895,20 @@ impl CompileState<'_> {
                         block: (else_if_block, else_if_vars),
                     } = else_if;
                     let else_if_merge_store =
-                        build_merge_store(diags, span_stmt, var, var_ir, else_if_vars, &mut joined_domain)?;
+                        build_merge_store(diags, span_stmt, var, var_ir, &ty_hw, else_if_vars, &mut joined_domain)?;
                     ctx.push_ir_statement(diags, else_if_block, else_if_merge_store)?;
                 }
 
                 let final_else_block = final_else_block.get_or_insert_with(|| ctx.new_ir_block());
-                let final_else_merge_store =
-                    build_merge_store(diags, span_stmt, var, var_ir, &final_else_vars, &mut joined_domain)?;
+                let final_else_merge_store = build_merge_store(
+                    diags,
+                    span_stmt,
+                    var,
+                    var_ir,
+                    &ty_hw,
+                    &final_else_vars,
+                    &mut joined_domain,
+                )?;
                 ctx.push_ir_statement(diags, final_else_block, final_else_merge_store)?;
 
                 // return the resulting variable
@@ -965,7 +981,7 @@ impl CompileState<'_> {
             body: _,
         } = stmt.inner;
 
-        let iter = self.eval_expression(ctx, ctx_block, scope, &vars, iter);
+        let iter = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, iter);
         let index_ty = index_ty
             .as_ref()
             .map(|index_ty| self.eval_expression_as_ty(scope, &vars, index_ty))
@@ -1078,7 +1094,7 @@ impl CompileState<'_> {
                     inner: &index_value,
                 };
                 let reason = TypeContainsReason::ForIndexType { span_ty: index_ty.span };
-                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false)?;
+                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
             }
 
             // set index value
@@ -1174,6 +1190,7 @@ fn build_merge_store(
     span_stmt: Span,
     var: Variable,
     var_ir: IrVariable,
+    ty_hw: &HardwareType,
     vars: &VariableValues,
     domain: &mut ValueDomain,
 ) -> Result<Spanned<IrStatement>, ErrorGuaranteed> {
@@ -1183,10 +1200,9 @@ fn build_merge_store(
         _ => throw!(diags.report_internal_error(span_stmt, "expected assigned value")),
     };
 
-    let hw_reason = HardwareReason::IfMerge { span_stmt };
     let value_ir = value
         .value
-        .to_ir_expression(diags, value.event.assigned_value_span, hw_reason)?;
+        .as_ir_expression(diags, value.event.assigned_value_span, ty_hw)?;
 
     *domain = domain.join(value.value.domain());
 

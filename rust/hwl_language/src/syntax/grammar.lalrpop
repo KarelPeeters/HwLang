@@ -509,7 +509,7 @@ ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
     // tuple literal
     "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(values),
     // array literal
-    "[" <elements:Separated<ArrayLiteralElement, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
+    "[" <elements:Separated<Spanned<ArrayLiteralElement>, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
     AtomicInner,
 }
 

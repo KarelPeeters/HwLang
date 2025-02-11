@@ -89,6 +89,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
 
             let ty_formatted = format!("{:?}", ty.map(|_| ())).replace("(())", "");
 
+            // TODO use token string instead of name for keywords and symbols
             Diagnostic::new("unexpected token")
                 .add_error(span, format!("unexpected token {:?}", ty_formatted))
                 .footer(Level::Info, format_expected(&expected))

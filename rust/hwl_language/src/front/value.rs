@@ -1,13 +1,17 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::compile::{CompileState, Constant, Parameter, Port, Register, Variable, Wire};
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
-use crate::front::ir::{IrExpression, IrVariable};
+use crate::front::ir::IrExpression;
 use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::syntax::ast::{ArrayLiteralElement, Spanned};
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
+use itertools::enumerate;
 use num_bigint::{BigInt, BigUint};
+use num_traits::ToPrimitive;
+use std::convert::identity;
 
 // TODO rename
 // TODO just provide both as default args
@@ -53,12 +57,13 @@ pub enum AssignmentTarget {
     Variable(Variable),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum HardwareValueResult {
     Success(IrExpression),
     Undefined,
     PartiallyUndefined,
     Unrepresentable,
+    InvalidType,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -75,6 +80,19 @@ pub enum HardwareReason {
     TupleWithOtherHardwareValue { span_tuple: Span, span_other_value: Span },
 }
 
+impl AssignmentTarget {
+    pub fn ty(&self, state: &CompileState) -> Option<Spanned<Type>> {
+        match *self {
+            AssignmentTarget::Port(port) => Some(state.ports[port].ty.as_ref().map_inner(|ty| ty.as_type())),
+            AssignmentTarget::Wire(wire) => Some(state.wires[wire].ty.as_ref().map_inner(|ty| ty.as_type())),
+            AssignmentTarget::Register(register) => {
+                Some(state.registers[register].ty.as_ref().map_inner(|ty| ty.as_type()))
+            }
+            AssignmentTarget::Variable(variable) => state.variables[variable].ty.clone(),
+        }
+    }
+}
+
 impl Typed for CompileValue {
     fn ty(&self) -> Type {
         match self {
@@ -88,7 +106,7 @@ impl Typed for CompileValue {
             CompileValue::String(_) => Type::String,
             CompileValue::Tuple(values) => Type::Tuple(values.iter().map(|v| v.ty()).collect()),
             CompileValue::Array(values) => {
-                let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty()));
+                let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty(), true));
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
             }
             CompileValue::IntRange(_) => Type::Range,
@@ -116,26 +134,29 @@ impl CompileValue {
         }
     }
 
-    pub fn as_hardware_value(&self) -> HardwareValueResult {
-        fn map_array(
+    pub fn as_hardware_value(&self, ty: &HardwareType) -> HardwareValueResult {
+        fn map_array<'t, E>(
             values: &[CompileValue],
-            f: impl FnOnce(Vec<IrExpression>) -> IrExpression,
+            t: impl Fn(usize) -> &'t HardwareType,
+            e: impl Fn(IrExpression) -> E,
+            f: impl FnOnce(Vec<E>) -> IrExpression,
         ) -> HardwareValueResult {
             let mut hardware_values = vec![];
             let mut all_undefined = true;
             let mut any_undefined = false;
 
-            for value in values {
-                match value.as_hardware_value() {
+            for (i, value) in enumerate(values) {
+                match value.as_hardware_value(t(i)) {
                     HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
                     HardwareValueResult::Success(v) => {
                         all_undefined = false;
-                        hardware_values.push(v)
+                        hardware_values.push(e(v))
                     }
                     HardwareValueResult::Undefined => {
                         any_undefined = true;
                     }
                     HardwareValueResult::PartiallyUndefined => return HardwareValueResult::PartiallyUndefined,
+                    HardwareValueResult::InvalidType => return HardwareValueResult::InvalidType,
                 }
             }
 
@@ -156,9 +177,33 @@ impl CompileValue {
         match self {
             CompileValue::Undefined => HardwareValueResult::Undefined,
             &CompileValue::Bool(value) => HardwareValueResult::Success(IrExpression::Bool(value)),
-            CompileValue::Int(value) => HardwareValueResult::Success(IrExpression::Int(value.clone())),
-            CompileValue::Tuple(values) => map_array(values, IrExpression::TupleLiteral),
-            CompileValue::Array(values) => map_array(values, IrExpression::ArrayLiteral),
+            CompileValue::Int(value) => match ty {
+                HardwareType::Int(ty) if ty.contains(value) => {
+                    let expr = IrExpression::Int(value.clone());
+                    let expr = if ty.start_inc == ty.end_inc {
+                        expr
+                    } else {
+                        IrExpression::ExpandIntRange(ty.clone(), Box::new(expr))
+                    };
+                    HardwareValueResult::Success(expr)
+                }
+                _ => HardwareValueResult::InvalidType,
+            },
+            CompileValue::Tuple(values) => match ty {
+                HardwareType::Tuple(tys) if tys.len() == values.len() => {
+                    map_array(values, |i| &tys[i], identity, IrExpression::TupleLiteral)
+                }
+                _ => HardwareValueResult::InvalidType,
+            },
+            CompileValue::Array(values) => match ty {
+                HardwareType::Array(inner_ty, len) if len.to_usize() == Some(values.len()) => map_array(
+                    values,
+                    |_i| inner_ty,
+                    |e| ArrayLiteralElement { spread: None, value: e },
+                    |e| IrExpression::ArrayLiteral(inner_ty.to_ir(), e),
+                ),
+                _ => HardwareValueResult::InvalidType,
+            },
             CompileValue::Type(_)
             | CompileValue::String(_)
             | CompileValue::IntRange(_)
@@ -167,53 +212,15 @@ impl CompileValue {
         }
     }
 
-    pub fn to_ir_expression(
+    pub fn as_ir_expression(
         &self,
         diags: &Diagnostics,
         span: Span,
-        reason: HardwareReason,
+        ty_hw: &HardwareType,
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
-        let ty = self.ty();
-        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
-            let diag = Diagnostic::new("value must be representable in hardware").add_error(
-                span,
-                format!(
-                    "value `{}` with type `{}` is not representable in hardware",
-                    self.to_diagnostic_string(),
-                    ty.to_diagnostic_string()
-                ),
-            );
-
-            let diag = match reason {
-                HardwareReason::AssignmentToPort(span) => diag.add_info(span, "because it is assigned to a port here"),
-                HardwareReason::AssignmentToWire(span) => diag.add_info(span, "because it is assigned to a wire here"),
-                HardwareReason::AssignmentToRegister(span) => {
-                    diag.add_info(span, "because it is assigned to a register here")
-                }
-                HardwareReason::InstancePortConnection(span) => {
-                    diag.add_info(span, "because it is connected to this port")
-                }
-                // TODO this one should maybe be an internal error instead
-                HardwareReason::RuntimeArrayIndexing(span) => {
-                    diag.add_info(span, "because it is used in an runtime array indexing expression")
-                }
-                HardwareReason::IfMerge { span_stmt } => {
-                    diag.add_info(span_stmt, "because it is merged in this if statement")
-                }
-                HardwareReason::TupleWithOtherHardwareValue {
-                    span_tuple,
-                    span_other_value,
-                } => diag
-                    .add_info(span_tuple, "because it it part of this tuple")
-                    .add_info(span_other_value, "which also contains a non-compile-time value here"),
-            };
-
-            diags.report(diag.finish())
-        })?;
-
-        match self.as_hardware_value() {
+        match self.as_hardware_value(ty_hw) {
             HardwareValueResult::Success(v) => Ok(TypedIrExpression {
-                ty: ty_hw,
+                ty: ty_hw.clone(),
                 domain: ValueDomain::CompileTime,
                 expr: v,
             }),
@@ -227,6 +234,16 @@ impl CompileValue {
                 format!(
                     "value `{}` has hardware type but is itself not representable",
                     self.to_diagnostic_string()
+                ),
+            )),
+            // type checking should have already happened before this, so this is an internal error
+            HardwareValueResult::InvalidType => Err(diags.report_internal_error(
+                span,
+                format!(
+                    "value `{}` with type `{}` cannot be represented as hardware type `{}`",
+                    self.to_diagnostic_string(),
+                    self.ty().to_diagnostic_string(),
+                    ty_hw.as_type().to_diagnostic_string()
                 ),
             )),
         }
@@ -274,31 +291,43 @@ impl<T, E> MaybeCompile<TypedIrExpression<T, E>> {
 }
 
 impl MaybeCompile<TypedIrExpression> {
-    pub fn to_ir_expression(
+    /// Turn this expression into an [IrExpression].
+    ///
+    /// Also tries to expand the expression to the given type, but this can fail.
+    /// It it still the responsibility of the caller to typecheck the resulting expression.
+    pub fn as_ir_expression(
         &self,
         diags: &Diagnostics,
         span: Span,
-        reason: HardwareReason,
+        ty: &HardwareType,
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self {
-            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span, reason),
-            MaybeCompile::Other(v) => Ok(v.clone()),
+            MaybeCompile::Compile(v) => v.as_ir_expression(diags, span, ty),
+            MaybeCompile::Other(v) => expand_expression_to_type(v.clone(), ty),
         }
     }
 }
 
-impl MaybeCompile<TypedIrExpression<HardwareType, IrVariable>> {
-    pub fn to_ir_expression(
-        &self,
-        diags: &Diagnostics,
-        span: Span,
-        reason: HardwareReason,
-    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
-        match self {
-            MaybeCompile::Compile(v) => v.to_ir_expression(diags, span, reason),
-            MaybeCompile::Other(v) => Ok(v.clone().to_general_expression()),
+fn expand_expression_to_type(
+    expr: TypedIrExpression,
+    target: &HardwareType,
+) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    let result = match (&expr.ty, target) {
+        (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
+            if target.contains_range(expr_ty) {
+                TypedIrExpression {
+                    ty: HardwareType::Int(target.clone()),
+                    domain: expr.domain,
+                    expr: IrExpression::ExpandIntRange(target.clone(), Box::new(expr.expr)),
+                }
+            } else {
+                expr
+            }
         }
-    }
+        _ => expr,
+    };
+
+    Ok(result)
 }
 
 impl MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt> {

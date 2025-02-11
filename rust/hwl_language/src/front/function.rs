@@ -196,7 +196,7 @@ impl CompileState<'_> {
                 span_target_ty: param_ty.span,
             };
             let arg_value_maybe = arg_value.as_ref().map_inner(|arg_value| arg_value.clone().into());
-            check_type_contains_value(diags, reason, &param_ty.inner, arg_value_maybe.as_ref(), true)?;
+            check_type_contains_value(diags, reason, &param_ty.inner, arg_value_maybe.as_ref(), true, true)?;
 
             // record value into vec
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
@@ -339,7 +339,7 @@ fn check_function_return_value(
                         span_keyword,
                         span_return_ty: ret_ty.span,
                     };
-                    check_type_contains_value(diags, reason, &ret_ty.inner, value.as_ref(), true)?;
+                    check_type_contains_value(diags, reason, &ret_ty.inner, value.as_ref(), true, true)?;
                     Ok(value.inner)
                 }
             }
