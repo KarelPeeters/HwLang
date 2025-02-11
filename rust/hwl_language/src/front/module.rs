@@ -32,7 +32,6 @@ use crate::util::{result_pair, result_pair_split, ResultExt};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Either, Itertools};
-use std::convert::identity;
 use std::hash::Hash;
 
 struct BodyElaborationState<'a, 'b> {
@@ -510,9 +509,13 @@ impl BodyElaborationState<'_, '_> {
         // eval module and generics
         let no_vars = VariableValues::new_no_vars();
         let module = state.eval_expression_as_compile(scope_body, &no_vars, module, "module instance");
-        let generic_args = generic_args.as_ref().map(|generic_args| {
-            generic_args.map_inner(|a| state.eval_expression_as_compile(scope_body, &no_vars, a, "generic arg"))
-        });
+        let generic_args = generic_args
+            .as_ref()
+            .map(|generic_args| {
+                generic_args
+                    .try_map_inner_all(|a| state.eval_expression_as_compile(scope_body, &no_vars, a, "generic arg"))
+            })
+            .transpose();
 
         // check that module is indeed a module
         let module = module?;
@@ -528,12 +531,8 @@ impl BodyElaborationState<'_, '_> {
         };
         let module_ast = &state.parsed[module_ast_ref];
 
-        // match args
-        let generic_args = generic_args
-            .map(|generic_args| generic_args.try_map_inner(identity))
-            .transpose()?;
-
         // elaborate module
+        let generic_args = generic_args?;
         let elaboration = ModuleElaborationInfo {
             item: module_ast_ref,
             args: generic_args,

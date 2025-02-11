@@ -17,13 +17,13 @@ use crate::syntax::ast::{
     PortDirection, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
+use crate::util::iter::IterExt;
 use crate::util::{Never, ResultDoubleExt};
-use itertools::{enumerate, Either, Itertools};
+use itertools::{enumerate, Either};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{Num, One, Pow, Signed, ToPrimitive, Zero};
 use std::cmp::{max, min};
-use std::convert::identity;
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
 
@@ -182,8 +182,7 @@ impl CompileState<'_> {
                             )?,
                         })
                     })
-                    .collect_vec();
-                let values: Vec<_> = values.into_iter().try_collect()?;
+                    .try_collect_all_vec()?;
 
                 // combine into compile or non-compile value
                 let first_non_compile_span = values
@@ -262,8 +261,7 @@ impl CompileState<'_> {
                         let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
                         self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_i, v)
                     })
-                    .collect_vec();
-                let values: Vec<_> = values.into_iter().try_collect()?;
+                    .try_collect_all_vec()?;
 
                 // combine into compile or non-compile value
                 let first_non_compile = values
@@ -452,10 +450,10 @@ impl CompileState<'_> {
             ExpressionKind::ArrayIndex(base, args) => {
                 // eval base and args
                 let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
-                let args = args.map_inner(|a| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, a));
+                let args = args.try_map_inner_all(|a| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, a));
 
                 let base = base?;
-                let args = args.try_map_inner(identity)?;
+                let args = args?;
 
                 // disallow named args
                 let mut result_named = Ok(());
@@ -581,7 +579,8 @@ impl CompileState<'_> {
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
                 let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
-                let args = args.map_inner(|arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
+                let args =
+                    args.try_map_inner_all(|arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
@@ -596,7 +595,7 @@ impl CompileState<'_> {
                         return Err(e);
                     }
                 };
-                let args = args.try_map_inner(identity)?;
+                let args = args?;
 
                 // actually do the call
                 let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
@@ -967,7 +966,7 @@ impl CompileState<'_> {
         args: &Spanned<Vec<Expression>>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         // evaluate args
-        let args_eval: Vec<CompileValue> = args
+        let args_eval = args
             .inner
             .iter()
             .map(|arg| {
@@ -975,7 +974,7 @@ impl CompileState<'_> {
                     .eval_expression_as_compile(scope, vars, arg, "builtin argument")?
                     .inner)
             })
-            .try_collect()?;
+            .try_collect_all_vec()?;
 
         if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
             let rest = &args_eval[2..];

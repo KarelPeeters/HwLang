@@ -1,5 +1,5 @@
 use crate::syntax::pos::Span;
-use itertools::Itertools;
+use crate::util::iter::IterExt;
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
 #[derive(Debug, Clone)]
@@ -470,20 +470,23 @@ impl<N, T> Args<N, T> {
         }
     }
 
-    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<Args<N, U>, E> {
+    pub fn try_map_inner_all<U, E>(&self, mut f: impl FnMut(&T) -> Result<U, E>) -> Result<Args<N, U>, E>
+    where
+        N: Clone,
+    {
         Ok(Args {
             span: self.span,
             inner: self
                 .inner
-                .into_iter()
+                .iter()
                 .map(|arg| {
                     Ok(Arg {
                         span: arg.span,
-                        name: arg.name,
-                        value: f(arg.value)?,
+                        name: arg.name.clone(),
+                        value: f(&arg.value)?,
                     })
                 })
-                .try_collect()?,
+                .try_collect_all()?,
         })
     }
 }
