@@ -314,7 +314,7 @@ fn expand_expression_to_type(
 ) -> Result<TypedIrExpression, ErrorGuaranteed> {
     let result = match (&expr.ty, target) {
         (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
-            if target.contains_range(expr_ty) {
+            if target != expr_ty && target.contains_range(expr_ty) {
                 TypedIrExpression {
                     ty: HardwareType::Int(target.clone()),
                     domain: expr.domain,
