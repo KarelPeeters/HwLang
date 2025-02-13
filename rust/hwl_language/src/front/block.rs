@@ -5,7 +5,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, Error
 use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
-use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
@@ -994,14 +994,38 @@ impl CompileState<'_> {
 
         let end = match iter.inner {
             MaybeCompile::Compile(CompileValue::IntRange(iter)) => {
-                let iter = iter.try_into_closed().map_err(|iter| {
-                    diags.report_simple(
-                        "for loop iterator range must be closed",
-                        iter_span,
-                        format!("got non-closed range `{iter}`"),
-                    )
-                })?;
-                let iter = iter.iter().map(|v| MaybeCompile::Compile(CompileValue::Int(v)));
+                let IncRange { start_inc, end_inc } = iter;
+                let start_inc = match start_inc {
+                    Some(start_inc) => start_inc,
+                    None => {
+                        return Err(diags.report_simple(
+                            "for loop iterator range must have start value",
+                            iter_span,
+                            format!(
+                                "got range `{}`",
+                                IncRange {
+                                    start_inc: None,
+                                    end_inc
+                                }
+                            ),
+                        ))
+                    }
+                };
+
+                let iter = {
+                    let mut next = start_inc;
+                    std::iter::from_fn(move || {
+                        if let Some(end_inc) = &end_inc {
+                            if &next > end_inc {
+                                return None;
+                            }
+                        }
+                        let curr = MaybeCompile::Compile(CompileValue::Int(next.clone()));
+                        next += 1;
+                        Some(curr)
+                    })
+                };
+
                 self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
             }
             MaybeCompile::Compile(CompileValue::Array(iter)) => {
