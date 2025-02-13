@@ -220,7 +220,7 @@ ModuleStatementKind: ModuleStatementKind = {
     },
 }
 
-// TODO better port syntax, maybe including directionality?
+// TODO better port syntax, maybe including directionality, eg ==> and <== or -> and <-?
 //   now it's different from both generics and struct literals
 PortConnection: PortConnection = {
     "." <id:Id> "(" <expr:Expr> ")" => PortConnection { id, expr },

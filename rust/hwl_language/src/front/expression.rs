@@ -739,30 +739,99 @@ impl CompileState<'_> {
                 }
             }
             BinaryOp::Mul => {
-                let (left, right) = check_both_int(left, right)?;
-                match pair_compile_int(left, right) {
-                    MaybeCompile::Compile((left, right)) => {
-                        Ok(MaybeCompile::Compile(CompileValue::Int(left.inner * right.inner)))
-                    }
-                    MaybeCompile::Other((left, right)) => {
-                        // calculate valid range
-                        let extremes = [
-                            &left.inner.ty.start_inc * &right.inner.ty.start_inc,
-                            &left.inner.ty.start_inc * &right.inner.ty.end_inc,
-                            &left.inner.ty.end_inc * &right.inner.ty.start_inc,
-                            &left.inner.ty.end_inc * &right.inner.ty.end_inc,
-                        ];
-                        let range = ClosedIncRange {
-                            start_inc: extremes.iter().min().unwrap().clone(),
-                            end_inc: extremes.iter().max().unwrap().clone(),
+                let right = check_type_is_int(diags, op_reason, right);
+                match left.inner.ty() {
+                    Type::Array(left_ty_inner, left_len) => {
+                        let right = right?;
+                        let right_inner = match right.inner {
+                            MaybeCompile::Compile(right_inner) => right_inner,
+                            MaybeCompile::Other(_) => {
+                                return Err(diags.report_simple(
+                                    "array repetition right hand side must be compile-time value",
+                                    right.span,
+                                    "got non-compile-time value here",
+                                ));
+                            }
                         };
-                        Ok(MaybeCompile::Other(ir_binary_arith(
-                            IrIntArithmeticOp::Mul,
-                            range,
-                            left,
-                            right,
-                        )))
+                        let right_inner = BigUint::try_from(right_inner).map_err(|right_inner| {
+                            diags.report_simple(
+                                "array repetition right hand side cannot be negative",
+                                right.span,
+                                format!("got value `{}`", right_inner.into_original()),
+                            )
+                        })?;
+                        let right_inner = right_inner.to_usize().ok_or_else(|| {
+                            diags.report_simple(
+                                "array repetition right hand side too large",
+                                right.span,
+                                format!("got value `{}`", right_inner),
+                            )
+                        })?;
+
+                        match left.inner {
+                            MaybeCompile::Compile(CompileValue::Array(left_inner)) => {
+                                // do the repetition at compile-time
+                                // TODO check for overflow (everywhere)
+                                let mut result = Vec::with_capacity(left_inner.len() * right_inner);
+                                for _ in 0..right_inner {
+                                    result.extend_from_slice(&left_inner);
+                                }
+                                Ok(MaybeCompile::Compile(CompileValue::Array(result)))
+                            }
+                            MaybeCompile::Compile(_) => Err(diags.report_internal_error(
+                                left.span,
+                                "compile-time value with type array is not actually an array",
+                            )),
+                            MaybeCompile::Other(value) => {
+                                // implement runtime repetition through spread array literal
+                                let element = ArrayLiteralElement {
+                                    spread: Some(op.span),
+                                    value: value.expr,
+                                };
+                                let elements = vec![element; right_inner];
+
+                                let left_ty_inner_hw = left_ty_inner.as_hardware_type().unwrap();
+                                Ok(MaybeCompile::Other(TypedIrExpression {
+                                    ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), left_len * right_inner),
+                                    domain: value.domain,
+                                    expr: IrExpression::ArrayLiteral(left_ty_inner_hw.to_ir(), elements),
+                                }))
+                            }
+                        }
                     }
+                    Type::Int(_) => {
+                        let left = check_type_is_int(diags, op_reason, left).expect("int, already checked");
+                        let right = right?;
+                        match pair_compile_int(left, right) {
+                            MaybeCompile::Compile((left, right)) => {
+                                Ok(MaybeCompile::Compile(CompileValue::Int(left.inner * right.inner)))
+                            }
+                            MaybeCompile::Other((left, right)) => {
+                                // calculate valid range
+                                let extremes = [
+                                    &left.inner.ty.start_inc * &right.inner.ty.start_inc,
+                                    &left.inner.ty.start_inc * &right.inner.ty.end_inc,
+                                    &left.inner.ty.end_inc * &right.inner.ty.start_inc,
+                                    &left.inner.ty.end_inc * &right.inner.ty.end_inc,
+                                ];
+                                let range = ClosedIncRange {
+                                    start_inc: extremes.iter().min().unwrap().clone(),
+                                    end_inc: extremes.iter().max().unwrap().clone(),
+                                };
+                                Ok(MaybeCompile::Other(ir_binary_arith(
+                                    IrIntArithmeticOp::Mul,
+                                    range,
+                                    left,
+                                    right,
+                                )))
+                            }
+                        }
+                    }
+                    _ => Err(diags.report_simple(
+                        "left hand side of multiplication must be an array or an integer",
+                        left.span,
+                        format!("got value with type `{}`", left.inner.ty().to_diagnostic_string()),
+                    )),
                 }
             }
             // (int, non-zero int)

@@ -120,6 +120,7 @@ impl Type {
                 }
             }
             // array
+            // TODO cache this
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
                     let inner = if allow_compound_subtype {
