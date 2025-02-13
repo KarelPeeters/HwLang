@@ -13,7 +13,7 @@ use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
+use crate::util::{Indent, ResultExt};
 use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
 use itertools::enumerate;
@@ -177,9 +177,6 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> Result<(), 
 
     Ok(())
 }
-
-/// Indentation used in the generated code.
-const I: &str = "    ";
 
 #[derive(Debug, Copy, Clone)]
 struct NameMap<'a> {
@@ -732,6 +729,7 @@ fn lower_block(
 
                 swrite!(f, "{indent}");
                 write_if(f, initial_if)?;
+                // TODO evaluating the else conditions is probably broken, they might not be a single expression
                 for else_if in else_ifs {
                     swrite!(f, " else ");
                     write_if(f, else_if)?;
@@ -753,6 +751,7 @@ fn lower_block(
 
 // TODO allow this to use intermediate variables
 // TODO IrExpressions should have clear types at every point, ints and arrays are now unclear
+// TODO is this allowed to use multiple lines?
 fn lower_expression(
     diags: &Diagnostics,
     name_map: NameMap,
@@ -854,29 +853,7 @@ fn lower_edge_to_str(
     })
 }
 
-#[derive(Debug, Copy, Clone)]
-struct Indent {
-    depth: usize,
-}
-
-impl Indent {
-    pub fn new(depth: usize) -> Indent {
-        Indent { depth }
-    }
-
-    pub fn nest(self) -> Indent {
-        Indent { depth: self.depth + 1 }
-    }
-}
-
-impl Display for Indent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for _ in 0..self.depth {
-            write!(f, "{I}")?;
-        }
-        Ok(())
-    }
-}
+const I: &str = Indent::I;
 
 #[derive(Debug, Copy, Clone)]
 struct ZeroWidth;

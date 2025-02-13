@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 pub mod arena;
 pub mod data;
 pub mod int;
@@ -134,4 +136,30 @@ macro_rules! swriteln {
         let dst: &mut String = $dst;
         writeln!(dst, $($arg)*).unwrap();
     }};
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Indent {
+    depth: usize,
+}
+
+impl Indent {
+    pub const I: &'static str = "    ";
+
+    pub fn new(depth: usize) -> Indent {
+        Indent { depth }
+    }
+
+    pub fn nest(self) -> Indent {
+        Indent { depth: self.depth + 1 }
+    }
+}
+
+impl Display for Indent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for _ in 0..self.depth {
+            f.write_str(Self::I)?;
+        }
+        Ok(())
+    }
 }

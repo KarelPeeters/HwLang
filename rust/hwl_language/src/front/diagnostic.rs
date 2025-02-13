@@ -10,6 +10,9 @@ use std::cell::RefCell;
 use std::cmp::min;
 
 // TODO give this a better name to clarify that this means that the compiler gave up on this
+//   and that the error has already been reported as a diagnostic.
+//   The current name is copied from the rust compiler:
+//     https://rustc-dev-guide.rust-lang.org/diagnostics/error-guaranteed.html
 
 /// Indicates that an error was already reported.
 ///

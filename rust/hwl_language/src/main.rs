@@ -3,6 +3,7 @@ use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::front::compile::compile;
 use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
+use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
 use hwl_language::syntax::token::Tokenizer;
@@ -76,6 +77,15 @@ fn main_inner() {
     let start_compile = Instant::now();
     let compiled = compile(&diags, &source, &parsed);
     let time_compile = start_compile.elapsed();
+
+    // TODO properly integrate
+    let simulator_code = simulator_codegen(&diags, &compiled);
+    std::fs::write(
+        "ignored/simulator.cpp",
+        simulator_code.as_ref().unwrap_or(&String::new()),
+    )
+    .unwrap();
+    return;
 
     let start_lower = Instant::now();
     let lowered = lower(&diags, &source, &parsed, &compiled);

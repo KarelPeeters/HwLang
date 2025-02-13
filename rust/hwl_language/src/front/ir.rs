@@ -95,6 +95,7 @@ pub enum IrModuleChild {
 #[derive(Debug)]
 pub struct IrClockedProcess {
     pub domain: Spanned<SyncDomain<IrExpression>>,
+    // TODO rename to variables
     pub locals: IrVariables,
     pub on_clock: IrBlock,
     pub on_reset: IrBlock,
@@ -143,6 +144,8 @@ pub enum IrStatement {
     If(IrIfStatement),
 }
 
+// TODO make this a simple if/else, this is sketchy:
+//   now every backend needs to be careful about evaluating else-if conditions
 pub type IrIfStatement = IfStatement<IrExpression, IrBlock, Option<IrBlock>>;
 
 #[derive(Debug)]

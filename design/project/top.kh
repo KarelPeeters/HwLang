@@ -5,97 +5,71 @@ import std.types.[
 import std.math.[gcd, min, max];
 
 pub module top ports(
-    clk_a: in clock,
-    clk_b: in clock,
-    rst_a: in async bool,
-    rst_b: in async bool,
+    clk: in clock,
+    rst: in async bool,
 
-    sync(clk_a, !rst_a) {
-        in_a: in bool[4],
-        out_a: out bool[4],
-    },
-    sync(clk_b, !rst_b) {
-        in_select: in bool,
-        in_b: in bool[4],
-        in_c: in bool[4],
-        out_b: out bool[4],
-    },
-
-    async {
-        in_async: in bool[4],
-//        out_async: out bool[4],
-
-        in_bool: in bool,
-
-        in_tuple: in (bool, int_range(2..4)),
-        out_tuple: out (bool, int_range(2..5)),
-        out_x: out int_range(2..5),
-
-        in_int_range: in int_range(-3..27),
-        in_int_bits: in int_bits(3),
-        in_uint_bits: in uint_bits(3),
+    sync(clk, rst) {
+       enable: in bool,
+       x: in int_range(0..256),
+       y: out int_range(0..256),
     }
 ) body {
-    const test_pos: int = 8;
-
-    reg pass: sync(clk_a, !rst_a) bool = false;
-    reg out out_a = undefined;
-    clocked(clk_a, !rst_a) {
-        var t = pass;
-        pass = !pass;
-        if (t) {
-            out_a = in_a;
-        }
-    }
-
-    wire w: async int_range(3..=3) = 3;
+//    reg out y = 0;
+//    reg d0: sync(clk, rst) int_range(0..256) = 0;
+//    reg d1: sync(clk, rst) int_range(0..256) = 0;
+//
+//    clocked(clk, rst) {
+//        if (enable) {
+//            d1 = d0;
+//            d0 = x;
+//        }
+//    }
+//
+//    instance child1 generics(int_range(0..256)) ports(
+//        .clk(clk),
+//        .rst(rst),
+//        .x(d1),
+//        .y(y),
+//    );
 
     combinatorial {
-//        out_async = [false, in_bool, true, false];
-//        val x = 3;
-//        out_x = x;
-//        val d: (bool, int_range(2..4)) = ;
-        out_tuple = (true, w);
-        out_x = 3;
+        if (enable) {
+            y = x;
+        } else {
+            y = 0;
+        }
+//        y = x;
     }
+}
 
-    instance child generics(
-        N=4,
-        f=identity,
-    ) ports(
-        .clk(clk_b),
-        .rst(!rst_b),
-        .x(select(bool[4], in_select, in_b, in_c)),
-        .y(out_b),
+module child1 generics(T: type) ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+       x: in T,
+       y: out T,
+    }
+) body {
+    wire x_wire: sync(clk, rst) T = x;
+    instance child2 generics(T) ports(
+        .clk(clk),
+        .rst(rst),
+        .x(x_wire),
+        .y(y),
     );
 }
 
-module child generics(
-    N: uint,
-    f: function,
-) ports(
+module child2 generics(T: type) ports(
     clk: in clock,
     rst: in async bool,
-    x: in sync(clk, rst) bool[N],
-    y: out sync(clk, rst) bool[N],
+
+    sync(clk, rst) {
+       x: in T,
+       y: out T,
+    }
 ) body {
     combinatorial {
-        y = f(bool[N], x);
+        y = x;
     }
-}
-
-type type_alias = bool[8, 4];
-
-function identity(T: type, x: T) -> T {
-    return x;
-}
-
-function select(T: type, c: bool, x: T, y: T) -> T {
-    var result: T;
-    if (c) {
-        result = x;
-    } else {
-        result = y;
-    }
-    return result;
 }
