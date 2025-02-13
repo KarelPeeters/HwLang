@@ -78,18 +78,13 @@ fn main_inner() {
     let compiled = compile(&diags, &source, &parsed);
     let time_compile = start_compile.elapsed();
 
-    // TODO properly integrate
-    let simulator_code = simulator_codegen(&diags, &compiled);
-    std::fs::write(
-        "ignored/simulator.cpp",
-        simulator_code.as_ref().unwrap_or(&String::new()),
-    )
-    .unwrap();
-    return;
-
     let start_lower = Instant::now();
     let lowered = lower(&diags, &source, &parsed, &compiled);
     let time_lower = start_lower.elapsed();
+
+    let start_simulator = Instant::now();
+    let simulator_code = simulator_codegen(&diags, &compiled);
+    let time_simulator = start_simulator.elapsed();
 
     let time_all = start_all.elapsed();
 
@@ -117,6 +112,13 @@ fn main_inner() {
         }
     }
 
+    // save simulator code
+    std::fs::write(
+        "ignored/simulator.cpp",
+        simulator_code.as_ref().unwrap_or(&String::new()),
+    )
+    .unwrap();
+
     // print profiling info
     if profile {
         // profile tokenization separately
@@ -138,7 +140,8 @@ fn main_inner() {
         println!("tokenize:         {:?}", time_tokenize);
         println!("parse + tokenize: {:?}", time_parse);
         println!("compile:          {:?}", time_compile);
-        println!("lower:            {:?}", time_lower);
+        println!("lower verilog:    {:?}", time_lower);
+        println!("lower c++:        {:?}", time_simulator);
         println!("-----------------------------------------------");
         println!("total:            {:?}", time_all);
         println!();
