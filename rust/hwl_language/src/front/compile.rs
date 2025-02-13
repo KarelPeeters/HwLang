@@ -367,9 +367,9 @@ fn find_parent_scope(
                 options.sort();
 
                 // TODO without trailing separator
-                let diag = Diagnostic::new("invalid path step")
+                let diag = Diagnostic::new("import not found")
                     .snippet(parents.span)
-                    .add_error(step.span, "invalid step")
+                    .add_error(step.span, "failed step")
                     .finish()
                     .footer(Level::Info, format!("possible options: {:?}", options))
                     .finish();
