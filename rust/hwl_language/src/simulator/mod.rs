@@ -5,14 +5,16 @@ use crate::front::ir::{
     IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
-use crate::syntax::ast::{Identifier, MaybeIdentifier};
+use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::Indent;
 use crate::{swrite, swriteln};
 use itertools::enumerate;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
+use num_traits::Zero;
 use std::fmt::{Display, Formatter};
+use unwrap_match::unwrap_match;
 
 pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String, ErrorGuaranteed> {
     // TODO split into separate files:
@@ -22,6 +24,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     let f = &mut source;
     swriteln!(f, "#include <cstdint>");
     swriteln!(f, "#include <stdlib.h>");
+    swriteln!(f, "#include <array>");
     swriteln!(f);
 
     for (module, module_info) in &ir.modules {
@@ -174,6 +177,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
                         locals,
                         f,
                         indent: Indent::new(1),
+                        next_temporary_index: 0,
                     };
                     let reset_eval = ctx.eval(domain.span, &domain.inner.reset, Stage::Next)?;
                     swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
@@ -201,6 +205,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
                         locals,
                         f,
                         indent: Indent::new(1),
+                        next_temporary_index: 0,
                     };
                     let clock_prev_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Prev)?;
                     let clock_next_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Next)?;
@@ -234,6 +239,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
                         locals,
                         f,
                         indent: Indent::new(1),
+                        next_temporary_index: 0,
                     };
                     for (var, var_info) in locals {
                         let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
@@ -275,40 +281,87 @@ struct CodegenBlockContext<'a> {
     locals: &'a IrVariables,
     f: &'a mut String,
     indent: Indent,
+    next_temporary_index: usize,
+}
+
+#[derive(Debug)]
+pub enum Evaluated {
+    Temporary(usize),
+    // TODO avoid string allocation for some common cases
+    Simple(String),
+}
+
+impl Display for Evaluated {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Evaluated::Temporary(index) => write!(f, "t_{}", index),
+            Evaluated::Simple(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 impl CodegenBlockContext<'_> {
-    fn eval(&mut self, span: Span, expr: &IrExpression, stage_read: Stage) -> Result<String, ErrorGuaranteed> {
+    fn eval(&mut self, span: Span, expr: &IrExpression, stage_read: Stage) -> Result<Evaluated, ErrorGuaranteed> {
         let todo = |kind: &str| self.diags.report_todo(span, format!("codegen IrExpression::{kind}"));
 
         let result = match expr {
-            &IrExpression::Bool(b) => format!("{b}"),
+            &IrExpression::Bool(b) => Evaluated::Simple(format!("{b}")),
             // TODO support arbitrary sized ints
-            IrExpression::Int(v) => format!("INT64_C({v})"),
+            IrExpression::Int(v) => Evaluated::Simple(format!("INT64_C({v})")),
             &IrExpression::Port(port) => {
                 let name = port_str(port, &self.module_info.ports[port]);
-                format!("*{stage_read}.{name}")
+                Evaluated::Simple(format!("*{stage_read}.{name}"))
             }
             &IrExpression::Wire(wire) => {
                 let name = wire_str(wire, &self.module_info.wires[wire]);
-                format!("{stage_read}.{name}")
+                Evaluated::Simple(format!("{stage_read}.{name}"))
             }
             &IrExpression::Register(reg) => {
                 let name = reg_str(reg, &self.module_info.registers[reg]);
-                format!("{stage_read}.{name}")
+                Evaluated::Simple(format!("{stage_read}.{name}"))
             }
-            &IrExpression::Variable(var) => var_str(var, &self.locals[var]),
+            &IrExpression::Variable(var) => Evaluated::Simple(var_str(var, &self.locals[var])),
             IrExpression::BoolNot(inner) => {
                 let inner_eval = self.eval(span, inner, stage_read)?;
-                format!("!({inner_eval})")
+                Evaluated::Simple(format!("!({inner_eval})"))
             }
             IrExpression::BoolBinary(_, _, _) => return Err(todo("BoolBinary")),
             IrExpression::IntArithmetic(_, _, _, _) => return Err(todo("IntArithmetic")),
             IrExpression::IntCompare(_, _, _) => return Err(todo("IntCompare")),
+
             IrExpression::TupleLiteral(_) => return Err(todo("TupleLiteral")),
-            IrExpression::ArrayLiteral(_, _) => return Err(todo("ArrayLiteral")),
+            IrExpression::ArrayLiteral(inner_ty, elements) => {
+                let indent = self.indent;
+
+                let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
+                let tmp_result = self.new_temporary();
+
+                swriteln!(
+                    self.f,
+                    "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",
+                    len = elements.len()
+                );
+
+                let mut offset = BigUint::zero();
+                for element in elements {
+                    let ArrayLiteralElement { spread, value } = element;
+                    let value_eval = self.eval(span, value, stage_read)?;
+                    if spread.is_some() {
+                        let element_len = unwrap_match!(value.ty(self.module_info, &self.locals), IrType::Array(_, element_len) => element_len);
+                        swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
+                        offset += element_len;
+                    } else {
+                        swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
+                        offset += 1u32;
+                    }
+                }
+
+                tmp_result
+            }
+
             IrExpression::ArrayIndex { .. } => return Err(todo("ArrayIndex")),
             IrExpression::ArraySlice { .. } => return Err(todo("ArraySlice")),
+
             IrExpression::IntToBits(_, _) => return Err(todo("IntToBits")),
             IrExpression::IntFromBits(_, _) => return Err(todo("IntFromBits")),
             IrExpression::ExpandIntRange(range, inner) => {
@@ -388,6 +441,12 @@ impl CodegenBlockContext<'_> {
 
         Ok(())
     }
+
+    fn new_temporary(&mut self) -> Evaluated {
+        let index = self.next_temporary_index;
+        self.next_temporary_index += 1;
+        Evaluated::Temporary(index)
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -419,7 +478,10 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, E
             }
         }
         IrType::Tuple(_) => return Err(diags.report_todo(span, "codegen type Tuple")),
-        IrType::Array(_, _) => return Err(diags.report_todo(span, "codegen type Array")),
+        IrType::Array(inner, len) => {
+            let inner_str = type_to_cpp(diags, span, inner)?;
+            format!("std::array<{inner_str}, {len}>")
+        }
     };
     Ok(result)
 }

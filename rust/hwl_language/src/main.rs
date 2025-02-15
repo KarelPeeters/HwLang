@@ -98,19 +98,13 @@ fn main_inner() {
         }
     }
 
-    // print result
-    if let Ok(lowered) = lowered {
-        println!("top module name: {:?}", lowered.top_module_name);
-        if !profile {
-            println!("verilog source:");
-            println!("----------------------------------------");
-            print!("{}", lowered.verilog_source);
-            if !lowered.verilog_source.ends_with("\n") {
-                println!();
-            }
-            println!("----------------------------------------");
-        }
-    }
+    // save lowered verilog
+    std::fs::create_dir_all("ignored").unwrap();
+    std::fs::write(
+        "ignored/lowered.v",
+        lowered.as_ref().map_or(&String::new(), |s| &s.verilog_source),
+    )
+    .unwrap();
 
     // save simulator code
     std::fs::write(

@@ -20,10 +20,15 @@ pub struct IntRepresentation {
 
 impl IntRepresentation {
     pub fn for_range(range: &ClosedIncRange<BigInt>) -> Self {
-        let ClosedIncRange {
-            start_inc: start,
-            end_inc: end,
-        } = range;
+        let ClosedIncRange { start_inc, end_inc } = range;
+        Self::for_range_impl(start_inc, end_inc)
+    }
+
+    pub fn for_single(value: &BigInt) -> Self {
+        Self::for_range_impl(value, value)
+    }
+
+    fn for_range_impl(start: &BigInt, end: &BigInt) -> Self {
         assert!(start <= end, "Range must be valid, got {start}..={end}");
 
         // TODO consider switching to zero-width range when there is only a single possible value

@@ -6,13 +6,14 @@ use crate::front::ir::{
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{
-    Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
+    ArrayLiteralElement, Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
 };
 use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::int::IntRepresentation;
 use crate::util::{Indent, ResultExt};
 use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
@@ -573,6 +574,7 @@ fn lower_module_statements(
     Ok(())
 }
 
+// TODO blocks with variables must be named
 fn declare_locals(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
@@ -771,8 +773,16 @@ fn lower_expression(
     }
 
     match expr {
-        &IrExpression::Bool(x) => swrite!(f, "{}", x as u8),
-        IrExpression::Int(x) => swrite!(f, "{}", x),
+        &IrExpression::Bool(x) => swrite!(f, "1'b{}", x as u8),
+        IrExpression::Int(x) => {
+            // TODO zero-width literals are not allowed in verilog
+            let sign = match x.sign() {
+                num_bigint::Sign::Plus | num_bigint::Sign::NoSign => "",
+                num_bigint::Sign::Minus => "-",
+            };
+            let repr = IntRepresentation::for_single(x);
+            swrite!(f, "{}{}'d{}", sign, repr.width, x.magnitude())
+        }
 
         &IrExpression::Port(port) => swrite!(f, "{}", try_get(diags, span, name_map.ports, port, "port")?),
         &IrExpression::Wire(wire) => swrite!(f, "{}", try_get(diags, span, name_map.wires, wire, "wire")?),
@@ -803,12 +813,36 @@ fn lower_expression(
         IrExpression::IntCompare(_, _, _) => throw!(diags.report_todo(span, "lower int compare expression")),
 
         IrExpression::TupleLiteral(_) => throw!(diags.report_todo(span, "lower tuple literal")),
-        IrExpression::ArrayLiteral(_, _) => throw!(diags.report_todo(span, "lower array literal")),
+        IrExpression::ArrayLiteral(_, elements) => {
+            // verilog does not care much about types, this is just a concatenation
+            //  (assuming all sub-expression have the right width, which they should)
+            // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions
+            swrite!(f, "{{");
+            for (i, elem) in enumerate(elements) {
+                if i != 0 {
+                    swrite!(f, ", ");
+                }
+
+                let ArrayLiteralElement { spread, value } = elem;
+                let _ = spread;
+                lower_expression(diags, name_map, span, value, f)?;
+            }
+            swrite!(f, "}}");
+        }
+
         IrExpression::ArrayIndex { .. } => throw!(diags.report_todo(span, "lower array index")),
         IrExpression::ArraySlice { .. } => throw!(diags.report_todo(span, "lower array slice")),
+
         IrExpression::IntToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
         IrExpression::IntFromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
-        IrExpression::ExpandIntRange(_, _) => throw!(diags.report_todo(span, "lower expand int range")),
+        IrExpression::ExpandIntRange(target, value) => {
+            // just add zero of the right width to expand the range
+            // TODO skip if unnecessary?
+            let target_repr = IntRepresentation::for_range(target);
+            swrite!(f, "({}'d0 + ", target_repr.width);
+            lower_expression(diags, name_map, span, value, f)?;
+            swrite!(f, ")");
+        }
     }
 
     Ok(())
