@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrDatabase, IrExpression, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement,
-    IrType, IrVariables, IrWireOrPort,
+    IrAssignmentTarget, IrBlock, IrDatabase, IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo,
+    IrPortConnection, IrStatement, IrType, IrVariables, IrWireOrPort,
 };
-use crate::syntax::ast::{ArrayLiteralElement, IfStatement};
+use crate::syntax::ast::ArrayLiteralElement;
 use crate::syntax::pos::Span;
 
 // TODO expand all of this
@@ -102,28 +102,18 @@ impl IrBlock {
                     block.validate(diags, module, locals)?;
                 }
                 IrStatement::If(if_stmt) => {
-                    let IfStatement {
-                        initial_if,
-                        else_ifs,
-                        final_else,
+                    let IrIfStatement {
+                        condition,
+                        then_block,
+                        else_block,
                     } = if_stmt;
 
-                    // if
-                    initial_if.cond.validate(diags, module, locals, stmt.span)?;
-                    check_type_match(diags, stmt.span, &IrType::Bool, &initial_if.cond.ty(module, locals))?;
+                    condition.validate(diags, module, locals, stmt.span)?;
+                    check_type_match(diags, stmt.span, &IrType::Bool, &condition.ty(module, locals))?;
 
-                    initial_if.block.validate(diags, module, locals)?;
+                    then_block.validate(diags, module, locals)?;
 
-                    // else if
-                    for else_if in else_ifs {
-                        else_if.cond.validate(diags, module, locals, stmt.span)?;
-                        check_type_match(diags, stmt.span, &IrType::Bool, &else_if.cond.ty(module, locals))?;
-
-                        else_if.block.validate(diags, module, locals)?;
-                    }
-
-                    // else
-                    if let Some(else_block) = &final_else {
+                    if let Some(else_block) = else_block {
                         else_block.validate(diags, module, locals)?;
                     }
                 }

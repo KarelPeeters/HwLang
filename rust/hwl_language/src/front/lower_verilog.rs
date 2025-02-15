@@ -1,13 +1,12 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
-    IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister,
-    IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrIfStatement, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
+    IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort,
 };
 use crate::front::types::HardwareType;
-use crate::syntax::ast::{
-    ArrayLiteralElement, Identifier, IfCondBlockPair, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
-};
+use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
@@ -666,18 +665,15 @@ fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) 
                 collect_written_registers(inner, result);
             }
             IrStatement::If(stmt) => {
-                let IfStatement {
-                    initial_if,
-                    else_ifs,
-                    final_else,
+                let IrIfStatement {
+                    condition: _,
+                    then_block,
+                    else_block,
                 } = stmt;
 
-                collect_written_registers(&initial_if.block, result);
-                for else_if in else_ifs {
-                    collect_written_registers(&else_if.block, result);
-                }
-                if let Some(final_else) = final_else {
-                    collect_written_registers(final_else, result);
+                collect_written_registers(then_block, result);
+                if let Some(else_block) = else_block {
+                    collect_written_registers(else_block, result);
                 }
             }
         }
@@ -715,31 +711,20 @@ fn lower_block(
                 lower_block(diag, name_map, inner, f, indent.nest(), newline)?;
                 swriteln!(f, "{indent}end");
             }
-            IrStatement::If(IfStatement {
-                initial_if,
-                else_ifs,
-                final_else,
+            IrStatement::If(IrIfStatement {
+                condition,
+                then_block,
+                else_block,
             }) => {
-                let mut write_if = |f: &mut String, pair: &IfCondBlockPair<IrExpression, IrBlock>| {
-                    swrite!(f, "if (");
-                    lower_expression(diag, name_map, stmt.span, &pair.cond, f)?;
-                    swriteln!(f, ") begin");
-                    lower_block(diag, name_map, &pair.block, f, indent.nest(), newline)?;
-                    swrite!(f, "{indent}end");
-                    Ok(())
-                };
+                swrite!(f, "{indent}if (");
+                lower_expression(diag, name_map, stmt.span, condition, f)?;
+                swriteln!(f, ") begin");
+                lower_block(diag, name_map, then_block, f, indent.nest(), newline)?;
+                swrite!(f, "{indent}end");
 
-                swrite!(f, "{indent}");
-                write_if(f, initial_if)?;
-                // TODO evaluating the else conditions is probably broken, they might not be a single expression
-                for else_if in else_ifs {
-                    swrite!(f, " else ");
-                    write_if(f, else_if)?;
-                }
-
-                if let Some(final_else) = final_else {
+                if let Some(else_block) = else_block {
                     swriteln!(f, " else begin");
-                    lower_block(diag, name_map, final_else, f, indent.nest(), newline)?;
+                    lower_block(diag, name_map, else_block, f, indent.nest(), newline)?;
                     swrite!(f, "{indent}end");
                 }
 
@@ -751,9 +736,7 @@ fn lower_block(
     Ok(())
 }
 
-// TODO allow this to use intermediate variables
-// TODO IrExpressions should have clear types at every point, ints and arrays are now unclear
-// TODO is this allowed to use multiple lines?
+// TODO allow this to use intermediate variables and to generate multi-line expressions
 fn lower_expression(
     diags: &Diagnostics,
     name_map: NameMap,

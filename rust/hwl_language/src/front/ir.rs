@@ -2,9 +2,7 @@ use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{
-    ArrayLiteralElement, Identifier, IfStatement, MaybeIdentifier, PortDirection, Spanned, SyncDomain,
-};
+use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use indexmap::IndexMap;
@@ -144,9 +142,12 @@ pub enum IrStatement {
     If(IrIfStatement),
 }
 
-// TODO make this a simple if/else, this is sketchy:
-//   now every backend needs to be careful about evaluating else-if conditions
-pub type IrIfStatement = IfStatement<IrExpression, IrBlock, Option<IrBlock>>;
+#[derive(Debug)]
+pub struct IrIfStatement {
+    pub condition: IrExpression,
+    pub then_block: IrBlock,
+    pub else_block: Option<IrBlock>,
+}
 
 #[derive(Debug)]
 pub enum IrAssignmentTarget {

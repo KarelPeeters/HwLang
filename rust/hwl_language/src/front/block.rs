@@ -13,9 +13,9 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::data::IndexMapExt;
 use crate::util::{result_pair, ResultExt};
 use indexmap::IndexMap;
-use itertools::Itertools;
 use num_bigint::{BigInt, BigUint};
 use num_traits::{CheckedSub, One};
 
@@ -323,43 +323,24 @@ impl CompileState<'_> {
                     }
                 }
                 BlockStatementKind::If(stmt_if) => {
-                    // TODO rewrite this with more eager storing to hardware values
                     let IfStatement {
                         initial_if,
                         else_ifs,
                         final_else,
                     } = stmt_if;
 
-                    // TODO avoid allocation here
-                    let mut all_ifs = vec![];
-                    all_ifs.push(initial_if);
-                    all_ifs.extend(else_ifs.iter());
-
-                    let vars_before = vars.clone();
-                    let lowered =
-                        self.elaborate_if_statement(ctx, &mut ctx_block, vars, scope, &all_ifs, final_else)?;
-
-                    let next_vars = match lowered {
-                        LoweredIfOutcome::Nothing(next_vars) => next_vars,
-                        LoweredIfOutcome::SingleBlock(inner_block_ir, block_end) => {
-                            ctx.push_ir_statement_block(&mut ctx_block, inner_block_ir);
-                            match block_end {
-                                BlockEnd::Normal(next_vars) => next_vars,
-                                BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
-                            }
-                        }
-                        LoweredIfOutcome::IfStatement(lowered) => {
-                            let (ir_if, next_vars) =
-                                self.convert_if_to_ir_by_merging_variables(ctx, vars_before, stmt.span, lowered)?;
-                            let ir_stmt = Spanned {
-                                span: stmt.span,
-                                inner: IrStatement::If(ir_if),
-                            };
-                            ctx.push_ir_statement(diags, &mut ctx_block, ir_stmt)?;
-                            next_vars
-                        }
-                    };
-                    vars = next_vars;
+                    let block_end = self.elaborate_if_statement(
+                        ctx,
+                        &mut ctx_block,
+                        vars,
+                        scope,
+                        Some((initial_if, else_ifs)),
+                        final_else,
+                    )?;
+                    match block_end {
+                        BlockEnd::Normal(new_vars) => vars = new_vars,
+                        BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
+                    }
                 }
                 BlockStatementKind::While(stmt_while) => {
                     let &WhileStatement {
@@ -648,41 +629,44 @@ impl CompileState<'_> {
     fn elaborate_if_statement<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        ctx_cond_eval_block: &mut C::Block,
+        ctx_block: &mut C::Block,
         vars: VariableValues,
         scope: Scope,
-        ifs: &[&IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
+        ifs: Option<(
+            &IfCondBlockPair<Box<Expression>, Block<BlockStatement>>,
+            &[IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
+        )>,
         final_else: &Option<Block<BlockStatement>>,
-    ) -> Result<LoweredIfOutcome<C::Block>, ErrorGuaranteed> {
+    ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.diags;
 
-        let (initial_if, remaining_ifs) = match ifs.split_first() {
+        let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
             None => {
                 return match final_else {
-                    None => Ok(LoweredIfOutcome::Nothing(vars)),
+                    None => Ok(BlockEnd::Normal(vars)),
                     Some(final_else) => {
                         let (final_else_ir, final_else_end) = self.elaborate_block(ctx, vars, scope, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
                         };
-                        Ok(LoweredIfOutcome::SingleBlock(final_else_spanned, final_else_end))
+                        ctx.push_ir_statement_block(ctx_block, final_else_spanned);
+                        Ok(final_else_end)
                     }
                 };
             }
         };
 
-        let IfCondBlockPair {
+        let &IfCondBlockPair {
             span: _,
             span_if,
-            cond,
-            block,
+            ref cond,
+            ref block,
         } = initial_if;
-        // TODO is this cond_eval_block concept correct? are conditions always evaluated in the right place?
-        let cond = self.eval_expression(ctx, ctx_cond_eval_block, scope, &vars, &Type::Bool, cond)?;
+        let cond = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Bool, cond)?;
 
-        let reason = TypeContainsReason::Operator(*span_if);
+        let reason = TypeContainsReason::Operator(span_if);
         check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false, true)?;
 
         match cond.inner {
@@ -695,26 +679,27 @@ impl CompileState<'_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, next_vars) = self.elaborate_block(ctx, vars, scope, block)?;
+                    let (block_ir, block_end) = self.elaborate_block(ctx, vars, scope, block)?;
                     let block_ir_spanned = Spanned {
                         span: block.span,
                         inner: block_ir,
                     };
-                    Ok(LoweredIfOutcome::SingleBlock(block_ir_spanned, next_vars))
+                    ctx.push_ir_statement_block(ctx_block, block_ir_spanned);
+                    Ok(block_end)
                 } else {
-                    self.elaborate_if_statement(ctx, ctx_cond_eval_block, vars, scope, remaining_ifs, final_else)
+                    self.elaborate_if_statement(ctx, ctx_block, vars, scope, remaining_ifs.split_first(), final_else)
                 }
             }
             // evaluate the if at runtime, generating IR
             MaybeCompile::Other(cond_eval) => {
                 // check condition domain
                 // TODO extract this to a common function?
-                let check_cond_domain = match ctx.block_domain() {
+                match ctx.block_domain() {
                     BlockDomain::CompileTime => {
                         throw!(diags
                             .report_internal_error(cond.span, "non-compile-time condition in compile-time context"))
                     }
-                    BlockDomain::Combinatorial => Ok(()),
+                    BlockDomain::Combinatorial => {}
                     BlockDomain::Clocked(block_domain) => {
                         let cond_domain = Spanned {
                             span: cond.span,
@@ -726,7 +711,7 @@ impl CompileState<'_> {
                             block_domain.as_ref(),
                             cond_domain,
                             "condition used in clocked block",
-                        )
+                        )?;
                     }
                 };
 
@@ -735,231 +720,183 @@ impl CompileState<'_> {
                     span: cond.span,
                     inner: cond_eval.domain,
                 };
-                let (then_ir, then_end, else_lowered) = ctx.with_condition_domain(diags, cond_domain, |ctx_inner| {
-                    // lower both branches
-                    let (then_ir, then_end) = self.elaborate_block(ctx_inner, vars.clone(), scope, block)?;
-                    let else_lowered = self.elaborate_if_statement(
-                        ctx_inner,
-                        ctx_cond_eval_block,
-                        vars,
-                        scope,
-                        remaining_ifs,
-                        final_else,
-                    )?;
+                let mut else_ir = ctx.new_ir_block();
+                let (mut then_ir, then_end, mut else_ir, else_end) =
+                    ctx.with_condition_domain(diags, cond_domain, |ctx_inner| {
+                        // lower then
+                        let (then_ir, then_end) = self.elaborate_block(ctx_inner, vars.clone(), scope, block)?;
 
-                    Ok((then_ir, then_end, else_lowered))
-                })?;
-
-                check_cond_domain?;
-
-                let then_vars = then_end.unwrap_normal_todo_in_if(diags, cond.span)?;
-                let initial_if = IfCondBlockPair {
-                    span: cond.span,
-                    span_if: *span_if,
-                    cond: cond_eval.expr,
-                    block: (then_ir, then_vars),
-                };
-
-                let stmt: LoweredIfStatement<C::Block> = match else_lowered {
-                    LoweredIfOutcome::Nothing(else_vars) => {
-                        // new simple if statement without any else-s
-                        IfStatement {
-                            initial_if,
-                            else_ifs: vec![],
-                            final_else: (None, else_vars),
-                        }
-                    }
-                    LoweredIfOutcome::SingleBlock(else_block, else_end) => {
-                        // new simple if statement with opaque else
-                        let else_vars = else_end.unwrap_normal_todo_in_if(diags, cond.span)?;
-                        IfStatement {
-                            initial_if,
-                            else_ifs: vec![],
-                            final_else: (Some(else_block.inner), else_vars),
-                        }
-                    }
-                    LoweredIfOutcome::IfStatement(else_if_stmt) => {
-                        // merge into a single bigger if statement
-                        let IfStatement {
-                            initial_if: else_initial_if,
-                            else_ifs: mut combined_else_ifs,
+                        // lower else
+                        let else_end = self.elaborate_if_statement(
+                            ctx_inner,
+                            &mut else_ir,
+                            vars,
+                            scope,
+                            remaining_ifs.split_first(),
                             final_else,
-                        } = else_if_stmt;
-                        combined_else_ifs.insert(0, else_initial_if);
+                        )?;
 
-                        IfStatement {
-                            initial_if,
-                            else_ifs: combined_else_ifs,
-                            final_else,
-                        }
+                        Ok((then_ir, then_end, else_ir, else_end))
+                    })?;
+
+                let then_vars = then_end.unwrap_normal_todo_in_if(diags, cond.span);
+                let else_vars = else_end.unwrap_normal_todo_in_if(diags, cond.span);
+                let then_vars = then_vars?;
+                let else_vars = else_vars?;
+
+                // TODO is unwrapping the maps fine here? can we encore that in the type system through C/ctx?
+                // TODO re-use one of the maps to avoid an extra allocation
+                let then_map = then_vars.map.as_ref().unwrap();
+                let else_map = else_vars.map.as_ref().unwrap();
+
+                let mut combined_map = IndexMap::new();
+                for &var in itertools::chain(then_map.keys(), else_map.keys()) {
+                    if combined_map.contains_key(&var) {
+                        // already visited
+                        continue;
                     }
-                };
 
-                Ok(LoweredIfOutcome::IfStatement(stmt))
+                    // if only one of the branches contains the variable, it was locally declared in that branch
+                    //   and should now be out of scope
+                    let (then_info, else_info) = match (then_map.get(&var), else_map.get(&var)) {
+                        (None, _) | (_, None) => continue,
+                        (Some(then_info), Some(else_info)) => (then_info, else_info),
+                    };
+
+                    let combined_info = match (then_info, else_info) {
+                        // any error
+                        (&MaybeAssignedValue::FailedIfMerge(span), _)
+                        | (_, &MaybeAssignedValue::FailedIfMerge(span)) => MaybeAssignedValue::FailedIfMerge(span),
+                        // both the same state
+                        (MaybeAssignedValue::Assigned(then_value), MaybeAssignedValue::Assigned(else_value)) => {
+                            let (assign_then, assign_else, result) =
+                                self.merge_variable_assigned_values(ctx, span_if, var, then_value, else_value)?;
+                            ctx.push_ir_statement(diags, &mut then_ir, assign_then)?;
+                            ctx.push_ir_statement(diags, &mut else_ir, assign_else)?;
+                            MaybeAssignedValue::Assigned(result)
+                        }
+                        (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
+                            MaybeAssignedValue::NotYetAssigned
+                        }
+                        // mix of assigned and not assigned
+                        (
+                            MaybeAssignedValue::Assigned(_)
+                            | MaybeAssignedValue::PartiallyAssigned
+                            | MaybeAssignedValue::NotYetAssigned,
+                            MaybeAssignedValue::Assigned(_)
+                            | MaybeAssignedValue::PartiallyAssigned
+                            | MaybeAssignedValue::NotYetAssigned,
+                        ) => MaybeAssignedValue::PartiallyAssigned,
+                    };
+                    combined_map.insert_first(var, combined_info);
+                }
+
+                let ir_if = IrStatement::If(IrIfStatement {
+                    condition: cond_eval.expr,
+                    then_block: ctx.unwrap_ir_block(diags, span_if, then_ir)?,
+                    else_block: Some(ctx.unwrap_ir_block(diags, span_if, else_ir)?),
+                });
+                // TODO is this span correct?
+                ctx.push_ir_statement(
+                    diags,
+                    ctx_block,
+                    Spanned {
+                        span: span_if,
+                        inner: ir_if,
+                    },
+                )?;
+
+                let combined_vars = VariableValues {
+                    map: Some(combined_map),
+                };
+                Ok(BlockEnd::Normal(combined_vars))
             }
         }
     }
 
-    // TODO this seems overcomplicated,
-    //   maybe a better approach is to just always generate variable writes in IR if possible
-    fn convert_if_to_ir_by_merging_variables<C: ExpressionContext>(
+    fn merge_variable_assigned_values<C: ExpressionContext>(
         &self,
         ctx: &mut C,
-        vars_before: VariableValues,
-        span_stmt: Span,
-        lowered_if: LoweredIfStatement<C::Block>,
-    ) -> Result<(IrIfStatement, VariableValues), ErrorGuaranteed> {
+        span_if: Span,
+        var: Variable,
+        then_value: &AssignedValue,
+        else_value: &AssignedValue,
+    ) -> Result<(Spanned<IrStatement>, Spanned<IrStatement>, AssignedValue), ErrorGuaranteed> {
         let diags = self.diags;
-        let LoweredIfStatement {
-            initial_if,
-            mut else_ifs,
-            final_else,
-        } = lowered_if;
 
-        // collect merge info for all variables
-        let mut info: IndexMap<Variable, VariableMergeInfo> = IndexMap::new();
+        // figure out the hardware type
 
-        let (mut initial_if_block, initial_if_vars) = initial_if.block;
-        record_merge_info(&mut info, &vars_before, &initial_if_vars);
+        let var_info = &self.variables[var];
 
-        for else_if in &else_ifs {
-            let IfCondBlockPair {
-                span: _,
-                span_if: _,
-                cond: _,
-                block: (_else_if_block, else_if_vars),
-            } = else_if;
-            record_merge_info(&mut info, &vars_before, else_if_vars);
-        }
+        let then_ty = then_value.value.ty();
+        let else_ty = else_value.value.ty();
+        let ty = then_ty.union(&else_ty, false);
 
-        let (mut final_else_block, final_else_vars) = final_else;
-        record_merge_info(&mut info, &vars_before, &final_else_vars);
+        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+            let diag = Diagnostic::new(
+                "merging `if` assignments is only possible for variables with types that are representable in hardware",
+            )
+            .add_error(
+                span_if,
+                format!("merge necessary here, combined type `{}`", ty.to_diagnostic_string()),
+            )
+            .add_info(var_info.id.span(), "for variable declared here")
+            .add_info(
+                then_value.event.assigned_value_span,
+                format!(
+                    "source value with type `{}` assigned here",
+                    then_ty.to_diagnostic_string()
+                ),
+            )
+            .add_info(
+                else_value.event.assigned_value_span,
+                format!(
+                    "source value with type `{}` assigned here",
+                    else_ty.to_diagnostic_string()
+                ),
+            )
+            .finish();
+            diags.report(diag)
+        })?;
 
-        // do the actual merge
-        let mut vars_after = VariableValues::new();
-
-        for (&var, info) in &info {
-            let assigned = if info.any_unassigned {
-                if info.any_assigned {
-                    MaybeAssignedValue::PartiallyAssigned
-                } else {
-                    MaybeAssignedValue::NotYetAssigned
-                }
-            } else if let Some(failed_span) = info.any_failed_merge {
-                MaybeAssignedValue::FailedIfMerge(failed_span)
-            } else if info.any_newly_assigned {
-                // TODO infer type if not specified, as the join of all values
-                // figure out the hardware type
-                let var_info = &self.variables[var];
-                let ty = var_info.ty.as_ref().ok_or_else(|| {
-                    let diag = Diagnostic::new("cannot merge `if` assignments for variables without explicit type")
-                        .add_error(span_stmt, "merge if necessary here")
-                        .add_info(var_info.id.span(), "for variable declared here")
-                        .finish();
-                    diags.report(diag)
-                })?;
-                let ty_hw = ty.inner.as_hardware_type().ok_or_else(|| {
-                    let diag = Diagnostic::new("merging `if` assignments is only possible for variables with types that are representable in hardware")
-                        .add_error(span_stmt, "merge necessary here")
-                        .add_info(var_info.id.span(), "for variable declared here")
-                        .add_info(ty.span, format!("with type {}", ty.inner.to_diagnostic_string()))
-                        .finish();
-                    diags.report(diag)
-                })?;
-
-                // create ir variable
-                let var_ir_info = IrVariableInfo {
-                    ty: ty_hw.to_ir(),
-                    debug_info_id: var_info.id.clone(),
-                };
-                let var_ir = ctx.new_ir_variable(diags, span_stmt, var_ir_info)?;
-
-                // add assignments to all blocks, and join domains
-                let mut joined_domain = ValueDomain::CompileTime;
-                let initial_if_merge_store = build_merge_store(
-                    diags,
-                    span_stmt,
-                    var,
-                    var_ir,
-                    &ty_hw,
-                    &initial_if_vars,
-                    &mut joined_domain,
-                )?;
-                ctx.push_ir_statement(diags, &mut initial_if_block, initial_if_merge_store)?;
-
-                for else_if in &mut else_ifs {
-                    let IfCondBlockPair {
-                        span: _,
-                        span_if: _,
-                        cond: _,
-                        block: (else_if_block, else_if_vars),
-                    } = else_if;
-                    let else_if_merge_store =
-                        build_merge_store(diags, span_stmt, var, var_ir, &ty_hw, else_if_vars, &mut joined_domain)?;
-                    ctx.push_ir_statement(diags, else_if_block, else_if_merge_store)?;
-                }
-
-                let final_else_block = final_else_block.get_or_insert_with(|| ctx.new_ir_block());
-                let final_else_merge_store = build_merge_store(
-                    diags,
-                    span_stmt,
-                    var,
-                    var_ir,
-                    &ty_hw,
-                    &final_else_vars,
-                    &mut joined_domain,
-                )?;
-                ctx.push_ir_statement(diags, final_else_block, final_else_merge_store)?;
-
-                // return the resulting variable
-                MaybeAssignedValue::Assigned(AssignedValue {
-                    // TODO this span is probably not correct
-                    event: AssignmentEvent {
-                        assigned_value_span: span_stmt,
-                    },
-                    value: MaybeCompile::Other(TypedIrExpression {
-                        ty: ty_hw,
-                        domain: joined_domain,
-                        expr: IrExpression::Variable(var_ir),
-                    }),
-                })
-            } else {
-                let prev = vars_before.map.as_ref().unwrap().get(&var).ok_or_else(|| {
-                    diags.report_internal_error(span_stmt, "variable was not assigned but didn't exist beforehand")
-                })?;
-                prev.clone()
-            };
-
-            vars_after.set(diags, span_stmt, var, assigned)?
-        }
-
-        // return finished if statement
-        // (we unwrap all blocks, once we're in this function we know we're really in an IR context)
-        let stmt: IrIfStatement = IfStatement {
-            initial_if: IfCondBlockPair {
-                span: initial_if.span,
-                span_if: initial_if.span_if,
-                cond: initial_if.cond,
-                block: ctx.unwrap_ir_block(diags, initial_if.span, initial_if_block)?,
-            },
-            else_ifs: else_ifs
-                .into_iter()
-                .map(|else_if| {
-                    let (else_if_block, _else_if_vars) = else_if.block;
-                    Ok(IfCondBlockPair {
-                        span: else_if.span,
-                        span_if: else_if.span_if,
-                        cond: else_if.cond,
-                        block: ctx.unwrap_ir_block(diags, else_if.span, else_if_block)?,
-                    })
-                })
-                .try_collect()?,
-            // TODO allow creating new block, just for merging
-            final_else: final_else_block
-                .map(|final_else_block| ctx.unwrap_ir_block(diags, span_stmt, final_else_block))
-                .transpose()?,
+        // create ir variable
+        let var_ir_info = IrVariableInfo {
+            ty: ty_hw.to_ir(),
+            debug_info_id: var_info.id.clone(),
         };
-        Ok((stmt, vars_after))
+        let var_ir = ctx.new_ir_variable(diags, span_if, var_ir_info)?;
+
+        // add assignments to all block
+        // TODO include reason for conversion in potential error message
+        let then_value_ir = then_value
+            .value
+            .as_ir_expression(diags, then_value.event.assigned_value_span, &ty_hw)?;
+        let else_value_ir = else_value
+            .value
+            .as_ir_expression(diags, else_value.event.assigned_value_span, &ty_hw)?;
+
+        let assign_then = Spanned {
+            span: span_if,
+            inner: IrStatement::Assign(IrAssignmentTarget::Variable(var_ir), then_value_ir.expr),
+        };
+        let assign_else = Spanned {
+            span: span_if,
+            inner: IrStatement::Assign(IrAssignmentTarget::Variable(var_ir), else_value_ir.expr),
+        };
+
+        // return the resulting variable
+        let result = AssignedValue {
+            // TODO this span is probably not correct
+            event: AssignmentEvent {
+                assigned_value_span: span_if,
+            },
+            value: MaybeCompile::Other(TypedIrExpression {
+                ty: ty_hw,
+                domain: then_value_ir.domain.join(&else_value_ir.domain),
+                expr: IrExpression::Variable(var_ir),
+            }),
+        };
+        Ok((assign_then, assign_else, result))
     }
 
     fn elaborate_for_statement<C: ExpressionContext>(
@@ -1165,86 +1102,3 @@ impl CompileState<'_> {
         Ok(BlockEnd::Normal(vars))
     }
 }
-
-struct VariableMergeInfo {
-    any_assigned: bool,
-    any_unassigned: bool,
-
-    any_failed_merge: Option<Span>,
-    any_newly_assigned: bool,
-}
-
-fn record_merge_info(
-    info: &mut IndexMap<Variable, VariableMergeInfo>,
-    vars_before: &VariableValues,
-    vars_after: &VariableValues,
-) {
-    // TODO get rid of the unwraps here
-    for (&variable, value) in vars_after.map.as_ref().unwrap() {
-        let info_slot = info.entry(variable).or_insert_with(|| VariableMergeInfo {
-            any_assigned: false,
-            any_unassigned: false,
-            any_failed_merge: None,
-            any_newly_assigned: false,
-        });
-
-        match value {
-            MaybeAssignedValue::Assigned(_) => {
-                info_slot.any_assigned = true;
-                if Some(value) != vars_before.map.as_ref().unwrap().get(&variable) {
-                    info_slot.any_newly_assigned = true;
-                }
-            }
-            MaybeAssignedValue::NotYetAssigned => {
-                info_slot.any_unassigned = true;
-            }
-            MaybeAssignedValue::PartiallyAssigned => {
-                info_slot.any_assigned = true;
-                info_slot.any_unassigned = true;
-            }
-            &MaybeAssignedValue::FailedIfMerge(failed_span) => {
-                info_slot.any_failed_merge = Some(failed_span);
-            }
-        }
-    }
-}
-
-fn build_merge_store(
-    diags: &Diagnostics,
-    span_stmt: Span,
-    var: Variable,
-    var_ir: IrVariable,
-    ty_hw: &HardwareType,
-    vars: &VariableValues,
-    domain: &mut ValueDomain,
-) -> Result<Spanned<IrStatement>, ErrorGuaranteed> {
-    // TODO get rid of this "unwrap" match by storing this during infor recording
-    let value = match vars.map.as_ref().unwrap().get(&var) {
-        Some(MaybeAssignedValue::Assigned(value)) => value,
-        _ => throw!(diags.report_internal_error(span_stmt, "expected assigned value")),
-    };
-
-    let value_ir = value
-        .value
-        .as_ir_expression(diags, value.event.assigned_value_span, ty_hw)?;
-
-    *domain = domain.join(value.value.domain());
-
-    let target = IrAssignmentTarget::Variable(var_ir);
-    let assign = IrStatement::Assign(target, value_ir.expr);
-    let assign_spanned = Spanned {
-        span: span_stmt,
-        inner: assign,
-    };
-
-    Ok(assign_spanned)
-}
-
-#[derive(Debug)]
-enum LoweredIfOutcome<B> {
-    Nothing(VariableValues),
-    SingleBlock(Spanned<B>, BlockEnd),
-    IfStatement(LoweredIfStatement<B>),
-}
-
-type LoweredIfStatement<B> = IfStatement<IrExpression, (B, VariableValues), (Option<B>, VariableValues)>;

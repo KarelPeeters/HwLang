@@ -413,25 +413,19 @@ impl CodegenBlockContext<'_> {
                 }
                 IrStatement::If(if_stmt) => {
                     let IrIfStatement {
-                        initial_if,
-                        else_ifs,
-                        final_else,
+                        condition,
+                        then_block,
+                        else_block,
                     } = if_stmt;
 
-                    let initial_cond = self.eval(stmt.span, &initial_if.cond, stage_read)?;
-                    swrite!(self.f, "{indent}if ({initial_cond})");
-                    self.generate_nested_block(&initial_if.block, stage_read)?;
+                    let cond_eval = self.eval(stmt.span, condition, stage_read)?;
 
-                    // TODO evaluating the else conditions is probably broken, they might not be a single expression
-                    for else_if in else_ifs {
-                        let else_if_cond = self.eval(stmt.span, &else_if.cond, stage_read)?;
-                        swrite!(self.f, " else if ({else_if_cond})");
-                        self.generate_nested_block(&else_if.block, stage_read)?;
-                    }
+                    swrite!(self.f, "{indent}if ({cond_eval})");
+                    self.generate_nested_block(&then_block, stage_read)?;
 
-                    if let Some(final_else) = final_else {
+                    if let Some(else_block) = else_block {
                         swrite!(self.f, " else");
-                        self.generate_nested_block(final_else, stage_read)?;
+                        self.generate_nested_block(else_block, stage_read)?;
                     }
 
                     swriteln!(self.f);
