@@ -651,15 +651,35 @@ impl CompileState<'_> {
                 let (curr_ty_inner, curr_len) = match curr_inner.ty() {
                     Type::Array(curr_ty_inner, curr_len) => (*curr_ty_inner, curr_len),
                     _ => {
-                        return Err(diags.report_simple(
-                            "array index on invalid target, must be array",
-                            curr.span,
-                            format!("target `{}` here", curr_inner.ty().to_diagnostic_string()),
-                        ));
+                        let diag = Diagnostic::new("array index on invalid target, must be array")
+                            .add_error(
+                                curr.span,
+                                format!(
+                                    "target with non-array type `{}` here",
+                                    curr_inner.ty().to_diagnostic_string()
+                                ),
+                            )
+                            .add_info(index.span, "array indexed here")
+                            .finish();
+
+                        return Err(diags.report(diag));
                     }
                 };
+                let curr_ty_inner_hw = curr_ty_inner.as_hardware_type().ok_or_else(|| {
+                    let diag =
+                        Diagnostic::new("non-compile-time array index on array that is not representable in hardware")
+                            .add_error(
+                                curr.span,
+                                format!(
+                                    "target with non-hardware type `{}` here",
+                                    curr_inner.ty().to_diagnostic_string()
+                                ),
+                            )
+                            .add_info(index.span, "array indexed with non-compile-time index here")
+                            .finish();
 
-                let curr_ty_inner_hw = curr_ty_inner.as_hardware_type().ok_or_else(|| todo!())?;
+                    diags.report(diag)
+                })?;
                 let curr_ir = curr_inner.as_ir_expression(
                     diags,
                     curr.span,
