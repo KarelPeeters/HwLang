@@ -429,7 +429,7 @@ pub enum ExpressionKind {
     TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
-    ArrayIndex(Box<Expression>, Args),
+    ArrayIndex(Box<Expression>, Spanned<Vec<Expression>>),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<String>),
 
@@ -520,10 +520,22 @@ pub struct StructLiteralField {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct RangeLiteral {
-    pub end_inclusive: bool,
-    pub start: Option<Box<Expression>>,
-    pub end: Option<Box<Expression>>,
+pub enum RangeLiteral {
+    ExclusiveEnd {
+        op_span: Span,
+        start: Option<Box<Expression>>,
+        end: Option<Box<Expression>>,
+    },
+    InclusiveEnd {
+        op_span: Span,
+        start: Option<Box<Expression>>,
+        end: Box<Expression>,
+    },
+    Length {
+        op_span: Span,
+        start: Box<Expression>,
+        len: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone)]

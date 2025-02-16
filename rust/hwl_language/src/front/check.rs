@@ -7,7 +7,7 @@ use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
 
 impl CompileState<'_> {
     pub fn check_valid_domain_crossing(
@@ -91,6 +91,9 @@ pub enum TypeContainsReason {
     WhileCondition {
         span_keyword: Span,
     },
+    ArrayIndex {
+        span_index: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -142,6 +145,9 @@ impl TypeContainsReason {
                 span_keyword,
                 format!("while condition requires type `{}`", target_ty_str),
             ),
+            TypeContainsReason::ArrayIndex { span_index } => {
+                diag.add_info(span_index, format!("array index requires type `{}`", target_ty_str))
+            }
         }
     }
 }
@@ -257,6 +263,36 @@ pub fn check_type_is_int(
             }),
             _ => Err(diags.report_internal_error(value.span, "expected int type, should have already been checked")),
         },
+    }
+}
+
+pub fn check_type_is_int_compile(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> Result<BigInt, ErrorGuaranteed> {
+    check_type_contains_compile_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false)?;
+
+    match value.inner {
+        CompileValue::Int(value_inner) => Ok(value_inner),
+        _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
+    }
+}
+
+pub fn check_type_is_uint_compile(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> Result<BigUint, ErrorGuaranteed> {
+    let range = IncRange {
+        start_inc: Some(BigInt::ZERO),
+        end_inc: None,
+    };
+    check_type_contains_compile_value(diags, reason, &Type::Int(range), value.as_ref(), false)?;
+
+    match value.inner {
+        CompileValue::Int(value_inner) => Ok(value_inner.to_biguint().unwrap()),
+        _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
     }
 }
 

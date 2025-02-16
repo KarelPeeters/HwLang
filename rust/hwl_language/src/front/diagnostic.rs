@@ -129,8 +129,8 @@ pub struct DiagnosticStringSettings {
     /// If `None`, no merging is done.
     snippet_merge_max_distance: Option<usize>,
 
-    /// Whether to include a backtrace in "todo" diagnostics.
-    todo_backtrace: bool,
+    /// Whether to include a backtrace in todo and internal compiler error diagnostics.
+    backtrace: bool,
 }
 
 impl Default for DiagnosticStringSettings {
@@ -138,7 +138,7 @@ impl Default for DiagnosticStringSettings {
         DiagnosticStringSettings {
             snippet_context_lines: 2,
             snippet_merge_max_distance: Some(3),
-            todo_backtrace: false,
+            backtrace: false,
         }
     }
 }
@@ -163,11 +163,9 @@ impl Diagnostic {
     #[track_caller]
     pub fn new_todo(span: Span, feature: impl Into<String>) -> DiagnosticBuilder {
         let message = format!("feature not yet implemented: '{}'", feature.into());
-        let backtrace = Backtrace::force_capture();
-
-        let mut builder = Diagnostic::new(&message).add_error(span, "used here");
-        builder.diagnostic.backtrace = Some(backtrace.to_string());
-        builder
+        let mut diag = Diagnostic::new(&message).add_error(span, "used here");
+        diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
+        diag
     }
 
     // TODO move this to a more logical place?
@@ -177,9 +175,10 @@ impl Diagnostic {
     }
 
     pub fn new_internal_error(span: Span, reason: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(format!("internal compiler error: '{}'", reason.into()))
-            .add_error(span, "caused here")
-            .finish()
+        let mut diag =
+            Diagnostic::new(format!("internal compiler error: '{}'", reason.into())).add_error(span, "caused here");
+        diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
+        diag.finish()
     }
 
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
@@ -277,7 +276,7 @@ impl Diagnostic {
         }
 
         if let Some(backtrace) = &backtrace {
-            if settings.todo_backtrace {
+            if settings.backtrace {
                 message = message.footer(Level::Info.title(backtrace));
             }
         }

@@ -1,5 +1,5 @@
 use crate::front::block::BlockDomain;
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
 use crate::front::misc::ValueDomain;
 use crate::front::value::AssignmentTarget;
@@ -43,9 +43,14 @@ pub trait ExpressionContext {
         domain: Spanned<ValueDomain>,
         f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
     ) -> Result<T, ErrorGuaranteed>;
+
+    fn check_ir_context(&self, diags: &Diagnostics, span: Span, reason: &str) -> Result<(), ErrorGuaranteed>;
 }
 
-pub struct CompileTimeExpressionContext;
+pub struct CompileTimeExpressionContext {
+    pub span: Span,
+    pub reason: String,
+}
 
 impl ExpressionContext for CompileTimeExpressionContext {
     type Block = ();
@@ -110,6 +115,17 @@ impl ExpressionContext for CompileTimeExpressionContext {
         }
         let _ = (diags, domain);
         f(self)
+    }
+
+    fn check_ir_context(&self, diags: &Diagnostics, span: Span, access: &str) -> Result<(), ErrorGuaranteed> {
+        let diag = Diagnostic::new("trying access hardware in compile-time context")
+            .add_error(span, format!("accessing {access} here"))
+            .add_info(
+                self.span,
+                format!("compile-time context because {} must be compile-time", self.reason),
+            )
+            .finish();
+        Err(diags.report(diag))
     }
 }
 
@@ -210,5 +226,9 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         self.condition_domains.pop();
 
         result
+    }
+
+    fn check_ir_context(&self, _: &Diagnostics, _: Span, _: &str) -> Result<(), ErrorGuaranteed> {
+        Ok(())
     }
 }

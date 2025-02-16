@@ -757,15 +757,7 @@ fn lower_expression(
 
     match expr {
         &IrExpression::Bool(x) => swrite!(f, "1'b{}", x as u8),
-        IrExpression::Int(x) => {
-            // TODO zero-width literals are not allowed in verilog
-            let sign = match x.sign() {
-                num_bigint::Sign::Plus | num_bigint::Sign::NoSign => "",
-                num_bigint::Sign::Minus => "-",
-            };
-            let repr = IntRepresentation::for_single(x);
-            swrite!(f, "{}{}'d{}", sign, repr.width, x.magnitude())
-        }
+        IrExpression::Int(x) => swrite!(f, "{}", lower_int_str(x)),
 
         &IrExpression::Port(port) => swrite!(f, "{}", try_get(diags, span, name_map.ports, port, "port")?),
         &IrExpression::Wire(wire) => swrite!(f, "{}", try_get(diags, span, name_map.wires, wire, "wire")?),
@@ -813,8 +805,22 @@ fn lower_expression(
             swrite!(f, "}}");
         }
 
-        IrExpression::ArrayIndex { .. } => throw!(diags.report_todo(span, "lower array index")),
-        IrExpression::ArraySlice { .. } => throw!(diags.report_todo(span, "lower array slice")),
+        IrExpression::ArrayIndex { base, index } => {
+            // TODO this is probably incorrect in general, we need to store the array in a variable first
+            swrite!(f, "(");
+            lower_expression(diags, name_map, span, base, f)?;
+            swrite!(f, "[");
+            lower_expression(diags, name_map, span, index, f)?;
+            swrite!(f, "])");
+        }
+        IrExpression::ArraySlice { base, start, len } => {
+            // TODO this is probably incorrect in general, we need to store the array in a variable first
+            swrite!(f, "(");
+            lower_expression(diags, name_map, span, base, f)?;
+            swrite!(f, "[");
+            lower_expression(diags, name_map, span, start, f)?;
+            swrite!(f, "+:{}])", lower_uint_str(len));
+        }
 
         IrExpression::IntToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
         IrExpression::IntFromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
@@ -829,6 +835,25 @@ fn lower_expression(
     }
 
     Ok(())
+}
+
+fn lower_int_str(x: &BigInt) -> String {
+    // TODO zero-width literals are probably not allowed in verilog
+    // TODO double-check integer bit-width promotion rules
+    let sign = match x.sign() {
+        num_bigint::Sign::Plus | num_bigint::Sign::NoSign => "",
+        num_bigint::Sign::Minus => "-",
+    };
+    let repr = IntRepresentation::for_single(x);
+    format!("{}{}'d{}", sign, repr.width, x.magnitude())
+}
+
+fn lower_uint_str(x: &BigUint) -> String {
+    // TODO zero-width literals are probably not allowed in verilog
+    // TODO double-check integer bit-width promotion rules
+    // TODO avoid clone
+    let repr = IntRepresentation::for_single(&BigInt::from(x.clone()));
+    format!("{}'d{}", repr.width, x)
 }
 
 #[derive(Debug)]

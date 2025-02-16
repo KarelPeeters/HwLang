@@ -16,6 +16,10 @@ use num_traits::Zero;
 use std::fmt::{Display, Formatter};
 use unwrap_match::unwrap_match;
 
+// TODO add "undefined" tracking bits
+//   only one for each signal, maybe also a separate one for each array element?
+//   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
+//   skip operations on undefined values, we don't want to cause undefined C++ behavior!
 pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String, ErrorGuaranteed> {
     // TODO split into separate files:
     //   maybe one shared with all structs,
@@ -209,6 +213,9 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
                     };
                     let clock_prev_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Prev)?;
                     let clock_next_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Next)?;
+                    // TODO also skip if reset is active
+                    // TODO maybe switch to a single function for both?
+                    //   or maybe that just mixes sensitivities for no good reason
                     swriteln!(ctx.f, "{I}if (!(!({clock_prev_eval}) && ({clock_next_eval}))) {{");
                     swriteln!(ctx.f, "{I}{I}return;");
                     swriteln!(ctx.f, "{I}}}");
@@ -302,6 +309,7 @@ impl Display for Evaluated {
 
 impl CodegenBlockContext<'_> {
     fn eval(&mut self, span: Span, expr: &IrExpression, stage_read: Stage) -> Result<Evaluated, ErrorGuaranteed> {
+        let indent = self.indent;
         let todo = |kind: &str| self.diags.report_todo(span, format!("codegen IrExpression::{kind}"));
 
         let result = match expr {
@@ -331,8 +339,6 @@ impl CodegenBlockContext<'_> {
 
             IrExpression::TupleLiteral(_) => return Err(todo("TupleLiteral")),
             IrExpression::ArrayLiteral(inner_ty, elements) => {
-                let indent = self.indent;
-
                 let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
                 let tmp_result = self.new_temporary();
 
@@ -347,7 +353,7 @@ impl CodegenBlockContext<'_> {
                     let ArrayLiteralElement { spread, value } = element;
                     let value_eval = self.eval(span, value, stage_read)?;
                     if spread.is_some() {
-                        let element_len = unwrap_match!(value.ty(self.module_info, &self.locals), IrType::Array(_, element_len) => element_len);
+                        let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
                         swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
                         offset += element_len;
                     } else {
@@ -360,7 +366,21 @@ impl CodegenBlockContext<'_> {
             }
 
             IrExpression::ArrayIndex { .. } => return Err(todo("ArrayIndex")),
-            IrExpression::ArraySlice { .. } => return Err(todo("ArraySlice")),
+            IrExpression::ArraySlice { base, start, len } => {
+                let base_eval = self.eval(span, base, stage_read)?;
+                let start_eval = self.eval(span, start, stage_read)?;
+
+                let tmp_result = self.new_temporary();
+                let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+
+                swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
+                swriteln!(
+                    self.f,
+                    "{indent}std::copy_n({base_eval}.begin() + {start_eval}, {len}, {tmp_result}.begin());"
+                );
+
+                tmp_result
+            }
 
             IrExpression::IntToBits(_, _) => return Err(todo("IntToBits")),
             IrExpression::IntFromBits(_, _) => return Err(todo("IntFromBits")),
@@ -421,7 +441,7 @@ impl CodegenBlockContext<'_> {
                     let cond_eval = self.eval(stmt.span, condition, stage_read)?;
 
                     swrite!(self.f, "{indent}if ({cond_eval})");
-                    self.generate_nested_block(&then_block, stage_read)?;
+                    self.generate_nested_block(then_block, stage_read)?;
 
                     if let Some(else_block) = else_block {
                         swrite!(self.f, " else");
@@ -473,6 +493,8 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, E
         }
         IrType::Tuple(_) => return Err(diags.report_todo(span, "codegen type Tuple")),
         IrType::Array(inner, len) => {
+            // TODO we want to represent boolean arrays als bitfields, either through a template optimization trick
+            //   or through a special case here (and in every other place that interacts with arrays)
             let inner_str = type_to_cpp(diags, span, inner)?;
             format!("std::array<{inner_str}, {len}>")
         }

@@ -1,5 +1,8 @@
 use crate::front::block::{TypedIrExpression, VariableValues};
-use crate::front::check::{check_type_contains_value, check_type_is_bool, check_type_is_int, TypeContainsReason};
+use crate::front::check::{
+    check_type_contains_type, check_type_contains_value, check_type_is_bool, check_type_is_int,
+    check_type_is_int_compile, check_type_is_uint_compile, TypeContainsReason,
+};
 use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
@@ -11,10 +14,9 @@ use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDoma
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
-use crate::syntax::ast;
 use crate::syntax::ast::{
     ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral, MaybeIdentifier,
-    PortDirection, Spanned, SyncDomain, UnaryOp,
+    PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::util::iter::IterExt;
@@ -96,6 +98,8 @@ impl CompileState<'_> {
                         NamedValue::Parameter(param) => Ok(self.parameters[param].value.clone()),
                         NamedValue::Variable(var) => Ok(vars.get(diags, expr.span, var)?.value.clone()),
                         NamedValue::Port(port) => {
+                            ctx.check_ir_context(diags, expr.span, "port")?;
+
                             let port_info = &self.ports[port];
                             match port_info.direction.inner {
                                 PortDirection::Input => Ok(MaybeCompile::Other(port_info.typed_ir_expr())),
@@ -105,6 +109,8 @@ impl CompileState<'_> {
                             }
                         }
                         NamedValue::Wire(wire) => {
+                            ctx.check_ir_context(diags, expr.span, "wire")?;
+
                             let wire_info = &self.wires[wire];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
@@ -117,6 +123,8 @@ impl CompileState<'_> {
                             Ok(MaybeCompile::Other(value_stored.to_general_expression()))
                         }
                         NamedValue::Register(reg) => {
+                            ctx.check_ir_context(diags, expr.span, "register")?;
+
                             let reg_info = &self.registers[reg];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
@@ -154,7 +162,7 @@ impl CompileState<'_> {
             ExpressionKind::StringLiteral(literal) => Ok(MaybeCompile::Compile(CompileValue::String(literal.clone()))),
 
             ExpressionKind::ArrayLiteral(values) => {
-                // intentionally ignore the length, the caller might have passed "0" when it has no opinion on it
+                // intentionally ignore the length, the caller can pass "0" when they have no opinion on it
                 let expected_ty_inner = match expected_ty {
                     Type::Array(inner, _len) => &**inner,
                     _ => &Type::Any,
@@ -324,65 +332,64 @@ impl CompileState<'_> {
             }
             ExpressionKind::StructLiteral(_) => Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
-                let &ast::RangeLiteral {
-                    end_inclusive,
-                    ref start,
-                    ref end,
-                } = literal;
-
-                let start = start.as_ref().map(|start| {
-                    Ok(self
-                        .eval_expression_as_compile(scope, vars, start, "range start")?
-                        .inner)
-                });
-                let end = end
-                    .as_ref()
-                    .map(|end| Ok(self.eval_expression_as_compile(scope, vars, end, "range end")?.inner));
-
-                // TODO reduce code duplication
-                let start_inc = match start.transpose() {
-                    Ok(None) => None,
-                    Ok(Some(CompileValue::Int(start))) => Some(start),
-                    Ok(Some(start)) => {
-                        let e = diags.report_simple(
-                            "range bound must be integer",
-                            expr.span,
-                            format!("got `{}`", start.to_diagnostic_string()),
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => return Err(e),
-                };
-                let end = match end.transpose() {
-                    Ok(None) => None,
-                    Ok(Some(CompileValue::Int(start))) => Some(start),
-                    Ok(Some(start)) => {
-                        let e = diags.report_simple(
-                            "range bound must be integer",
-                            expr.span,
-                            format!("got `{}`", start.to_diagnostic_string()),
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => return Err(e),
+                let mut eval_bound = |bound: &Expression, name: &str, op_span: Span| {
+                    let bound = self.eval_expression_as_compile(scope, vars, bound, &format!("range {name}"))?;
+                    let reason = TypeContainsReason::Operator(op_span);
+                    check_type_is_int_compile(diags, reason, bound)
                 };
 
-                let end_inc = if end_inclusive {
-                    match end {
-                        Some(end) => Some(end),
-                        None => {
-                            let e = self
-                                .diags
-                                .report_internal_error(expr.span, "inclusive range must have end");
-                            return Err(e);
-                        }
-                    }
-                } else {
-                    end.map(|end| end - 1)
-                };
+                match *literal {
+                    RangeLiteral::ExclusiveEnd {
+                        op_span,
+                        ref start,
+                        ref end,
+                    } => {
+                        let start = start
+                            .as_ref()
+                            .map(|start| eval_bound(start, "start", op_span))
+                            .transpose();
+                        let end = end.as_ref().map(|end| eval_bound(end, "end", op_span)).transpose();
 
-                let range = IncRange { start_inc, end_inc };
-                Ok(MaybeCompile::Compile(CompileValue::IntRange(range)))
+                        Ok(MaybeCompile::Compile(CompileValue::IntRange(IncRange {
+                            start_inc: start?,
+                            end_inc: end?.map(|end| end - 1),
+                        })))
+                    }
+                    RangeLiteral::InclusiveEnd {
+                        op_span,
+                        ref start,
+                        ref end,
+                    } => {
+                        let start = start
+                            .as_ref()
+                            .map(|start| eval_bound(start, "start", op_span))
+                            .transpose();
+                        let end = eval_bound(end, "end", op_span);
+
+                        Ok(MaybeCompile::Compile(CompileValue::IntRange(IncRange {
+                            start_inc: start?,
+                            end_inc: Some(end?),
+                        })))
+                    }
+                    RangeLiteral::Length {
+                        op_span,
+                        ref start,
+                        ref len,
+                    } => {
+                        // TODO support runtime starts here too (so they can be full values),
+                        //   for now those are special-cased in the array indexing evaluation.
+                        //   Maybe we want real support for mixed compile/runtime compounds,
+                        //     eg. arrays, tuples, ranges, ...
+                        let start = eval_bound(start, "start", op_span);
+                        let length = eval_bound(len, "length", op_span);
+
+                        let start = start?;
+                        Ok(MaybeCompile::Compile(CompileValue::IntRange(IncRange {
+                            end_inc: Some(&start + length? - 1),
+                            start_inc: Some(start),
+                        })))
+                    }
+                }
             }
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Neg => {
@@ -447,132 +454,8 @@ impl CompileState<'_> {
                 self.eval_binary_expression(expr.span, op, left?, right?)
             }
             ExpressionKind::TernarySelect(_, _, _) => Err(diags.report_todo(expr.span, "expr kind TernarySelect")),
-            ExpressionKind::ArrayIndex(base, args) => {
-                // eval base and args
-                let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
-                let args = args.try_map_inner_all(|a| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, a));
-
-                let base = base?;
-                let args = args?;
-
-                // disallow named args
-                let mut result_named = Ok(());
-                for arg in &args.inner {
-                    if let Some(name) = &arg.name {
-                        result_named = Err(diags.report_todo(name.span, "named array dimensions"));
-                    }
-                }
-                result_named?;
-
-                // loop over all indices, folding the indexing operations
-                let mut curr = base;
-                for arg in args.inner {
-                    let curr_span = curr.span;
-
-                    let next_inner = match (curr.inner, arg.value.inner) {
-                        (MaybeCompile::Compile(curr_inner), MaybeCompile::Compile(arg_inner)) => {
-                            match curr_inner {
-                                // declare new array type
-                                CompileValue::Type(curr) => {
-                                    let dim_len = match arg_inner {
-                                        CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
-                                            diags.report_simple(
-                                                "array dimension length cannot be negative",
-                                                arg.span,
-                                                format!("got value `{}`", e.into_original()),
-                                            )
-                                        })?,
-                                        _ => {
-                                            return Err(diags.report_simple(
-                                                "array dimension length must be an integer",
-                                                arg.span,
-                                                format!("got value `{}`", arg_inner.to_diagnostic_string()),
-                                            ));
-                                        }
-                                    };
-
-                                    let result_ty = Type::Array(Box::new(curr), dim_len);
-                                    MaybeCompile::Compile(CompileValue::Type(result_ty))
-                                }
-                                // index into compile-time array
-                                CompileValue::Array(curr) => {
-                                    match arg_inner {
-                                        CompileValue::Int(index_inner) => {
-                                            let valid_range = 0..curr.len();
-                                            let index = index_inner.to_usize()
-                                                .filter(|index| valid_range.contains(index))
-                                                .ok_or_else(|| {
-                                                    diags.report_simple(
-                                                        "array index out of bounds",
-                                                        arg.span,
-                                                        format!("got index `{index_inner}`, valid range for this array is `{valid_range:?}`"),
-                                                    )
-                                                })?;
-                                            // TODO avoid clone, both of this value and of the entire array?
-                                            MaybeCompile::Compile(curr[index].clone())
-                                        }
-                                        CompileValue::IntRange(range) => {
-                                            let check_valid = |x: &Option<BigInt>, default: usize| {
-                                                // for slices, the valid range is inclusive
-                                                let valid_range = 0..=curr.len();
-                                                match x {
-                                                    None => Ok(default),
-                                                    Some(x) => x.to_usize()
-                                                        .filter(|index| valid_range.contains(index))
-                                                        .ok_or_else(|| {
-                                                            diags.report_simple(
-                                                                "array slice range out of bounds",
-                                                                arg.span,
-                                                                format!("got slice range `{range:?}`, valid range for this array is `{valid_range:?}`"),
-                                                            )
-                                                        })
-                                                }
-                                            };
-
-                                            let start = check_valid(&range.start_inc, 0)?;
-                                            let end = check_valid(&range.end_inc, curr.len())?;
-
-                                            if start > end {
-                                                return Err(diags.report_internal_error(
-                                                    arg.span,
-                                                    format!("invalid decreasing range `{range:?}`"),
-                                                ));
-                                            }
-
-                                            // TODO avoid clone, both of this slice and of the entire array?
-                                            MaybeCompile::Compile(CompileValue::Array(curr[start..end].to_vec()))
-                                        }
-                                        _ => {
-                                            return Err(diags.report_simple(
-                                                "array index must be an integer or an integer range",
-                                                arg.span,
-                                                format!("got value `{}`", arg_inner.to_diagnostic_string()),
-                                            ));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Err(diags.report_simple(
-                                        "array index on invalid target",
-                                        arg.span,
-                                        format!("target `{}` here", curr_inner.to_diagnostic_string()),
-                                    ));
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(diags.report_todo(arg.span, "runtime array indexing/slicing"));
-                        }
-                    };
-
-                    // TODO this is a bit of sketchy span, but maybe the best we can do
-                    curr = Spanned {
-                        span: curr_span.join(arg.span),
-                        inner: next_inner,
-                    }
-                }
-
-                Ok(curr.inner)
+            ExpressionKind::ArrayIndex(base, indices) => {
+                self.eval_array_index_expression(ctx, ctx_block, scope, vars, base, indices)
             }
             ExpressionKind::DotIdIndex(_, _) => Err(diags.report_todo(expr.span, "expr kind DotIdIndex")),
             ExpressionKind::DotIntIndex(_, _) => Err(diags.report_todo(expr.span, "expr kind DotIntIndex")),
@@ -615,6 +498,304 @@ impl CompileState<'_> {
                 Ok(MaybeCompile::Compile(self.eval_builtin(scope, vars, expr.span, args)?))
             }
         }
+    }
+
+    fn eval_array_index_expression<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: Scope,
+        vars: &VariableValues,
+        base: &Expression,
+        indices: &Spanned<Vec<Expression>>,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        // eval base and args
+        let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
+        let indices = indices
+            .inner
+            .iter()
+            .map(|index| {
+                // special case range with length
+                if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
+                    op_span,
+                    ref start,
+                    ref len,
+                }) = &index.inner
+                {
+                    let reason = TypeContainsReason::Operator(op_span);
+                    let start = self
+                        .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, start)
+                        .and_then(|start| check_type_is_int(diags, reason, start));
+                    let len = self
+                        .eval_expression_as_compile(scope, vars, len, "range length")
+                        .and_then(|len| check_type_is_uint_compile(diags, reason, len));
+
+                    let (start, len) = (start?, len?);
+                    match start.inner {
+                        MaybeCompile::Compile(start) => {
+                            // decay back to normal range for fully compile-time
+                            let range = IncRange {
+                                end_inc: Some(&start + &BigInt::from(len.clone()) - 1),
+                                start_inc: Some(start),
+                            };
+                            let range_compile = MaybeCompile::Compile(CompileValue::IntRange(range));
+                            Ok(Spanned {
+                                span: index.span,
+                                inner: range_compile,
+                            })
+                        }
+                        MaybeCompile::Other(start) => {
+                            // preserve special case
+                            let range = IrArrayIndexKind::SliceRange { start, len };
+                            Ok(Spanned {
+                                span: index.span,
+                                inner: MaybeCompile::Other(range),
+                            })
+                        }
+                    }
+                } else {
+                    let index_eval = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, index)?;
+
+                    let index_inner = match index_eval.inner {
+                        MaybeCompile::Compile(x) => MaybeCompile::Compile(x),
+                        MaybeCompile::Other(x) => MaybeCompile::Other(IrArrayIndexKind::IndexSingle(x)),
+                    };
+
+                    Ok(Spanned {
+                        span: index_eval.span,
+                        inner: index_inner,
+                    })
+                }
+            })
+            .try_collect_all_vec();
+
+        let base = base?;
+        let indices = indices?;
+
+        // loop over all indices, folding the indexing operations
+        let mut curr = base;
+        for index in indices {
+            curr = self.eval_array_index_expression_step(curr, index)?;
+        }
+        Ok(curr.inner)
+    }
+
+    fn eval_array_index_expression_step(
+        &mut self,
+        curr: Spanned<MaybeCompile<TypedIrExpression>>,
+        index: Spanned<MaybeCompile<IrArrayIndexKind>>,
+    ) -> Result<Spanned<MaybeCompile<TypedIrExpression>>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let next_inner = match (curr.inner, index.inner) {
+            (MaybeCompile::Compile(curr_inner), MaybeCompile::Compile(index_inner)) => {
+                let index = Spanned {
+                    span: index.span,
+                    inner: index_inner,
+                };
+
+                match curr_inner {
+                    CompileValue::Type(curr) => {
+                        // declare new array type
+                        let dim_len = match index.inner {
+                            CompileValue::Int(dim_len) => BigUint::try_from(dim_len).map_err(|e| {
+                                diags.report_simple(
+                                    "array dimension length cannot be negative",
+                                    index.span,
+                                    format!("got value `{}`", e.into_original()),
+                                )
+                            })?,
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "array dimension length must be an integer",
+                                    index.span,
+                                    format!("got value `{}`", index.inner.to_diagnostic_string()),
+                                ));
+                            }
+                        };
+
+                        let result_ty = Type::Array(Box::new(curr), dim_len);
+                        MaybeCompile::Compile(CompileValue::Type(result_ty))
+                    }
+                    CompileValue::Array(curr_inner) => {
+                        // simple compile-time array indexing
+                        match check_array_index(diags, curr.span, BigUint::from(curr_inner.len()), index)? {
+                            CheckedArrayIndex::Single { index } => {
+                                let index = index.to_usize().unwrap();
+                                MaybeCompile::Compile(curr_inner[index].clone())
+                            }
+                            CheckedArrayIndex::Slice { start, len } => {
+                                let start = start.to_usize().unwrap();
+                                let len = len.to_usize().unwrap();
+                                MaybeCompile::Compile(CompileValue::Array(curr_inner[start..start + len].to_vec()))
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(diags.report_simple(
+                            "array index on invalid target, must be type or array",
+                            index.span,
+                            format!("target `{}` here", curr_inner.to_diagnostic_string()),
+                        ));
+                    }
+                }
+            }
+            (curr_inner, index_inner) => {
+                let index = Spanned {
+                    span: index.span,
+                    inner: index_inner,
+                };
+
+                let (curr_ty_inner, curr_len) = match curr_inner.ty() {
+                    Type::Array(curr_ty_inner, curr_len) => (*curr_ty_inner, curr_len),
+                    _ => {
+                        return Err(diags.report_simple(
+                            "array index on invalid target, must be array",
+                            curr.span,
+                            format!("target `{}` here", curr_inner.ty().to_diagnostic_string()),
+                        ));
+                    }
+                };
+
+                let curr_ty_inner_hw = curr_ty_inner.as_hardware_type().ok_or_else(|| todo!())?;
+                let curr_ir = curr_inner.as_ir_expression(
+                    diags,
+                    curr.span,
+                    &HardwareType::Array(Box::new(curr_ty_inner_hw.clone()), curr_len.clone()),
+                )?;
+                let base = Box::new(curr_ir.expr);
+
+                let result = match index.inner {
+                    MaybeCompile::Compile(index_inner) => {
+                        let index = Spanned {
+                            span: index.span,
+                            inner: index_inner,
+                        };
+                        match check_array_index(diags, curr.span, curr_len, index)? {
+                            CheckedArrayIndex::Single { index } => {
+                                let expr = IrExpression::ArrayIndex {
+                                    base,
+                                    index: Box::new(IrExpression::Int(BigInt::from(index))),
+                                };
+                                TypedIrExpression {
+                                    ty: curr_ty_inner_hw,
+                                    domain: curr_ir.domain,
+                                    expr,
+                                }
+                            }
+                            CheckedArrayIndex::Slice { start, len } => {
+                                let expr = IrExpression::ArraySlice {
+                                    base,
+                                    start: Box::new(IrExpression::Int(BigInt::from(start))),
+                                    len: len.clone(),
+                                };
+                                TypedIrExpression {
+                                    ty: HardwareType::Array(Box::new(curr_ty_inner_hw), len),
+                                    domain: curr_ir.domain,
+                                    expr,
+                                }
+                            }
+                        }
+                    }
+                    MaybeCompile::Other(index_inner) => {
+                        match index_inner {
+                            IrArrayIndexKind::IndexSingle(index_inner) => {
+                                // check type and range
+                                let reason = TypeContainsReason::ArrayIndex { span_index: index.span };
+                                let valid_range = IncRange {
+                                    start_inc: Some(BigInt::ZERO),
+                                    end_inc: Some(BigInt::from(curr_len) - 1),
+                                };
+                                let value_ty = Spanned {
+                                    span: index.span,
+                                    inner: &index_inner.ty.as_type(),
+                                };
+                                check_type_contains_type(diags, reason, &Type::Int(valid_range), value_ty, false)?;
+
+                                // build expression
+                                let expr = IrExpression::ArrayIndex {
+                                    base,
+                                    index: Box::new(index_inner.expr),
+                                };
+                                TypedIrExpression {
+                                    ty: curr_ty_inner_hw,
+                                    domain: curr_ir.domain.join(&index_inner.domain),
+                                    expr,
+                                }
+                            }
+                            IrArrayIndexKind::SliceRange { start, len } => {
+                                // check ranges
+                                let min_start = &start.ty.start_inc;
+                                let max_end_inc = &start.ty.end_inc + BigInt::from(len.clone()) - 1;
+
+                                let valid_start_range = ClosedIncRange {
+                                    start_inc: BigInt::ZERO,
+                                    end_inc: BigInt::from(curr_len.clone()),
+                                };
+                                let valid_end_inc_range = ClosedIncRange {
+                                    start_inc: BigInt::from(-1),
+                                    end_inc: BigInt::from(curr_len) - 1,
+                                };
+
+                                let start_valid = valid_start_range.contains(&min_start);
+                                let end_valid = valid_end_inc_range.contains(&max_end_inc);
+
+                                if !start_valid || !end_valid {
+                                    let invalid = match (start_valid, end_valid) {
+                                        (false, false) => "start and end",
+                                        (false, true) => "start",
+                                        (true, false) => "end",
+                                        (true, true) => unreachable!(),
+                                    };
+
+                                    let msg_error = format!(
+                                        "got slice range with start range `{}` and length `{}`,resulting in total range `{}`",
+                                        start.ty,
+                                        len,
+                                        ClosedIncRange {
+                                            start_inc: min_start,
+                                            end_inc: &max_end_inc,
+                                        }
+                                    );
+                                    let msg_info = format!(
+                                        "for this array the valid start range is `{}` and end range is `{}`",
+                                        valid_start_range, valid_end_inc_range
+                                    );
+
+                                    let diag = Diagnostic::new(format!("array slice range {invalid} out of bounds"))
+                                        .add_error(index.span, msg_error)
+                                        .add_info(curr.span, msg_info)
+                                        .finish();
+                                    return Err(diags.report(diag));
+                                }
+
+                                // build result
+                                let expr = IrExpression::ArraySlice {
+                                    base,
+                                    start: Box::new(start.expr),
+                                    len: len.clone(),
+                                };
+                                TypedIrExpression {
+                                    ty: HardwareType::Array(Box::new(curr_ty_inner_hw), len),
+                                    domain: curr_ir.domain.join(&start.domain),
+                                    expr,
+                                }
+                            }
+                        }
+                    }
+                };
+
+                MaybeCompile::Other(result)
+            }
+        };
+
+        // TODO this is a bit of sketchy span, but maybe the best we can do
+        Ok(Spanned {
+            span: curr.span.join(index.span),
+            inner: next_inner,
+        })
     }
 
     // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
@@ -1074,7 +1255,10 @@ impl CompileState<'_> {
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
-        let mut ctx = CompileTimeExpressionContext;
+        let mut ctx = CompileTimeExpressionContext {
+            span: expr.span,
+            reason: reason.to_owned(),
+        };
         let mut ctx_block = ();
 
         let value_eval = self
@@ -1413,4 +1597,97 @@ fn store_ir_expression_in_dedicated_variable<C: ExpressionContext>(
         expr: ir_variable,
     };
     Ok(stored_value)
+}
+
+enum IrArrayIndexKind {
+    IndexSingle(TypedIrExpression),
+    SliceRange {
+        start: TypedIrExpression<ClosedIncRange<BigInt>>,
+        len: BigUint,
+    },
+}
+
+enum CheckedArrayIndex {
+    Single { index: BigUint },
+    Slice { start: BigUint, len: BigUint },
+}
+
+fn check_array_index(
+    diags: &Diagnostics,
+    array_span: Span,
+    array_len: BigUint,
+    index: Spanned<CompileValue>,
+) -> Result<CheckedArrayIndex, ErrorGuaranteed> {
+    match index.inner {
+        CompileValue::Int(index_inner) => {
+            let valid_range_index = BigInt::ZERO..BigInt::from(array_len);
+            if !valid_range_index.contains(&index_inner) {
+                return Err(diags.report_simple(
+                    "array index out of bounds",
+                    index.span,
+                    format!("got index `{index_inner}`, valid index range for this array is `{valid_range_index:?}`"),
+                ));
+            }
+            let index = index_inner.to_biguint().unwrap();
+
+            Ok(CheckedArrayIndex::Single { index })
+        }
+        CompileValue::IntRange(range) => {
+            // because we're using inclusive ranges (they are more convenient for math),
+            //   the slicing ranges become a bit weird
+            let valid_range_start_inc = BigInt::ZERO..=BigInt::from(array_len.clone());
+            let valid_range_end_inc = BigInt::from(-1i32)..BigInt::from(array_len.clone());
+
+            let IncRange { start_inc, end_inc } = &range;
+
+            let start_valid = start_inc
+                .as_ref()
+                .map_or(true, |start_inc| valid_range_start_inc.contains(start_inc));
+            let end_valid = end_inc
+                .as_ref()
+                .map_or(true, |end_inc| valid_range_end_inc.contains(end_inc));
+            if !start_valid || !end_valid {
+                let invalid = match (start_valid, end_valid) {
+                    (false, false) => "start and end",
+                    (false, true) => "start",
+                    (true, false) => "end",
+                    (true, true) => unreachable!(),
+                };
+
+                let diag = Diagnostic::new(format!("array slice range {invalid} out of bounds"))
+                    .add_error(index.span, format!("got slice range `{range}`"))
+                    .add_info(array_span, format!("for this array the valid start range is `{valid_range_start_inc:?}` and end range is `{valid_range_end_inc:?}`"))
+                    .finish();
+                return Err(diags.report(diag));
+            }
+
+            let start_inc = match &range.start_inc {
+                None => BigUint::ZERO,
+                Some(start_inc) => start_inc.to_biguint().unwrap(),
+            };
+            let end_ex = match &range.end_inc {
+                None => array_len.clone(),
+                Some(end_inc) => (end_inc + 1u32).to_biguint().unwrap(),
+            };
+
+            if start_inc > end_ex {
+                return Err(diags.report_internal_error(
+                    index.span,
+                    format!("invalid decreasing range `{range:?}` turned into `{start_inc}..{end_ex}` "),
+                ));
+            }
+
+            let len = end_ex - &start_inc;
+            Ok(CheckedArrayIndex::Slice { start: start_inc, len })
+        }
+        _ => Err(diags.report_simple(
+            "array index must be an integer or an integer range",
+            index.span,
+            format!(
+                "got value `{}` with type `{}`",
+                index.inner.to_diagnostic_string(),
+                index.inner.ty().to_diagnostic_string()
+            ),
+        )),
+    }
 }

@@ -8,6 +8,7 @@ use crate::util::int::IntRepresentation;
 use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
+use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
 pub struct IrDatabase {
@@ -190,10 +191,10 @@ pub enum IrExpression {
         base: Box<IrExpression>,
         index: Box<IrExpression>,
     },
-    // TODO require constant range?
     ArraySlice {
         base: Box<IrExpression>,
-        range: ClosedIncRange<Box<IrExpression>>,
+        start: Box<IrExpression>,
+        len: BigUint,
     },
 
     // casting
@@ -292,15 +293,14 @@ impl IrExpression {
             IrExpression::TupleLiteral(v) => IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect()),
             IrExpression::ArrayLiteral(ty, values) => IrType::Array(Box::new(ty.clone()), BigUint::from(values.len())),
 
-            // TODO cache resulting type?
-            IrExpression::ArrayIndex { base, .. } => match base.ty(module, locals) {
-                IrType::Array(inner, _) => *inner,
-                _ => unreachable!(),
-            },
-            IrExpression::ArraySlice { base, .. } => match base.ty(module, locals) {
-                IrType::Array(inner, _) => *inner,
-                _ => unreachable!(),
-            },
+            // TODO store resulting type in expression instead?
+            IrExpression::ArrayIndex { base, .. } => {
+                unwrap_match!(base.ty(module, locals), IrType::Array(inner, _) => *inner)
+            }
+            IrExpression::ArraySlice { base, start: _, len } => {
+                let inner = unwrap_match!(base.ty(module, locals), IrType::Array(inner, _) => inner);
+                IrType::Array(inner, len.clone())
+            }
 
             IrExpression::IntToBits(ty, _) => {
                 IrType::Array(Box::new(IrType::Bool), IntRepresentation::for_range(ty).width)
@@ -395,13 +395,12 @@ impl IrExpression {
             IrExpression::ArrayIndex { base, index } => {
                 format!("({}[{}])", base.to_diagnostic_string(m), index.to_diagnostic_string(m))
             }
-            IrExpression::ArraySlice { base, range } => {
-                let ClosedIncRange { start_inc, end_inc } = range;
+            IrExpression::ArraySlice { base, start, len } => {
                 format!(
-                    "({}[{}..{}])",
+                    "({}[{}..+{}])",
                     base.to_diagnostic_string(m),
-                    start_inc.to_diagnostic_string(m),
-                    end_inc.to_diagnostic_string(m)
+                    start.to_diagnostic_string(m),
+                    len
                 )
             }
             IrExpression::IntToBits(ty, x) => format!("int_to_bits({}, {})", ty, x.to_diagnostic_string(m)),
@@ -438,13 +437,9 @@ impl IrExpression {
                 f(base);
                 f(index);
             }
-            IrExpression::ArraySlice {
-                base,
-                range: ClosedIncRange { start_inc, end_inc },
-            } => {
+            IrExpression::ArraySlice { base, start, len: _ } => {
                 f(base);
-                f(start_inc);
-                f(end_inc);
+                f(start);
             }
             IrExpression::IntToBits(_ty, x) | IrExpression::IntFromBits(_ty, x) => f(x),
             IrExpression::ExpandIntRange(_ty, x) => f(x),

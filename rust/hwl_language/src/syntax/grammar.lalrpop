@@ -70,6 +70,7 @@ extern {
         "." => TokenType::Dot,
         ".." => TokenType::Dots,
         "..=" => TokenType::DotsEq,
+        "..+" => TokenType::DotsPlus,
         "&&" => TokenType::AmperAmper,
         "||" => TokenType::PipePipe,
         "^^" => TokenType::CircumflexCircumflex,
@@ -350,10 +351,12 @@ ExprLevelNoIn: Expression = Spanned<ExprLevelRange>;
 
 ExprLevelRange: ExpressionKind = {
     // assoc none
-    <range_start: BoxSpanned<ExprLevelLogical>?> ".." <range_end: BoxSpanned<ExprLevelLogical>?>
-        => ExpressionKind::RangeLiteral(RangeLiteral { end_inclusive: false, start: range_start, end: range_end }),
-    <range_start: BoxSpanned<ExprLevelLogical>?> "..=" <range_end: BoxSpanned<ExprLevelLogical>?>
-        => ExpressionKind::RangeLiteral(RangeLiteral { end_inclusive: true, start: range_start, end: range_end }),
+    <start:BoxSpanned<ExprLevelLogical>?> <op_span:Span<"..">> <end:BoxSpanned<ExprLevelLogical>?>
+        => ExpressionKind::RangeLiteral(RangeLiteral::ExclusiveEnd { op_span, start, end }),
+    <start:BoxSpanned<ExprLevelLogical>?> <op_span:Span<"..=">> <end:BoxSpanned<ExprLevelLogical>>
+        => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end }),
+    <start:BoxSpanned<ExprLevelLogical>> <op_span:Span<"..+">> <len:BoxSpanned<ExprLevelLogical>>
+        => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, len }),
     ExprLevelLogical,
 }
 
@@ -481,8 +484,8 @@ ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
         ExpressionKind::Call(target, args),
     // intentionally ban sequential array indices, the inner/outer order would be too confusing
     // TODO investigate exactly how C or maybe Java handles this
-    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "[" <args:Args> "]" =>
-        ExpressionKind::ArrayIndex(target, args),
+    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> <indices:Spanned<("[" <Separated<Expr, ",">> "]")>> =>
+        ExpressionKind::ArrayIndex(target, indices),
     ExprLevelDotIndex<AtomicInner>,
 }
 
