@@ -103,6 +103,7 @@ impl VariableValues {
                 span_use,
                 "variable used here",
             )),
+            // TODO point to examples of assignment and non-assignment
             MaybeAssignedValue::PartiallyAssigned => Err(diags.report_simple(
                 "variable has not yet been assigned a value in all preceding branches",
                 span_use,
@@ -769,11 +770,17 @@ impl CompileState<'_> {
                         | (_, &MaybeAssignedValue::FailedIfMerge(span)) => MaybeAssignedValue::FailedIfMerge(span),
                         // both the same state
                         (MaybeAssignedValue::Assigned(then_value), MaybeAssignedValue::Assigned(else_value)) => {
-                            let (assign_then, assign_else, result) =
-                                self.merge_variable_assigned_values(ctx, span_if, var, then_value, else_value)?;
-                            ctx.push_ir_statement(diags, &mut then_ir, assign_then)?;
-                            ctx.push_ir_statement(diags, &mut else_ir, assign_else)?;
-                            MaybeAssignedValue::Assigned(result)
+                            // TODO maybe it's better to just check whether either has been re-assigned,
+                            //   then we don't need to rely on equality
+                            if then_value == else_value {
+                                MaybeAssignedValue::Assigned(then_value.clone())
+                            } else {
+                                let (assign_then, assign_else, result) =
+                                    self.merge_variable_assigned_values(ctx, span_if, var, then_value, else_value)?;
+                                ctx.push_ir_statement(diags, &mut then_ir, assign_then)?;
+                                ctx.push_ir_statement(diags, &mut else_ir, assign_else)?;
+                                MaybeAssignedValue::Assigned(result)
+                            }
                         }
                         (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
                             MaybeAssignedValue::NotYetAssigned
@@ -825,12 +832,10 @@ impl CompileState<'_> {
         let diags = self.diags;
 
         // figure out the hardware type
-
-        let var_info = &self.variables[var];
-
         let then_ty = then_value.value.ty();
         let else_ty = else_value.value.ty();
         let ty = then_ty.union(&else_ty, false);
+        let var_info = &self.variables[var];
 
         let ty_hw = ty.as_hardware_type().ok_or_else(|| {
             let diag = Diagnostic::new(
