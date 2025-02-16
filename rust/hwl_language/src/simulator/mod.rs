@@ -463,7 +463,7 @@ impl CodegenBlockContext<'_> {
                     swriteln!(self.f, "{indent}{target_str} = {value_str};");
                 }
                 IrStatement::Block(inner) => {
-                    swriteln!(self.f, "{indent}");
+                    swrite!(self.f, "{indent}");
                     self.generate_nested_block(inner, stage_read)?;
                     swriteln!(self.f);
                 }
@@ -480,7 +480,7 @@ impl CodegenBlockContext<'_> {
                     self.generate_nested_block(then_block, stage_read)?;
 
                     if let Some(else_block) = else_block {
-                        swrite!(self.f, " else");
+                        swrite!(self.f, " else ");
                         self.generate_nested_block(else_block, stage_read)?;
                     }
 
