@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
-    IrIfStatement, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
-    IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort,
+    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo,
+    IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -784,11 +784,57 @@ fn lower_expression(
             lower_expression(diags, name_map, span, right, f)?;
             swrite!(f, ")");
         }
-        IrExpression::IntArithmetic(_, _, _, _) => throw!(diags.report_todo(span, "lower int arithmetic expression")),
-        IrExpression::IntCompare(_, _, _) => throw!(diags.report_todo(span, "lower int compare expression")),
+        IrExpression::IntArithmetic(op, ty, left, right) => {
+            // TODO bit-widths are not correct
+            let op_str = match op {
+                IrIntArithmeticOp::Add => "+",
+                IrIntArithmeticOp::Sub => "-",
+                IrIntArithmeticOp::Mul => "*",
+                IrIntArithmeticOp::Div => "/",
+                IrIntArithmeticOp::Mod => "%",
+                IrIntArithmeticOp::Pow => "**",
+            };
 
-        IrExpression::TupleLiteral(_) => throw!(diags.report_todo(span, "lower tuple literal")),
-        IrExpression::ArrayLiteral(_, elements) => {
+            let _ = ty;
+            swrite!(f, "(");
+            lower_expression(diags, name_map, span, left, f)?;
+            swrite!(f, " {} ", op_str);
+            lower_expression(diags, name_map, span, right, f)?;
+            swrite!(f, ")");
+        }
+        IrExpression::IntCompare(op, left, right) => {
+            // TODO bit-widths are not correct
+            let op_str = match op {
+                IrIntCompareOp::Eq => "==",
+                IrIntCompareOp::Neq => "!=",
+                IrIntCompareOp::Lt => "<",
+                IrIntCompareOp::Lte => "<=",
+                IrIntCompareOp::Gt => ">",
+                IrIntCompareOp::Gte => ">=",
+            };
+
+            swrite!(f, "(");
+            lower_expression(diags, name_map, span, left, f)?;
+            swrite!(f, " {} ", op_str);
+            lower_expression(diags, name_map, span, right, f)?;
+            swrite!(f, ")");
+        }
+
+        IrExpression::TupleLiteral(elements) => {
+            // verilog does not care much about types, this is just a concatenation
+            //  (assuming all sub-expression have the right width, which they should)
+            // TODO this is probably incorrect in general, we need to store the tuple in a variable first
+            swrite!(f, "{{");
+            for (i, elem) in enumerate(elements) {
+                if i != 0 {
+                    swrite!(f, ", ");
+                }
+
+                lower_expression(diags, name_map, span, elem, f)?;
+            }
+            swrite!(f, "}}");
+        }
+        IrExpression::ArrayLiteral(_inner_ty, elements) => {
             // verilog does not care much about types, this is just a concatenation
             //  (assuming all sub-expression have the right width, which they should)
             // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions

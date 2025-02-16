@@ -1,8 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement,
-    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
-    IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
+    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo,
+    IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier};
@@ -295,14 +296,14 @@ struct CodegenBlockContext<'a> {
 pub enum Evaluated {
     Temporary(usize),
     // TODO avoid string allocation for some common cases
-    Simple(String),
+    Inline(String),
 }
 
 impl Display for Evaluated {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Evaluated::Temporary(index) => write!(f, "t_{}", index),
-            Evaluated::Simple(s) => write!(f, "{}", s),
+            Evaluated::Inline(s) => write!(f, "{}", s),
         }
     }
 }
@@ -313,29 +314,64 @@ impl CodegenBlockContext<'_> {
         let todo = |kind: &str| self.diags.report_todo(span, format!("codegen IrExpression::{kind}"));
 
         let result = match expr {
-            &IrExpression::Bool(b) => Evaluated::Simple(format!("{b}")),
+            &IrExpression::Bool(b) => Evaluated::Inline(format!("{b}")),
             // TODO support arbitrary sized ints
-            IrExpression::Int(v) => Evaluated::Simple(format!("INT64_C({v})")),
+            IrExpression::Int(v) => Evaluated::Inline(format!("INT64_C({v})")),
             &IrExpression::Port(port) => {
                 let name = port_str(port, &self.module_info.ports[port]);
-                Evaluated::Simple(format!("*{stage_read}.{name}"))
+                Evaluated::Inline(format!("*{stage_read}.{name}"))
             }
             &IrExpression::Wire(wire) => {
                 let name = wire_str(wire, &self.module_info.wires[wire]);
-                Evaluated::Simple(format!("{stage_read}.{name}"))
+                Evaluated::Inline(format!("{stage_read}.{name}"))
             }
             &IrExpression::Register(reg) => {
                 let name = reg_str(reg, &self.module_info.registers[reg]);
-                Evaluated::Simple(format!("{stage_read}.{name}"))
+                Evaluated::Inline(format!("{stage_read}.{name}"))
             }
-            &IrExpression::Variable(var) => Evaluated::Simple(var_str(var, &self.locals[var])),
+            &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
             IrExpression::BoolNot(inner) => {
                 let inner_eval = self.eval(span, inner, stage_read)?;
-                Evaluated::Simple(format!("!({inner_eval})"))
+                Evaluated::Inline(format!("!({inner_eval})"))
             }
-            IrExpression::BoolBinary(_, _, _) => return Err(todo("BoolBinary")),
-            IrExpression::IntArithmetic(_, _, _, _) => return Err(todo("IntArithmetic")),
-            IrExpression::IntCompare(_, _, _) => return Err(todo("IntCompare")),
+            IrExpression::BoolBinary(op, left, right) => {
+                let op_str = match op {
+                    IrBoolBinaryOp::And => "&",
+                    IrBoolBinaryOp::Or => "|",
+                    IrBoolBinaryOp::Xor => "^",
+                };
+                let left_eval = self.eval(span, left, stage_read)?;
+                let right_eval = self.eval(span, right, stage_read)?;
+                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+            }
+            IrExpression::IntArithmetic(op, _ty, left, right) => {
+                // TODO types are  wrong
+                let op_str = match op {
+                    IrIntArithmeticOp::Add => "+",
+                    IrIntArithmeticOp::Sub => "-",
+                    IrIntArithmeticOp::Mul => "*",
+                    IrIntArithmeticOp::Div => "/",
+                    IrIntArithmeticOp::Mod => "%",
+                    IrIntArithmeticOp::Pow => return Err(todo("codegen power operator")),
+                };
+                let left_eval = self.eval(span, left, stage_read)?;
+                let right_eval = self.eval(span, right, stage_read)?;
+                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+            }
+            IrExpression::IntCompare(op, left, right) => {
+                // TODO types are  wrong
+                let op_str = match op {
+                    IrIntCompareOp::Eq => "==",
+                    IrIntCompareOp::Neq => "!=",
+                    IrIntCompareOp::Lt => "<",
+                    IrIntCompareOp::Lte => "<=",
+                    IrIntCompareOp::Gt => ">",
+                    IrIntCompareOp::Gte => ">=",
+                };
+                let left_eval = self.eval(span, left, stage_read)?;
+                let right_eval = self.eval(span, right, stage_read)?;
+                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+            }
 
             IrExpression::TupleLiteral(_) => return Err(todo("TupleLiteral")),
             IrExpression::ArrayLiteral(inner_ty, elements) => {
