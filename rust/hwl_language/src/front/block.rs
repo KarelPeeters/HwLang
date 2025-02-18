@@ -605,12 +605,11 @@ impl CompileState<'_> {
             }
         };
 
-        // convert to value
-        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_ty.inner);
-
-        let ir_value = ir_value?;
         check_domains?;
         check_ty?;
+
+        // convert to value
+        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_ty.inner)?;
 
         ctx.report_assignment(target.as_ref())?;
 

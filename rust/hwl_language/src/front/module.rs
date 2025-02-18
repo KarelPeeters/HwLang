@@ -698,19 +698,12 @@ impl BodyElaborationState<'_, '_> {
                 )?;
 
                 // check type
-                let mut any_err = Ok(());
                 let reason = TypeContainsReason::InstancePortInput {
                     span_connection_port_id: connection_id.span,
                     span_port_ty: port_ty.span,
                 };
-                any_err = any_err.and(check_type_contains_value(
-                    diags,
-                    reason,
-                    &port_ty.inner,
-                    connection_value.as_ref(),
-                    true,
-                    false,
-                ));
+                let check_ty =
+                    check_type_contains_value(diags, reason, &port_ty.inner, connection_value.as_ref(), true, false);
 
                 // check domain
                 let target_domain = Spanned {
@@ -718,19 +711,21 @@ impl BodyElaborationState<'_, '_> {
                     inner: &port_domain.as_ref_ok()?.inner,
                 };
                 let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
-                any_err = any_err.and(self.state.check_valid_domain_crossing(
+                let check_domain = self.state.check_valid_domain_crossing(
                     connection.span,
                     target_domain,
                     source_domain,
                     "input port connection",
-                ));
+                );
+
+                check_ty?;
+                check_domain?;
 
                 // convert value to ir
                 let connection_value_ir_raw = connection_value
                     .as_ref()
                     .map_inner(|v| Ok(v.as_ir_expression(diags, connection_expr.span, &port_ty_hw.inner)?.expr))
                     .transpose()?;
-                any_err?;
 
                 // build extra wire and process if necessary
                 let connection_value_ir =
