@@ -1,11 +1,10 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{CompileState, Constant, Parameter, Port, Register, Variable, Wire};
+use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
-use crate::front::ir::IrExpression;
+use crate::front::ir::{IrArrayLiteralElement, IrExpression};
 use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::syntax::ast::{ArrayLiteralElement, Spanned};
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
 use itertools::enumerate;
@@ -49,14 +48,6 @@ pub enum CompileValue {
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
-#[derive(Debug, Clone)]
-pub enum AssignmentTarget {
-    Port(Port),
-    Wire(Wire),
-    Register(Register),
-    Variable(Variable),
-}
-
 #[derive(Debug)]
 pub enum HardwareValueResult {
     Success(IrExpression),
@@ -78,19 +69,6 @@ pub enum HardwareReason {
     IfMerge { span_stmt: Span },
 
     TupleWithOtherHardwareValue { span_tuple: Span, span_other_value: Span },
-}
-
-impl AssignmentTarget {
-    pub fn ty(&self, state: &CompileState) -> Option<Spanned<Type>> {
-        match *self {
-            AssignmentTarget::Port(port) => Some(state.ports[port].ty.as_ref().map_inner(|ty| ty.as_type())),
-            AssignmentTarget::Wire(wire) => Some(state.wires[wire].ty.as_ref().map_inner(|ty| ty.as_type())),
-            AssignmentTarget::Register(register) => {
-                Some(state.registers[register].ty.as_ref().map_inner(|ty| ty.as_type()))
-            }
-            AssignmentTarget::Variable(variable) => state.variables[variable].ty.clone(),
-        }
-    }
 }
 
 impl Typed for CompileValue {
@@ -199,7 +177,7 @@ impl CompileValue {
                 HardwareType::Array(inner_ty, len) if len.to_usize() == Some(values.len()) => map_array(
                     values,
                     |_i| inner_ty,
-                    |e| ArrayLiteralElement { spread: None, value: e },
+                    IrArrayLiteralElement::Single,
                     |e| IrExpression::ArrayLiteral(inner_ty.to_ir(), e),
                 ),
                 _ => HardwareValueResult::InvalidType,
@@ -303,31 +281,9 @@ impl MaybeCompile<TypedIrExpression> {
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self {
             MaybeCompile::Compile(v) => v.as_ir_expression(diags, span, ty),
-            MaybeCompile::Other(v) => expand_expression_to_type(v.clone(), ty),
+            MaybeCompile::Other(v) => Ok(v.clone().soft_expand_to_type(ty)),
         }
     }
-}
-
-fn expand_expression_to_type(
-    expr: TypedIrExpression,
-    target: &HardwareType,
-) -> Result<TypedIrExpression, ErrorGuaranteed> {
-    let result = match (&expr.ty, target) {
-        (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
-            if target != expr_ty && target.contains_range(expr_ty) {
-                TypedIrExpression {
-                    ty: HardwareType::Int(target.clone()),
-                    domain: expr.domain,
-                    expr: IrExpression::ExpandIntRange(target.clone(), Box::new(expr.expr)),
-                }
-            } else {
-                expr
-            }
-        }
-        _ => expr,
-    };
-
-    Ok(result)
 }
 
 impl MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt> {

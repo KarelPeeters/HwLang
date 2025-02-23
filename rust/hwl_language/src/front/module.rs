@@ -1,4 +1,5 @@
-use crate::front::block::{BlockDomain, TypedIrExpression, VariableValues};
+use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase, VariableValues};
+use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
@@ -15,7 +16,7 @@ use crate::front::ir::{
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{AssignmentTarget, CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,
@@ -282,7 +283,7 @@ impl CompileState<'_> {
                 let reg_info = &state.state.registers[reg];
                 let reg_ir = reg_info.ir;
                 let statement =
-                    IrStatement::Assign(IrAssignmentTarget::Port(out_port_ir), IrExpression::Register(reg_ir));
+                    IrStatement::Assign(IrAssignmentTarget::port(out_port_ir), IrExpression::Register(reg_ir));
                 statements.push(Spanned {
                     span: reg_info.id.span(),
                     inner: statement,
@@ -740,7 +741,7 @@ impl BodyElaborationState<'_, '_> {
                         ctx_block.statements.push(Spanned {
                             span: connection.span,
                             inner: IrStatement::Assign(
-                                IrAssignmentTarget::Wire(extra_ir_wire),
+                                IrAssignmentTarget::wire(extra_ir_wire),
                                 connection_value_ir_raw.inner,
                             ),
                         });
@@ -780,7 +781,7 @@ impl BodyElaborationState<'_, '_> {
                                 let wire_info = &self.state.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
-                                    AssignmentTarget::Wire(wire),
+                                    AssignmentTargetBase::Wire(wire),
                                     &wire_info.ty,
                                     &wire_info.domain,
                                 )
@@ -789,7 +790,7 @@ impl BodyElaborationState<'_, '_> {
                                 let port_info = &self.state.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
-                                    AssignmentTarget::Port(port),
+                                    AssignmentTargetBase::Port(port),
                                     &port_info.ty,
                                     &port_info.domain.map_inner(ValueDomain::from_port_domain),
                                 )
@@ -829,7 +830,10 @@ impl BodyElaborationState<'_, '_> {
                         let driver = Driver::InstancePortConnection(stmt_index);
                         let target = Spanned {
                             span: named.span,
-                            inner: &signal_target,
+                            inner: &AssignmentTarget::simple(Spanned {
+                                span: named.span,
+                                inner: signal_target,
+                            }),
                         };
                         self.drivers.report_assignment(diags, driver, target)?;
 
@@ -925,13 +929,13 @@ impl BodyElaborationState<'_, '_> {
                                     "value `{}` with type `{}` cannot be represented as hardware type `{}`",
                                     init.inner.to_diagnostic_string(),
                                     init.inner.ty().to_diagnostic_string(),
-                                    reg_info.ty.inner.as_type().to_diagnostic_string()
+                                    reg_info.ty.inner.to_diagnostic_string()
                                 ),
                             )),
                         };
 
                         if let Some(init_ir) = init_ir {
-                            let stmt = IrStatement::Assign(IrAssignmentTarget::Register(reg_info.ir), init_ir);
+                            let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg_info.ir), init_ir);
                             process.on_reset.statements.push(Spanned {
                                 span: init.span,
                                 inner: stmt,
@@ -1137,7 +1141,7 @@ impl BodyElaborationState<'_, '_> {
 
         // append assignment to process
         if let Some(value) = value {
-            let target = IrAssignmentTarget::Wire(ir_wire);
+            let target = IrAssignmentTarget::wire(ir_wire);
             let stmt = IrStatement::Assign(target, value.inner.expr);
 
             let stmt = Spanned {
@@ -1233,9 +1237,7 @@ impl BodyElaborationState<'_, '_> {
         let no_vars = VariableValues::new_no_vars();
         let init = state.eval_expression_as_compile(scope_body, &no_vars, init, "register reset value");
 
-        let init = init;
         let port = port?;
-
         let port_info = &state.ports[port];
         let mut direction_err = Ok(());
 
@@ -1377,11 +1379,19 @@ impl Drivers {
             Ok(())
         }
 
-        match *target.inner {
-            AssignmentTarget::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
-            AssignmentTarget::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
-            AssignmentTarget::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
-            AssignmentTarget::Variable(_) => Err(diags.report_todo(target.span, "variable assignment")),
+        let AssignmentTarget { base, steps } = target.inner;
+
+        // TODO track steps, eg. "does this combinatorial block assign all array indices / struct fields / ..."
+        let _ = steps;
+
+        match base.inner {
+            AssignmentTargetBase::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
+            AssignmentTargetBase::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
+            AssignmentTargetBase::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
+            AssignmentTargetBase::Variable(_) => {
+                // we don't care about variable assignments, they're just internal to the process
+                Ok(())
+            }
         }
     }
 }

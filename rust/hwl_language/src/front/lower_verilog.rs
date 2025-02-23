@@ -1,12 +1,13 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
-    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrBoolBinaryOp,
+    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
+    IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort,
 };
 use crate::front::types::HardwareType;
-use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
@@ -292,7 +293,7 @@ fn lower_module_ports(
             PortDirection::Input => "input",
             PortDirection::Output => "output",
         };
-        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
+        let ty_debug_str = debug_info_ty.to_diagnostic_string();
 
         if is_actual_port {
             last_actual_port_index = Some(port_index);
@@ -348,7 +349,7 @@ fn lower_module_signals(
         };
 
         let name_debug_str = &debug_info_id.string();
-        let ty_debug_str = debug_info_ty.as_type().to_diagnostic_string();
+        let ty_debug_str = debug_info_ty.to_diagnostic_string();
 
         // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
         swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // {signal_type} {name_debug_str}: {debug_info_domain} {ty_debug_str}");
@@ -655,11 +656,13 @@ fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) 
 
     for stmt in statements {
         match &stmt.inner {
-            IrStatement::Assign(target, _) => match target {
-                &IrAssignmentTarget::Register(reg) => {
+            IrStatement::Assign(IrAssignmentTarget { base, steps: _ }, _) => match base {
+                &IrAssignmentTargetBase::Register(reg) => {
                     result.insert(reg);
                 }
-                IrAssignmentTarget::Wire(_) | IrAssignmentTarget::Port(_) | IrAssignmentTarget::Variable(_) => {}
+                IrAssignmentTargetBase::Wire(_)
+                | IrAssignmentTargetBase::Port(_)
+                | IrAssignmentTargetBase::Variable(_) => {}
             },
             IrStatement::Block(inner) => {
                 collect_written_registers(inner, result);
@@ -695,14 +698,9 @@ fn lower_block(
 
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let target = match *target {
-                    IrAssignmentTarget::Port(port) => name_map.ports.get(&port).unwrap(),
-                    IrAssignmentTarget::Wire(wire) => name_map.wires.get(&wire).unwrap(),
-                    IrAssignmentTarget::Register(reg) => name_map.registers.get(&reg).unwrap(),
-                    IrAssignmentTarget::Variable(var) => name_map.variables.get(&var).unwrap(),
-                };
-
-                swrite!(f, "{indent}{target} = ");
+                swrite!(f, "{indent}");
+                lower_assign_target(diag, name_map, stmt.span, target, f)?;
+                swrite!(f, " = ");
                 lower_expression(diag, name_map, stmt.span, source, f)?;
                 swriteln!(f, ";");
             }
@@ -729,6 +727,41 @@ fn lower_block(
                 }
 
                 swriteln!(f);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn lower_assign_target(
+    diag: &Diagnostics,
+    name_map: NameMap,
+    span: Span,
+    target: &IrAssignmentTarget,
+    f: &mut String,
+) -> Result<(), ErrorGuaranteed> {
+    // TODO this is probably wrong, we might need intermediate variables for the base and after each step
+    let IrAssignmentTarget { base, steps } = target;
+
+    match *base {
+        IrAssignmentTargetBase::Port(port) => swrite!(f, "{}", name_map.ports.get(&port).unwrap()),
+        IrAssignmentTargetBase::Wire(wire) => swrite!(f, "{}", name_map.wires.get(&wire).unwrap()),
+        IrAssignmentTargetBase::Register(reg) => swrite!(f, "{}", name_map.registers.get(&reg).unwrap()),
+        IrAssignmentTargetBase::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
+    }
+
+    for step in steps {
+        match step {
+            IrAssignmentTargetStep::ArrayAccess { start, slice_len: len } => {
+                // TODO this is wrong, we need to slice depending on element sizes,
+                //   (nested) arrays become flat bit vectors in verilog
+                swrite!(f, "[");
+                lower_expression(diag, name_map, span, start, f)?;
+                if let Some(len) = len {
+                    swrite!(f, "+:{}", lower_uint_str(len));
+                }
+                swrite!(f, "]");
             }
         }
     }
@@ -844,9 +877,11 @@ fn lower_expression(
                     swrite!(f, ", ");
                 }
 
-                let ArrayLiteralElement { spread, value } = elem;
-                let _ = spread;
-                lower_expression(diags, name_map, span, value, f)?;
+                let inner = match elem {
+                    IrArrayLiteralElement::Spread(inner) => inner,
+                    IrArrayLiteralElement::Single(inner) => inner,
+                };
+                lower_expression(diags, name_map, span, inner, f)?;
             }
             swrite!(f, "}}");
         }

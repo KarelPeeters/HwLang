@@ -239,6 +239,10 @@ impl HardwareType {
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.to_ir()), len.clone()),
         }
     }
+
+    pub fn to_diagnostic_string(&self) -> String {
+        self.as_type().to_diagnostic_string()
+    }
 }
 
 impl<T> IncRange<T> {

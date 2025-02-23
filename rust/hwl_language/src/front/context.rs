@@ -1,8 +1,8 @@
+use crate::front::assignment::AssignmentTarget;
 use crate::front::block::BlockDomain;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
 use crate::front::misc::ValueDomain;
-use crate::front::value::AssignmentTarget;
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::throw;

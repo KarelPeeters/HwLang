@@ -482,10 +482,18 @@ ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
         ExpressionKind::Builtin(args),
     <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
         ExpressionKind::Call(target, args),
-    // intentionally ban sequential array indices, the inner/outer order would be too confusing
+    // intentionally ban sequential array indices, the inner/outer order would be too confusing for types
     // TODO investigate exactly how C or maybe Java handles this
-    <target:BoxSpanned<ExprLevelDotIndex<AtomicInner>>> <indices:Spanned<("[" <Separated<Expr, ",">> "]")>> =>
+    <target:BoxSpanned<ExprLevelCallGenericNoArray<AtomicInner>>> <indices:Spanned<("[" <Separated<Expr, ",">> "]")>> =>
         ExpressionKind::ArrayIndex(target, indices),
+    ExprLevelDotIndex<AtomicInner>,
+}
+
+ExprLevelCallGenericNoArray<AtomicInner>: ExpressionKind = {
+    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" =>
+        ExpressionKind::Builtin(args),
+    <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
+        ExpressionKind::Call(target, args),
     ExprLevelDotIndex<AtomicInner>,
 }
 
@@ -518,10 +526,8 @@ ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     // TODO allow multiple stars to flatten multi-dimensional arrays?
-    <spread:Span<"*">?> <value:Expr> => ArrayLiteralElement {
-        spread,
-        value
-    },
+    <spread:Span<"*">> <value:Expr> => ArrayLiteralElement::Spread(spread, value),
+    <value:Expr> => ArrayLiteralElement::Single(value),
 }
 
 ExprLevelStructInit: ExpressionKind = {

@@ -1,4 +1,4 @@
-use crate::front::block::VariableValues;
+use crate::front::assignment::VariableValues;
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
 use crate::front::diagnostic::ErrorGuaranteed;

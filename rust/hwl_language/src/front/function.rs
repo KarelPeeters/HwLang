@@ -1,4 +1,5 @@
-use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression, VariableValues};
+use crate::front::assignment::VariableValues;
+use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
 use crate::front::context::ExpressionContext;

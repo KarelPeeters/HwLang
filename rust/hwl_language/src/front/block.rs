@@ -1,3 +1,4 @@
+use crate::front::assignment::{AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues};
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
@@ -6,10 +7,10 @@ use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatem
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::front::value::{AssignmentTarget, CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    Assignment, Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement,
-    ReturnStatement, Spanned, SyncDomain, VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement,
+    Spanned, SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -19,6 +20,7 @@ use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::{CheckedSub, One};
 
+// TODO move
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TypedIrExpression<T = HardwareType, E = IrExpression> {
     pub ty: T,
@@ -42,101 +44,30 @@ impl<T> TypedIrExpression<T, IrVariable> {
     }
 }
 
+impl TypedIrExpression {
+    pub fn soft_expand_to_type(self, ty: &HardwareType) -> Self {
+        match (&self.ty, ty) {
+            (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
+                if target != expr_ty && target.contains_range(expr_ty) {
+                    TypedIrExpression {
+                        ty: HardwareType::Int(target.clone()),
+                        domain: self.domain,
+                        expr: IrExpression::ExpandIntRange(target.clone(), Box::new(self.expr)),
+                    }
+                } else {
+                    self
+                }
+            }
+            _ => self,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum BlockDomain {
     CompileTime,
     Combinatorial,
     Clocked(Spanned<SyncDomain<DomainSignal>>),
-}
-
-// TODO move
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MaybeAssignedValue {
-    Assigned(AssignedValue),
-    NotYetAssigned,
-    PartiallyAssigned,
-    FailedIfMerge(Span),
-}
-
-// TODO move
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AssignedValue {
-    pub event: AssignmentEvent,
-    pub value: MaybeCompile<TypedIrExpression>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AssignmentEvent {
-    assigned_value_span: Span,
-}
-
-// TODO move
-#[derive(Debug, Clone)]
-pub struct VariableValues {
-    map: Option<IndexMap<Variable, MaybeAssignedValue>>,
-}
-
-impl VariableValues {
-    pub fn new() -> Self {
-        Self {
-            map: Some(IndexMap::new()),
-        }
-    }
-
-    pub fn new_no_vars() -> Self {
-        Self { map: None }
-    }
-
-    pub fn get(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> Result<&AssignedValue, ErrorGuaranteed> {
-        let map = self
-            .map
-            .as_ref()
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?;
-        let value = map
-            .get(&var)
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
-
-        match value {
-            MaybeAssignedValue::Assigned(value) => Ok(value),
-            MaybeAssignedValue::NotYetAssigned => Err(diags.report_simple(
-                "variable has not yet been assigned a value",
-                span_use,
-                "variable used here",
-            )),
-            // TODO point to examples of assignment and non-assignment
-            MaybeAssignedValue::PartiallyAssigned => Err(diags.report_simple(
-                "variable has not yet been assigned a value in all preceding branches",
-                span_use,
-                "variable used here",
-            )),
-            &MaybeAssignedValue::FailedIfMerge(span_if) => {
-                // TODO include more specific reason and/or hint
-                //   in particular, point to the runtime condition and the if keyword,
-                //   similar to the return/break/continue error message
-                let diag = Diagnostic::new("variable value from different `if` branches could not be merged")
-                    .add_error(span_use, "variable used here")
-                    .add_info(span_if, "if that caused the merge failure here")
-                    .finish();
-                Err(diags.report(diag))
-            }
-        }
-    }
-
-    pub fn set(
-        &mut self,
-        diags: &Diagnostics,
-        span_set: Span,
-        var: Variable,
-        value: MaybeAssignedValue,
-    ) -> Result<(), ErrorGuaranteed> {
-        match &mut self.map {
-            None => Err(diags.report_internal_error(span_set, "variables are not allowed in this context")),
-            Some(map) => {
-                map.insert(var, value);
-                Ok(())
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -439,193 +370,6 @@ impl CompileState<'_> {
         Ok((ctx_block, BlockEnd::Normal(vars)))
     }
 
-    fn elaborate_assignment<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
-        mut vars: VariableValues,
-        scope: Scope,
-        stmt: &Assignment,
-    ) -> Result<VariableValues, ErrorGuaranteed> {
-        let diags = self.diags;
-        let Assignment {
-            span: _,
-            op,
-            target: target_expr,
-            value,
-        } = stmt;
-
-        // TODO stop evaluating `left` twice, if there are side effects that is observably wrong
-        //   instead, add a way to turn targets into their "read value" form
-        let target = self.eval_expression_as_assign_target(scope, target_expr);
-
-        let expected_ty = target
-            .as_ref_ok()
-            .ok()
-            .and_then(|target| target.inner.ty(self).map(|ty| ty.inner))
-            .unwrap_or(Type::Any);
-        let value_right = self.eval_expression(ctx, ctx_block, scope, &vars, &expected_ty, value);
-
-        let value = if let Some(op) = op.transpose() {
-            let value_left = self.eval_expression(ctx, ctx_block, scope, &vars, &expected_ty, target_expr);
-
-            result_pair(value_left, value_right).and_then(|(left, right)| {
-                let result = self.eval_binary_expression(stmt.span, op, left, right)?;
-                Ok(Spanned {
-                    span: stmt.span,
-                    inner: result,
-                })
-            })
-        } else {
-            value_right
-        };
-
-        let target = target?;
-        let value = value?;
-
-        let condition_domains = ctx.condition_domains();
-
-        let (target_ty, target_domain, ir_target) = match target.inner {
-            AssignmentTarget::Port(port) => {
-                let info = &self.ports[port];
-                let domain = ValueDomain::from_port_domain(info.domain.inner);
-                (&info.ty, domain, IrAssignmentTarget::Port(info.ir))
-            }
-            AssignmentTarget::Wire(wire) => {
-                let info = &self.wires[wire];
-                let domain = info.domain.inner.clone();
-                (&info.ty, domain, IrAssignmentTarget::Wire(info.ir))
-            }
-            AssignmentTarget::Register(reg) => {
-                let info = &self.registers[reg];
-                let domain = ValueDomain::Sync(info.domain.inner);
-                (&info.ty, domain, IrAssignmentTarget::Register(self.registers[reg].ir))
-            }
-            AssignmentTarget::Variable(var) => {
-                // variable assignments are handled separately, they are evaluated at compile-time as much as possible
-                let VariableInfo { id, mutable, ty } = &mut self.variables[var];
-
-                // check mutable
-                if !*mutable {
-                    let diag = Diagnostic::new("assignment to immutable variable")
-                        .add_error(target.span, "variable assigned to here")
-                        .add_info(id.span(), "variable declared as immutable here")
-                        .finish();
-                    return Err(diags.report(diag));
-                }
-
-                // check type
-                if let Some(ty) = ty {
-                    let reason = TypeContainsReason::Assignment {
-                        span_target: target.span,
-                        span_target_ty: ty.span,
-                    };
-                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true, true)?;
-                }
-
-                // save the value
-                let assigned = AssignedValue {
-                    event: AssignmentEvent {
-                        assigned_value_span: value.span,
-                    },
-                    value: value.inner,
-                };
-                vars.set(diags, target.span, var, MaybeAssignedValue::Assigned(assigned))?;
-
-                return Ok(vars);
-            }
-        };
-
-        // check type
-        let reason = TypeContainsReason::Assignment {
-            span_target: target.span,
-            span_target_ty: target_ty.span,
-        };
-        let check_ty =
-            check_type_contains_value(diags, reason, &target_ty.inner.as_type(), value.as_ref(), true, false);
-
-        // check domains
-        let value_domain = value.inner.domain();
-        // TODO better error messages with more explanation
-        let target_domain = Spanned {
-            span: target.span,
-            inner: &target_domain,
-        };
-        let value_domain = Spanned {
-            span: value.span,
-            inner: value_domain,
-        };
-
-        let check_domains = match ctx.block_domain() {
-            BlockDomain::CompileTime => {
-                for d in [&target_domain, &value_domain] {
-                    if d.inner != &ValueDomain::CompileTime {
-                        throw!(diags.report_internal_error(d.span, "non-compile-time domain in compile-time context"))
-                    }
-                }
-                Ok(())
-            }
-            BlockDomain::Combinatorial => {
-                let mut check = self.check_valid_domain_crossing(
-                    stmt.span,
-                    target_domain,
-                    value_domain,
-                    "value to target in combinatorial block",
-                );
-
-                for condition_domain in condition_domains {
-                    let c = self.check_valid_domain_crossing(
-                        stmt.span,
-                        target_domain,
-                        condition_domain.as_ref(),
-                        "condition to target in combinatorial block",
-                    );
-                    check = check.and(c);
-                }
-
-                check
-            }
-            BlockDomain::Clocked(block_domain) => {
-                let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
-
-                let check_target_domain = self.check_valid_domain_crossing(
-                    stmt.span,
-                    target_domain,
-                    block_domain.as_ref(),
-                    "clocked block to target",
-                );
-                let check_value_domain = self.check_valid_domain_crossing(
-                    stmt.span,
-                    block_domain.as_ref(),
-                    value_domain,
-                    "value to clocked block",
-                );
-
-                check_target_domain.and(check_value_domain)
-            }
-        };
-
-        check_domains?;
-        check_ty?;
-
-        // convert to value
-        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_ty.inner)?;
-
-        ctx.report_assignment(target.as_ref())?;
-
-        let stmt_ir = IrStatement::Assign(ir_target, ir_value.expr);
-        ctx.push_ir_statement(
-            diags,
-            ctx_block,
-            Spanned {
-                span: stmt.span,
-                inner: stmt_ir,
-            },
-        )?;
-
-        Ok(vars)
-    }
-
     fn elaborate_if_statement<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -879,13 +623,14 @@ impl CompileState<'_> {
             .value
             .as_ir_expression(diags, else_value.event.assigned_value_span, &ty_hw)?;
 
+        let var_target = || IrAssignmentTarget::variable(var_ir);
         let assign_then = Spanned {
             span: span_if,
-            inner: IrStatement::Assign(IrAssignmentTarget::Variable(var_ir), then_value_ir.expr),
+            inner: IrStatement::Assign(var_target(), then_value_ir.expr),
         };
         let assign_else = Spanned {
             span: span_if,
-            inner: IrStatement::Assign(IrAssignmentTarget::Variable(var_ir), else_value_ir.expr),
+            inner: IrStatement::Assign(var_target(), else_value_ir.expr),
         };
 
         // return the resulting variable

@@ -1,10 +1,12 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrDatabase, IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo,
-    IrPortConnection, IrStatement, IrType, IrVariables, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrDatabase,
+    IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement, IrType, IrVariables,
+    IrWireOrPort,
 };
-use crate::syntax::ast::ArrayLiteralElement;
 use crate::syntax::pos::Span;
+use std::borrow::Cow;
+use unwrap_match::unwrap_match;
 
 // TODO expand all of this
 
@@ -86,17 +88,12 @@ impl IrBlock {
         for stmt in &self.statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
-                    let target_ty = match *target {
-                        IrAssignmentTarget::Port(port) => &module.ports[port].ty,
-                        IrAssignmentTarget::Register(reg) => &module.registers[reg].ty,
-                        IrAssignmentTarget::Wire(wire) => &module.wires[wire].ty,
-                        IrAssignmentTarget::Variable(var) => &locals[var].ty,
-                    };
+                    let target_ty = assignment_target_ty(module, locals, target);
 
                     expr.validate(diags, module, locals, stmt.span)?;
                     let expr_ty = expr.ty(module, locals);
 
-                    check_type_match(diags, stmt.span, target_ty, &expr_ty)?;
+                    check_type_match(diags, stmt.span, target_ty.as_ref(), &expr_ty)?;
                 }
                 IrStatement::Block(block) => {
                     block.validate(diags, module, locals)?;
@@ -123,6 +120,40 @@ impl IrBlock {
     }
 }
 
+fn assignment_target_ty<'a>(
+    module: &'a IrModuleInfo,
+    locals: &'a IrVariables,
+    target: &IrAssignmentTarget,
+) -> Cow<'a, IrType> {
+    let IrAssignmentTarget { base, steps } = target;
+
+    let base_ty = match *base {
+        IrAssignmentTargetBase::Port(port) => Cow::Borrowed(&module.ports[port].ty),
+        IrAssignmentTargetBase::Register(reg) => Cow::Borrowed(&module.registers[reg].ty),
+        IrAssignmentTargetBase::Wire(wire) => Cow::Borrowed(&module.wires[wire].ty),
+        IrAssignmentTargetBase::Variable(var) => Cow::Borrowed(&locals[var].ty),
+    };
+
+    let mut curr_ty = base_ty;
+    for step in steps {
+        match step {
+            IrAssignmentTargetStep::ArrayAccess {
+                start: _,
+                slice_len: len,
+            } => {
+                // TODO avoid clone
+                let curr_ty_inner = unwrap_match!(curr_ty.into_owned(), IrType::Array(inner, _) => inner);
+                curr_ty = match len {
+                    None => Cow::Owned(*curr_ty_inner),
+                    Some(len) => Cow::Owned(IrType::Array(curr_ty_inner, len.clone())),
+                }
+            }
+        }
+    }
+
+    curr_ty
+}
+
 impl IrExpression {
     pub fn validate(
         &self,
@@ -141,17 +172,19 @@ impl IrExpression {
             IrExpression::TupleLiteral(_) => {}
             IrExpression::ArrayLiteral(inner_ty, values) => {
                 for value in values {
-                    let ArrayLiteralElement { spread, value } = value;
-                    let value_ty = value.ty(module, locals);
-
-                    if spread.is_some() {
-                        let len = match value.ty(module, locals) {
-                            IrType::Array(_, len) => len,
-                            _ => unreachable!(),
-                        };
-                        check_type_match(diags, span, &IrType::Array(Box::new(inner_ty.clone()), len), &value_ty)?;
-                    } else {
-                        check_type_match(diags, span, inner_ty, &value_ty)?
+                    match value {
+                        IrArrayLiteralElement::Single(value) => {
+                            let value_ty = value.ty(module, locals);
+                            check_type_match(diags, span, inner_ty, &value_ty)?
+                        }
+                        IrArrayLiteralElement::Spread(value) => {
+                            let value_ty = value.ty(module, locals);
+                            let len = match value.ty(module, locals) {
+                                IrType::Array(_, len) => len,
+                                _ => unreachable!(),
+                            };
+                            check_type_match(diags, span, &IrType::Array(Box::new(inner_ty.clone()), len), &value_ty)?;
+                        }
                     }
                 }
             }

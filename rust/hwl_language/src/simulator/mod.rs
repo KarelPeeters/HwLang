@@ -1,12 +1,12 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression,
-    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrBoolBinaryOp,
+    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister,
+    IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
-use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier};
+use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::Indent;
@@ -283,6 +283,45 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     Ok(source)
 }
 
+enum Evaluated {
+    Temporary(Temporary),
+    // TODO avoid string allocation for some common cases
+    Inline(String),
+}
+
+#[derive(Copy, Clone)]
+struct Temporary(usize);
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum Stage {
+    Prev,
+    Next,
+}
+
+impl Display for Evaluated {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Evaluated::Temporary(t) => write!(f, "{}", t),
+            Evaluated::Inline(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl Display for Temporary {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "t_{}", self.0)
+    }
+}
+
+impl Display for Stage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stage::Prev => write!(f, "prev"),
+            Stage::Next => write!(f, "next"),
+        }
+    }
+}
+
 struct CodegenBlockContext<'a> {
     diags: &'a Diagnostics,
     module_info: &'a IrModuleInfo,
@@ -290,22 +329,6 @@ struct CodegenBlockContext<'a> {
     f: &'a mut String,
     indent: Indent,
     next_temporary_index: usize,
-}
-
-#[derive(Debug)]
-pub enum Evaluated {
-    Temporary(usize),
-    // TODO avoid string allocation for some common cases
-    Inline(String),
-}
-
-impl Display for Evaluated {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Evaluated::Temporary(index) => write!(f, "t_{}", index),
-            Evaluated::Inline(s) => write!(f, "{}", s),
-        }
-    }
 }
 
 impl CodegenBlockContext<'_> {
@@ -386,19 +409,22 @@ impl CodegenBlockContext<'_> {
 
                 let mut offset = BigUint::zero();
                 for element in elements {
-                    let ArrayLiteralElement { spread, value } = element;
-                    let value_eval = self.eval(span, value, stage_read)?;
-                    if spread.is_some() {
-                        let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
-                        swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
-                        offset += element_len;
-                    } else {
-                        swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
-                        offset += 1u32;
+                    match element {
+                        IrArrayLiteralElement::Single(value) => {
+                            let value_eval = self.eval(span, value, stage_read)?;
+                            swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
+                            offset += 1u32;
+                        }
+                        IrArrayLiteralElement::Spread(value) => {
+                            let value_eval = self.eval(span, value, stage_read)?;
+                            let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
+                            swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
+                            offset += element_len;
+                        }
                     }
                 }
 
-                tmp_result
+                Evaluated::Temporary(tmp_result)
             }
 
             IrExpression::ArrayIndex { .. } => return Err(todo("ArrayIndex")),
@@ -415,7 +441,7 @@ impl CodegenBlockContext<'_> {
                     "{indent}std::copy_n({base_eval}.begin() + {start_eval}, {len}, {tmp_result}.begin());"
                 );
 
-                tmp_result
+                Evaluated::Temporary(tmp_result)
             }
 
             IrExpression::IntToBits(_, _) => return Err(todo("IntToBits")),
@@ -446,21 +472,31 @@ impl CodegenBlockContext<'_> {
         for stmt in statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
-                    let next = Stage::Next;
-                    let target_str = match *target {
-                        IrAssignmentTarget::Port(port) => {
-                            format!("*{next}.{}", port_str(port, &self.module_info.ports[port]))
-                        }
-                        IrAssignmentTarget::Register(reg) => {
-                            format!("{next}.{}", reg_str(reg, &self.module_info.registers[reg]))
-                        }
-                        IrAssignmentTarget::Wire(wire) => {
-                            format!("{next}.{}", wire_str(wire, &self.module_info.wires[wire]))
-                        }
-                        IrAssignmentTarget::Variable(var) => var_str(var, &self.locals[var]),
-                    };
-                    let value_str = self.eval(stmt.span, expr, stage_read)?;
-                    swriteln!(self.f, "{indent}{target_str} = {value_str};");
+                    let Target {
+                        loops: target_loops,
+                        inner: target_inner,
+                    } = self.eval_assignment_target(stmt.span, target, stage_read)?;
+                    let value_eval = self.eval(stmt.span, expr, stage_read)?;
+
+                    for (i, (tmp_i, start, len)) in enumerate(&target_loops) {
+                        let indent_i = indent.nest_n(i);
+                        swriteln!(
+                            self.f,
+                            "{indent_i}for (std::size_t {tmp_i} = {start}; {tmp_i} < {start} + {len}; {tmp_i}++) {{"
+                        );
+                    }
+
+                    let indent_n = indent.nest_n(target_loops.len());
+                    swrite!(self.f, "{indent_n}{target_inner} = {value_eval}");
+                    for (tmp_i, _, _) in target_loops.iter().rev() {
+                        swrite!(self.f, "[{tmp_i}]");
+                    }
+                    swriteln!(self.f, ";");
+
+                    for i in 0..target_loops.len() {
+                        let indent_i = indent.nest_n(i);
+                        swrite!(self.f, "{indent_i}}}");
+                    }
                 }
                 IrStatement::Block(inner) => {
                     swrite!(self.f, "{indent}");
@@ -492,26 +528,64 @@ impl CodegenBlockContext<'_> {
         Ok(())
     }
 
-    fn new_temporary(&mut self) -> Evaluated {
+    fn eval_assignment_target(
+        &mut self,
+        span: Span,
+        target: &IrAssignmentTarget,
+        stage_read: Stage,
+    ) -> Result<Target, ErrorGuaranteed> {
+        let next = Stage::Next;
+        let IrAssignmentTarget { base, steps } = target;
+
+        let base_str = match *base {
+            IrAssignmentTargetBase::Port(port) => {
+                let port_str = port_str(port, &self.module_info.ports[port]);
+                format!("*{next}.{port_str}")
+            }
+            IrAssignmentTargetBase::Register(reg) => {
+                let reg_str = reg_str(reg, &self.module_info.registers[reg]);
+                format!("{next}.{reg_str}")
+            }
+            IrAssignmentTargetBase::Wire(wire) => {
+                let wire_str = wire_str(wire, &self.module_info.wires[wire]);
+                format!("{next}.{wire_str}")
+            }
+            IrAssignmentTargetBase::Variable(var) => var_str(var, &self.locals[var]),
+        };
+
+        let mut curr_str = base_str;
+        let mut loops = vec![];
+
+        for step in steps {
+            match step {
+                IrAssignmentTargetStep::ArrayAccess { start, slice_len: len } => {
+                    let start = self.eval(span, start, stage_read)?;
+
+                    match len {
+                        None => swrite!(&mut curr_str, "[{start}]"),
+                        Some(len) => {
+                            let tmp_index = self.new_temporary();
+                            loops.push((tmp_index, start, len.clone()));
+                            swrite!(&mut curr_str, "[{tmp_index}]");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Target { loops, inner: curr_str })
+    }
+
+    fn new_temporary(&mut self) -> Temporary {
         let index = self.next_temporary_index;
         self.next_temporary_index += 1;
-        Evaluated::Temporary(index)
+        Temporary(index)
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Stage {
-    Prev,
-    Next,
-}
-
-impl Display for Stage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Stage::Prev => write!(f, "prev"),
-            Stage::Next => write!(f, "next"),
-        }
-    }
+struct Target {
+    loops: Vec<(Temporary, Evaluated, BigUint)>,
+    inner: String,
 }
 
 fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, ErrorGuaranteed> {

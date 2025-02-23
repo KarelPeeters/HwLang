@@ -4,6 +4,8 @@ pub mod misc;
 pub mod types;
 pub mod value;
 
+pub mod array;
+pub mod assignment;
 pub mod block;
 pub mod check;
 pub mod compile;

@@ -153,6 +153,10 @@ impl Indent {
     pub fn nest(self) -> Indent {
         Indent { depth: self.depth + 1 }
     }
+
+    pub fn nest_n(self, n: usize) -> Indent {
+        Indent { depth: self.depth + n }
+    }
 }
 
 impl Display for Indent {

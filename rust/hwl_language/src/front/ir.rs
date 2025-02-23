@@ -2,7 +2,7 @@ use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{ArrayLiteralElement, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
 use indexmap::IndexMap;
@@ -151,11 +151,51 @@ pub struct IrIfStatement {
 }
 
 #[derive(Debug)]
-pub enum IrAssignmentTarget {
+pub struct IrAssignmentTarget {
+    pub base: IrAssignmentTargetBase,
+    pub steps: Vec<IrAssignmentTargetStep>,
+}
+
+impl IrAssignmentTarget {
+    pub fn simple(base: IrAssignmentTargetBase) -> Self {
+        IrAssignmentTarget {
+            base,
+            steps: Vec::new(),
+        }
+    }
+
+    pub fn wire(wire: IrWire) -> Self {
+        IrAssignmentTarget::simple(IrAssignmentTargetBase::Wire(wire))
+    }
+
+    pub fn port(port: IrPort) -> Self {
+        IrAssignmentTarget::simple(IrAssignmentTargetBase::Port(port))
+    }
+
+    pub fn register(reg: IrRegister) -> Self {
+        IrAssignmentTarget::simple(IrAssignmentTargetBase::Register(reg))
+    }
+
+    pub fn variable(var: IrVariable) -> Self {
+        IrAssignmentTarget::simple(IrAssignmentTargetBase::Variable(var))
+    }
+}
+
+#[derive(Debug)]
+pub enum IrAssignmentTargetBase {
     Port(IrPort),
     Register(IrRegister),
     Wire(IrWire),
     Variable(IrVariable),
+}
+
+// TODO re-use from frontend?
+#[derive(Debug)]
+pub enum IrAssignmentTargetStep {
+    ArrayAccess {
+        start: IrExpression,
+        slice_len: Option<BigUint>,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -184,7 +224,7 @@ pub enum IrExpression {
     // concat
     TupleLiteral(Vec<IrExpression>),
     // TODO remove spread operator from this, replace with concat operator?
-    ArrayLiteral(IrType, Vec<ArrayLiteralElement<IrExpression>>),
+    ArrayLiteral(IrType, Vec<IrArrayLiteralElement>),
 
     // slice
     ArrayIndex {
@@ -201,6 +241,12 @@ pub enum IrExpression {
     IntToBits(ClosedIncRange<BigInt>, Box<IrExpression>),
     IntFromBits(ClosedIncRange<BigInt>, Box<IrExpression>),
     ExpandIntRange(ClosedIncRange<BigInt>, Box<IrExpression>),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum IrArrayLiteralElement {
+    Single(IrExpression),
+    Spread(IrExpression),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -270,6 +316,10 @@ impl IrType {
             IrType::Tuple(inner) => inner.iter().map(IrType::bit_width).sum(),
             IrType::Array(inner, len) => inner.bit_width() * len,
         }
+    }
+
+    pub fn to_diagnostic_string(&self) -> String {
+        self.as_type().to_diagnostic_string()
     }
 }
 
@@ -379,14 +429,12 @@ impl IrExpression {
                 format!("({})", v_str)
             }
             IrExpression::ArrayLiteral(ty, v) => {
-                let ty_str = ty.as_type().to_diagnostic_string();
+                let ty_str = ty.to_diagnostic_string();
                 let v_str = v
                     .iter()
-                    .map(|x| {
-                        let ArrayLiteralElement { value, spread } = x;
-                        let value_str = value.to_diagnostic_string(m);
-                        let spread_str = if spread.is_some() { "*" } else { "" };
-                        format!("{}{}", spread_str, value_str)
+                    .map(|x| match x {
+                        IrArrayLiteralElement::Single(value) => value.to_diagnostic_string(m),
+                        IrArrayLiteralElement::Spread(value) => format!("*{}", value.to_diagnostic_string(m)),
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -432,7 +480,9 @@ impl IrExpression {
                 f(right);
             }
             IrExpression::TupleLiteral(x) => x.iter().for_each(f),
-            IrExpression::ArrayLiteral(_ty, x) => x.iter().for_each(|a| f(&a.value)),
+            IrExpression::ArrayLiteral(_ty, x) => x.iter().for_each(|a| match a {
+                IrArrayLiteralElement::Single(v) | IrArrayLiteralElement::Spread(v) => f(v),
+            }),
             IrExpression::ArrayIndex { base, index } => {
                 f(base);
                 f(index);

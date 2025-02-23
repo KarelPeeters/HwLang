@@ -279,6 +279,27 @@ pub fn check_type_is_int_compile(
     }
 }
 
+pub fn check_type_is_int_hardware(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<TypedIrExpression>,
+) -> Result<Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>, ErrorGuaranteed> {
+    let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
+    check_type_contains_type(diags, reason, &Type::Int(IncRange::OPEN), value_ty.as_ref(), false)?;
+
+    match value.inner.ty {
+        HardwareType::Int(ty) => Ok(Spanned {
+            span: value.span,
+            inner: TypedIrExpression {
+                ty,
+                domain: value.inner.domain,
+                expr: value.inner.expr,
+            },
+        }),
+        _ => Err(diags.report_internal_error(value.span, "expected int type, should have already been checked")),
+    }
+}
+
 pub fn check_type_is_uint_compile(
     diags: &Diagnostics,
     reason: TypeContainsReason,

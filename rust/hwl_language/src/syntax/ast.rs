@@ -1,3 +1,4 @@
+use crate::front::value::MaybeCompile;
 use crate::syntax::pos::Span;
 use crate::util::iter::IterExt;
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
@@ -492,16 +493,41 @@ impl<N, T> Args<N, T> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ArrayLiteralElement<V> {
-    pub spread: Option<Span>,
-    pub value: V,
+pub enum ArrayLiteralElement<V> {
+    Single(V),
+    Spread(Span, V),
 }
 
-impl<T> ArrayLiteralElement<Spanned<T>> {
+impl<V> ArrayLiteralElement<Spanned<V>> {
     pub fn span(&self) -> Span {
-        match self.spread {
-            Some(spread_span) => spread_span.join(self.value.span),
-            None => self.value.span,
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
+impl<V> ArrayLiteralElement<V> {
+    pub fn map_inner<W>(&self, f: impl FnOnce(&V) -> W) -> ArrayLiteralElement<W> {
+        match self {
+            ArrayLiteralElement::Single(value) => ArrayLiteralElement::Single(f(&value)),
+            ArrayLiteralElement::Spread(span, value) => ArrayLiteralElement::Spread(*span, f(&value)),
+        }
+    }
+
+    pub fn value(&self) -> &V {
+        match self {
+            ArrayLiteralElement::Single(value) => &value,
+            ArrayLiteralElement::Spread(_, value) => &value,
+        }
+    }
+}
+
+impl<T, E> ArrayLiteralElement<Result<T, E>> {
+    pub fn transpose(self) -> Result<ArrayLiteralElement<T>, E> {
+        match self {
+            ArrayLiteralElement::Single(value) => Ok(ArrayLiteralElement::Single(value?)),
+            ArrayLiteralElement::Spread(span, value) => Ok(ArrayLiteralElement::Spread(span, value?)),
         }
     }
 }
@@ -657,6 +683,21 @@ impl<T, E> Spanned<Result<T, E>> {
 impl<T> Spanned<Option<T>> {
     pub fn transpose(self) -> Option<Spanned<T>> {
         self.inner.map(|inner| Spanned { span: self.span, inner })
+    }
+}
+
+impl<T, C> Spanned<MaybeCompile<T, C>> {
+    pub fn transpose(self) -> MaybeCompile<Spanned<T>, Spanned<C>> {
+        match self.inner {
+            MaybeCompile::Compile(value) => MaybeCompile::Compile(Spanned {
+                span: self.span,
+                inner: value,
+            }),
+            MaybeCompile::Other(value) => MaybeCompile::Other(Spanned {
+                span: self.span,
+                inner: value,
+            }),
+        }
     }
 }
 
