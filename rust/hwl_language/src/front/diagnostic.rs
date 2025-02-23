@@ -13,6 +13,7 @@ use std::cmp::min;
 //   and that the error has already been reported as a diagnostic.
 //   The current name is copied from the rust compiler:
 //     https://rustc-dev-guide.rust-lang.org/diagnostics/error-guaranteed.html
+// TODO create DResult<T> = Result<T, ErrorGuaranteed> alias
 
 /// Indicates that an error was already reported.
 ///

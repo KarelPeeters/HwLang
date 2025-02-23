@@ -310,272 +310,247 @@ pub fn handle_array_variable_assignment_steps(
     let next_span = value_span.join(step.span);
 
     match &step.inner {
-        AssignmentTargetStep::ArrayAccess(access) => {
-            match access {
-                ArrayAccessStep::IndexOrSliceLen { start, slice_len } => match (value.inner, start) {
-                    (MaybeCompile::Compile(value), MaybeCompile::Compile(start)) => match value {
-                        CompileValue::Array(values) => {
-                            let values_len = Spanned {
-                                span: value_span,
-                                inner: values.len(),
-                            };
-                            let ty_inner = expected_ty.map(|ty| {
-                                ty.map_inner(|ty| match ty {
-                                    Type::Array(ty_inner, _) => &**ty_inner,
-                                    _ => todo!("error"),
-                                })
-                            });
+        AssignmentTargetStep::ArrayAccess(access) => match access {
+            ArrayAccessStep::IndexOrSliceLen { start, slice_len } => match (value.inner, start) {
+                (MaybeCompile::Compile(value), MaybeCompile::Compile(start)) => match value {
+                    CompileValue::Array(values) => {
+                        let values_len = Spanned {
+                            span: value_span,
+                            inner: values.len(),
+                        };
+                        let ty_inner = expected_ty.map(|ty| {
+                            ty.map_inner(|ty| match ty {
+                                Type::Array(ty_inner, _) => &**ty_inner,
+                                _ => todo!("error"),
+                            })
+                        });
 
-                            match slice_len {
-                                None => {
-                                    let start = check_range_compile_index(diags, start, step.span, values_len)?;
+                        match slice_len {
+                            None => {
+                                let start = check_range_compile_index(diags, start, step.span, values_len)?;
 
-                                    let mut values = values;
-                                    let value_to_replace =
-                                        std::mem::replace(&mut values[start], CompileValue::Undefined);
+                                let mut values = values;
+                                let value_to_replace = std::mem::replace(&mut values[start], CompileValue::Undefined);
 
-                                    let expected_ty_replace =
-                                        ty_inner.map(|ty_inner| ty_inner.map_inner(|ty_inner| ty_inner.clone()));
-                                    let value_replaced = handle_array_variable_assignment_steps(
-                                        diags,
-                                        Spanned {
-                                            span: next_span,
-                                            inner: MaybeCompile::Compile(value_to_replace),
-                                        },
-                                        expected_ty_replace.as_ref().map(Spanned::as_ref),
-                                        steps_remaining,
-                                        eval_value,
-                                    )?;
+                                let expected_ty_replace =
+                                    ty_inner.map(|ty_inner| ty_inner.map_inner(|ty_inner| ty_inner.clone()));
+                                let value_replaced = handle_array_variable_assignment_steps(
+                                    diags,
+                                    Spanned {
+                                        span: next_span,
+                                        inner: MaybeCompile::Compile(value_to_replace),
+                                    },
+                                    expected_ty_replace.as_ref().map(Spanned::as_ref),
+                                    steps_remaining,
+                                    eval_value,
+                                )?;
 
-                                    match value_replaced {
-                                        MaybeCompile::Compile(value_replaced) => {
-                                            values[start] = value_replaced;
-                                            Ok(MaybeCompile::Compile(CompileValue::Array(values)))
-                                        }
-                                        MaybeCompile::Other(value_replaced) => {
-                                            // convert existing array elements into hardware
-                                            // TODO create function for this
-                                            // TODO fix duplication
-                                            let expected_ty = expected_ty
-                                                .unwrap_or_else(|| todo!("error"))
-                                                .inner
-                                                .as_hardware_type()
-                                                .unwrap_or_else(|| todo!("error"));
-                                            let array_ty_inner = match expected_ty {
-                                                HardwareType::Array(inner, _len) => *inner,
-                                                _ => todo!("error"),
-                                            };
-
-                                            let after = values.drain(start + 1..).collect_vec();
-                                            let before = values.into_iter().take(start).collect();
-
-                                            let before_expected_ty = HardwareType::Array(
-                                                Box::new(array_ty_inner.clone()),
-                                                BigUint::from(start),
-                                            );
-                                            let before = CompileValue::Array(before).as_ir_expression(
-                                                diags,
-                                                value_span,
-                                                &before_expected_ty,
-                                            )?;
-                                            let after_expected_ty = HardwareType::Array(
-                                                Box::new(array_ty_inner.clone()),
-                                                BigUint::from(after.len()),
-                                            );
-                                            let after = CompileValue::Array(after).as_ir_expression(
-                                                diags,
-                                                value_span,
-                                                &after_expected_ty,
-                                            )?;
-
-                                            // concatenate
-                                            let literal_elements = vec![
-                                                IrArrayLiteralElement::Spread(before.expr),
-                                                IrArrayLiteralElement::Single(value_replaced.expr),
-                                                IrArrayLiteralElement::Spread(after.expr),
-                                            ];
-                                            let expr =
-                                                IrExpression::ArrayLiteral(array_ty_inner.to_ir(), literal_elements);
-
-                                            Ok(MaybeCompile::Other(TypedIrExpression {
-                                                ty: HardwareType::Array(
-                                                    Box::new(array_ty_inner),
-                                                    BigUint::from(values_len.inner),
-                                                ),
-                                                domain: value_replaced.domain,
-                                                expr,
-                                            }))
-                                        }
+                                match value_replaced {
+                                    MaybeCompile::Compile(value_replaced) => {
+                                        values[start] = value_replaced;
+                                        Ok(MaybeCompile::Compile(CompileValue::Array(values)))
+                                    }
+                                    MaybeCompile::Other(value_replaced) => {
+                                        Ok(MaybeCompile::Other(replace_compile_array_slice_with_hardware(
+                                            diags,
+                                            expected_ty,
+                                            values,
+                                            value_span,
+                                            start,
+                                            None,
+                                            value_replaced,
+                                        )?))
                                     }
                                 }
-                                Some(slice_len) => {
-                                    let SliceInfo { start, slice_len } =
-                                        check_range_compile_slice(diags, start, slice_len, step.span, values_len)?;
+                            }
+                            Some(slice_len) => {
+                                let SliceInfo { start, slice_len } =
+                                    check_range_compile_slice(diags, start, slice_len, step.span, values_len)?;
 
-                                    let mut values = values;
+                                let mut values = values;
 
-                                    let mut values_to_replace = vec![];
-                                    for di in 0..slice_len {
-                                        values_to_replace
-                                            .push(std::mem::replace(&mut values[start + di], CompileValue::Undefined));
+                                let mut values_to_replace = vec![];
+                                for di in 0..slice_len {
+                                    values_to_replace
+                                        .push(std::mem::replace(&mut values[start + di], CompileValue::Undefined));
+                                }
+                                let values_to_replace = CompileValue::Array(values_to_replace);
+
+                                let expected_ty_replace = ty_inner.map(|ty_inner| {
+                                    ty_inner.map_inner(|ty_inner| {
+                                        Type::Array(Box::new(ty_inner.clone()), BigUint::from(slice_len))
+                                    })
+                                });
+                                let values_replaced = handle_array_variable_assignment_steps(
+                                    diags,
+                                    Spanned {
+                                        span: next_span,
+                                        inner: MaybeCompile::Compile(values_to_replace),
+                                    },
+                                    expected_ty_replace.as_ref().map(Spanned::as_ref),
+                                    steps_remaining,
+                                    eval_value,
+                                )?;
+
+                                match values_replaced {
+                                    MaybeCompile::Compile(values_replaced) => {
+                                        let values_replaced = match values_replaced {
+                                            CompileValue::Array(values) => values,
+                                            _ => todo!("error"),
+                                        };
+                                        for (di, replaced) in enumerate(values_replaced) {
+                                            values[start + di] = replaced;
+                                        }
+                                        Ok(MaybeCompile::Compile(CompileValue::Array(values)))
                                     }
-                                    let values_to_replace = CompileValue::Array(values_to_replace);
-
-                                    let expected_ty_replace = ty_inner.map(|ty_inner| {
-                                        ty_inner.map_inner(|ty_inner| {
-                                            Type::Array(Box::new(ty_inner.clone()), BigUint::from(slice_len))
-                                        })
-                                    });
-                                    let values_replaced = handle_array_variable_assignment_steps(
-                                        diags,
-                                        Spanned {
-                                            span: next_span,
-                                            inner: MaybeCompile::Compile(values_to_replace),
-                                        },
-                                        expected_ty_replace.as_ref().map(Spanned::as_ref),
-                                        steps_remaining,
-                                        eval_value,
-                                    )?;
-
-                                    match values_replaced {
-                                        MaybeCompile::Compile(values_replaced) => {
-                                            let values_replaced = match values_replaced {
-                                                CompileValue::Array(values) => values,
-                                                _ => todo!("error"),
-                                            };
-                                            for (di, replaced) in enumerate(values_replaced) {
-                                                values[start + di] = replaced;
-                                            }
-                                            Ok(MaybeCompile::Compile(CompileValue::Array(values)))
-                                        }
-                                        MaybeCompile::Other(values_replaced) => {
-                                            // convert existing array elements into hardware
-                                            let expected_ty = expected_ty
-                                                .unwrap_or_else(|| todo!("error"))
-                                                .inner
-                                                .as_hardware_type()
-                                                .unwrap_or_else(|| todo!("error"));
-                                            let array_ty_inner = match expected_ty {
-                                                HardwareType::Array(inner, _len) => *inner,
-                                                _ => todo!("error"),
-                                            };
-
-                                            let after = values.drain(start + slice_len..).collect_vec();
-                                            let before = values.into_iter().take(start).collect();
-
-                                            let before_expected_ty = HardwareType::Array(
-                                                Box::new(array_ty_inner.clone()),
-                                                BigUint::from(start),
-                                            );
-                                            let before = CompileValue::Array(before).as_ir_expression(
-                                                diags,
-                                                value_span,
-                                                &before_expected_ty,
-                                            )?;
-                                            let after_expected_ty = HardwareType::Array(
-                                                Box::new(array_ty_inner.clone()),
-                                                BigUint::from(after.len()),
-                                            );
-                                            let after = CompileValue::Array(after).as_ir_expression(
-                                                diags,
-                                                value_span,
-                                                &after_expected_ty,
-                                            )?;
-
-                                            // concatenate
-                                            let literal_elements = vec![
-                                                IrArrayLiteralElement::Spread(before.expr),
-                                                IrArrayLiteralElement::Spread(values_replaced.expr),
-                                                IrArrayLiteralElement::Spread(after.expr),
-                                            ];
-                                            let expr =
-                                                IrExpression::ArrayLiteral(array_ty_inner.to_ir(), literal_elements);
-
-                                            Ok(MaybeCompile::Other(TypedIrExpression {
-                                                ty: HardwareType::Array(
-                                                    Box::new(array_ty_inner),
-                                                    BigUint::from(values_len.inner),
-                                                ),
-                                                domain: values_replaced.domain,
-                                                expr,
-                                            }))
-                                        }
+                                    MaybeCompile::Other(values_replaced) => {
+                                        Ok(MaybeCompile::Other(replace_compile_array_slice_with_hardware(
+                                            diags,
+                                            expected_ty,
+                                            values,
+                                            value_span,
+                                            start,
+                                            Some(slice_len),
+                                            values_replaced,
+                                        )?))
                                     }
                                 }
                             }
                         }
-                        _ => todo!("error"),
-                    },
-                    (value, index) => {
-                        let value_spanned = Spanned {
-                            span: value_span,
-                            inner: value,
-                        };
-                        let array = require_array_convert_to_ir(diags, value_spanned)?;
-                        let (array_inner_ty, array_len) = array.inner.ty;
+                    }
+                    _ => todo!("error"),
+                },
+                (value, index) => {
+                    let value_spanned = Spanned {
+                        span: value_span,
+                        inner: value,
+                    };
+                    let array = require_array_convert_to_ir(diags, value_spanned)?;
+                    let (array_inner_ty, array_len) = array.inner.ty;
+                    let array_len = Spanned {
+                        span: array.span,
+                        inner: array_len,
+                    };
+
+                    let (index_expr, index_domain) = match index {
+                        MaybeCompile::Compile(index) => {
+                            check_range_mixed_index(diags, index, step.span, array_len.as_ref())?;
+                            (IrExpression::Int(index.clone()), ValueDomain::CompileTime)
+                        }
+                        MaybeCompile::Other(index) => {
+                            check_range_hardware_index(diags, &index.ty, step.span, array_len.as_ref())?;
+                            (index.expr.clone(), index.domain.clone())
+                        }
+                    };
+
+                    Ok(MaybeCompile::Other(TypedIrExpression {
+                        ty: array_inner_ty,
+                        domain: array.inner.domain.join(&index_domain),
+                        expr: IrExpression::ArrayIndex {
+                            base: Box::new(array.inner.expr),
+                            index: Box::new(index_expr),
+                        },
+                    }))
+                }
+            },
+            ArrayAccessStep::SliceUntilEnd { start } => match value.inner {
+                MaybeCompile::Compile(value) => match value {
+                    CompileValue::Array(values) => {
                         let array_len = Spanned {
-                            span: array.span,
+                            span: value_span,
+                            inner: values.len(),
+                        };
+                        let start = check_range_compile_slice_start(diags, start, step.span, array_len)?;
+                        Ok(MaybeCompile::Compile(CompileValue::Array(values[start..].to_vec())))
+                    }
+                    _ => todo!("error"),
+                },
+                MaybeCompile::Other(value) => match value.ty {
+                    HardwareType::Array(array_ty_inner, array_len) => {
+                        let array_len = Spanned {
+                            span: value_span,
                             inner: array_len,
                         };
-
-                        let (index_expr, index_domain) = match index {
-                            MaybeCompile::Compile(index) => {
-                                check_range_mixed_index(diags, index, step.span, array_len.as_ref())?;
-                                (IrExpression::Int(index.clone()), ValueDomain::CompileTime)
-                            }
-                            MaybeCompile::Other(index) => {
-                                check_range_hardware_index(diags, &index.ty, step.span, array_len.as_ref())?;
-                                (index.expr.clone(), index.domain.clone())
-                            }
-                        };
+                        let SliceLength(slice_len) =
+                            check_range_hardware_slice_start(diags, start, step.span, array_len.as_ref())?;
 
                         Ok(MaybeCompile::Other(TypedIrExpression {
-                            ty: array_inner_ty,
-                            domain: array.inner.domain.join(&index_domain),
-                            expr: IrExpression::ArrayIndex {
-                                base: Box::new(array.inner.expr),
-                                index: Box::new(index_expr),
+                            ty: *array_ty_inner,
+                            domain: value.domain,
+                            expr: IrExpression::ArraySlice {
+                                base: Box::new(value.expr),
+                                start: Box::new(IrExpression::Int(start.clone())),
+                                len: slice_len,
                             },
                         }))
                     }
+                    _ => todo!("error"),
                 },
-                ArrayAccessStep::SliceUntilEnd { start } => match value.inner {
-                    MaybeCompile::Compile(value) => match value {
-                        CompileValue::Array(values) => {
-                            let array_len = Spanned {
-                                span: value_span,
-                                inner: values.len(),
-                            };
-                            let start = check_range_compile_slice_start(diags, start, step.span, array_len)?;
-                            Ok(MaybeCompile::Compile(CompileValue::Array(values[start..].to_vec())))
-                        }
-                        _ => todo!("error"),
-                    },
-                    MaybeCompile::Other(value) => match value.ty {
-                        HardwareType::Array(array_ty_inner, array_len) => {
-                            let array_len = Spanned {
-                                span: value_span,
-                                inner: array_len,
-                            };
-                            let SliceLength(slice_len) =
-                                check_range_hardware_slice_start(diags, start, step.span, array_len.as_ref())?;
-
-                            Ok(MaybeCompile::Other(TypedIrExpression {
-                                ty: *array_ty_inner,
-                                domain: value.domain,
-                                expr: IrExpression::ArraySlice {
-                                    base: Box::new(value.expr),
-                                    start: Box::new(IrExpression::Int(start.clone())),
-                                    len: slice_len,
-                                },
-                            }))
-                        }
-                        _ => todo!("error"),
-                    },
-                },
-            }
-        }
+            },
+        },
     }
+}
+
+fn replace_compile_array_slice_with_hardware(
+    diags: &Diagnostics,
+    expected_ty: Option<Spanned<&Type>>,
+    values: Vec<CompileValue>,
+    values_span: Span,
+    start: usize,
+    slice_len: Option<usize>,
+    replacement: TypedIrExpression,
+) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    // figure out the array type
+    let expected_ty = expected_ty
+        .unwrap_or_else(|| todo!("error"))
+        .inner
+        .as_hardware_type()
+        .unwrap_or_else(|| todo!("error"));
+    let array_ty_inner = match expected_ty {
+        HardwareType::Array(inner, _len) => *inner,
+        _ => todo!("error"),
+    };
+
+    // double-check that the replacement value has the right type
+    // (this should have been checked with a proper error message earlier already)
+    let expected_replacement_ty = match slice_len {
+        None => array_ty_inner.clone(),
+        Some(slice_len) => HardwareType::Array(Box::new(array_ty_inner.clone()), BigUint::from(slice_len)),
+    };
+    if expected_replacement_ty != replacement.ty {
+        return Err(diags.report_internal_error(values_span, "incorrect replacement type"));
+    };
+
+    // convert necessary values into hardware
+    let values_len = values.len();
+    let mut values = values;
+    let after = values.drain(start + slice_len.unwrap_or(1)..).collect_vec();
+    let before = values.into_iter().take(start).collect();
+
+    let before_expected_ty = HardwareType::Array(Box::new(array_ty_inner.clone()), BigUint::from(start));
+    let before = CompileValue::Array(before).as_ir_expression(diags, values_span, &before_expected_ty)?;
+    let after_expected_ty = HardwareType::Array(Box::new(array_ty_inner.clone()), BigUint::from(after.len()));
+    let after = CompileValue::Array(after).as_ir_expression(diags, values_span, &after_expected_ty)?;
+
+    // concatenate
+    let element_inner = if slice_len.is_some() {
+        IrArrayLiteralElement::Spread(replacement.expr)
+    } else {
+        IrArrayLiteralElement::Single(replacement.expr)
+    };
+
+    let literal_elements = vec![
+        IrArrayLiteralElement::Spread(before.expr),
+        element_inner,
+        IrArrayLiteralElement::Spread(after.expr),
+    ];
+    let expr = IrExpression::ArrayLiteral(array_ty_inner.to_ir(), literal_elements);
+
+    Ok(TypedIrExpression {
+        ty: HardwareType::Array(Box::new(array_ty_inner), BigUint::from(values_len)),
+        domain: replacement.domain,
+        expr,
+    })
 }
 
 fn check_range_compile_index(
