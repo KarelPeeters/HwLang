@@ -269,8 +269,10 @@ impl CompileState<'_> {
                     let ty_ref = var_ty.as_ref().map(Spanned::as_ref);
                     let result = handle_array_variable_assignment_steps(
                         diags,
-                        target_base.span,
-                        target_initial_value,
+                        Spanned {
+                            span: target_base.span,
+                            inner: target_initial_value,
+                        },
                         ty_ref,
                         &target_steps,
                         |left, expected_ty| match op.transpose() {
