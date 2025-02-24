@@ -17,7 +17,6 @@ use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::result_pair;
 use indexmap::IndexMap;
-use num_bigint::BigInt;
 
 // TODO move
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -370,7 +369,7 @@ impl CompileState<'_> {
                                                 )?;
                                             }
                                         }
-                                        IrExpression::Int(BigInt::from(start))
+                                        IrExpression::Int(start)
                                     }
                                     MaybeCompile::Other(start) => {
                                         match &slice_len {
@@ -384,7 +383,13 @@ impl CompileState<'_> {
                                         start.expr
                                     }
                                 };
-                                (IrAssignmentTargetStep::ArrayAccess { start, slice_len }, None)
+                                (
+                                    IrAssignmentTargetStep::ArrayAccess {
+                                        start,
+                                        slice_len: slice_len.clone(),
+                                    },
+                                    slice_len,
+                                )
                             }
                             ArrayAccessStep::SliceUntilEnd { start } => {
                                 let SliceLength(slice_len) =
