@@ -584,12 +584,17 @@ impl CompileState<'_> {
                         slice_len: None,
                     },
                     CompileValue::IntRange(range) => {
-                        let start = range.start_inc.unwrap_or(BigInt::ZERO);
-                        match range.end_inc {
+                        let start = range.start_inc.clone().unwrap_or(BigInt::ZERO);
+                        match &range.end_inc {
                             None => ArrayAccessStep::SliceUntilEnd { start },
                             Some(end_inc) => {
-                                let slice_len =
-                                    (end_inc - &start + 1u32).to_biguint().unwrap_or_else(|| todo!("error"));
+                                let slice_len = (end_inc - &start + 1u32).to_biguint().ok_or_else(|| {
+                                    diags.report_simple(
+                                        "slice range end cannot be below start",
+                                        index.span,
+                                        format!("got range `{range}`"),
+                                    )
+                                })?;
                                 ArrayAccessStep::IndexOrSliceLen {
                                     start: MaybeCompile::Compile(start),
                                     slice_len: Some(slice_len),
@@ -597,7 +602,13 @@ impl CompileState<'_> {
                             }
                         }
                     }
-                    _ => todo!("error"),
+                    _ => {
+                        return Err(diags.report_simple(
+                            "array index needs to be an int or a range",
+                            index_or_slice.span,
+                            format!("got `{}`", index_or_slice.inner.to_diagnostic_string()),
+                        ));
+                    }
                 },
                 MaybeCompile::Other(index) => {
                     // TODO make this error message better, specifically refer to non-compile-time index

@@ -1,4 +1,7 @@
-use crate::front::array::{handle_array_variable_assignment_steps, ArrayAccessStep};
+use crate::front::array::{
+    check_range_hardware_index, check_range_hardware_slice, check_range_hardware_slice_start, check_range_mixed_index,
+    handle_array_variable_assignment_steps, ArrayAccessStep, SliceLength, VarAssignSpans,
+};
 use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, Port, Register, Variable, VariableInfo, Wire};
@@ -7,7 +10,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, Error
 use crate::front::ir::{IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrExpression, IrStatement};
 use crate::front::misc::{Signal, ValueDomain};
 use crate::front::scope::Scope;
-use crate::front::types::{HardwareType, Type};
+use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::MaybeCompile;
 use crate::syntax::ast::{Assignment, Spanned};
 use crate::syntax::pos::Span;
@@ -192,6 +195,7 @@ impl CompileState<'_> {
                 )
             }
             AssignmentTargetBase::Variable(var) => {
+                // TODO extract to function
                 // variable assignments are handled separately, they are evaluated at compile-time whenever possible
                 let VariableInfo {
                     id,
@@ -267,6 +271,13 @@ impl CompileState<'_> {
                     let target_initial_value = vars.get(diags, target_base.span, var)?.value.clone();
 
                     let ty_ref = var_ty.as_ref().map(Spanned::as_ref);
+
+                    let spans = VarAssignSpans {
+                        variable_declaration: self.variables[var].id.span(),
+                        assigned_value: value.span,
+                        assignment_operator: op.span,
+                    };
+
                     let result = handle_array_variable_assignment_steps(
                         diags,
                         Spanned {
@@ -275,6 +286,7 @@ impl CompileState<'_> {
                         },
                         ty_ref,
                         &target_steps,
+                        spans,
                         |left, expected_ty| match op.transpose() {
                             None => Ok(self
                                 .eval_expression(ctx, ctx_block, scope, &vars, expected_ty, value)?
@@ -310,6 +322,7 @@ impl CompileState<'_> {
         // take steps
         let mut steps_ir = vec![];
 
+        let mut curr_span = target.inner.base.span;
         let mut curr_inner_ty = &target_ty.inner;
         let mut expected_ranges = vec![];
 
@@ -318,18 +331,43 @@ impl CompileState<'_> {
             curr_inner_ty = match step.inner {
                 AssignmentTargetStep::ArrayAccess(step_inner) => match curr_inner_ty {
                     HardwareType::Array(array_inner, array_len) => {
+                        let array_len = Spanned {
+                            span: curr_span,
+                            inner: array_len,
+                        };
+
                         let (step_ir, slice_len) = match step_inner {
                             ArrayAccessStep::IndexOrSliceLen { start, slice_len } => {
                                 let start = match start {
-                                    MaybeCompile::Compile(start) => IrExpression::Int(BigInt::from(start)),
-                                    MaybeCompile::Other(start) => start.expr,
+                                    MaybeCompile::Compile(start) => {
+                                        match &slice_len {
+                                            None => check_range_mixed_index(diags, &start, step.span, array_len)?,
+                                            Some(slice_len) => {
+                                                let start = ClosedIncRange::single(start.clone());
+                                                check_range_hardware_slice(
+                                                    diags, &start, slice_len, step.span, array_len,
+                                                )?;
+                                            }
+                                        }
+                                        IrExpression::Int(BigInt::from(start))
+                                    }
+                                    MaybeCompile::Other(start) => {
+                                        match &slice_len {
+                                            None => check_range_hardware_index(diags, &start.ty, step.span, array_len)?,
+                                            Some(slice_len) => {
+                                                check_range_hardware_slice(
+                                                    diags, &start.ty, slice_len, step.span, array_len,
+                                                )?;
+                                            }
+                                        }
+                                        start.expr
+                                    }
                                 };
                                 (IrAssignmentTargetStep::ArrayAccess { start, slice_len }, None)
                             }
                             ArrayAccessStep::SliceUntilEnd { start } => {
-                                // TODO error on underflow
-                                let slice_len =
-                                    array_len.clone() - start.to_biguint().unwrap_or_else(|| todo!("error"));
+                                let SliceLength(slice_len) =
+                                    check_range_hardware_slice_start(diags, &start, step.span, array_len)?;
                                 let start = IrExpression::Int(start);
                                 (
                                     IrAssignmentTargetStep::ArrayAccess {
@@ -366,7 +404,8 @@ impl CompileState<'_> {
                         return Err(diags.report(diag));
                     }
                 },
-            }
+            };
+            curr_span = curr_span.join(step.span);
         }
 
         // by going through the steps we've figured out the inner type and built the ir target

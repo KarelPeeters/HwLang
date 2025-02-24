@@ -86,6 +86,7 @@ pub fn eval_array_index_expression_step(
                                 span: curr.span,
                                 inner: MaybeCompile::Compile(CompileValue::Array(curr_inner)),
                             },
+                            step.span,
                         )?;
                         MaybeCompile::Other(build_index_or_slice_ir_expression(
                             diags, array, start, slice_len, step.span,
@@ -166,6 +167,7 @@ pub fn eval_array_index_expression_step(
 fn require_array_convert_to_ir(
     diags: &Diagnostics,
     array: Spanned<MaybeCompile<TypedIrExpression>>,
+    step_span: Span,
 ) -> Result<Spanned<TypedIrExpression<(HardwareType, BigUint)>>, ErrorGuaranteed> {
     let array_span = array.span;
 
@@ -173,7 +175,12 @@ fn require_array_convert_to_ir(
         MaybeCompile::Compile(array) => match array {
             CompileValue::Array(_) => {
                 let ty = array.ty();
-                let ty_hw = ty.as_hardware_type().unwrap_or_else(|| todo!("error"));
+                let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+                    diags.report_internal_error(
+                        array_span,
+                        "converting a compile array to hardware should result in an array",
+                    )
+                })?;
                 let array_ir = array.as_ir_expression(diags, array_span, &ty_hw)?;
 
                 match ty_hw {
@@ -185,7 +192,9 @@ fn require_array_convert_to_ir(
                     _ => unreachable!("array compile value should turn into hardware array"),
                 }
             }
-            _ => todo!("error"),
+            _ => {
+                return Err(diags.report(diag_expected_array_value(array, array_span, step_span)));
+            }
         },
         MaybeCompile::Other(array) => match array.ty {
             HardwareType::Array(array_inner_ty, array_len) => TypedIrExpression {
@@ -193,7 +202,9 @@ fn require_array_convert_to_ir(
                 domain: array.domain,
                 expr: array.expr,
             },
-            _ => todo!("error"),
+            _ => {
+                return Err(diags.report(diag_expected_array_type(&array.ty.as_type(), array_span, step_span)));
+            }
         },
     };
 
@@ -203,7 +214,7 @@ fn require_array_convert_to_ir(
     })
 }
 
-fn build_index_or_slice_ir_expression(
+pub fn build_index_or_slice_ir_expression(
     diags: &Diagnostics,
     array: Spanned<TypedIrExpression<(HardwareType, BigUint)>>,
     start: TypedIrExpression<ClosedIncRange<BigInt>>,
@@ -270,6 +281,13 @@ fn build_slice_until_end_ir_expression(
     })
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct VarAssignSpans {
+    pub variable_declaration: Span,
+    pub assigned_value: Span,
+    pub assignment_operator: Span,
+}
+
 // TODO rename function and params (eg. old_value/curr_value)
 // TODO split into more functions
 pub fn handle_array_variable_assignment_steps(
@@ -277,6 +295,7 @@ pub fn handle_array_variable_assignment_steps(
     value: Spanned<MaybeCompile<TypedIrExpression>>,
     expected_ty: Option<Spanned<&Type>>,
     steps: &[Spanned<AssignmentTargetStep>],
+    spans: VarAssignSpans,
     eval_value: impl FnOnce(
         Spanned<MaybeCompile<TypedIrExpression>>,
         &Type,
@@ -318,12 +337,22 @@ pub fn handle_array_variable_assignment_steps(
                             span: value_span,
                             inner: values.len(),
                         };
-                        let ty_inner = expected_ty.map(|ty| {
-                            ty.map_inner(|ty| match ty {
-                                Type::Array(ty_inner, _) => &**ty_inner,
-                                _ => todo!("error"),
+                        let ty_inner = expected_ty
+                            .map(|ty| {
+                                ty.map_inner(|ty_inner| match ty_inner {
+                                    Type::Array(ty_inner, _) => Ok(&**ty_inner),
+                                    _ => {
+                                        let diag =
+                                            Diagnostic::new("array index operation on variable with non-array type")
+                                                .add_error(step.span, "this indexing step requires an array type")
+                                                .add_info(ty.span, "variable type set here")
+                                                .finish();
+                                        Err(diags.report(diag))
+                                    }
+                                })
+                                .transpose()
                             })
-                        });
+                            .transpose()?;
 
                         match slice_len {
                             None => {
@@ -342,6 +371,7 @@ pub fn handle_array_variable_assignment_steps(
                                     },
                                     expected_ty_replace.as_ref().map(Spanned::as_ref),
                                     steps_remaining,
+                                    spans,
                                     eval_value,
                                 )?;
 
@@ -358,6 +388,7 @@ pub fn handle_array_variable_assignment_steps(
                                             value_span,
                                             start,
                                             None,
+                                            spans,
                                             value_replaced,
                                         )?))
                                     }
@@ -389,6 +420,7 @@ pub fn handle_array_variable_assignment_steps(
                                     },
                                     expected_ty_replace.as_ref().map(Spanned::as_ref),
                                     steps_remaining,
+                                    spans,
                                     eval_value,
                                 )?;
 
@@ -396,7 +428,12 @@ pub fn handle_array_variable_assignment_steps(
                                     MaybeCompile::Compile(values_replaced) => {
                                         let values_replaced = match values_replaced {
                                             CompileValue::Array(values) => values,
-                                            _ => todo!("error"),
+                                            _ => {
+                                                return Err(diags.report_internal_error(
+                                                    step.span,
+                                                    "replaced value should be an array again",
+                                                ))
+                                            }
                                         };
                                         for (di, replaced) in enumerate(values_replaced) {
                                             values[start + di] = replaced;
@@ -411,6 +448,7 @@ pub fn handle_array_variable_assignment_steps(
                                             value_span,
                                             start,
                                             Some(slice_len),
+                                            spans,
                                             values_replaced,
                                         )?))
                                     }
@@ -418,14 +456,14 @@ pub fn handle_array_variable_assignment_steps(
                             }
                         }
                     }
-                    _ => todo!("error"),
+                    _ => Err(diags.report(diag_expected_array_value(value, value_span, step.span))),
                 },
                 (value, index) => {
                     let value_spanned = Spanned {
                         span: value_span,
                         inner: value,
                     };
-                    let array = require_array_convert_to_ir(diags, value_spanned)?;
+                    let array = require_array_convert_to_ir(diags, value_spanned, step.span)?;
                     let (array_inner_ty, array_len) = array.inner.ty;
                     let array_len = Spanned {
                         span: array.span,
@@ -463,7 +501,7 @@ pub fn handle_array_variable_assignment_steps(
                         let start = check_range_compile_slice_start(diags, start, step.span, array_len)?;
                         Ok(MaybeCompile::Compile(CompileValue::Array(values[start..].to_vec())))
                     }
-                    _ => todo!("error"),
+                    _ => Err(diags.report(diag_expected_array_value(value, value_span, step.span))),
                 },
                 MaybeCompile::Other(value) => match value.ty {
                     HardwareType::Array(array_ty_inner, array_len) => {
@@ -484,7 +522,7 @@ pub fn handle_array_variable_assignment_steps(
                             },
                         }))
                     }
-                    _ => todo!("error"),
+                    _ => Err(diags.report(diag_expected_array_type(&value.ty.as_type(), value_span, step.span))),
                 },
             },
         },
@@ -498,17 +536,38 @@ fn replace_compile_array_slice_with_hardware(
     values_span: Span,
     start: usize,
     slice_len: Option<usize>,
+    spans: VarAssignSpans,
     replacement: TypedIrExpression,
 ) -> Result<TypedIrExpression, ErrorGuaranteed> {
     // figure out the array type
-    let expected_ty = expected_ty
-        .unwrap_or_else(|| todo!("error"))
-        .inner
-        .as_hardware_type()
-        .unwrap_or_else(|| todo!("error"));
+    let expected_ty = expected_ty.ok_or_else(|| {
+        let diag = Diagnostic::new("converting array to hardware needs type hint")
+            .add_error(spans.assignment_operator, "necessary for this assignment")
+            .add_info(values_span, "compile-time array here")
+            .add_info(spans.assigned_value, "non-compile-time assigned value here")
+            .add_info(spans.variable_declaration, "this variable needs a type hint")
+            .finish();
+        diags.report(diag)
+    })?;
+    let expected_ty = expected_ty.inner.as_hardware_type().ok_or_else(|| {
+        let diag = Diagnostic::new("converting array to hardware needs array with hardware type hint")
+            .add_error(spans.assignment_operator, "necessary for this assignment")
+            .add_info(values_span, "compile-time array here")
+            .add_info(spans.assigned_value, "non-compile-time assigned value here")
+            .add_info(
+                expected_ty.span,
+                format!(
+                    "type `{}` is not representable in hardware",
+                    expected_ty.inner.to_diagnostic_string()
+                ),
+            )
+            .finish();
+        diags.report(diag)
+    })?;
+
     let array_ty_inner = match expected_ty {
         HardwareType::Array(inner, _len) => *inner,
-        _ => todo!("error"),
+        _ => return Err(diags.report_internal_error(values_span, "expected type should be an array")),
     };
 
     // double-check that the replacement value has the right type
@@ -553,7 +612,7 @@ fn replace_compile_array_slice_with_hardware(
     })
 }
 
-fn check_range_compile_index(
+pub fn check_range_compile_index(
     diags: &Diagnostics,
     index: &BigInt,
     index_span: Span,
@@ -573,7 +632,7 @@ fn check_range_compile_index(
     Ok(index.to_usize().unwrap())
 }
 
-fn check_range_hardware_index(
+pub fn check_range_hardware_index(
     diags: &Diagnostics,
     index: &ClosedIncRange<BigInt>,
     index_span: Span,
@@ -592,7 +651,7 @@ fn check_range_hardware_index(
     Ok(())
 }
 
-fn check_range_mixed_index(
+pub fn check_range_mixed_index(
     diags: &Diagnostics,
     index: &BigInt,
     index_span: Span,
@@ -611,12 +670,12 @@ fn check_range_mixed_index(
     Ok(())
 }
 
-struct SliceInfo {
-    start: usize,
-    slice_len: usize,
+pub struct SliceInfo {
+    pub start: usize,
+    pub slice_len: usize,
 }
 
-fn check_range_compile_slice(
+pub fn check_range_compile_slice(
     diags: &Diagnostics,
     start: &BigInt,
     slice_len: &BigUint,
@@ -642,7 +701,7 @@ fn check_range_compile_slice(
     })
 }
 
-fn check_range_hardware_slice(
+pub fn check_range_hardware_slice(
     diags: &Diagnostics,
     start: &ClosedIncRange<BigInt>,
     slice_len: &BigUint,
@@ -667,7 +726,7 @@ fn check_range_hardware_slice(
     Ok(())
 }
 
-fn check_range_compile_slice_start(
+pub fn check_range_compile_slice_start(
     diags: &Diagnostics,
     start: &BigInt,
     step_span: Span,
@@ -686,9 +745,9 @@ fn check_range_compile_slice_start(
     Ok(start.to_usize().unwrap())
 }
 
-struct SliceLength(BigUint);
+pub struct SliceLength(pub BigUint);
 
-fn check_range_hardware_slice_start(
+pub fn check_range_hardware_slice_start(
     diags: &Diagnostics,
     start: &BigInt,
     step_span: Span,
@@ -705,4 +764,27 @@ fn check_range_hardware_slice_start(
         return Err(diags.report(diag));
     }
     Ok(SliceLength(start.to_biguint().unwrap()))
+}
+
+pub fn diag_expected_array_value(value: CompileValue, value_span: Span, step_span: Span) -> Diagnostic {
+    Diagnostic::new("array indexing on non-array type")
+        .add_error(step_span, "array access operation here")
+        .add_info(
+            value_span,
+            format!("on non-array value `{}` here", value.to_diagnostic_string()),
+        )
+        .finish()
+}
+
+pub fn diag_expected_array_type(value_ty: &Type, value_span: Span, step_span: Span) -> Diagnostic {
+    Diagnostic::new("array indexing on non-array type")
+        .add_error(step_span, "array access operation here")
+        .add_info(
+            value_span,
+            format!(
+                "on non-array value with type `{}` here",
+                value_ty.to_diagnostic_string()
+            ),
+        )
+        .finish()
 }
