@@ -1,6 +1,8 @@
 use crate::front::compile::{CompileState, Port, Register, Wire};
+use crate::front::ir::IrAssignmentTargetBase;
+use crate::front::types::HardwareType;
 use crate::front::value::NamedValue;
-use crate::syntax::ast::{DomainKind, SyncDomain};
+use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
 
 // TODO move this to a better place
@@ -140,6 +142,33 @@ impl Signal {
             Signal::Port(port) => s.ports[port].id.string.clone(),
             Signal::Wire(wire) => s.wires[wire].id.string().to_owned(),
             Signal::Register(reg) => s.registers[reg].id.string().to_owned(),
+        }
+    }
+
+    pub fn ty<'s>(self, state: &'s CompileState) -> Spanned<&'s HardwareType> {
+        match self {
+            Signal::Port(port) => state.ports[port].ty.as_ref(),
+            Signal::Wire(wire) => state.wires[wire].ty.as_ref(),
+            Signal::Register(reg) => state.registers[reg].ty.as_ref(),
+        }
+    }
+
+    pub fn domain(self, state: &CompileState) -> Spanned<ValueDomain> {
+        match self {
+            Signal::Port(port) => state.ports[port]
+                .domain
+                .clone()
+                .map_inner(ValueDomain::from_port_domain),
+            Signal::Wire(wire) => state.wires[wire].domain.clone(),
+            Signal::Register(reg) => state.registers[reg].domain.clone().map_inner(ValueDomain::Sync),
+        }
+    }
+
+    pub fn ir_assignment_target(self, state: &CompileState) -> IrAssignmentTargetBase {
+        match self {
+            Signal::Port(port) => IrAssignmentTargetBase::Port(state.ports[port].ir),
+            Signal::Wire(wire) => IrAssignmentTargetBase::Wire(state.wires[wire].ir),
+            Signal::Register(reg) => IrAssignmentTargetBase::Register(state.registers[reg].ir),
         }
     }
 }

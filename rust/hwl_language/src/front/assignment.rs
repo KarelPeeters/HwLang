@@ -7,7 +7,7 @@ use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, Port, Register, Variable, VariableInfo, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrExpression, IrStatement};
+use crate::front::ir::{IrAssignmentTarget, IrAssignmentTargetStep, IrExpression, IrStatement};
 use crate::front::misc::{Signal, ValueDomain};
 use crate::front::scope::Scope;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
@@ -153,41 +153,14 @@ impl CompileState<'_> {
 
         // evaluate target
         let target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, &vars, target_expr)?;
+
         // TODO report exact range/sub-access that is being assigned
         ctx.report_assignment(target.as_ref())?;
 
-        // TODO all of these can be derived from signal, just pass that along
-        let (target_ty, target_domain, base_ir, base_signal) = match target.inner.base.inner {
-            AssignmentTargetBase::Port(port) => {
-                let info = &self.ports[port];
-                let domain = ValueDomain::from_port_domain(info.domain.inner);
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTargetBase::Port(info.ir),
-                    Signal::Port(port),
-                )
-            }
-            AssignmentTargetBase::Wire(wire) => {
-                let info = &self.wires[wire];
-                let domain = info.domain.inner.clone();
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTargetBase::Wire(info.ir),
-                    Signal::Wire(wire),
-                )
-            }
-            AssignmentTargetBase::Register(reg) => {
-                let info = &self.registers[reg];
-                let domain = ValueDomain::Sync(info.domain.inner);
-                (
-                    &info.ty,
-                    domain,
-                    IrAssignmentTargetBase::Register(self.registers[reg].ir),
-                    Signal::Register(reg),
-                )
-            }
+        let target_base_signal = match target.inner.base.inner {
+            AssignmentTargetBase::Port(port) => Signal::Port(port),
+            AssignmentTargetBase::Wire(wire) => Signal::Wire(wire),
+            AssignmentTargetBase::Register(reg) => Signal::Register(reg),
             AssignmentTargetBase::Variable(var) => {
                 let new_vars = self
                     .elaborate_variable_assignment(ctx, ctx_block, vars, scope, stmt.span, target, var, *op, value)?;
@@ -195,17 +168,13 @@ impl CompileState<'_> {
             }
         };
 
-        let target_ty = target_ty.clone();
         let new_vars = self.elaborate_hardware_assignment(
             ctx,
             ctx_block,
             vars,
             scope,
-            &target_ty,
-            target_domain,
             stmt.span,
-            base_ir,
-            base_signal,
+            target_base_signal,
             target,
             *op,
             value,
@@ -358,11 +327,8 @@ impl CompileState<'_> {
         ctx_block: &mut C::Block,
         vars: VariableValues,
         scope: Scope,
-        target_ty: &Spanned<HardwareType>,
-        target_domain: ValueDomain,
         assignment_span: Span,
-        base_ir: IrAssignmentTargetBase,
-        base_signal: Signal,
+        target_base_signal: Signal,
         target: Spanned<AssignmentTarget>,
         op: Spanned<Option<BinaryOp>>,
         assignment_value: &Expression,
@@ -377,7 +343,8 @@ impl CompileState<'_> {
         let mut steps_ir = vec![];
 
         let mut curr_span = target_base.span;
-        let mut curr_inner_ty = &target_ty.inner;
+        let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
+        let mut curr_inner_ty = &target_base_ty.inner;
         let mut expected_ranges = vec![];
 
         // TODO check types here
@@ -451,9 +418,9 @@ impl CompileState<'_> {
                             )
                             .add_info(
                                 target_base.span,
-                                format!("base has type `{}`", target_ty.inner.to_diagnostic_string()),
+                                format!("base has type `{}`", target_base_ty.inner.to_diagnostic_string()),
                             )
-                            .add_info(target_ty.span, "base type set here")
+                            .add_info(target_base_ty.span, "base type set here")
                             .finish();
                         return Err(diags.report(diag));
                     }
@@ -469,7 +436,7 @@ impl CompileState<'_> {
             .fold(curr_inner_ty.clone(), |a, r| HardwareType::Array(Box::new(a), r));
 
         let ir_target = IrAssignmentTarget {
-            base: base_ir,
+            base: target_base_signal.ir_assignment_target(self),
             steps: steps_ir,
         };
 
@@ -481,7 +448,7 @@ impl CompileState<'_> {
                 inner: AssignmentTarget {
                     base: Spanned {
                         span: target.inner.base.span,
-                        inner: base_signal,
+                        inner: target_base_signal,
                     },
                     steps: target.inner.steps,
                 },
@@ -506,16 +473,17 @@ impl CompileState<'_> {
         // TODO expand value to type?
         let reason = TypeContainsReason::Assignment {
             span_target: target.span,
-            span_target_ty: target_ty.span,
+            span_target_ty: target_base_ty.span,
         };
         let check_ty = check_type_contains_value(diags, reason, &expected_ty.as_type(), value.as_ref(), true, false);
 
         // check domains
+        // TODO double-check if/how step/index domains should influence this
         let value_domain = value.inner.domain();
         // TODO better error messages with more explanation
         let target_domain = Spanned {
             span: target.span,
-            inner: &target_domain,
+            inner: &target_base_signal.domain(self).inner,
         };
         let value_domain = Spanned {
             span: value.span,
@@ -575,7 +543,7 @@ impl CompileState<'_> {
         check_ty?;
 
         // convert to IR and store
-        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_ty.inner)?;
+        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_base_ty.inner)?;
 
         let stmt_ir = IrStatement::Assign(ir_target, ir_value.expr);
         ctx.push_ir_statement(
