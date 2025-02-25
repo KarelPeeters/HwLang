@@ -397,15 +397,11 @@ impl CodegenBlockContext<'_> {
             }
 
             IrExpression::TupleLiteral(_) => return Err(todo("TupleLiteral")),
-            IrExpression::ArrayLiteral(inner_ty, elements) => {
+            IrExpression::ArrayLiteral(inner_ty, len, elements) => {
                 let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
                 let tmp_result = self.new_temporary();
 
-                swriteln!(
-                    self.f,
-                    "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",
-                    len = elements.len()
-                );
+                swriteln!(self.f, "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",);
 
                 let mut offset = BigUint::zero();
                 for element in elements {

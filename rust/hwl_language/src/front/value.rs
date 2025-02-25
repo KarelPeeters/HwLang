@@ -178,7 +178,7 @@ impl CompileValue {
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,
-                    |e| IrExpression::ArrayLiteral(inner_ty.to_ir(), e),
+                    |e| IrExpression::ArrayLiteral(inner_ty.to_ir(), len.clone(), e),
                 ),
                 _ => HardwareValueResult::InvalidType,
             },

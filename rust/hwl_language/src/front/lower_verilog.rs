@@ -867,7 +867,7 @@ fn lower_expression(
             }
             swrite!(f, "}}");
         }
-        IrExpression::ArrayLiteral(_inner_ty, elements) => {
+        IrExpression::ArrayLiteral(_inner_ty, _len, elements) => {
             // verilog does not care much about types, this is just a concatenation
             //  (assuming all sub-expression have the right width, which they should)
             // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions

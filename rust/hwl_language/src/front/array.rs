@@ -603,7 +603,7 @@ fn replace_compile_array_slice_with_hardware(
         element_inner,
         IrArrayLiteralElement::Spread(after.expr),
     ];
-    let expr = IrExpression::ArrayLiteral(array_ty_inner.to_ir(), literal_elements);
+    let expr = IrExpression::ArrayLiteral(array_ty_inner.to_ir(), BigUint::from(values_len), literal_elements);
 
     Ok(TypedIrExpression {
         ty: HardwareType::Array(Box::new(array_ty_inner), BigUint::from(values_len)),

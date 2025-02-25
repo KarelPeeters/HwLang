@@ -224,7 +224,7 @@ pub enum IrExpression {
     // concat
     TupleLiteral(Vec<IrExpression>),
     // TODO remove spread operator from this, replace with concat operator?
-    ArrayLiteral(IrType, Vec<IrArrayLiteralElement>),
+    ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
 
     // slice
     ArrayIndex {
@@ -341,7 +341,9 @@ impl IrExpression {
             IrExpression::IntCompare(_, _, _) => IrType::Bool,
 
             IrExpression::TupleLiteral(v) => IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect()),
-            IrExpression::ArrayLiteral(ty, values) => IrType::Array(Box::new(ty.clone()), BigUint::from(values.len())),
+            IrExpression::ArrayLiteral(ty_inner, len, _values) => {
+                IrType::Array(Box::new(ty_inner.clone()), len.clone())
+            }
 
             // TODO store resulting type in expression instead?
             IrExpression::ArrayIndex { base, .. } => {
@@ -428,7 +430,7 @@ impl IrExpression {
                     .join(", ");
                 format!("({})", v_str)
             }
-            IrExpression::ArrayLiteral(ty, v) => {
+            IrExpression::ArrayLiteral(ty, len, v) => {
                 let ty_str = ty.to_diagnostic_string();
                 let v_str = v
                     .iter()
@@ -438,7 +440,7 @@ impl IrExpression {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("[{ty_str}; {v_str}]")
+                format!("[{ty_str} {len}; {v_str}]")
             }
             IrExpression::ArrayIndex { base, index } => {
                 format!("({}[{}])", base.to_diagnostic_string(m), index.to_diagnostic_string(m))
@@ -480,7 +482,7 @@ impl IrExpression {
                 f(right);
             }
             IrExpression::TupleLiteral(x) => x.iter().for_each(f),
-            IrExpression::ArrayLiteral(_ty, x) => x.iter().for_each(|a| match a {
+            IrExpression::ArrayLiteral(_ty, _len, x) => x.iter().for_each(|a| match a {
                 IrArrayLiteralElement::Single(v) | IrArrayLiteralElement::Spread(v) => f(v),
             }),
             IrExpression::ArrayIndex { base, index } => {

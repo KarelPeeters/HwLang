@@ -213,33 +213,69 @@ impl CompileState<'_> {
 
                     let mut result_domain = ValueDomain::CompileTime;
                     let mut result_exprs = vec![];
+                    let mut result_len = BigUint::zero();
 
                     for elem in values {
-                        let (elem_ir, domain) = match elem {
+                        let (elem_ir, domain, elem_len) = match elem {
                             ArrayLiteralElement::Single(elem_inner) => {
                                 let value_ir =
                                     elem_inner
                                         .inner
                                         .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
-                                (IrArrayLiteralElement::Single(value_ir.expr), value_ir.domain)
+
+                                check_type_contains_value(
+                                    diags,
+                                    TypeContainsReason::Operator(expr.span),
+                                    expected_ty_inner,
+                                    Spanned {
+                                        span: elem_inner.span,
+                                        inner: &MaybeCompile::Other(value_ir.clone()),
+                                    },
+                                    true,
+                                    true,
+                                )?;
+
+                                (
+                                    IrArrayLiteralElement::Single(value_ir.expr),
+                                    value_ir.domain,
+                                    BigUint::one(),
+                                )
                             }
                             ArrayLiteralElement::Spread(_, elem_inner) => {
                                 let value_ir =
                                     elem_inner
                                         .inner
                                         .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
-                                (IrArrayLiteralElement::Spread(value_ir.expr), value_ir.domain)
+
+                                let len = match value_ir.ty() {
+                                    Type::Array(_, len) => len,
+                                    _ => BigUint::zero(),
+                                };
+                                check_type_contains_value(
+                                    diags,
+                                    TypeContainsReason::Operator(expr.span),
+                                    &Type::Array(Box::new(expected_ty_inner.clone()), len.clone()),
+                                    Spanned {
+                                        span: elem_inner.span,
+                                        inner: &MaybeCompile::Other(value_ir.clone()),
+                                    },
+                                    true,
+                                    true,
+                                )?;
+
+                                (IrArrayLiteralElement::Spread(value_ir.expr), value_ir.domain, len)
                             }
                         };
 
                         result_domain = result_domain.join(&domain);
                         result_exprs.push(elem_ir);
+                        result_len += elem_len;
                     }
 
-                    let result_len = result_exprs.len();
-                    let result_expr = IrExpression::ArrayLiteral(expected_ty_inner_hw.to_ir(), result_exprs);
+                    let result_expr =
+                        IrExpression::ArrayLiteral(expected_ty_inner_hw.to_ir(), result_len.clone(), result_exprs);
                     Ok(MaybeCompile::Other(TypedIrExpression {
-                        ty: HardwareType::Array(Box::new(expected_ty_inner_hw), BigUint::from(result_len)),
+                        ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
                         domain: result_domain,
                         expr: result_expr,
                     }))
@@ -799,10 +835,11 @@ impl CompileState<'_> {
                                 let elements = vec![element; right_inner];
 
                                 let left_ty_inner_hw = left_ty_inner.as_hardware_type().unwrap();
+                                let result_len = left_len * right_inner;
                                 Ok(MaybeCompile::Other(TypedIrExpression {
-                                    ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), left_len * right_inner),
+                                    ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), result_len.clone()),
                                     domain: value.domain,
-                                    expr: IrExpression::ArrayLiteral(left_ty_inner_hw.to_ir(), elements),
+                                    expr: IrExpression::ArrayLiteral(left_ty_inner_hw.to_ir(), result_len, elements),
                                 }))
                             }
                         }

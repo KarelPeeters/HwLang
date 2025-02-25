@@ -5,6 +5,8 @@ use crate::front::ir::{
     IrWireOrPort,
 };
 use crate::syntax::pos::Span;
+use num_bigint::BigUint;
+use num_traits::Zero;
 use std::borrow::Cow;
 use unwrap_match::unwrap_match;
 
@@ -170,12 +172,14 @@ impl IrExpression {
         // validate self
         match self {
             IrExpression::TupleLiteral(_) => {}
-            IrExpression::ArrayLiteral(inner_ty, values) => {
+            IrExpression::ArrayLiteral(inner_ty, len, values) => {
+                let mut actual_len = BigUint::zero();
                 for value in values {
                     match value {
                         IrArrayLiteralElement::Single(value) => {
                             let value_ty = value.ty(module, locals);
-                            check_type_match(diags, span, inner_ty, &value_ty)?
+                            check_type_match(diags, span, inner_ty, &value_ty)?;
+                            actual_len += 1u32;
                         }
                         IrArrayLiteralElement::Spread(value) => {
                             let value_ty = value.ty(module, locals);
@@ -183,9 +187,19 @@ impl IrExpression {
                                 IrType::Array(_, len) => len,
                                 _ => unreachable!(),
                             };
-                            check_type_match(diags, span, &IrType::Array(Box::new(inner_ty.clone()), len), &value_ty)?;
+                            check_type_match(
+                                diags,
+                                span,
+                                &IrType::Array(Box::new(inner_ty.clone()), len.clone()),
+                                &value_ty,
+                            )?;
+                            actual_len += len;
                         }
                     }
+                }
+                if &actual_len != len {
+                    let msg = format!("array literal length mismatch: expected {} but got {}", len, actual_len);
+                    return Err(diags.report_internal_error(span, msg));
                 }
             }
             _ => {}
