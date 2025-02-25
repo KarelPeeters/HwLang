@@ -1,6 +1,6 @@
 import std.types.[int, int_range];
 
-pub function min(x: int, y: int) -> int {
+pub fn min(x: int, y: int) -> int {
     if (x < y) {
         return x;
     } else {
@@ -8,7 +8,7 @@ pub function min(x: int, y: int) -> int {
     }
 }
 
-pub function max(x: int, y: int) -> int {
+pub fn max(x: int, y: int) -> int {
     if (y > x) {
         return y;
     } else {
@@ -16,7 +16,7 @@ pub function max(x: int, y: int) -> int {
     }
 }
 
-pub function gcd(a: int_range(1..), b: int_range(1..)) -> int_range(1..) {
+pub fn gcd(a: int_range(1..), b: int_range(1..)) -> int_range(1..) {
     var a = a;
     var b = b;
     while (b != 0) {

@@ -542,6 +542,7 @@ impl BodyElaborationState<'_, '_> {
 
         // eval and check port connections
         // TODO allow port re-ordering as long as domain ordering constraints are respected
+        // TODO improve error message to specify which port name is actually missing, instead of focusing on counts
         if ports.len() != port_connections.inner.len() {
             let diag = Diagnostic::new("mismatched port connections for module instance")
                 .add_error(
