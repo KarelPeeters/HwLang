@@ -89,7 +89,6 @@ impl SourceDatabase {
         }
 
         let file_id = FileId(self.files.len());
-        eprintln!("adding {:?} => {:?}", file_id, path);
         let directory = self.get_directory(&path);
         let info = FileSourceInfo {
             id: file_id,
