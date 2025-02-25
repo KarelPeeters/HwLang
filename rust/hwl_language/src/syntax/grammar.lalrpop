@@ -131,6 +131,7 @@ Item: Item = {
     },
 
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
+    // TODO allow specifying "const" before function params to make error messages nicer
     <start:@L> <vis:Vis> "fn" <id:Id> <params:Parameters<GenericParameter>> <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }

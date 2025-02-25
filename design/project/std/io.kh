@@ -1,3 +1,0 @@
-//pub function print(value: any) {
-//    __builtin("function", "print", value);
-//}

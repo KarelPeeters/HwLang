@@ -1,6 +1,6 @@
 use clap::Parser;
 use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
-use hwl_language::front::compile::compile;
+use hwl_language::front::compile::{compile, StdoutPrintHandler};
 use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
@@ -75,7 +75,7 @@ fn main_inner() {
     let time_parse = start_parse.elapsed();
 
     let start_compile = Instant::now();
-    let compiled = compile(&diags, &source, &parsed);
+    let compiled = compile(&diags, &source, &parsed, &mut StdoutPrintHandler);
     let time_compile = start_compile.elapsed();
 
     let start_lower = Instant::now();

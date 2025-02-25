@@ -25,7 +25,12 @@ use itertools::{enumerate, Itertools};
 //   * type-checking-only generic instantiations of modules
 //   * type-check all modules without generics automatically
 //   * type-check modules with generics partially
-pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> IrDatabase {
+pub fn compile(
+    diags: &Diagnostics,
+    source: &SourceDatabase,
+    parsed: &ParsedDatabase,
+    print_handler: &mut dyn PrintHandler,
+) -> IrDatabase {
     // populate file scopes
     let mut map_file_scopes = IndexMap::new();
     let mut scopes = Scopes::new();
@@ -98,6 +103,7 @@ pub fn compile(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedData
         diags,
         source,
         parsed,
+        print_handler,
         scopes,
         file_scopes: map_file_scopes,
         constants: Arena::default(),
@@ -149,6 +155,7 @@ pub struct CompileState<'a> {
     pub diags: &'a Diagnostics,
     pub source: &'a SourceDatabase,
     pub parsed: &'a ParsedDatabase,
+    pub print_handler: &'a mut dyn PrintHandler,
 
     pub scopes: Scopes,
     file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
@@ -562,3 +569,22 @@ macro_rules! impl_index {
 }
 
 impl_index!(scopes, Scope, ScopeInfo);
+
+// TODO rename/expand to handle all external interation: IO, env vars, ...
+pub trait PrintHandler {
+    fn println(&mut self, s: &str);
+}
+
+pub struct NoPrintHandler;
+
+impl PrintHandler for NoPrintHandler {
+    fn println(&mut self, _: &str) {}
+}
+
+pub struct StdoutPrintHandler;
+
+impl PrintHandler for StdoutPrintHandler {
+    fn println(&mut self, s: &str) {
+        println!("{}", s);
+    }
+}

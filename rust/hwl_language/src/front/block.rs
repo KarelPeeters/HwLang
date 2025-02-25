@@ -592,14 +592,14 @@ impl CompileState<'_> {
             .add_info(
                 then_value.event.assigned_value_span,
                 format!(
-                    "source value with type `{}` assigned here",
+                    "`if` value with type `{}` assigned here",
                     then_ty.to_diagnostic_string()
                 ),
             )
             .add_info(
                 else_value.event.assigned_value_span,
                 format!(
-                    "source value with type `{}` assigned here",
+                    "`else` value with type `{}` assigned here",
                     else_ty.to_diagnostic_string()
                 ),
             )

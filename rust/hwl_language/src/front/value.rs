@@ -234,7 +234,7 @@ impl CompileValue {
             CompileValue::Type(ty) => ty.to_diagnostic_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
-            CompileValue::String(value) => value.clone(),
+            CompileValue::String(value) => format!("{:?}", value),
             CompileValue::Tuple(values) => {
                 let values = values
                     .iter()

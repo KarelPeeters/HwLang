@@ -5,7 +5,7 @@ use crate::server::settings::PositionEncoding;
 use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
 use annotate_snippets::Level;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
-use hwl_language::front::compile::compile;
+use hwl_language::front::compile::{compile, NoPrintHandler, PrintHandler};
 use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
@@ -35,7 +35,7 @@ impl ServerState {
             self.log("source database built, compiling");
             let diags = Diagnostics::new();
             let parsed = ParsedDatabase::new(&diags, &source);
-            let compiled = compile(&diags, &source, &parsed);
+            let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler);
             let _ = lower(&diags, &source, &parsed, &compiled);
             self.log("compilation finished");
 

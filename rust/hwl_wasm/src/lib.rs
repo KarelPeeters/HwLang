@@ -1,4 +1,4 @@
-use hwl_language::front::compile::compile;
+use hwl_language::front::compile::{compile, NoPrintHandler};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
@@ -54,7 +54,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
 
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
-    let compiled = compile(&diags, &source, &parsed);
+    let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler);
     let lowered = lower(&diags, &source, &parsed, &compiled);
 
     // TODO lower directly to html?

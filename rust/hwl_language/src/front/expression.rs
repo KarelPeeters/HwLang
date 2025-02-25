@@ -509,9 +509,9 @@ impl CompileState<'_> {
 
                 Ok(result_value)
             }
-            ExpressionKind::Builtin(ref args) => {
-                Ok(MaybeCompile::Compile(self.eval_builtin(scope, vars, expr.span, args)?))
-            }
+            ExpressionKind::Builtin(ref args) => Ok(MaybeCompile::Compile(
+                self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
+            )),
         }
     }
 
@@ -1035,8 +1035,10 @@ impl CompileState<'_> {
     }
 
     // TODO replace builtin+import+prelude with keywords?
-    fn eval_builtin(
+    fn eval_builtin<C: ExpressionContext>(
         &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
         scope: Scope,
         vars: &VariableValues,
         expr_span: Span,
@@ -1048,25 +1050,44 @@ impl CompileState<'_> {
             .iter()
             .map(|arg| {
                 Ok(self
-                    .eval_expression_as_compile(scope, vars, arg, "builtin argument")?
+                    .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg)?
                     .inner)
             })
             .try_collect_all_vec()?;
 
-        if let (Some(CompileValue::String(a0)), Some(CompileValue::String(a1))) = (args_eval.get(0), args_eval.get(1)) {
+        if let (
+            Some(MaybeCompile::Compile(CompileValue::String(a0))),
+            Some(MaybeCompile::Compile(CompileValue::String(a1))),
+        ) = (args_eval.get(0), args_eval.get(1))
+        {
             let rest = &args_eval[2..];
             match (a0.as_str(), a1.as_str(), rest) {
                 ("type", "any", []) => return Ok(CompileValue::Type(Type::Any)),
                 ("type", "bool", []) => return Ok(CompileValue::Type(Type::Bool)),
                 ("type", "Range", []) => return Ok(CompileValue::Type(Type::Range)),
-                ("type", "int_range", [CompileValue::IntRange(range)]) => {
+                ("type", "int_range", [MaybeCompile::Compile(CompileValue::IntRange(range))]) => {
                     return Ok(CompileValue::Type(Type::Int(range.clone())));
+                }
+                ("fn", "typeof", [value]) => return Ok(CompileValue::Type(value.ty())),
+                ("fn", "print", [value]) => {
+                    let value_str = match value {
+                        MaybeCompile::Compile(v) => v.to_diagnostic_string(),
+                        MaybeCompile::Other(v) => {
+                            let TypedIrExpression { ty, domain, expr: _ } = v;
+                            let ty_str = ty.to_diagnostic_string();
+                            let domain_str = domain.to_diagnostic_string(self);
+                            format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
+                        }
+                    };
+                    self.print_handler.println(&value_str);
+                    return Ok(CompileValue::Tuple(vec![]));
                 }
                 // fallthrough into err
                 _ => {}
             }
         }
 
+        // TODO this causes a strange error message when people call eg. int_range with non-compile args
         let diag = Diagnostic::new("invalid builtin arguments")
             .snippet(expr_span)
             .add_error(args.span, "invalid args")

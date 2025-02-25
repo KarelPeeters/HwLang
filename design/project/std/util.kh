@@ -1,0 +1,9 @@
+import std.types.any;
+
+pub fn print(value: any) {
+    __builtin("fn", "print", value);
+}
+
+pub fn typeof(value: any) -> type {
+    return __builtin("fn", "typeof", value);
+}
