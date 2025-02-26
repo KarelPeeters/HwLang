@@ -26,7 +26,7 @@ pub struct CompileAndLowerResult {
 }
 
 // TODO include entire std dir, instead of this hardcoding
-const SRC_TOP: &str = include_str!("../../../design/project/top.kh");
+const SRC_TOP: &str = include_str!("../../../design/top_webdemo.kh");
 const SRC_STD_TYPES: &str = include_str!("../../../design/project/std/types.kh");
 const SRC_STD_MATH: &str = include_str!("../../../design/project/std/math.kh");
 const SRC_STD_UTIL: &str = include_str!("../../../design/project/std/util.kh");

@@ -1,0 +1,64 @@
+import std.types.[
+    bool, int_range, int, uint, natural,
+    int_bits, uint_bits, any,
+];
+import std.math.[gcd, min, max];
+import std.util.[print, typeof];
+
+pub module top ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        enable: in bool,
+        x: in int_range(0..256),
+        y: out int_range(0..256),
+        t: out bool,
+    }
+) body {
+    reg d0: sync(clk, rst) int_range(0..256) = 0;
+    reg d1: sync(clk, rst) int_range(0..256) = 0;
+    reg out t = false;
+
+    clocked(clk, rst) {
+        if (enable) {
+            d1 = d0;
+            d0 = x;
+        }
+        t = select(bool, enable, false, true);
+        print(t);
+    }
+
+    instance child generics(
+        T=int_range(0..256)
+    ) ports(
+        .clk(clk),
+        .rst(rst),
+        .x(d1),
+        .y(y),
+    );
+}
+
+fn select(T: type, c: bool, a: T, b: T) -> bool {
+    var result: T;
+    if (c) {
+        result = a;
+    } else {
+        result = b;
+    }
+    return result;
+}
+
+module child generics(T: type) ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        x: in T,
+        y: out T,
+    }
+) body {
+    comb {
+        y = x;
+    }
+}
