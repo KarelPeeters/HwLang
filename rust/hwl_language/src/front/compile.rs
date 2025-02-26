@@ -588,3 +588,21 @@ impl PrintHandler for StdoutPrintHandler {
         println!("{}", s);
     }
 }
+
+pub struct CollectPrintHandler(Vec<String>);
+
+impl CollectPrintHandler {
+    pub fn new() -> Self {
+        CollectPrintHandler(Vec::new())
+    }
+
+    pub fn finish(self) -> Vec<String> {
+        self.0
+    }
+}
+
+impl PrintHandler for CollectPrintHandler {
+    fn println(&mut self, s: &str) {
+        self.0.push(s.to_owned());
+    }
+}

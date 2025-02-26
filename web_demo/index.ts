@@ -132,6 +132,17 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
         const result = hwl_wasm.compile_and_lower(source);
         diagnostics_ansi = result.diagnostics_ansi;
         lowered_verilog = result.lowered_verilog;
+
+        if (result.prints.length > 0) {
+            let combined_prints = "// prints:\n";
+            for (const print of result.prints) {
+                combined_prints += "//  " + print + "\n";
+            }
+            combined_prints += "\n";
+            lowered_verilog = combined_prints + lowered_verilog;
+        }
+
+        // TODO include tab for lowered cpp
     } catch (e) {
         diagnostics_ansi = "compiler panicked\nsee console for the error message and stack trace";
         lowered_verilog = "";

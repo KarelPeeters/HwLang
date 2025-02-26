@@ -1,6 +1,7 @@
-use hwl_language::front::compile::{compile, NoPrintHandler};
+use hwl_language::front::compile::{compile, CollectPrintHandler};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
+use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::source::FilePath;
@@ -19,18 +20,23 @@ pub fn start() {
 #[wasm_bindgen(getter_with_clone)]
 pub struct CompileAndLowerResult {
     pub diagnostics_ansi: String,
+    pub prints: Vec<String>,
     pub lowered_verilog: String,
+    pub lowered_cpp: String,
 }
 
+// TODO include entire std dir, instead of this hardcoding
 const SRC_TOP: &str = include_str!("../../../design/project/top.kh");
 const SRC_STD_TYPES: &str = include_str!("../../../design/project/std/types.kh");
 const SRC_STD_MATH: &str = include_str!("../../../design/project/std/math.kh");
+const SRC_STD_UTIL: &str = include_str!("../../../design/project/std/util.kh");
 
 #[wasm_bindgen]
 pub fn initial_source() -> String {
     SRC_TOP.to_owned()
 }
 
+// TODO include C++ as well, just for demo purposes
 #[wasm_bindgen]
 pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let mut source = SourceDatabase::new();
@@ -49,13 +55,22 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         )
         .unwrap();
     source
+        .add_file(
+            FilePath(vec!["std".to_owned(), "util".to_owned()]),
+            "std/util.kh".to_owned(),
+            SRC_STD_UTIL.to_owned(),
+        )
+        .unwrap();
+    source
         .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src)
         .unwrap();
 
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
-    let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler);
+    let mut print_handler = CollectPrintHandler::new();
+    let compiled = compile(&diags, &source, &parsed, &mut print_handler);
     let lowered = lower(&diags, &source, &parsed, &compiled);
+    let sim = simulator_codegen(&diags, &compiled);
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();
@@ -65,14 +80,14 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         .map(|d| d.to_string(&source, diag_settings))
         .join("\n\n");
 
-    let lowered_verilog = match lowered {
-        Ok(lowered) => lowered.verilog_source,
-        Err(_) => "/* error */".to_string(),
-    };
+    let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.verilog_source);
+    let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
 
     CompileAndLowerResult {
         diagnostics_ansi,
+        prints: print_handler.finish(),
         lowered_verilog,
+        lowered_cpp,
     }
 }
 
