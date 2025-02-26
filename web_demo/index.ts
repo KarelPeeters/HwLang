@@ -16,6 +16,7 @@ import {Input, NodeSet, NodeType, Parser, PartialParse, Tree} from "@lezer/commo
 import {styleTags, tags} from "@lezer/highlight"
 import * as hwl_wasm from "hwl_wasm";
 import {verilog as mode_verilog} from "@codemirror/legacy-modes/mode/verilog";
+import {cpp as mode_cpp} from "@codemirror/legacy-modes/mode/clike";
 
 import AnsiToHtmlClass from "ansi-to-html";
 import Cookies from "js-cookie";
@@ -83,11 +84,12 @@ class HwlParser extends Parser {
 
 let language = new Language(null, new HwlParser(), [], "HWLang");
 
-const element_editor_output = document.getElementById("div-editor-output");
 const element_editor_input = document.getElementById("div-editor-input");
+const element_editor_output_verilog = document.getElementById("div-editor-output-verilog");
+const element_editor_output_cpp = document.getElementById("div-editor-output-cpp");
 const element_messages = document.getElementById("div-messages");
-const element_share_link = document.getElementById("a-share") as HTMLAnchorElement;
-const element_clear_button = document.getElementById("svg-clear");
+const element_share_link = document.getElementById("button-share") as HTMLAnchorElement;
+const element_clear_button = document.getElementById("button-clear");
 
 const ansi_to_html = new AnsiToHtmlClass();
 
@@ -101,6 +103,10 @@ function escapeHtml(raw: string): string {
 }
 
 function diagnostics_ansi_to_html(ansi: string): string {
+    if (ansi.length == 0) {
+        return "";
+    }
+
     let result = "";
     for (let line of ansi.split("\n")) {
         if (line.length == 0) {
@@ -115,7 +121,7 @@ function diagnostics_ansi_to_html(ansi: string): string {
 const EMPTY_DOC = "// empty";
 const COOKIE_SOURCE = "source";
 
-function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
+function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView) {
     // store code in cookie
     Cookies.set(COOKIE_SOURCE, source);
 
@@ -127,11 +133,12 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     element_share_link.href = url.toString()
 
     // run the compiler
-    let diagnostics_ansi, lowered_verilog;
+    let diagnostics_ansi, lowered_verilog, lowered_cpp;
     try {
         const result = hwl_wasm.compile_and_lower(source);
         diagnostics_ansi = result.diagnostics_ansi;
         lowered_verilog = result.lowered_verilog;
+        lowered_cpp = result.lowered_cpp;
 
         if (result.prints.length > 0) {
             let combined_prints = "// prints:\n";
@@ -146,21 +153,33 @@ function onDocumentChanged(source: string, editor_view_verilog: EditorView) {
     } catch (e) {
         diagnostics_ansi = "compiler panicked\nsee console for the error message and stack trace";
         lowered_verilog = "";
+        lowered_cpp = "";
     }
 
     // display diagnostics as html
     element_messages.innerHTML = diagnostics_ansi_to_html(diagnostics_ansi);
 
-    // replace output content with newly generated verilog,
+    // replace output contents with newly generated source,
     // put at least some text to prevent confusion
     if (lowered_verilog.length == 0) {
         lowered_verilog = EMPTY_DOC;
     }
-    editor_view_verilog.dispatch({
+    if (lowered_cpp.length == 0) {
+        lowered_cpp = EMPTY_DOC;
+    }
+
+    editor_view_output_verilog.dispatch({
         changes: {
             from: 0,
-            to: editor_view_verilog.state.doc.length,
+            to: editor_view_output_verilog.state.doc.length,
             insert: lowered_verilog,
+        }
+    })
+    editor_view_output_cpp.dispatch({
+        changes: {
+            from: 0,
+            to: editor_view_output_cpp.state.doc.length,
+            insert: lowered_cpp,
         }
     })
 }
@@ -180,22 +199,33 @@ let common_extensions = [
 ];
 
 // TODO compare legacy mode to to https://www.npmjs.com/package/codemirror-lang-verilog
-let editor_state_verilog = EditorState.create({
+let editor_state_output_verilog = EditorState.create({
     doc: EMPTY_DOC,
     extensions: common_extensions.concat([
         EditorState.readOnly.of(true),
         StreamLanguage.define(mode_verilog)
     ]),
 })
-let editor_view_verilog = new EditorView({
-    state: editor_state_verilog,
-    parent: element_editor_output
+let editor_view_output_verilog = new EditorView({
+    state: editor_state_output_verilog,
+    parent: element_editor_output_verilog
+})
+let editor_state_output_cpp = EditorState.create({
+    doc: EMPTY_DOC,
+    extensions: common_extensions.concat([
+        EditorState.readOnly.of(true),
+        StreamLanguage.define(mode_cpp)
+    ]),
+})
+let editor_view_output_cpp = new EditorView({
+    state: editor_state_output_cpp,
+    parent: element_editor_output_cpp
 })
 
 // TODO get this out of the typing event loop, run this async or on a separate thread
 let updateListenerExtension = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-        onDocumentChanged(update.state.doc.toString(), editor_view_verilog);
+        onDocumentChanged(update.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp);
     }
 })
 
@@ -216,7 +246,7 @@ let initial_source = wasm_initial_source;
     }
 }
 
-let editor_state_hdl = EditorState.create({
+let editor_state_input = EditorState.create({
     doc: initial_source,
     extensions: common_extensions.concat([
         highlightActiveLineGutter(),
@@ -224,21 +254,21 @@ let editor_state_hdl = EditorState.create({
         updateListenerExtension,
     ])
 })
-let editor_view_hdl = new EditorView({
-    state: editor_state_hdl,
+let editor_view_input = new EditorView({
+    state: editor_state_input,
     parent: element_editor_input,
 })
 
 // add clear event handler
 element_clear_button.addEventListener("click", () => {
-    editor_view_hdl.dispatch({
+    editor_view_input.dispatch({
         changes: {
             from: 0,
-            to: editor_view_hdl.state.doc.length,
+            to: editor_view_input.state.doc.length,
             insert: wasm_initial_source,
         }
     })
 });
 
 // initial update
-onDocumentChanged(editor_view_hdl.state.doc.toString(), editor_view_verilog)
+onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp)
