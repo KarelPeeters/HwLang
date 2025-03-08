@@ -1,6 +1,5 @@
 use crate::front::block::TypedIrExpression;
 use crate::front::check::{check_type_is_uint_compile, TypeContainsReason};
-use crate::front::compile::CompileState;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrExpression, IrTargetStep};
 use crate::front::misc::ValueDomain;
@@ -8,6 +7,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
+use itertools::Itertools;
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
 
@@ -43,6 +43,9 @@ impl<S> ArraySteps<S> {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+struct EncounteredAny;
+
 impl ArraySteps<ArrayStep> {
     pub fn any_hardware(&self) -> bool {
         self.steps
@@ -61,7 +64,7 @@ impl ArraySteps<ArrayStep> {
     }
 
     pub fn apply_to_expected_type(&self, diags: &Diagnostics, ty: Spanned<Type>) -> Result<Type, ErrorGuaranteed> {
-        let (ty, _) = self.apply_to_type_impl(diags, ty)?;
+        let (ty, _) = self.apply_to_type_impl(diags, ty, true)?;
         Ok(ty)
     }
 
@@ -70,13 +73,16 @@ impl ArraySteps<ArrayStep> {
         diags: &Diagnostics,
         ty: Spanned<&HardwareType>,
     ) -> Result<(HardwareType, Vec<IrTargetStep>), ErrorGuaranteed> {
-        let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type))?;
+        let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type), false)?;
+        let steps = steps.unwrap();
+
         let result_ty_hw = result_ty.as_hardware_type().ok_or_else(|| {
             diags.report_internal_error(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
             )
         })?;
+
         Ok((result_ty_hw, steps))
     }
 
@@ -97,7 +103,8 @@ impl ArraySteps<ArrayStep> {
         &self,
         diags: &Diagnostics,
         ty: Spanned<Type>,
-    ) -> Result<(Type, Vec<IrTargetStep>), ErrorGuaranteed> {
+        pass_any: bool,
+    ) -> Result<(Type, Result<Vec<IrTargetStep>, EncounteredAny>), ErrorGuaranteed> {
         let ArraySteps { steps } = self;
 
         // forward
@@ -107,6 +114,7 @@ impl ArraySteps<ArrayStep> {
         for step in steps {
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
+                Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
                 _ => return Err(diags.report(diag_expected_array_type(curr_ty.as_ref(), step.span))),
             };
             let ty_array_len = Spanned::new(curr_ty.span, ty_array_len);
@@ -163,15 +171,15 @@ impl ArraySteps<ArrayStep> {
             .into_iter()
             .rev()
             .fold(curr_ty.inner, |acc, len| Type::Array(Box::new(acc), len));
-        Ok((result_ty, steps_ir))
+
+        Ok((result_ty, Ok(steps_ir)))
     }
 
     pub fn apply_to_value(
         &self,
-        state: &mut CompileState,
+        diags: &Diagnostics,
         value: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        let diags = state.diags;
         let ArraySteps { steps } = self;
 
         let mut curr = value;
@@ -424,6 +432,28 @@ impl ArraySteps<&ArrayStepCompile> {
         let ArraySteps { steps } = self;
         set_compile_value_impl(diags, old, steps, op_span, new)
     }
+
+    pub fn get_compile_value(
+        &self,
+        diags: &Diagnostics,
+        value: Spanned<CompileValue>,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        // TODO avoid clones
+        let self_mapped = ArraySteps {
+            steps: self
+                .steps
+                .iter()
+                .map(|s| s.map_inner(|s| ArrayStep::Compile(s.clone())))
+                .collect_vec(),
+        };
+        let value_span = value.span;
+
+        let result = self_mapped.apply_to_value(diags, value.map_inner(MaybeCompile::Compile))?;
+        match result {
+            MaybeCompile::Compile(result) => Ok(result),
+            MaybeCompile::Other(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),
+        }
+    }
 }
 
 pub fn check_range_index(
@@ -554,7 +584,7 @@ pub fn check_range_slice_compile(
 }
 
 pub fn diag_expected_array_value(value: Spanned<&CompileValue>, step_span: Span) -> Diagnostic {
-    Diagnostic::new("array indexing on non-array type")
+    Diagnostic::new("array indexing on non-array value")
         .add_error(step_span, "array access operation here")
         .add_info(
             value.span,

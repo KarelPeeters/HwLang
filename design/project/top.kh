@@ -80,6 +80,11 @@ pub module top ports(
         z[0] = true;
         z[1] = true;
 
+        var u: any[2] = [[1, 2], 2];
+        u[1] += 2;
+        u[0, 0] += 2;
+        print(u);
+
         // error cases
     }
 }

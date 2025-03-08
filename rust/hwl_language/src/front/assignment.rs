@@ -3,6 +3,7 @@ use crate::front::check::{check_type_contains_compile_value, check_type_contains
 use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::expression::eval_binary_expression;
 use crate::front::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
@@ -156,28 +157,27 @@ impl CompileState<'_> {
         } = &target.inner;
 
         // figure out expected type if any
-        let right_expected_ty = if op.inner.is_some() {
-            Type::Any
-        } else {
-            let target_base_ty = match target_base.inner {
-                AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
-                AssignmentTargetBase::Wire(wire) => Some(self.wires[wire].ty.as_ref().map_inner(HardwareType::as_type)),
-                AssignmentTargetBase::Register(reg) => {
-                    Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
-                }
-                AssignmentTargetBase::Variable(var) => self.variables[var].ty.clone(),
-            };
-
-            // TODO allow Type::Any passthrough
-            match target_base_ty {
-                None => Type::Any,
-                Some(target_base_ty) => {
-                    target_steps.apply_to_expected_type(diags, Spanned::new(target_base.span, target_base_ty.inner))?
-                }
+        let target_base_ty = match target_base.inner {
+            AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
+            AssignmentTargetBase::Wire(wire) => Some(self.wires[wire].ty.as_ref().map_inner(HardwareType::as_type)),
+            AssignmentTargetBase::Register(reg) => {
+                Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
+            }
+            AssignmentTargetBase::Variable(var) => self.variables[var].ty.clone(),
+        };
+        let target_expected_ty = match target_base_ty {
+            None => Type::Any,
+            Some(target_base_ty) => {
+                target_steps.apply_to_expected_type(diags, Spanned::new(target_base.span, target_base_ty.inner))?
             }
         };
 
         // evaluate right value
+        let right_expected_ty = if op.inner.is_some() {
+            &Type::Any
+        } else {
+            &target_expected_ty
+        };
         let right_eval = self.eval_expression(ctx, ctx_block, scope, &vars, &right_expected_ty, right_expr)?;
 
         // figure out if we need a compile or hardware assignment
@@ -193,9 +193,9 @@ impl CompileState<'_> {
                     stmt.span,
                     target,
                     var,
+                    target_expected_ty,
                     *op,
                     right_eval,
-                    right_expected_ty,
                 )?;
                 return Ok(vars);
             }
@@ -269,9 +269,9 @@ impl CompileState<'_> {
         stmt_span: Span,
         target: Spanned<AssignmentTarget>,
         var: Variable,
+        target_expected_ty: Type,
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
-        right_expected_ty: Type,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.diags;
         let AssignmentTarget {
@@ -380,51 +380,56 @@ impl CompileState<'_> {
             let target_steps = target_steps.unwrap_compile();
             let right_eval = right_eval.map_inner(MaybeCompile::unwrap_compile);
 
-            match op.inner {
-                None => {
-                    // check type
-                    if let Some(var_ty) = &self.variables[var].ty {
-                        let reason = TypeContainsReason::Assignment {
-                            span_target: target.span,
-                            span_target_ty: var_ty.span,
-                        };
-                        check_type_contains_compile_value(
-                            diags,
-                            reason,
-                            &right_expected_ty,
-                            right_eval.as_ref(),
-                            true,
-                        )?;
-                    }
-
-                    // do assignment
-                    let event = AssignmentEvent {
-                        assigned_value_span: right_eval.span,
-                    };
-                    let result_value = target_steps.set_compile_value(
-                        diags,
-                        target_base_eval.map_inner(Clone::clone),
-                        op.span,
-                        right_eval,
-                    )?;
-                    vars.set(
+            // handle op
+            let value_eval = match op.inner {
+                None => right_eval,
+                Some(op_inner) => {
+                    let target_eval = target_steps.get_compile_value(diags, target_base_eval.cloned())?;
+                    let value = eval_binary_expression(
                         diags,
                         stmt_span,
-                        var,
-                        MaybeAssignedValue::Assigned(AssignedValue {
-                            event,
-                            value: MaybeCompile::Compile(result_value),
-                        }),
+                        Spanned::new(op.span, op_inner),
+                        Spanned::new(target.span, MaybeCompile::Compile(target_eval)),
+                        right_eval.map_inner(MaybeCompile::Compile),
                     )?;
+                    let value = match value {
+                        MaybeCompile::Compile(value) => value,
+                        MaybeCompile::Other(_) => {
+                            return Err(diags.report_internal_error(
+                                stmt_span,
+                                "binary op on compile values should result in compile value again",
+                            ))
+                        }
+                    };
+
+                    Spanned::new(stmt_span, value)
                 }
-                Some(_) => {
-                    // let target_eval = Spanned::new(
-                    //     target_expr.span,
-                    //     target_steps.get_compile_value(diags, Spanned::new(target_base.span, target_base_eval))?,
-                    // );
-                    todo!("compile-time op assign")
-                }
+            };
+
+            // check type
+            if let Some(var_ty) = &self.variables[var].ty {
+                let reason = TypeContainsReason::Assignment {
+                    span_target: target.span,
+                    span_target_ty: var_ty.span,
+                };
+                check_type_contains_compile_value(diags, reason, &target_expected_ty, value_eval.as_ref(), true)?;
             }
+
+            // do assignment
+            let event = AssignmentEvent {
+                assigned_value_span: value_eval.span,
+            };
+            let result_value =
+                target_steps.set_compile_value(diags, target_base_eval.map_inner(Clone::clone), op.span, value_eval)?;
+            vars.set(
+                diags,
+                stmt_span,
+                var,
+                MaybeAssignedValue::Assigned(AssignedValue {
+                    event,
+                    value: MaybeCompile::Compile(result_value),
+                }),
+            )?;
         }
 
         Ok(())

@@ -679,6 +679,18 @@ impl<T> Spanned<T> {
     }
 }
 
+impl<T> Spanned<&T> {
+    pub fn cloned(&self) -> Spanned<T>
+    where
+        T: Clone,
+    {
+        Spanned {
+            span: self.span,
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T, E> Spanned<Result<T, E>> {
     pub fn transpose(self) -> Result<Spanned<T>, E> {
         self.inner.map(|inner| Spanned { span: self.span, inner })
