@@ -4,7 +4,6 @@ pub mod misc;
 pub mod types;
 pub mod value;
 
-pub mod array;
 pub mod assignment;
 pub mod block;
 pub mod check;
@@ -17,3 +16,4 @@ pub mod ir_validate;
 pub mod item;
 pub mod module;
 pub mod scope;
+pub mod steps;

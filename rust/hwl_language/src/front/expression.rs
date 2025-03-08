@@ -1,5 +1,4 @@
-use crate::front::array::{eval_array_index_expression_step, ArrayAccessStep};
-use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase, AssignmentTargetStep, VariableValues};
+use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase, VariableValues};
 use crate::front::block::TypedIrExpression;
 use crate::front::check::{
     check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
@@ -14,6 +13,7 @@ use crate::front::ir::{
 };
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Visibility};
+use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
@@ -200,6 +200,7 @@ impl CompileState<'_> {
                 if let Some(first_non_compile_span) = first_non_compile_span {
                     // at least one non-compile, turn everything into IR
                     let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+                        // TODO clarify that inferred type comes from outside, not the expression itself
                         let message = format!(
                             "hardware array literal has inferred inner type `{}` which is not representable in hardware",
                             expected_ty_inner.to_diagnostic_string()
@@ -560,36 +561,30 @@ impl CompileState<'_> {
         base: &Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        // eval base and args
         let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
-        let indices = indices
+        let steps = indices
             .inner
             .iter()
-            .map(|index| self.eval_expression_as_array_access_step(ctx, ctx_block, scope, vars, index))
+            .map(|index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
             .try_collect_all_vec();
 
         let base = base?;
-        let indices = indices?;
+        let steps = ArraySteps::new(steps?);
 
-        // loop over all indices, folding the indexing operations
-        let mut curr = base;
-        for index in indices {
-            curr = eval_array_index_expression_step(self.diags, curr, index)?;
-        }
-        Ok(curr.inner)
+        steps.apply_to_value(self, base)
     }
 
-    fn eval_expression_as_array_access_step<C: ExpressionContext>(
+    fn eval_expression_as_array_step<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: Scope,
         vars: &VariableValues,
         index: &Expression,
-    ) -> Result<Spanned<ArrayAccessStep>, ErrorGuaranteed> {
+    ) -> Result<Spanned<ArrayStep>, ErrorGuaranteed> {
         let diags = self.diags;
 
-        // special case range with length
+        // special case range with length, it can have a hardware start index
         let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
             op_span,
             ref start,
@@ -604,37 +599,36 @@ impl CompileState<'_> {
                 .eval_expression_as_compile(scope, vars, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, reason, len));
 
-            let (start, len) = (start?, len?);
+            let start = start?;
+            let len = len?;
 
-            ArrayAccessStep::IndexOrSliceLen {
-                start: start.inner,
-                slice_len: Some(len),
+            match start.inner {
+                MaybeCompile::Compile(start) => {
+                    ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, len: Some(len) })
+                }
+                MaybeCompile::Other(start) => ArrayStep::Other(ArrayStepHardware::ArraySlice { start, len }),
             }
         } else {
             let index_eval = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, index)?;
 
             match index_eval.transpose() {
                 MaybeCompile::Compile(index_or_slice) => match index_or_slice.inner {
-                    CompileValue::Int(index) => ArrayAccessStep::IndexOrSliceLen {
-                        start: MaybeCompile::Compile(index),
-                        slice_len: None,
-                    },
+                    CompileValue::Int(index) => ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)),
                     CompileValue::IntRange(range) => {
                         let start = range.start_inc.clone().unwrap_or(BigInt::ZERO);
                         match &range.end_inc {
-                            None => ArrayAccessStep::SliceUntilEnd { start },
+                            None => ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, len: None }),
                             Some(end_inc) => {
                                 let slice_len = (end_inc - &start + 1u32).to_biguint().ok_or_else(|| {
-                                    diags.report_simple(
-                                        "slice range end cannot be below start",
+                                    diags.report_internal_error(
                                         index.span,
-                                        format!("got range `{range}`"),
+                                        format!("slice range end cannot be below start, got range `{range}`"),
                                     )
                                 })?;
-                                ArrayAccessStep::IndexOrSliceLen {
-                                    start: MaybeCompile::Compile(start),
-                                    slice_len: Some(slice_len),
-                                }
+                                ArrayStep::Compile(ArrayStepCompile::ArraySlice {
+                                    start,
+                                    len: Some(slice_len),
+                                })
                             }
                         }
                     }
@@ -650,10 +644,7 @@ impl CompileState<'_> {
                     // TODO make this error message better, specifically refer to non-compile-time index
                     let reason = TypeContainsReason::ArrayIndex { span_index: index.span };
                     let index = check_type_is_int_hardware(diags, reason, index)?;
-                    ArrayAccessStep::IndexOrSliceLen {
-                        start: MaybeCompile::Other(index.inner),
-                        slice_len: None,
-                    }
+                    ArrayStep::Other(ArrayStepHardware::ArrayIndex(index.inner))
                 }
             }
         };
@@ -1203,6 +1194,7 @@ impl CompileState<'_> {
         })
     }
 
+    // TODO move typechecks here, immediately returning expected type if any
     pub fn eval_expression_as_assign_target<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -1211,157 +1203,72 @@ impl CompileState<'_> {
         vars: &VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
-        let build_err = |actual: &str| {
-            self.diags
-                .report_simple("expected assignment target", expr.span, format!("got `{}`", actual))
-        };
+        let diags = self.diags;
+        let build_err =
+            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got `{}`", actual));
 
         let result = match &expr.inner {
             ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
-                MaybeCompile::Compile(_) => Err(build_err("compile-time constant")),
+                MaybeCompile::Compile(_) => return Err(build_err("compile-time constant")),
                 MaybeCompile::Other(s) => match s {
-                    NamedValue::Constant(_) => Err(build_err("constant")),
-                    NamedValue::Parameter(_) => Err(build_err("parameter")),
-                    NamedValue::Variable(v) => Ok(AssignmentTarget::simple(Spanned {
-                        span: expr.span,
-                        inner: AssignmentTargetBase::Variable(v),
-                    })),
+                    NamedValue::Constant(_) => return Err(build_err("constant")),
+                    NamedValue::Parameter(_) => return Err(build_err("parameter")),
+                    NamedValue::Variable(v) => {
+                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
+                    }
                     NamedValue::Port(p) => {
                         let direction = self.ports[p].direction;
                         match direction.inner {
-                            PortDirection::Input => Err(build_err("input port")),
-                            PortDirection::Output => Ok(AssignmentTarget::simple(Spanned {
-                                span: expr.span,
-                                inner: AssignmentTargetBase::Port(p),
-                            })),
+                            PortDirection::Input => return Err(build_err("input port")),
+                            PortDirection::Output => {
+                                AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(p)))
+                            }
                         }
                     }
-                    NamedValue::Wire(w) => Ok(AssignmentTarget::simple(Spanned {
-                        span: expr.span,
-                        inner: AssignmentTargetBase::Wire(w),
-                    })),
-                    NamedValue::Register(r) => Ok(AssignmentTarget::simple(Spanned {
-                        span: expr.span,
-                        inner: AssignmentTargetBase::Register(r),
-                    })),
+                    NamedValue::Wire(w) => {
+                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
+                    }
+                    NamedValue::Register(r) => {
+                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Register(r)))
+                    }
                 },
             },
-            ExpressionKind::ArrayIndex(base, indices) => {
-                let base = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, base);
-                let indices = indices
+            ExpressionKind::ArrayIndex(inner_target, indices) => {
+                let inner_target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, inner_target);
+                let array_steps = indices
                     .inner
                     .iter()
-                    .map(|index| self.eval_expression_as_array_access_step(ctx, ctx_block, scope, vars, index))
+                    .map(|index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
                     .try_collect_all_vec();
 
-                let base = base?;
-                let indices = indices?;
+                let inner_target = inner_target?;
+                let array_steps = ArraySteps::new(array_steps?);
 
-                let AssignmentTarget { base, mut steps } = base.inner;
-                steps.extend(
-                    indices
-                        .into_iter()
-                        .map(|access| access.map_inner(AssignmentTargetStep::ArrayAccess)),
-                );
-                Ok(AssignmentTarget { base, steps })
+                let AssignmentTarget {
+                    base: inner_base,
+                    array_steps: inner_array_steps,
+                } = inner_target.inner;
+                if !inner_array_steps.is_empty() {
+                    return Err(diags.report_todo(expr.span, "combining target expressions"));
+                }
+
+                AssignmentTarget {
+                    base: inner_base,
+                    array_steps,
+                }
             }
             ExpressionKind::DotIdIndex(_, _) => {
-                Err(self.diags.report_todo(expr.span, "assignment target dot id index"))?
+                return Err(diags.report_todo(expr.span, "assignment target dot id index"))?
             }
             ExpressionKind::DotIntIndex(_, _) => {
-                Err(self.diags.report_todo(expr.span, "assignment target dot int index"))?
+                return Err(diags.report_todo(expr.span, "assignment target dot int index"))?
             }
-            _ => Err(build_err("other expression")),
+            _ => return Err(build_err("other expression")),
         };
 
         Ok(Spanned {
             span: expr.span,
-            inner: result?,
-        })
-    }
-
-    // TODO this entire thing feels duplicate, is there a way to combine this with the other array evaluation functions?
-    pub fn eval_assignment_target_as_expression_unchecked(
-        &mut self,
-        target: Spanned<&AssignmentTarget<Signal>>,
-    ) -> Result<Spanned<TypedIrExpression>, ErrorGuaranteed> {
-        let AssignmentTarget { base, steps } = target.inner;
-
-        let mut curr = match base.inner {
-            Signal::Port(port) => self.ports[port].typed_ir_expr(),
-            Signal::Wire(wire) => self.wires[wire].typed_ir_expr(),
-            Signal::Register(register) => self.registers[register].typed_ir_expr(),
-        };
-
-        for step in steps {
-            curr = match &step.inner {
-                AssignmentTargetStep::ArrayAccess(step) => {
-                    let (curr_ty_inner, curr_array_len) = match &curr.ty {
-                        HardwareType::Array(curr_ty_inner, curr_array_len) => (&**curr_ty_inner, curr_array_len),
-                        _ => unreachable!(),
-                    };
-
-                    match step {
-                        ArrayAccessStep::IndexOrSliceLen { start, slice_len } => match start {
-                            MaybeCompile::Compile(start) => match slice_len {
-                                None => TypedIrExpression {
-                                    ty: curr_ty_inner.clone(),
-                                    domain: curr.domain,
-                                    expr: IrExpression::ArrayIndex {
-                                        base: Box::new(curr.expr),
-                                        index: Box::new(IrExpression::Int(start.clone())),
-                                    },
-                                },
-                                Some(slice_len) => TypedIrExpression {
-                                    ty: HardwareType::Array(Box::new(curr_ty_inner.clone()), slice_len.clone()),
-                                    domain: curr.domain,
-                                    expr: IrExpression::ArraySlice {
-                                        base: Box::new(curr.expr),
-                                        start: Box::new(IrExpression::Int(start.clone())),
-                                        len: slice_len.clone(),
-                                    },
-                                },
-                            },
-                            MaybeCompile::Other(start) => match slice_len {
-                                None => TypedIrExpression {
-                                    ty: curr_ty_inner.clone(),
-                                    domain: start.domain.join(&curr.domain),
-                                    expr: IrExpression::ArrayIndex {
-                                        base: Box::new(curr.expr),
-                                        index: Box::new(start.expr.clone()),
-                                    },
-                                },
-                                Some(slice_len) => TypedIrExpression {
-                                    ty: HardwareType::Array(Box::new(curr_ty_inner.clone()), slice_len.clone()),
-                                    domain: start.domain.join(&curr.domain),
-                                    expr: IrExpression::ArraySlice {
-                                        base: Box::new(curr.expr),
-                                        start: Box::new(start.expr.clone()),
-                                        len: slice_len.clone(),
-                                    },
-                                },
-                            },
-                        },
-                        ArrayAccessStep::SliceUntilEnd { start } => {
-                            let slice_len = curr_array_len - start.to_biguint().unwrap();
-                            TypedIrExpression {
-                                ty: HardwareType::Array(Box::new(curr_ty_inner.clone()), slice_len.clone()),
-                                domain: curr.domain,
-                                expr: IrExpression::ArraySlice {
-                                    base: Box::new(curr.expr),
-                                    start: Box::new(IrExpression::Int(start.clone())),
-                                    len: slice_len,
-                                },
-                            }
-                        }
-                    }
-                }
-            };
-        }
-
-        Ok(Spanned {
-            span: target.span,
-            inner: curr,
+            inner: result,
         })
     }
 

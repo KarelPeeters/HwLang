@@ -652,6 +652,7 @@ pub enum InterfaceDirection {
     Out,
 }
 
+// TODO move to pos?
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Spanned<T> {
     pub span: Span,
@@ -659,6 +660,10 @@ pub struct Spanned<T> {
 }
 
 impl<T> Spanned<T> {
+    pub fn new(span: Span, inner: T) -> Spanned<T> {
+        Spanned { span, inner }
+    }
+
     pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
         Spanned {
             span: self.span,

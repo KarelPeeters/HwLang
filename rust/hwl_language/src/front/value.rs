@@ -259,6 +259,22 @@ impl CompileValue {
     }
 }
 
+impl<T, C> MaybeCompile<T, C> {
+    pub fn unwrap_compile(self) -> C {
+        match self {
+            MaybeCompile::Compile(v) => v,
+            MaybeCompile::Other(_) => panic!("expected compile value"),
+        }
+    }
+
+    pub fn as_ref(&self) -> MaybeCompile<&T, &C> {
+        match self {
+            MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
+            MaybeCompile::Other(v) => MaybeCompile::Other(v),
+        }
+    }
+}
+
 impl<T, E> MaybeCompile<TypedIrExpression<T, E>> {
     pub fn domain(&self) -> &ValueDomain {
         match self {

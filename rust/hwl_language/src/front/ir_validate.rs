@@ -1,7 +1,7 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrDatabase,
-    IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement, IrType, IrVariables,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrDatabase, IrExpression,
+    IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement, IrTargetStep, IrType, IrVariables,
     IrWireOrPort,
 };
 use crate::syntax::pos::Span;
@@ -137,23 +137,23 @@ fn assignment_target_ty<'a>(
     };
 
     let mut curr_ty = base_ty;
+    let mut slice_lens = vec![];
+
     for step in steps {
+        curr_ty = Cow::Owned(unwrap_match!(&*curr_ty, IrType::Array(inner, _) => &**inner).clone());
         match step {
-            IrAssignmentTargetStep::ArrayAccess {
-                start: _,
-                slice_len: len,
-            } => {
-                // TODO avoid clone
-                let curr_ty_inner = unwrap_match!(curr_ty.into_owned(), IrType::Array(inner, _) => inner);
-                curr_ty = match len {
-                    None => Cow::Owned(*curr_ty_inner),
-                    Some(len) => Cow::Owned(IrType::Array(curr_ty_inner, len.clone())),
-                }
+            IrTargetStep::ArrayIndex(_index) => {
+                // no slice len
             }
-        }
+            IrTargetStep::ArraySlice(_start, len) => {
+                slice_lens.push(len.clone());
+            }
+        };
     }
 
-    curr_ty
+    slice_lens.into_iter().rev().fold(curr_ty, |acc, len| {
+        Cow::Owned(IrType::Array(Box::new(acc.into_owned()), len))
+    })
 }
 
 impl IrExpression {
@@ -209,11 +209,16 @@ impl IrExpression {
     }
 }
 
-fn check_type_match(diags: &Diagnostics, span: Span, left: &IrType, right: &IrType) -> Result<(), ErrorGuaranteed> {
-    if left == right {
+fn check_type_match(
+    diags: &Diagnostics,
+    span: Span,
+    expected: &IrType,
+    actual: &IrType,
+) -> Result<(), ErrorGuaranteed> {
+    if expected == actual {
         Ok(())
     } else {
-        let msg = format!("ir assignment type mismatch: {:?} vs {:?}", left, right);
+        let msg = format!("ir type mismatch: expected {:?}, got {:?}", expected, actual);
         Err(diags.report_internal_error(span, msg))
     }
 }

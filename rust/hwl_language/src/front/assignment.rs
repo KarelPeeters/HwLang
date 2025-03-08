@@ -1,21 +1,18 @@
-use crate::front::array::{
-    check_range_hardware_index, check_range_hardware_slice, check_range_hardware_slice_start, check_range_mixed_index,
-    handle_array_variable_assignment_steps, ArrayAccessStep, SliceLength, VarAssignSpans,
-};
 use crate::front::block::{BlockDomain, TypedIrExpression};
-use crate::front::check::{check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileState, Port, Register, Variable, VariableInfo, Wire};
+use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
+use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrAssignmentTarget, IrAssignmentTargetStep, IrExpression, IrStatement};
+use crate::front::ir::{
+    IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
+};
 use crate::front::misc::{Signal, ValueDomain};
 use crate::front::scope::Scope;
-use crate::front::types::{ClosedIncRange, HardwareType, Type};
+use crate::front::steps::ArraySteps;
+use crate::front::types::{HardwareType, Type};
 use crate::front::value::MaybeCompile;
-use crate::syntax::ast::{Assignment, BinaryOp, Expression, Spanned};
+use crate::syntax::ast::{Assignment, BinaryOp, Spanned};
 use crate::syntax::pos::Span;
-use crate::throw;
-use crate::util::result_pair;
 use indexmap::IndexMap;
 
 // TODO move
@@ -43,15 +40,11 @@ pub struct AssignmentEvent {
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget<B = AssignmentTargetBase> {
     pub base: Spanned<B>,
-    pub steps: Vec<Spanned<AssignmentTargetStep>>,
+    // TODO add struct/tuple dot indices here
+    pub array_steps: ArraySteps,
 }
 
-impl AssignmentTarget {
-    pub fn simple(base: Spanned<AssignmentTargetBase>) -> Self {
-        Self { base, steps: vec![] }
-    }
-}
-
+// TODO general name for this, eg. "SignalOrVariable"
 #[derive(Debug, Clone)]
 pub enum AssignmentTargetBase {
     Port(Port),
@@ -60,9 +53,13 @@ pub enum AssignmentTargetBase {
     Variable(Variable),
 }
 
-#[derive(Debug, Clone)]
-pub enum AssignmentTargetStep {
-    ArrayAccess(ArrayAccessStep),
+impl AssignmentTarget {
+    pub fn simple(base: Spanned<AssignmentTargetBase>) -> Self {
+        Self {
+            base,
+            array_steps: ArraySteps::new(vec![]),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,383 +136,397 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        vars: VariableValues,
+        mut vars: VariableValues,
         scope: Scope,
         stmt: &Assignment,
     ) -> Result<VariableValues, ErrorGuaranteed> {
+        let diags = self.diags;
         let Assignment {
             span: _,
             op,
             target: target_expr,
-            value,
+            value: right_expr,
         } = stmt;
 
         // evaluate target
         let target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, &vars, target_expr)?;
+        let AssignmentTarget {
+            base: target_base,
+            array_steps: target_steps,
+        } = &target.inner;
 
-        // TODO report exact range/sub-access that is being assigned
-        ctx.report_assignment(target.as_ref())?;
+        // figure out expected type if any
+        let right_expected_ty = if op.inner.is_some() {
+            Type::Any
+        } else {
+            let target_base_ty = match target_base.inner {
+                AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
+                AssignmentTargetBase::Wire(wire) => Some(self.wires[wire].ty.as_ref().map_inner(HardwareType::as_type)),
+                AssignmentTargetBase::Register(reg) => {
+                    Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
+                }
+                AssignmentTargetBase::Variable(var) => self.variables[var].ty.clone(),
+            };
 
-        let target_base_signal = match target.inner.base.inner {
+            // TODO allow Type::Any passthrough
+            match target_base_ty {
+                None => Type::Any,
+                Some(target_base_ty) => {
+                    target_steps.apply_to_expected_type(diags, Spanned::new(target_base.span, target_base_ty.inner))?
+                }
+            }
+        };
+
+        // evaluate right value
+        let right_eval = self.eval_expression(ctx, ctx_block, scope, &vars, &right_expected_ty, right_expr)?;
+
+        // figure out if we need a compile or hardware assignment
+        let target_base_signal = match target_base.inner {
             AssignmentTargetBase::Port(port) => Signal::Port(port),
             AssignmentTargetBase::Wire(wire) => Signal::Wire(wire),
             AssignmentTargetBase::Register(reg) => Signal::Register(reg),
             AssignmentTargetBase::Variable(var) => {
-                let new_vars = self
-                    .elaborate_variable_assignment(ctx, ctx_block, vars, scope, stmt.span, target, var, *op, value)?;
-                return Ok(new_vars);
+                self.elaborate_variable_assignment(
+                    ctx,
+                    ctx_block,
+                    &mut vars,
+                    stmt.span,
+                    target,
+                    var,
+                    *op,
+                    right_eval,
+                    right_expected_ty,
+                )?;
+                return Ok(vars);
             }
         };
 
-        let new_vars = self.elaborate_hardware_assignment(
-            ctx,
-            ctx_block,
-            vars,
-            scope,
-            stmt.span,
-            target_base_signal,
-            target,
-            *op,
-            value,
-        )?;
-        Ok(new_vars)
-    }
+        // handle hardware signal assignment
+        // TODO report exact range/sub-access that is being assigned
+        ctx.report_assignment(Spanned::new(target_base.span, target_base_signal))?;
 
-    fn elaborate_variable_assignment<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
-        mut vars: VariableValues,
-        scope: Scope,
-
-        assignment_span: Span,
-        target: Spanned<AssignmentTarget>,
-        target_var: Variable,
-        op: Spanned<Option<BinaryOp>>,
-        assignment_value: &Expression,
-    ) -> Result<VariableValues, ErrorGuaranteed> {
-        let diags = self.diags;
-
-        let AssignmentTarget {
-            base: target_base,
-            steps: target_steps,
-        } = target.inner;
-
-        let VariableInfo {
-            id,
-            mutable,
-            ty: var_ty,
-        } = &self.variables[target_var];
-        let var_ty = var_ty.clone();
-
-        // check mutable
-        if !*mutable {
-            let diag = Diagnostic::new("assignment to immutable variable")
-                .add_error(target.span, "variable assigned to here")
-                .add_info(id.span(), "variable declared as immutable here")
-                .finish();
-            return Err(diags.report(diag));
-        }
-
-        let new_value = if target_steps.is_empty() {
-            // simple full variable assignment
-            // TODO can this be merged with the other branch? avoid evaluating the target if not necessary!
-
-            // evaluate value
-            let result = match op.transpose() {
-                None => {
-                    // evaluate with expected type
-                    let expected_ty = var_ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                    self.eval_expression(ctx, ctx_block, scope, &vars, expected_ty, assignment_value)?
-                }
-                Some(op) => {
-                    // evaluate both
-                    let left = Spanned {
-                        span: target.span,
-                        inner: vars.get(diags, target.span, target_var)?.value.clone(),
-                    };
-                    let right = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, assignment_value)?;
-
-                    // evaluate operator
-                    let result = self.eval_binary_expression(assignment_span, op, left, right)?;
-
-                    // expand to expected type
-                    let expected_ty = var_ty.as_ref().and_then(|ty| ty.inner.as_hardware_type());
-                    let result_expanded = if let Some(expected_ty) = expected_ty {
-                        match result {
-                            MaybeCompile::Compile(result) => MaybeCompile::Compile(result),
-                            MaybeCompile::Other(result) => {
-                                MaybeCompile::Other(result.soft_expand_to_type(&expected_ty))
-                            }
-                        }
-                    } else {
-                        result
-                    };
-
-                    Spanned {
-                        span: assignment_span,
-                        inner: result_expanded,
-                    }
-                }
-            };
-
-            // check type
-            if let Some(var_ty) = var_ty {
-                let reason = TypeContainsReason::Assignment {
-                    span_target: target.span,
-                    span_target_ty: var_ty.span,
-                };
-                // TODO allow compound subtype or not?
-                check_type_contains_value(diags, reason, &var_ty.inner, result.as_ref(), true, true)?;
-            }
-
-            result
-        } else {
-            // we can evaluate here, we know there are steps so it is required anyway
-            let target_initial_value = vars.get(diags, target_base.span, target_var)?.value.clone();
-
-            let ty_ref = var_ty.as_ref().map(Spanned::as_ref);
-
-            let spans = VarAssignSpans {
-                variable_declaration: self.variables[target_var].id.span(),
-                assigned_value: assignment_value.span,
-                assignment_operator: op.span,
-            };
-
-            let result = handle_array_variable_assignment_steps(
-                diags,
-                Spanned {
-                    span: target_base.span,
-                    inner: target_initial_value,
-                },
-                ty_ref,
-                &target_steps,
-                spans,
-                |left, expected_ty| match op.transpose() {
-                    None => Ok(self
-                        .eval_expression(ctx, ctx_block, scope, &vars, expected_ty, assignment_value)?
-                        .inner),
-                    Some(op) => {
-                        let right = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, assignment_value)?;
-                        self.eval_binary_expression(assignment_span, op, left, right)
-                    }
-                },
-            )?;
-
-            Spanned {
-                span: assignment_span,
-                inner: result,
-            }
+        // evaluate the full value
+        let value = match op.inner {
+            None => right_eval,
+            Some(_) => todo!("hardware signal op assign"),
         };
 
-        // do assignment
-        let assigned = MaybeAssignedValue::Assigned(AssignedValue {
-            event: AssignmentEvent {
-                assigned_value_span: new_value.span,
-            },
-            value: new_value.inner,
-        });
-        vars.set(diags, target.span, target_var, assigned)?;
-
-        Ok(vars)
-    }
-
-    fn elaborate_hardware_assignment<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
-        vars: VariableValues,
-        scope: Scope,
-        assignment_span: Span,
-        target_base_signal: Signal,
-        target: Spanned<AssignmentTarget>,
-        op: Spanned<Option<BinaryOp>>,
-        assignment_value: &Expression,
-    ) -> Result<VariableValues, ErrorGuaranteed> {
-        let diags = self.diags;
-        let AssignmentTarget {
-            base: target_base,
-            steps: target_steps,
-        } = target.inner.clone();
-
-        // take steps
-        let mut steps_ir = vec![];
-
-        let mut curr_span = target_base.span;
+        // check type (and convert the steps to IR)
         let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
-        let mut curr_inner_ty = &target_base_ty.inner;
-        let mut expected_ranges = vec![];
 
-        // TODO check types here
-        for step in target_steps {
-            curr_inner_ty = match step.inner {
-                AssignmentTargetStep::ArrayAccess(step_inner) => match curr_inner_ty {
-                    HardwareType::Array(array_inner, array_len) => {
-                        let array_len = Spanned {
-                            span: curr_span,
-                            inner: array_len,
-                        };
+        let diags = self.diags;
+        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
 
-                        let (step_ir, slice_len) = match step_inner {
-                            ArrayAccessStep::IndexOrSliceLen { start, slice_len } => {
-                                let start = match start {
-                                    MaybeCompile::Compile(start) => {
-                                        match &slice_len {
-                                            None => check_range_mixed_index(diags, &start, step.span, array_len)?,
-                                            Some(slice_len) => {
-                                                let start = ClosedIncRange::single(start.clone());
-                                                check_range_hardware_slice(
-                                                    diags, &start, slice_len, step.span, array_len,
-                                                )?;
-                                            }
-                                        }
-                                        IrExpression::Int(start)
-                                    }
-                                    MaybeCompile::Other(start) => {
-                                        match &slice_len {
-                                            None => check_range_hardware_index(diags, &start.ty, step.span, array_len)?,
-                                            Some(slice_len) => {
-                                                check_range_hardware_slice(
-                                                    diags, &start.ty, slice_len, step.span, array_len,
-                                                )?;
-                                            }
-                                        }
-                                        start.expr
-                                    }
-                                };
-                                (
-                                    IrAssignmentTargetStep::ArrayAccess {
-                                        start,
-                                        slice_len: slice_len.clone(),
-                                    },
-                                    slice_len,
-                                )
-                            }
-                            ArrayAccessStep::SliceUntilEnd { start } => {
-                                let SliceLength(slice_len) =
-                                    check_range_hardware_slice_start(diags, &start, step.span, array_len)?;
-                                let start = IrExpression::Int(start);
-                                (
-                                    IrAssignmentTargetStep::ArrayAccess {
-                                        start,
-                                        slice_len: Some(slice_len.clone()),
-                                    },
-                                    Some(slice_len),
-                                )
-                            }
-                        };
-
-                        steps_ir.push(step_ir);
-                        if let Some(slice_len) = slice_len {
-                            expected_ranges.push(slice_len);
-                        }
-
-                        array_inner
-                    }
-                    _ => {
-                        let diag = Diagnostic::new("tried to index non-array type")
-                            .add_error(
-                                step.span,
-                                format!(
-                                    "attempting to index value of type `{}` here",
-                                    curr_inner_ty.to_diagnostic_string()
-                                ),
-                            )
-                            .add_info(
-                                target_base.span,
-                                format!("base has type `{}`", target_base_ty.inner.to_diagnostic_string()),
-                            )
-                            .add_info(target_base_ty.span, "base type set here")
-                            .finish();
-                        return Err(diags.report(diag));
-                    }
-                },
-            };
-            curr_span = curr_span.join(step.span);
-        }
-
-        // by going through the steps we've figured out the inner type and built the ir target
-        let expected_ty = expected_ranges
-            .into_iter()
-            .rev()
-            .fold(curr_inner_ty.clone(), |a, r| HardwareType::Array(Box::new(a), r));
-
-        let ir_target = IrAssignmentTarget {
-            base: target_base_signal.ir_assignment_target(self),
-            steps: steps_ir,
-        };
-
-        // evaluate value
-        let value = if let Some(op) = op.transpose() {
-            // compound assignment, re-evaluate target and don't pass expected type for right
-            let target = Spanned {
-                span: target.span,
-                inner: AssignmentTarget {
-                    base: Spanned {
-                        span: target.inner.base.span,
-                        inner: target_base_signal,
-                    },
-                    steps: target.inner.steps,
-                },
-            };
-            let value_left = self.eval_assignment_target_as_expression_unchecked(target.as_ref());
-            let value_right = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, assignment_value);
-
-            result_pair(value_left, value_right).and_then(|(left, right)| {
-                let left = left.map_inner(|left| MaybeCompile::Other(left));
-                let result = self.eval_binary_expression(assignment_span, op, left, right)?;
-                Ok(Spanned {
-                    span: assignment_span,
-                    inner: result,
-                })
-            })?
-        } else {
-            // simple assignment, pass expected type along
-            self.eval_expression(ctx, ctx_block, scope, &vars, &expected_ty.as_type(), assignment_value)?
-        };
-
-        // check type
-        // TODO expand value to type?
         let reason = TypeContainsReason::Assignment {
             span_target: target.span,
             span_target_ty: target_base_ty.span,
         };
-        let check_ty = check_type_contains_value(diags, reason, &expected_ty.as_type(), value.as_ref(), true, false);
+        check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref(), true, false)?;
+
+        // convert value to hardware
+        let value_ir = value.inner.as_ir_expression(diags, value.span, &target_ty)?;
 
         // check domains
-        // TODO double-check if/how step/index domains should influence this
-        let value_domain = value.inner.domain();
-        // TODO better error messages with more explanation
-        let target_domain = Spanned {
-            span: target.span,
-            inner: &target_base_signal.domain(self).inner,
-        };
         let value_domain = Spanned {
             span: value.span,
-            inner: value_domain,
+            inner: &value_ir.domain,
+        };
+        self.check_assignment_domains(
+            ctx.block_domain(),
+            ctx.condition_domains(),
+            op.span,
+            target_base_signal.domain(self).as_ref(),
+            target_steps,
+            value_domain,
+        )?;
+
+        // get ir target
+        let target_ir = IrAssignmentTarget {
+            base: target_base_signal.as_ir_target_base(self),
+            steps: target_steps_ir,
         };
 
-        let check_domains = match ctx.block_domain() {
+        // push ir statement
+        let stmt_ir = IrStatement::Assign(target_ir, value_ir.expr);
+        ctx.push_ir_statement(
+            diags,
+            ctx_block,
+            Spanned {
+                span: stmt.span,
+                inner: stmt_ir,
+            },
+        )?;
+
+        // vars have not changed
+        Ok(vars)
+    }
+
+    fn elaborate_variable_assignment<C: ExpressionContext>(
+        &self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        vars: &mut VariableValues,
+        stmt_span: Span,
+        target: Spanned<AssignmentTarget>,
+        var: Variable,
+        op: Spanned<Option<BinaryOp>>,
+        right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
+        right_expected_ty: Type,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+        let AssignmentTarget {
+            base: target_base,
+            array_steps: target_steps,
+        } = target.inner;
+
+        // TODO move all of this into a function
+        // check mutable
+        if !self.variables[var].mutable {
+            let diag = Diagnostic::new("assignment to immutable variable")
+                .add_error(target_base.span, "variable assigned to here")
+                .add_info(self.variables[var].id.span(), "variable declared as immutable here")
+                .finish();
+            return Err(diags.report(diag));
+        }
+
+        // If no op and no steps, we can just do the full assignment immediately.
+        // This is separate because in this case the current target value should not be evaluated.
+        if op.inner.is_none() && target_steps.is_empty() {
+            // check type
+            if let Some(ty) = &self.variables[var].ty {
+                let reason = TypeContainsReason::Assignment {
+                    span_target: target.span,
+                    span_target_ty: ty.span,
+                };
+                check_type_contains_value(diags, reason, &ty.inner, right_eval.as_ref(), true, false)?;
+            }
+
+            // set variable
+            vars.set(
+                diags,
+                stmt_span,
+                var,
+                MaybeAssignedValue::Assigned(AssignedValue {
+                    event: AssignmentEvent {
+                        assigned_value_span: right_eval.span,
+                    },
+                    value: right_eval.inner,
+                }),
+            )?;
+            return Ok(());
+        }
+
+        // at this point the current target value needs to be evaluated
+        let target_base_eval = Spanned::new(target_base.span, &vars.get(diags, target_base.span, var)?.value);
+
+        // check if we will stay compile-time or be forced to convert to hardware
+        let mut any_hardware = false;
+        any_hardware |= matches!(target_base_eval.inner, MaybeCompile::Other(_));
+        any_hardware |= target_steps.any_hardware();
+        any_hardware |= matches!(right_eval.inner, MaybeCompile::Other(_));
+
+        if any_hardware {
+            // implement assignment as hardware
+            let value = match op.inner {
+                None => right_eval,
+                Some(_) => todo!("hardware variable op assign"),
+            };
+
+            let (target_base_ty, target_base_domain, var_ir) = self.convert_variable_to_ir_variable(
+                ctx,
+                ctx_block,
+                target.span,
+                target_base.span,
+                var,
+                target_base_eval.inner,
+            )?;
+
+            // figure out the inner type and steps
+            let (target_inner_ty, target_steps_ir) =
+                target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
+            let reason = TypeContainsReason::Assignment {
+                span_target: target.span,
+                span_target_ty: target_base_ty.span,
+            };
+            check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref(), true, false)?;
+
+            // do the current assignment
+            let value_ir = value.inner.as_ir_expression(diags, value.span, &target_inner_ty)?;
+            let target_ir = IrAssignmentTarget {
+                base: IrAssignmentTargetBase::Variable(var_ir),
+                steps: target_steps_ir,
+            };
+            let stmt_store = IrStatement::Assign(target_ir, value_ir.expr);
+            ctx.push_ir_statement(diags, ctx_block, Spanned::new(stmt_span, stmt_store))?;
+
+            // map variable to ir variable
+            let mut combined_domain = target_base_domain.join(value.inner.domain());
+            target_steps.for_each_domain(|d| combined_domain = combined_domain.join(d.inner));
+
+            let assigned = AssignedValue {
+                event: AssignmentEvent {
+                    assigned_value_span: value.span,
+                },
+                value: MaybeCompile::Other(TypedIrExpression {
+                    ty: target_base_ty.inner,
+                    domain: combined_domain,
+                    expr: IrExpression::Variable(var_ir),
+                }),
+            };
+            vars.set(diags, stmt_span, var, MaybeAssignedValue::Assigned(assigned))?;
+        } else {
+            // everything is compile-time, do assignment at compile-time
+            let target_base_eval = target_base_eval.map_inner(|m| m.as_ref().unwrap_compile());
+            let target_steps = target_steps.unwrap_compile();
+            let right_eval = right_eval.map_inner(MaybeCompile::unwrap_compile);
+
+            match op.inner {
+                None => {
+                    // check type
+                    if let Some(var_ty) = &self.variables[var].ty {
+                        let reason = TypeContainsReason::Assignment {
+                            span_target: target.span,
+                            span_target_ty: var_ty.span,
+                        };
+                        check_type_contains_compile_value(
+                            diags,
+                            reason,
+                            &right_expected_ty,
+                            right_eval.as_ref(),
+                            true,
+                        )?;
+                    }
+
+                    // do assignment
+                    let event = AssignmentEvent {
+                        assigned_value_span: right_eval.span,
+                    };
+                    let result_value = target_steps.set_compile_value(
+                        diags,
+                        target_base_eval.map_inner(Clone::clone),
+                        op.span,
+                        right_eval,
+                    )?;
+                    vars.set(
+                        diags,
+                        stmt_span,
+                        var,
+                        MaybeAssignedValue::Assigned(AssignedValue {
+                            event,
+                            value: MaybeCompile::Compile(result_value),
+                        }),
+                    )?;
+                }
+                Some(_) => {
+                    // let target_eval = Spanned::new(
+                    //     target_expr.span,
+                    //     target_steps.get_compile_value(diags, Spanned::new(target_base.span, target_base_eval))?,
+                    // );
+                    todo!("compile-time op assign")
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn convert_variable_to_ir_variable<C: ExpressionContext>(
+        &self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        target_span: Span,
+        target_base_span: Span,
+        var: Variable,
+        target_base_eval: &MaybeCompile<TypedIrExpression>,
+    ) -> Result<(Spanned<HardwareType>, ValueDomain, IrVariable), ErrorGuaranteed> {
+        let diags = self.diags;
+
+        // pick a type and convert the current base value to hardware
+        let target_base_ty = self.variables[var].ty.as_ref().ok_or_else(|| {
+            let diag = Diagnostic::new("variable needs type annotation")
+                .add_error(
+                    target_span,
+                    "for the assignment here the variable needs to be converted to hardware",
+                )
+                .add_info(self.variables[var].id.span(), "variable declared without a type here")
+                .finish();
+            diags.report(diag)
+        })?;
+        let target_base_ty_hw = target_base_ty.inner.as_hardware_type().ok_or_else(|| {
+            let diag = Diagnostic::new("variable needs hardware type because it is assigned a hardware value")
+                .add_error(
+                    target_span,
+                    format!(
+                        "actual type `{}` not representable in hardware",
+                        target_base_ty.inner.to_diagnostic_string()
+                    ),
+                )
+                .add_info(target_base_ty.span, "variable type set here")
+                .finish();
+            diags.report(diag)
+        })?;
+        let target_base_ty_hw = Spanned::new(target_base_ty.span, target_base_ty_hw);
+
+        let target_base_ir_expr =
+            target_base_eval.as_ir_expression(diags, target_base_span, &target_base_ty_hw.inner)?;
+
+        // create ir variable and replace the variable with it
+        let var_ir_info = IrVariableInfo {
+            ty: target_base_ty_hw.inner.to_ir(),
+            debug_info_id: self.variables[var].id.clone(),
+        };
+        let var_ir = ctx.new_ir_variable(diags, target_base_span, var_ir_info)?;
+
+        // store previous value into ir variable
+        let stmt_init = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), target_base_ir_expr.expr);
+        ctx.push_ir_statement(diags, ctx_block, Spanned::new(target_span, stmt_init))?;
+
+        Ok((target_base_ty_hw, target_base_ir_expr.domain, var_ir))
+    }
+
+    fn check_assignment_domains(
+        &self,
+        block_domain: &BlockDomain,
+        condition_domains: &[Spanned<ValueDomain>],
+        op_span: Span,
+        target_base_domain: Spanned<&ValueDomain>,
+        steps: &ArraySteps,
+        value_domain: Spanned<&ValueDomain>,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+        match block_domain {
             BlockDomain::CompileTime => {
-                for d in [&target_domain, &value_domain] {
+                for d in [&target_base_domain, &value_domain] {
                     if d.inner != &ValueDomain::CompileTime {
-                        throw!(diags.report_internal_error(d.span, "non-compile-time domain in compile-time context"))
+                        return Err(
+                            diags.report_internal_error(d.span, "non-compile-time domain in compile-time context")
+                        );
                     }
                 }
                 Ok(())
             }
             BlockDomain::Combinatorial => {
                 let mut check = self.check_valid_domain_crossing(
-                    assignment_span,
-                    target_domain,
+                    op_span,
+                    target_base_domain,
                     value_domain,
                     "value to target in combinatorial block",
                 );
 
-                for condition_domain in ctx.condition_domains() {
+                steps.for_each_domain(|d| {
                     let c = self.check_valid_domain_crossing(
-                        assignment_span,
-                        target_domain,
+                        op_span,
+                        target_base_domain,
+                        d,
+                        "step to target in combinatorial block",
+                    );
+                    check = check.and(c);
+                });
+
+                for condition_domain in condition_domains {
+                    let c = self.check_valid_domain_crossing(
+                        op_span,
+                        target_base_domain,
                         condition_domain.as_ref(),
                         "condition to target in combinatorial block",
                     );
@@ -527,39 +538,29 @@ impl CompileState<'_> {
             BlockDomain::Clocked(block_domain) => {
                 let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
 
-                let check_target_domain = self.check_valid_domain_crossing(
-                    assignment_span,
-                    target_domain,
+                let mut check = self.check_valid_domain_crossing(
+                    op_span,
+                    target_base_domain,
                     block_domain.as_ref(),
                     "clocked block to target",
                 );
-                let check_value_domain = self.check_valid_domain_crossing(
-                    assignment_span,
+
+                steps.for_each_domain(|d| {
+                    let c =
+                        self.check_valid_domain_crossing(op_span, block_domain.as_ref(), d, "step to clocked block");
+                    check = check.and(c);
+                });
+
+                let c = self.check_valid_domain_crossing(
+                    op_span,
                     block_domain.as_ref(),
                     value_domain,
                     "value to clocked block",
                 );
+                check = check.and(c);
 
-                check_target_domain.and(check_value_domain)
+                check
             }
-        };
-
-        check_domains?;
-        check_ty?;
-
-        // convert to IR and store
-        let ir_value = value.inner.as_ir_expression(diags, value.span, &target_base_ty.inner)?;
-
-        let stmt_ir = IrStatement::Assign(ir_target, ir_value.expr);
-        ctx.push_ir_statement(
-            diags,
-            ctx_block,
-            Spanned {
-                span: assignment_span,
-                inner: stmt_ir,
-            },
-        )?;
-
-        Ok(vars)
+        }
     }
 }

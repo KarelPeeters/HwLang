@@ -164,7 +164,7 @@ impl Signal {
         }
     }
 
-    pub fn ir_assignment_target(self, state: &CompileState) -> IrAssignmentTargetBase {
+    pub fn as_ir_target_base(self, state: &CompileState) -> IrAssignmentTargetBase {
         match self {
             Signal::Port(port) => IrAssignmentTargetBase::Port(state.ports[port].ir),
             Signal::Wire(wire) => IrAssignmentTargetBase::Wire(state.wires[wire].ir),

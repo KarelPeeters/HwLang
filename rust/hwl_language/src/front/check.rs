@@ -65,6 +65,7 @@ impl CompileState<'_> {
     }
 }
 
+// TODO turn this into a lambda
 #[derive(Debug, Copy, Clone)]
 pub enum TypeContainsReason {
     Assignment {
@@ -93,6 +94,9 @@ pub enum TypeContainsReason {
     },
     ArrayIndex {
         span_index: Span,
+    },
+    ArrayLen {
+        span_len: Span,
     },
 }
 
@@ -147,6 +151,9 @@ impl TypeContainsReason {
             ),
             TypeContainsReason::ArrayIndex { span_index } => {
                 diag.add_info(span_index, format!("array index requires type `{}`", target_ty_str))
+            }
+            TypeContainsReason::ArrayLen { span_len } => {
+                diag.add_info(span_len, format!("array length requires type `{}`", target_ty_str))
             }
         }
     }

@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrBoolBinaryOp,
-    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister,
-    IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
+    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModuleChild,
+    IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
@@ -554,17 +554,18 @@ impl CodegenBlockContext<'_> {
 
         for step in steps {
             match step {
-                IrAssignmentTargetStep::ArrayAccess { start, slice_len: len } => {
+                IrTargetStep::ArrayIndex(index) => {
+                    let index = self.eval(span, index, stage_read)?;
+                    swrite!(&mut curr_str, "[{index}]")
+                }
+
+                IrTargetStep::ArraySlice(start, len) => {
                     let start = self.eval(span, start, stage_read)?;
 
-                    match len {
-                        None => swrite!(&mut curr_str, "[{start}]"),
-                        Some(len) => {
-                            let tmp_index = self.new_temporary();
-                            loops.push((tmp_index, start, len.clone()));
-                            swrite!(&mut curr_str, "[{tmp_index}]");
-                        }
-                    }
+                    let tmp_index = self.new_temporary();
+                    loops.push((tmp_index, start, len.clone()));
+
+                    swrite!(&mut curr_str, "[{tmp_index}]");
                 }
             }
         }

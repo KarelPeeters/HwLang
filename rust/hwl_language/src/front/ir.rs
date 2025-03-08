@@ -153,7 +153,7 @@ pub struct IrIfStatement {
 #[derive(Debug)]
 pub struct IrAssignmentTarget {
     pub base: IrAssignmentTargetBase,
-    pub steps: Vec<IrAssignmentTargetStep>,
+    pub steps: Vec<IrTargetStep>,
 }
 
 impl IrAssignmentTarget {
@@ -191,13 +191,13 @@ pub enum IrAssignmentTargetBase {
 
 // TODO re-use from frontend?
 #[derive(Debug)]
-pub enum IrAssignmentTargetStep {
-    ArrayAccess {
-        start: IrExpression,
-        slice_len: Option<BigUint>,
-    },
+pub enum IrTargetStep {
+    ArrayIndex(IrExpression),
+    ArraySlice(IrExpression, BigUint),
 }
 
+// TODO consider not nesting these, but forcing a pass through a local variable for compound expressions
+//   that should simplify the backends, at the cost of more verbose backend codegen
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants

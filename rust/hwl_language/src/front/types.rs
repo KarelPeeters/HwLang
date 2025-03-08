@@ -45,6 +45,8 @@ pub struct IncRange<T> {
 
 // TODO can this represent the empty range? maybe exclusive is better after all...
 //   we don't really want empty ranges for int types, but for for loops and slices we do
+// TODO switch to exclusive ranges, much more intuitive to program with, especially for arrays and loops
+//   match code becomes harder, but that's fine
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ClosedIncRange<T> {
     pub start_inc: T,
@@ -321,6 +323,17 @@ impl<T> ClosedIncRange<T> {
             end_inc: other_end_inc,
         } = other;
         start_inc <= other_start_inc && other_end_inc <= end_inc
+    }
+
+    pub fn as_single(&self) -> Option<&T>
+    where
+        T: Eq,
+    {
+        if self.start_inc == self.end_inc {
+            Some(&self.start_inc)
+        } else {
+            None
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = T> + '_

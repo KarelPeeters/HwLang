@@ -1,8 +1,7 @@
-use crate::front::assignment::AssignmentTarget;
 use crate::front::block::BlockDomain;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
-use crate::front::misc::ValueDomain;
+use crate::front::misc::{Signal, ValueDomain};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -31,7 +30,7 @@ pub trait ExpressionContext {
         info: IrVariableInfo,
     ) -> Result<IrVariable, ErrorGuaranteed>;
 
-    fn report_assignment(&mut self, target: Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>;
+    fn report_assignment(&mut self, target: Spanned<Signal>) -> Result<(), ErrorGuaranteed>;
 
     fn block_domain(&self) -> &BlockDomain;
 
@@ -88,7 +87,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         Err(diags.report_internal_error(span, "trying to create IR variable in compile-time context"))
     }
 
-    fn report_assignment(&mut self, target: Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed> {
+    fn report_assignment(&mut self, target: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
         let _ = target;
         Ok(())
     }
@@ -131,7 +130,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
 
 pub struct IrBuilderExpressionContext<'a> {
     block_domain: &'a BlockDomain,
-    report_assignment: &'a mut dyn FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
+    report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     condition_domains: Vec<Spanned<ValueDomain>>,
     ir_variables: IrVariables,
 }
@@ -139,7 +138,7 @@ pub struct IrBuilderExpressionContext<'a> {
 impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
         block_domain: &'a BlockDomain,
-        report_assignment: &'a mut dyn FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed>,
+        report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     ) -> Self {
         Self {
             block_domain,
@@ -197,7 +196,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         Ok(self.ir_variables.push(info))
     }
 
-    fn report_assignment(&mut self, target: Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed> {
+    fn report_assignment(&mut self, target: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
         (self.report_assignment)(target)
     }
 

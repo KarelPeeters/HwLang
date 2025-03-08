@@ -1,4 +1,4 @@
-use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase, VariableValues};
+use crate::front::assignment::VariableValues;
 use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
@@ -402,7 +402,7 @@ impl BodyElaborationState<'_, '_> {
                     } = block;
 
                     let block_domain = BlockDomain::Combinatorial;
-                    let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
+                    let mut report_assignment = |target: Spanned<Signal>| {
                         self.drivers
                             .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
                     };
@@ -448,7 +448,7 @@ impl BodyElaborationState<'_, '_> {
                             inner: domain.inner,
                         };
                         let block_domain = BlockDomain::Clocked(block_domain);
-                        let mut report_assignment = |target: Spanned<&AssignmentTarget>| {
+                        let mut report_assignment = |target: Spanned<Signal>| {
                             self.drivers
                                 .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
                         };
@@ -782,7 +782,7 @@ impl BodyElaborationState<'_, '_> {
                                 let wire_info = &self.state.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
-                                    AssignmentTargetBase::Wire(wire),
+                                    Signal::Wire(wire),
                                     &wire_info.ty,
                                     &wire_info.domain,
                                 )
@@ -791,7 +791,7 @@ impl BodyElaborationState<'_, '_> {
                                 let port_info = &self.state.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
-                                    AssignmentTargetBase::Port(port),
+                                    Signal::Port(port),
                                     &port_info.ty,
                                     &port_info.domain.map_inner(ValueDomain::from_port_domain),
                                 )
@@ -829,13 +829,7 @@ impl BodyElaborationState<'_, '_> {
 
                         // report driver
                         let driver = Driver::InstancePortConnection(stmt_index);
-                        let target = Spanned {
-                            span: named.span,
-                            inner: &AssignmentTarget::simple(Spanned {
-                                span: named.span,
-                                inner: signal_target,
-                            }),
-                        };
+                        let target = Spanned::new(named.span, signal_target);
                         self.drivers.report_assignment(diags, driver, target)?;
 
                         // success, build connection
@@ -1362,7 +1356,7 @@ impl Drivers {
         &mut self,
         diags: &Diagnostics,
         driver: Driver,
-        target: Spanned<&AssignmentTarget>,
+        target: Spanned<Signal>,
     ) -> Result<(), ErrorGuaranteed> {
         fn record<T: Hash + Eq>(
             diags: &Diagnostics,
@@ -1380,19 +1374,10 @@ impl Drivers {
             Ok(())
         }
 
-        let AssignmentTarget { base, steps } = target.inner;
-
-        // TODO track steps, eg. "does this combinatorial block assign all array indices / struct fields / ..."
-        let _ = steps;
-
-        match base.inner {
-            AssignmentTargetBase::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
-            AssignmentTargetBase::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
-            AssignmentTargetBase::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
-            AssignmentTargetBase::Variable(_) => {
-                // we don't care about variable assignments, they're just internal to the process
-                Ok(())
-            }
+        match target.inner {
+            Signal::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
+            Signal::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
+            Signal::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
         }
     }
 }
@@ -1400,8 +1385,8 @@ impl Drivers {
 fn report_assignment_internal_error<'a>(
     diags: &'a Diagnostics,
     place: &'a str,
-) -> impl FnMut(Spanned<&AssignmentTarget>) -> Result<(), ErrorGuaranteed> + 'a {
-    move |target: Spanned<&AssignmentTarget>| {
+) -> impl FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed> + 'a {
+    move |target: Spanned<Signal>| {
         Err(diags.report_internal_error(target.span, format!("driving signal within {place}")))
     }
 }

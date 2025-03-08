@@ -185,15 +185,12 @@ impl CompileState<'_> {
                         .transpose();
 
                     // eval init
-                    let eval_expected_ty = ty
-                        .as_ref_ok()
-                        .ok()
-                        .and_then(|t| t.as_ref().map(|t| &t.inner))
-                        .unwrap_or(&Type::Any);
-                    let init = init
-                        .as_ref()
-                        .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, &vars, eval_expected_ty, init))
-                        .transpose();
+                    let init = ty.as_ref_ok().and_then(|ty| {
+                        let init_expected_ty = ty.as_ref().map_or(&Type::Type, |ty| &ty.inner);
+                        init.as_ref()
+                            .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, &vars, init_expected_ty, init))
+                            .transpose()
+                    });
 
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
                         // check init fits in type

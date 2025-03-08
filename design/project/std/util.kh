@@ -1,5 +1,6 @@
 import std.types.any;
 
+// TODO separate "print during elaboration" from "print during simulation", same with assert
 pub fn print(value: any) {
     __builtin("fn", "print", value);
 }

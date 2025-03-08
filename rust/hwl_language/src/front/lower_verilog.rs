@@ -1,10 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAssignmentTargetStep, IrBlock, IrBoolBinaryOp,
-    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
-    IrRegister, IrRegisterInfo, IrStatement, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
+    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule,
+    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
+    IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -751,16 +750,20 @@ fn lower_assign_target(
         IrAssignmentTargetBase::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
     }
 
+    // TODO both of these are wrong, we're not taking element type sizes into account
+    // TODO this entire thing should just be flattened to a single slice
     for step in steps {
         match step {
-            IrAssignmentTargetStep::ArrayAccess { start, slice_len: len } => {
-                // TODO this is wrong, we need to slice depending on element sizes,
-                //   (nested) arrays become flat bit vectors in verilog
+            IrTargetStep::ArrayIndex(start) => {
                 swrite!(f, "[");
                 lower_expression(diag, name_map, span, start, f)?;
-                if let Some(len) = len {
-                    swrite!(f, "+:{}", lower_uint_str(len));
-                }
+                swrite!(f, "]");
+            }
+
+            IrTargetStep::ArraySlice(start, len) => {
+                swrite!(f, "[");
+                lower_expression(diag, name_map, span, start, f)?;
+                swrite!(f, "+:{}", lower_uint_str(len));
                 swrite!(f, "]");
             }
         }
