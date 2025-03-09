@@ -127,7 +127,8 @@ impl ArraySteps<ArrayStep> {
                             Spanned::new(step.span, ClosedIncRange::single(index)),
                             ty_array_len,
                         )?;
-                        (IrTargetStep::ArrayIndex(IrExpression::Int(index.clone())), None)
+                        let step_ir = IrTargetStep::ArrayIndex(IrExpression::Int(index.clone()));
+                        (step_ir, None)
                     }
                     ArrayStepCompile::ArraySlice { start, len } => {
                         let len = check_range_slice(
@@ -136,16 +137,15 @@ impl ArraySteps<ArrayStep> {
                             len.as_ref().map(|len| Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        (
-                            IrTargetStep::ArraySlice(IrExpression::Int(start.clone()), len.clone()),
-                            Some(len),
-                        )
+                        let step_ir = IrTargetStep::ArraySlice(IrExpression::Int(start.clone()), len.clone());
+                        (step_ir, Some(len))
                     }
                 },
                 ArrayStep::Other(step_inner) => match step_inner {
                     ArrayStepHardware::ArrayIndex(index) => {
                         check_range_index(diags, Spanned::new(step.span, index.ty.as_ref()), ty_array_len)?;
-                        (IrTargetStep::ArrayIndex(index.expr.clone()), None)
+                        let step_ir = IrTargetStep::ArrayIndex(index.expr.clone());
+                        (step_ir, None)
                     }
                     ArrayStepHardware::ArraySlice { start, len } => {
                         let len = check_range_slice(
@@ -154,7 +154,8 @@ impl ArraySteps<ArrayStep> {
                             Some(Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        (IrTargetStep::ArraySlice(start.expr.clone(), len.clone()), Some(len))
+                        let step_ir = IrTargetStep::ArraySlice(start.expr.clone(), len.clone());
+                        (step_ir, Some(len))
                     }
                 },
             };
@@ -269,7 +270,7 @@ impl ArraySteps<ArrayStep> {
                     let curr_array_len = Spanned::new(curr.span, curr_array_len);
 
                     // convert step to hardware
-                    let (result_expr, step_domain) = match step_inner {
+                    let (result_expr, step_domain, slice_len) = match step_inner {
                         MaybeCompile::Compile(ArrayStepCompile::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
@@ -282,6 +283,7 @@ impl ArraySteps<ArrayStep> {
                                     index: Box::new(IrExpression::Int(index.clone())),
                                 },
                                 ValueDomain::CompileTime,
+                                None,
                             )
                         }
                         MaybeCompile::Compile(ArrayStepCompile::ArraySlice { start, len }) => {
@@ -298,6 +300,7 @@ impl ArraySteps<ArrayStep> {
                                     len: len.clone(),
                                 },
                                 ValueDomain::CompileTime,
+                                Some(len),
                             )
                         }
                         MaybeCompile::Other(ArrayStepHardware::ArrayIndex(index)) => {
@@ -312,6 +315,7 @@ impl ArraySteps<ArrayStep> {
                                     index: Box::new(index.expr.clone()),
                                 },
                                 index.domain.clone(),
+                                None,
                             )
                         }
                         MaybeCompile::Other(ArrayStepHardware::ArraySlice { start, len }) => {
@@ -328,13 +332,18 @@ impl ArraySteps<ArrayStep> {
                                     len: len.clone(),
                                 },
                                 start.domain.clone(),
+                                Some(len),
                             )
                         }
                     };
 
                     // build final value
+                    let next_ty = match slice_len {
+                        None => *curr_array_inner_ty.clone(),
+                        Some(slice_len) => HardwareType::Array(curr_array_inner_ty.clone(), slice_len),
+                    };
                     MaybeCompile::Other(TypedIrExpression {
-                        ty: *curr_array_inner_ty,
+                        ty: next_ty,
                         domain: curr_inner.domain.join(&step_domain),
                         expr: result_expr,
                     })

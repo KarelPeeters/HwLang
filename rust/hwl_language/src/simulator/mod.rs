@@ -495,7 +495,7 @@ impl CodegenBlockContext<'_> {
 
                     for i in 0..target_loops.len() {
                         let indent_i = indent.nest_n(i);
-                        swrite!(self.f, "{indent_i}}}");
+                        swriteln!(self.f, "{indent_i}}}");
                     }
                 }
                 IrStatement::Block(inner) => {

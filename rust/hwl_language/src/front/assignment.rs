@@ -310,16 +310,32 @@ impl CompileState<'_> {
             return Err(diags.report(diag));
         }
 
-        // If no op and no steps, we can just do the full assignment immediately.
+        // If no steps, we can just do the full assignment immediately.
         // This is separate because in this case the current target value should not be evaluated.
-        if op.inner.is_none() && target_steps.is_empty() {
+        if target_steps.is_empty() {
+            // evaluate value
+            let value_eval = match op.inner {
+                None => right_eval,
+                Some(op_inner) => {
+                    let target_eval = Spanned::new(target.span, vars.get(diags, target.span, var)?.value.clone());
+                    let value_eval = eval_binary_expression(
+                        diags,
+                        stmt_span,
+                        Spanned::new(op.span, op_inner),
+                        target_eval,
+                        right_eval,
+                    )?;
+                    Spanned::new(stmt_span, value_eval)
+                }
+            };
+
             // check type
             if let Some(ty) = &self.variables[var].ty {
                 let reason = TypeContainsReason::Assignment {
                     span_target: target.span,
                     span_target_ty: ty.span,
                 };
-                check_type_contains_value(diags, reason, &ty.inner, right_eval.as_ref(), true, false)?;
+                check_type_contains_value(diags, reason, &ty.inner, value_eval.as_ref(), true, false)?;
             }
 
             // set variable
@@ -329,9 +345,9 @@ impl CompileState<'_> {
                 var,
                 MaybeAssignedValue::Assigned(AssignedValue {
                     event: AssignmentEvent {
-                        assigned_value_span: right_eval.span,
+                        assigned_value_span: value_eval.span,
                     },
-                    value: right_eval.inner,
+                    value: value_eval.inner,
                 }),
             )?;
             return Ok(());
