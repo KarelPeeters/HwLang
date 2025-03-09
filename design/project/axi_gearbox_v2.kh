@@ -1,47 +1,147 @@
-//// Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
-//import std.types.[natural, bool, bits, int_range];
-//import std.math.[gcd, clog2, min];
-//
-//module axi_gearbox_v2 generics(
-//    input_width: natural,
-//    output_width: natural,
-//) ports (
-//    clk: in clock,
-//    rst: in async bool,
-//
-//    // input
-//    input_data: in sync(clk, rst) bits(input_width),
-//    input_valid: in sync(clk, rst) bool,
-//    input_ready: out sync(clk, rst) bool,
-//
-//    // output
-//    output_data: out sync(clk, rst) bits(output_width),
-//    output_valid: out sync(clk, rst) bool,
-//    output_ready: in sync(clk, rst) bool,
-//) body {
-//    val step = gcd(input_width, output_width);
-//    val buffer_size = input_width + output_width + min(input_width, output_width) - step;
-//    val shift_bits = clog2((buffer_size - input_width) / step + 1);
-//
-//    reg buffer: sync(clk, rst) bits(buffer_size) = undefined;
-//    reg level: sync(clk, rst) int_range(0 ..= (buffer_size / step)) = 0;
-//
-//    combinatorial {
-//        output_data = buffer[0..output_width];
-//        output_valid = level >= output_width / step;
-//        input_ready = level <= (buffer_size - input_width) / step;
-//    }
-//
-//    clocked (clk, rst) {
-//        // handle input
-//        if (input_valid && level <= (buffer_size - input_width) / step) {
-//            // TODO actually do something here
-//        };
-//
-//        // handle output
-//        if (output_ready && level >= output_width / step) {
-//            buffer[0..buffer_size - output_width] = buffer[output_width..buffer_size];
-//            level -= output_width / step;
-//        };
-//    }
-//}
+// Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
+import std.types.[
+    bool, int_range, int, uint, natural,
+    int_bits, uint_bits, any,
+];
+import std.util.[print, typeof];
+
+pub module axi_gearbox_v2 generics(
+    input_width: natural,
+    output_width: natural,
+) ports (
+    // clock and async reset
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        // input side
+        input_data: in bool[input_width],
+        input_valid: in bool,
+        input_ready: out bool,
+
+        // output side
+        output_data: out bool[output_width],
+        output_valid: out bool,
+        output_ready: in bool,
+    }
+) body {
+    const step = gcd(input_width, output_width);
+    const buffer_size = input_width + output_width + min(input_width, output_width) - step;
+    // TODO off by one, bug in original?
+    const shift_bits = clog2((buffer_size - input_width) / step + 1) + 1;
+
+    reg buffer: sync(clk, rst) bool[buffer_size] = undef;
+    reg level: sync(clk, rst) int_range(0..(buffer_size / step)) = 0;
+
+    comb {
+        output_data = buffer[..output_width];
+        output_valid = level >= output_width / step;
+        input_ready = level <= (buffer_size - input_width) / step;
+    }
+
+    clocked(clk, rst) {
+        // handle input
+        if (input_valid && level <= (buffer_size - input_width) / step) {
+            const data_width = input_width + step * (2**shift_bits - 1);
+            const mask_width = input_width / step + (2**shift_bits - 1);
+
+            var data: bool[data_width] = [false] * data_width;
+            var mask: bool[mask_width] = [false] * mask_width;
+
+            data[..input_width] = input_data;
+            mask[..input_width / step] = [true] * (input_width / step);
+
+            var shift = uint_to_bits(shift_bits, level);
+            for (i in 0..shift_bits) {
+                print("shift bits");
+                if (shift[i]) {
+                    print("shift[i] = true");
+                    // note: the range `..` we use here and the `downto` in the original have opposite directions!
+                    if (input_width + 2**(i+1) > buffer_size) {
+                        print("derp");
+                        data[step * 2**i .. buffer_size] = data[.. buffer_size - step * 2**i];
+                        mask[2**i .. buffer_size / step] = mask[.. input_width / step + (2**i - 1)];
+                    } else {
+                        data[step * 2**i .. input_width + step * (2**(i+1) - 1)] = data[.. input_width + step * (2**i - 1)];
+                        mask[2**i .. input_width / step + (2**(i+1) - 1)] = mask[.. input_width / step + (2**i - 1)];
+                    }
+                    mask[..2**i] = [false] * 2**i;
+                } else {
+                    if (input_width + 2**(i+1) > buffer_size) {
+                        mask[input_width/step + 2**i .. buffer_size / step] = [false] * (buffer_size / step - input_width / step - 2**i);
+                    } else {
+                        mask[2**i .. input_width / step + (2**(i+1) - 1)] = [false] * (input_width / step + (2**(i+1) - 1) - 2**i);
+                    }
+                }
+            }
+
+            for (i in 0..buffer_size / step) {
+                if (mask[i]) {
+                    buffer[i*step .. (i+1)*step] = data[i*step .. (i+1)*step];
+                }
+            }
+
+            level += input_width / step;
+        }
+
+        // handle output
+        if (output_ready && level >= output_width / step) {
+            buffer[0..buffer_size - output_width] = buffer[output_width..buffer_size];
+            level -= output_width / step;
+        }
+    }
+}
+
+fn min(a: int, b: int) -> int {
+    var result;
+    if (a < b) {
+        result = a;
+    } else {
+        result = b;
+    }
+    return result;
+}
+
+fn gcd(a: natural, b: natural) -> natural {
+    var va = a;
+    var vb = b;
+    while (true) {
+        va = va % vb;
+        if (va == 0) {
+            return vb;
+        }
+        vb = vb % va;
+        if (vb == 0) {
+            return va;
+        }
+    }
+}
+
+fn clog2(a: natural) -> natural {
+    for (pow in 0..) {
+        if (2 ** pow >= a) {
+            return pow;
+        }
+    }
+}
+
+// TODO this should be an intrinsic, this is a placeholder technically correct implementation
+// TODO check the type of "left", currently it keeps unnecesarily expanding,
+//   because we take take into account the "if" implications
+fn uint_to_bits(bits: uint, value: uint_bits(bits)) -> bool[bits] {
+
+    var left = value;
+    var result: bool[bits] = [false] * bits;
+
+    for (i in 0..bits) {
+        val j = bits - i - 1;
+        val curr = 2**j;
+
+        if (left >= curr) {
+            result[i] = true;
+            left -= curr;
+        }
+    }
+
+    return result;
+}

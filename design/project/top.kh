@@ -14,88 +14,26 @@ pub module top ports(
     rst: in async bool,
 
     sync(clk, rst) {
-//        input_data: in bool[input_width],
-//        input_valid: in bool,
-//        input_ready: out bool,
-//
-//        output_data: out bool[output_width],
-//        output_valid: out bool,
-//        output_ready: in bool,
+        input_data: in bool[input_width],
+        input_valid: in bool,
+        input_ready: out bool,
+
+        output_data: out bool[output_width],
+        output_valid: out bool,
+        output_ready: in bool,
     }
 ) body {
-//    instance axi_gearbox_v2 generics(
-//        input_width=input_width,
-//        output_width=output_width,
-//    ) ports(
-//        .clk(clk),
-//        .rst(rst),
-//        .input_data(input_data),
-//        .input_valid(input_valid),
-//        .input_ready(input_ready),
-//        .output_data(output_data),
-//        .output_valid(output_valid),
-//        .output_ready(output_ready),
-//    );
-
-    wire w: async bool;
-    wire i: async int_range(0..1) = 0;
-
-    comb {
-        w = true;
-        w = !w;
-
-        var x = false;
-        x = true;
-
-        var y: bool[2] = [false, true];
-        var t = y[..];
-        print("t");
-        print(t);
-
-        print(y);
-        y[0] = true;
-        print(y);
-        y[0..2] = [true, false];
-        print(y);
-        y[..2] = [false, true];
-        print(y);
-        y[0..] = [true, false];
-        print(y);
-        y[..] = [false, true];
-        print(y);
-        y[0] = w;
-        print(y);
-
-        y[i] = false;
-        y[i..+2] = [true, false];
-
-        var a = [1, 2, 3];
-//        a[1..] = [4, 5, 6];
-        val v = y[i];
-
-//        var fs = [f, f];
-//        fs[i];
-
-        var z: bool[2] = [w, false];
-        z[0] = true;
-        z[1] = true;
-
-        var u: any[2] = [[1, 2], 2];
-        u[1] += 2;
-        u[0, 0] += 2;
-        print(u);
-
-        var b: bool[4] = [true] * 4;
-        b[0] &= w;
-        b[0] &= w;
-        print(b);
-
-        w = false;
-
-        w |= true;
-
-        // error cases
-    }
+    instance axi_gearbox_v2 generics(
+        input_width=input_width,
+        output_width=output_width,
+    ) ports(
+        .clk(clk),
+        .rst(rst),
+        .input_data(input_data),
+        .input_valid(input_valid),
+        .input_ready(input_ready),
+        .output_data(output_data),
+        .output_valid(output_valid),
+        .output_ready(output_ready),
+    );
 }
-
-fn f() {}
