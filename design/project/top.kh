@@ -85,6 +85,15 @@ pub module top ports(
         u[0, 0] += 2;
         print(u);
 
+        var b: bool[4] = [true] * 4;
+        b[0] &= w;
+        b[0] &= w;
+        print(b);
+
+        w = false;
+
+        w |= true;
+
         // error cases
     }
 }

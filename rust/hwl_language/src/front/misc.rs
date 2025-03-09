@@ -1,5 +1,6 @@
+use crate::front::block::TypedIrExpression;
 use crate::front::compile::{CompileState, Port, Register, Wire};
-use crate::front::ir::IrAssignmentTargetBase;
+use crate::front::ir::{IrAssignmentTargetBase, IrExpression};
 use crate::front::types::HardwareType;
 use crate::front::value::NamedValue;
 use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
@@ -169,6 +170,35 @@ impl Signal {
             Signal::Port(port) => IrAssignmentTargetBase::Port(state.ports[port].ir),
             Signal::Wire(wire) => IrAssignmentTargetBase::Wire(state.wires[wire].ir),
             Signal::Register(reg) => IrAssignmentTargetBase::Register(state.registers[reg].ir),
+        }
+    }
+
+    pub fn as_ir_expression(self, state: &CompileState) -> TypedIrExpression {
+        match self {
+            Signal::Port(port) => {
+                let port_info = &state.ports[port];
+                TypedIrExpression {
+                    ty: port_info.ty.inner.clone(),
+                    domain: ValueDomain::from_port_domain(port_info.domain.inner.clone()),
+                    expr: IrExpression::Port(port_info.ir),
+                }
+            }
+            Signal::Wire(wire) => {
+                let wire_info = &state.wires[wire];
+                TypedIrExpression {
+                    ty: wire_info.ty.inner.clone(),
+                    domain: wire_info.domain.inner.clone(),
+                    expr: IrExpression::Wire(wire_info.ir),
+                }
+            }
+            Signal::Register(reg) => {
+                let reg_info = &state.registers[reg];
+                TypedIrExpression {
+                    ty: reg_info.ty.inner.clone(),
+                    domain: ValueDomain::Sync(reg_info.domain.inner.clone()),
+                    expr: IrExpression::Register(reg_info.ir),
+                }
+            }
         }
     }
 }

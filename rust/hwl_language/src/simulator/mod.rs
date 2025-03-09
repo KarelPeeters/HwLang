@@ -423,7 +423,11 @@ impl CodegenBlockContext<'_> {
                 Evaluated::Temporary(tmp_result)
             }
 
-            IrExpression::ArrayIndex { .. } => return Err(todo("ArrayIndex")),
+            IrExpression::ArrayIndex { base, index } => {
+                let base_eval = self.eval(span, base, stage_read)?;
+                let index_eval = self.eval(span, index, stage_read)?;
+                Evaluated::Inline(format!("{base_eval}[{index_eval}]"))
+            }
             IrExpression::ArraySlice { base, start, len } => {
                 let base_eval = self.eval(span, base, stage_read)?;
                 let start_eval = self.eval(span, start, stage_read)?;

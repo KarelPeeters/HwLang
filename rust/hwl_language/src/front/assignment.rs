@@ -205,18 +205,39 @@ impl CompileState<'_> {
         // TODO report exact range/sub-access that is being assigned
         ctx.report_assignment(Spanned::new(target_base.span, target_base_signal))?;
 
+        // get inner type and steps
+        let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
+        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
+
         // evaluate the full value
         let value = match op.inner {
             None => right_eval,
-            Some(_) => todo!("hardware signal op assign"),
+            Some(op_inner) => {
+                let target_base_eval = target_base_signal.as_ir_expression(self);
+                let target_eval = target_steps
+                    .apply_to_value(diags, Spanned::new(target.span, MaybeCompile::Other(target_base_eval)))?;
+
+                let value_eval = eval_binary_expression(
+                    diags,
+                    stmt.span,
+                    Spanned::new(op.span, op_inner),
+                    Spanned::new(target.span, target_eval),
+                    right_eval,
+                )?;
+                let value_eval = match value_eval {
+                    MaybeCompile::Compile(_) => {
+                        return Err(diags.report_internal_error(
+                            stmt.span,
+                            "binary op on compile values should result in compile value again",
+                        ))
+                    }
+                    MaybeCompile::Other(value) => value,
+                };
+                Spanned::new(stmt.span, MaybeCompile::Other(value_eval))
+            }
         };
 
-        // check type (and convert the steps to IR)
-        let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
-
-        let diags = self.diags;
-        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
-
+        // check type
         let reason = TypeContainsReason::Assignment {
             span_target: target.span,
             span_target_ty: target_base_ty.span,
@@ -326,12 +347,23 @@ impl CompileState<'_> {
         any_hardware |= matches!(right_eval.inner, MaybeCompile::Other(_));
 
         if any_hardware {
-            // implement assignment as hardware
+            // figure out the assigned value
             let value = match op.inner {
                 None => right_eval,
-                Some(_) => todo!("hardware variable op assign"),
+                Some(op_inner) => {
+                    let target_eval = target_steps.apply_to_value(diags, target_base_eval.cloned())?;
+                    let value_eval = eval_binary_expression(
+                        diags,
+                        stmt_span,
+                        Spanned::new(op.span, op_inner),
+                        Spanned::new(target.span, target_eval),
+                        right_eval,
+                    )?;
+                    Spanned::new(stmt_span, value_eval)
+                }
             };
 
+            // create a corresponding ir variable
             let (target_base_ty, target_base_domain, var_ir) = self.convert_variable_to_ir_variable(
                 ctx,
                 ctx_block,

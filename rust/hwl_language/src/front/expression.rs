@@ -1483,6 +1483,7 @@ pub fn eval_binary_expression(
             }
         }
         // (bool, bool)
+        // TODO these should short-circuit, so delay evaluation of right
         BinaryOp::BoolAnd => impl_bool_op(left, right, IrBoolBinaryOp::And),
         BinaryOp::BoolOr => impl_bool_op(left, right, IrBoolBinaryOp::Or),
         BinaryOp::BoolXor => impl_bool_op(left, right, IrBoolBinaryOp::Xor),
@@ -1495,12 +1496,13 @@ pub fn eval_binary_expression(
         BinaryOp::CmpGte => impl_int_compare_op(left, right, IrIntCompareOp::Gte),
         // (int, range)
         BinaryOp::In => Err(diags.report_todo(expr_span, "binary op In")),
-
-        // TODO boolean arrays?
-        BinaryOp::BitAnd => Err(diags.report_todo(expr_span, "binary op BitAnd")),
-        BinaryOp::BitOr => Err(diags.report_todo(expr_span, "binary op BitOr")),
-        BinaryOp::BitXor => Err(diags.report_todo(expr_span, "binary op BitXor")),
-        // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int)
+        // (bool, bool)
+        // TODO support boolean arrays
+        BinaryOp::BitAnd => impl_bool_op(left, right, IrBoolBinaryOp::And),
+        BinaryOp::BitOr => impl_bool_op(left, right, IrBoolBinaryOp::Or),
+        BinaryOp::BitXor => impl_bool_op(left, right, IrBoolBinaryOp::Xor),
+        // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int),
+        //   and maybe even negative shift amounts?
         BinaryOp::Shl => Err(diags.report_todo(expr_span, "binary op Shl")),
         BinaryOp::Shr => Err(diags.report_todo(expr_span, "binary op Shr")),
     }
