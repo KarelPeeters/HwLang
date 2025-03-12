@@ -30,6 +30,8 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     swriteln!(f, "#include <cstdint>");
     swriteln!(f, "#include <stdlib.h>");
     swriteln!(f, "#include <array>");
+    swriteln!(f, "#include <utility>");
+    swriteln!(f, "#include <algorithm>");
     swriteln!(f);
 
     for (module, module_info) in &ir.modules {
@@ -342,7 +344,7 @@ impl CodegenBlockContext<'_> {
             IrExpression::Int(v) => Evaluated::Inline(format!("INT64_C({v})")),
             &IrExpression::Port(port) => {
                 let name = port_str(port, &self.module_info.ports[port]);
-                Evaluated::Inline(format!("*{stage_read}.{name}"))
+                Evaluated::Inline(format!("(*{stage_read}.{name})"))
             }
             &IrExpression::Wire(wire) => {
                 let name = wire_str(wire, &self.module_info.wires[wire]);
