@@ -41,7 +41,8 @@ pub module axi_gearbox_v2 generics(
 
     clocked(clk, rst) {
         // handle input
-        if (input_valid && level <= (buffer_size - input_width) / step) {
+        // TODO off by one (<= vs <), bug in original?
+        if (input_valid && level < (buffer_size - input_width) / step) {
             const data_width = input_width + step * (2**shift_bits - 1);
             const mask_width = input_width / step + (2**shift_bits - 1);
 
@@ -53,12 +54,9 @@ pub module axi_gearbox_v2 generics(
 
             var shift = uint_to_bits(shift_bits, level);
             for (i in 0..shift_bits) {
-                print("shift bits");
                 if (shift[i]) {
-                    print("shift[i] = true");
                     // note: the range `..` we use here and the `downto` in the original have opposite directions!
                     if (input_width + 2**(i+1) > buffer_size) {
-                        print("derp");
                         data[step * 2**i .. buffer_size] = data[.. buffer_size - step * 2**i];
                         mask[2**i .. buffer_size / step] = mask[.. input_width / step + (2**i - 1)];
                     } else {
@@ -81,13 +79,13 @@ pub module axi_gearbox_v2 generics(
                 }
             }
 
-            level += input_width / step;
+            level = level + input_width / step;
         }
 
         // handle output
         if (output_ready && level >= output_width / step) {
             buffer[0..buffer_size - output_width] = buffer[output_width..buffer_size];
-            level -= output_width / step;
+            level = level - output_width / step;
         }
     }
 }
