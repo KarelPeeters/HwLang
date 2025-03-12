@@ -1,5 +1,5 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{CompileState, Port, Register, Wire};
+use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::ir::{IrAssignmentTargetBase, IrExpression};
 use crate::front::types::HardwareType;
 use crate::front::value::NamedValue;
@@ -22,11 +22,17 @@ pub struct Polarized<V> {
     pub signal: V,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Signal {
     Port(Port),
     Wire(Wire),
     Register(Register),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum SignalOrVariable {
+    Signal(Signal),
+    Variable(Variable),
 }
 
 #[derive(Debug, Copy, Clone)]

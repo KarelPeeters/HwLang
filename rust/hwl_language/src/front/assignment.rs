@@ -3,11 +3,11 @@ use crate::front::check::{check_type_contains_compile_value, check_type_contains
 use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::expression::eval_binary_expression;
+use crate::front::expression::{eval_binary_expression, ExpressionEvaluated};
 use crate::front::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::front::misc::{Signal, ValueDomain};
+use crate::front::misc::{Signal, SignalOrVariable, ValueDomain};
 use crate::front::scope::Scope;
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
@@ -63,28 +63,50 @@ impl AssignmentTarget {
     }
 }
 
+// TODO move this into context, together with the ir block being written and the scope
 #[derive(Debug, Clone)]
 pub struct VariableValues {
-    // TODO make private again
-    pub map: Option<IndexMap<Variable, MaybeAssignedValue>>,
+    pub inner: Option<VariableValuesInner>,
 }
+
+#[derive(Debug, Clone)]
+pub struct VariableValuesInner {
+    // TODO for combinatorial blocks: include which bits have been written/read on signals,
+    //   so that we can report an error if not bits are written at the end and if bits are read before they are written
+    //   (if any other bit of the respective signal is written later)
+    pub versions: IndexMap<SignalOrVariable, u64>,
+    pub map: IndexMap<Variable, MaybeAssignedValue>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ValueVersioned {
+    pub value: SignalOrVariable,
+    pub version: ValueVersion,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ValueVersion(u64);
 
 impl VariableValues {
     pub fn new() -> Self {
         Self {
-            map: Some(IndexMap::new()),
+            inner: Some(VariableValuesInner {
+                versions: IndexMap::new(),
+                map: IndexMap::new(),
+            }),
         }
     }
 
     pub fn new_no_vars() -> Self {
-        Self { map: None }
+        Self { inner: None }
     }
 
     pub fn get(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> Result<&AssignedValue, ErrorGuaranteed> {
-        let map = self
-            .map
+        let map = &self
+            .inner
             .as_ref()
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?;
+            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?
+            .map;
         let value = map
             .get(&var)
             .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
@@ -122,13 +144,50 @@ impl VariableValues {
         var: Variable,
         value: MaybeAssignedValue,
     ) -> Result<(), ErrorGuaranteed> {
-        match &mut self.map {
+        match &mut self.inner {
             None => Err(diags.report_internal_error(span_set, "variables are not allowed in this context")),
-            Some(map) => {
-                map.insert(var, value);
+            Some(inner) => {
+                inner.map.insert(var, value);
+                *inner.versions.entry(SignalOrVariable::Variable(var)).or_insert(0) += 1;
                 Ok(())
             }
         }
+    }
+
+    pub fn value_versioned(
+        &self,
+        diags: &Diagnostics,
+        value: Spanned<SignalOrVariable>,
+    ) -> Result<ValueVersioned, ErrorGuaranteed> {
+        let inner = self.inner.as_ref().ok_or_else(|| {
+            diags.report_internal_error(
+                value.span,
+                "value versioning doesn't make sense in contexts without variables",
+            )
+        })?;
+        let version = ValueVersion(*inner.versions.get(&value.inner).unwrap_or(&0));
+        Ok(ValueVersioned {
+            value: value.inner,
+            version,
+        })
+    }
+
+    pub fn report_signal_assignment(
+        &mut self,
+        diags: &Diagnostics,
+        signal: Spanned<Signal>,
+    ) -> Result<(), ErrorGuaranteed> {
+        let inner = self.inner.as_mut().ok_or_else(|| {
+            diags.report_internal_error(
+                signal.span,
+                "signal versioning doesn't make sense in contexts without variables",
+            )
+        })?;
+        *inner
+            .versions
+            .entry(SignalOrVariable::Signal(signal.inner))
+            .or_insert(0) += 1;
+        Ok(())
     }
 }
 
@@ -203,7 +262,7 @@ impl CompileState<'_> {
 
         // handle hardware signal assignment
         // TODO report exact range/sub-access that is being assigned
-        ctx.report_assignment(Spanned::new(target_base.span, target_base_signal))?;
+        ctx.report_assignment(diags, Spanned::new(target_base.span, target_base_signal), &mut vars)?;
 
         // get inner type and steps
         let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
@@ -221,9 +280,10 @@ impl CompileState<'_> {
                     diags,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
-                    Spanned::new(target.span, target_eval),
-                    right_eval,
-                )?;
+                    Spanned::new(target.span, ExpressionEvaluated::simple(target_eval)),
+                    right_eval.map_inner(ExpressionEvaluated::simple),
+                )?
+                .value;
                 let value_eval = match value_eval {
                     MaybeCompile::Compile(_) => {
                         return Err(diags.report_internal_error(
@@ -317,14 +377,18 @@ impl CompileState<'_> {
             let value_eval = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = Spanned::new(target.span, vars.get(diags, target.span, var)?.value.clone());
+                    let target_eval = Spanned::new(
+                        target.span,
+                        ExpressionEvaluated::simple(vars.get(diags, target.span, var)?.value.clone()),
+                    );
                     let value_eval = eval_binary_expression(
                         diags,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         target_eval,
-                        right_eval,
-                    )?;
+                        right_eval.map_inner(ExpressionEvaluated::simple),
+                    )?
+                    .value;
                     Spanned::new(stmt_span, value_eval)
                 }
             };
@@ -372,9 +436,10 @@ impl CompileState<'_> {
                         diags,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, target_eval),
-                        right_eval,
-                    )?;
+                        Spanned::new(target.span, ExpressionEvaluated::simple(target_eval)),
+                        right_eval.map_inner(ExpressionEvaluated::simple),
+                    )?
+                    .value;
                     Spanned::new(stmt_span, value_eval)
                 }
             };
@@ -437,9 +502,13 @@ impl CompileState<'_> {
                         diags,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, MaybeCompile::Compile(target_eval)),
-                        right_eval.map_inner(MaybeCompile::Compile),
-                    )?;
+                        Spanned::new(
+                            target.span,
+                            ExpressionEvaluated::simple(MaybeCompile::Compile(target_eval)),
+                        ),
+                        right_eval.map_inner(|e| ExpressionEvaluated::simple(MaybeCompile::Compile(e))),
+                    )?
+                    .value;
                     let value = match value {
                         MaybeCompile::Compile(value) => value,
                         MaybeCompile::Other(_) => {

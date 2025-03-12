@@ -85,6 +85,11 @@ pub enum IrModuleChild {
     ModuleInstance(IrModuleInstance),
 }
 
+// TODO change the execution model and block representation:
+//  * processes must explicitly request signals to read and report signals they drive
+//  * these read/write things correspond to IR variables that are read at the start, and always fully written at the end
+//  careful: would that style of codegen break automatic clock gating?
+
 /// The execution/memory model is:
 /// * all writes are immediately visible to later reads in the current block
 /// * writes only become visible to other blocks once all blocks (recursively) triggered by the current event
@@ -238,9 +243,16 @@ pub enum IrExpression {
     },
 
     // casting
+    // TODO these first two should be any type, not just int
+    // to-bits can never fail
     IntToBits(ClosedIncRange<BigInt>, Box<IrExpression>),
+    // from-bits can fail (eg. if the resulting value if out of range), if it fails the resulting value is undefined
     IntFromBits(ClosedIncRange<BigInt>, Box<IrExpression>),
+
+    // expand can never fail, this is just a re-encoding
     ExpandIntRange(ClosedIncRange<BigInt>, Box<IrExpression>),
+    // constrain can fail, if it fails the resulting value is undefined
+    ConstrainIntRange(ClosedIncRange<BigInt>, Box<IrExpression>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -359,6 +371,7 @@ impl IrExpression {
             }
             IrExpression::IntFromBits(ty, _) => IrType::Int(ty.clone()),
             IrExpression::ExpandIntRange(ty, _) => IrType::Int(ty.clone()),
+            IrExpression::ConstrainIntRange(ty, _) => IrType::Int(ty.clone()),
         }
     }
 
@@ -456,6 +469,9 @@ impl IrExpression {
             IrExpression::IntToBits(ty, x) => format!("int_to_bits({}, {})", ty, x.to_diagnostic_string(m)),
             IrExpression::IntFromBits(ty, x) => format!("int_from_bits({}, {})", ty, x.to_diagnostic_string(m)),
             IrExpression::ExpandIntRange(ty, x) => format!("expand_int_range({}, {})", ty, x.to_diagnostic_string(m)),
+            IrExpression::ConstrainIntRange(ty, x) => {
+                format!("constrain_int_range({}, {})", ty, x.to_diagnostic_string(m))
+            }
         }
     }
 
@@ -495,6 +511,7 @@ impl IrExpression {
             }
             IrExpression::IntToBits(_ty, x) | IrExpression::IntFromBits(_ty, x) => f(x),
             IrExpression::ExpandIntRange(_ty, x) => f(x),
+            IrExpression::ConstrainIntRange(_ty, x) => f(x),
         }
     }
 

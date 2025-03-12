@@ -451,6 +451,11 @@ impl CodegenBlockContext<'_> {
                 let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
                 self.eval(span, inner, stage_read)?
             }
+            IrExpression::ConstrainIntRange(range, inner) => {
+                // check that result is still representable
+                let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
+                self.eval(span, inner, stage_read)?
+            }
         };
         Ok(result)
     }

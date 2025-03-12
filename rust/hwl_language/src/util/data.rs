@@ -47,3 +47,9 @@ impl<T> VecExt<T> for Vec<T> {
         result
     }
 }
+
+pub fn vec_concat<T>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let mut result = a;
+    result.extend(b);
+    result
+}

@@ -1,4 +1,6 @@
-use crate::front::assignment::{AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues};
+use crate::front::assignment::{
+    AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues, VariableValuesInner,
+};
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileState, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
@@ -19,6 +21,7 @@ use crate::util::{result_pair, ResultExt};
 use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::{CheckedSub, One};
+use std::cmp::max;
 
 // TODO move
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -405,12 +408,19 @@ impl CompileState<'_> {
             ref cond,
             ref block,
         } = initial_if;
-        let cond = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Bool, cond)?;
+        let cond = self.eval_expression_with_implications(ctx, ctx_block, scope, &vars, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::Operator(span_if);
-        check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref(), false, true)?;
+        check_type_contains_value(
+            diags,
+            reason,
+            &Type::Bool,
+            cond.as_ref().map_inner(|cond| &cond.value),
+            false,
+            true,
+        )?;
 
-        match cond.inner {
+        match cond.inner.value {
             // evaluate the if at compile-time
             MaybeCompile::Compile(cond_eval) => {
                 let cond_eval = match cond_eval {
@@ -463,19 +473,25 @@ impl CompileState<'_> {
                 };
                 let mut else_ir = ctx.new_ir_block();
                 let (mut then_ir, then_end, mut else_ir, else_end) =
-                    ctx.with_condition_domain(diags, cond_domain, |ctx_inner| {
+                    ctx.with_condition_domain(diags, cond_domain, |ctx_mid| {
                         // lower then
-                        let (then_ir, then_end) = self.elaborate_block(ctx_inner, vars.clone(), scope, block)?;
+                        let (then_ir, then_end) =
+                            ctx_mid.with_implications(diags, cond.inner.implications_if_true, |ctx_inner| {
+                                self.elaborate_block(ctx_inner, vars.clone(), scope, block)
+                            })?;
 
                         // lower else
-                        let else_end = self.elaborate_if_statement(
-                            ctx_inner,
-                            &mut else_ir,
-                            vars,
-                            scope,
-                            remaining_ifs.split_first(),
-                            final_else,
-                        )?;
+                        let else_end =
+                            ctx_mid.with_implications(diags, cond.inner.implications_if_false, |ctx_inner| {
+                                self.elaborate_if_statement(
+                                    ctx_inner,
+                                    &mut else_ir,
+                                    vars,
+                                    scope,
+                                    remaining_ifs.split_first(),
+                                    final_else,
+                                )
+                            })?;
 
                         Ok((then_ir, then_end, else_ir, else_end))
                     })?;
@@ -487,8 +503,39 @@ impl CompileState<'_> {
 
                 // TODO is unwrapping the maps fine here? can we encore that in the type system through C/ctx?
                 // TODO re-use one of the maps to avoid an extra allocation
-                let then_map = then_vars.map.as_ref().unwrap();
-                let else_map = else_vars.map.as_ref().unwrap();
+                let VariableValues { inner: then_inner } = then_vars;
+                let VariableValues { inner: else_inner } = else_vars;
+                let VariableValuesInner {
+                    versions: then_signal_versions,
+                    map: then_map,
+                } = then_inner.unwrap();
+                let VariableValuesInner {
+                    versions: else_signal_versions,
+                    map: else_map,
+                } = else_inner.unwrap();
+
+                let mut combined_versions = IndexMap::new();
+                for &signal in itertools::chain(then_signal_versions.keys(), else_signal_versions.keys()) {
+                    if combined_versions.contains_key(&signal) {
+                        // already visited
+                        continue;
+                    }
+
+                    let combined_version = match (then_signal_versions.get(&signal), else_signal_versions.get(&signal))
+                    {
+                        (Some(&then_version), Some(&else_version)) => {
+                            if then_version == else_version {
+                                then_version
+                            } else {
+                                max(then_version, else_version) + 1
+                            }
+                        }
+                        (Some(&then_version), None) => then_version,
+                        (None, Some(&else_version)) => else_version,
+                        (None, None) => unreachable!(),
+                    };
+                    combined_versions.insert_first(signal, combined_version);
+                }
 
                 let mut combined_map = IndexMap::new();
                 for &var in itertools::chain(then_map.keys(), else_map.keys()) {
@@ -554,7 +601,10 @@ impl CompileState<'_> {
                 )?;
 
                 let combined_vars = VariableValues {
-                    map: Some(combined_map),
+                    inner: Some(VariableValuesInner {
+                        versions: combined_versions,
+                        map: combined_map,
+                    }),
                 };
                 Ok(BlockEnd::Normal(combined_vars))
             }

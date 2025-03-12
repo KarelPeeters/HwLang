@@ -2,8 +2,9 @@ use crate::front::ir::IrType;
 use crate::swrite;
 use itertools::{zip_eq, Itertools};
 use num_bigint::{BigInt, BigUint};
+use std::collections::Bound;
 use std::fmt::{Display, Formatter};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, RangeBounds};
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -47,6 +48,7 @@ pub struct IncRange<T> {
 //   we don't really want empty ranges for int types, but for for loops and slices we do
 // TODO switch to exclusive ranges, much more intuitive to program with, especially for arrays and loops
 //   match code becomes harder, but that's fine
+// TODO transition this to multi-range as the int type
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ClosedIncRange<T> {
     pub start_inc: T,
@@ -369,5 +371,31 @@ impl<T: Display> Display for ClosedIncRange<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let ClosedIncRange { start_inc, end_inc } = self;
         write!(f, "{}..={}", start_inc, end_inc)
+    }
+}
+
+impl<T> RangeBounds<T> for IncRange<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        match &self.start_inc {
+            None => Bound::Unbounded,
+            Some(start_inc) => Bound::Included(start_inc),
+        }
+    }
+
+    fn end_bound(&self) -> Bound<&T> {
+        match &self.end_inc {
+            None => Bound::Unbounded,
+            Some(end_inc) => Bound::Included(end_inc),
+        }
+    }
+}
+
+impl<T> RangeBounds<T> for ClosedIncRange<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Bound::Included(&self.start_inc)
+    }
+
+    fn end_bound(&self) -> Bound<&T> {
+        Bound::Included(&self.end_inc)
     }
 }

@@ -916,6 +916,12 @@ fn lower_expression(
             lower_expression(diags, name_map, span, value, f)?;
             swrite!(f, ")");
         }
+        IrExpression::ConstrainIntRange(target, value) => {
+            // TODO this not correct, we're not actually lowering the bit width
+            let target_repr = IntRepresentation::for_range(target);
+            let _ = target_repr;
+            lower_expression(diags, name_map, span, value, f)?;
+        }
     }
 
     Ok(())
