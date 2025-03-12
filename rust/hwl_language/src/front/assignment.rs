@@ -154,22 +154,10 @@ impl VariableValues {
         }
     }
 
-    pub fn value_versioned(
-        &self,
-        diags: &Diagnostics,
-        value: Spanned<SignalOrVariable>,
-    ) -> Result<ValueVersioned, ErrorGuaranteed> {
-        let inner = self.inner.as_ref().ok_or_else(|| {
-            diags.report_internal_error(
-                value.span,
-                "value versioning doesn't make sense in contexts without variables",
-            )
-        })?;
-        let version = ValueVersion(*inner.versions.get(&value.inner).unwrap_or(&0));
-        Ok(ValueVersioned {
-            value: value.inner,
-            version,
-        })
+    pub fn value_versioned(&self, value: SignalOrVariable) -> Option<ValueVersioned> {
+        let inner = self.inner.as_ref()?;
+        let version = ValueVersion(*inner.versions.get(&value).unwrap_or(&0));
+        Some(ValueVersioned { value: value, version })
     }
 
     pub fn report_signal_assignment(
@@ -272,6 +260,7 @@ impl CompileState<'_> {
         let value = match op.inner {
             None => right_eval,
             Some(op_inner) => {
+                // TODO apply implications
                 let target_base_eval = target_base_signal.as_ir_expression(self);
                 let target_eval = target_steps
                     .apply_to_value(diags, Spanned::new(target.span, MaybeCompile::Other(target_base_eval)))?;
@@ -418,6 +407,7 @@ impl CompileState<'_> {
         }
 
         // at this point the current target value needs to be evaluated
+        // TODO apply implications
         let target_base_eval = Spanned::new(target_base.span, &vars.get(diags, target_base.span, var)?.value);
 
         // check if we will stay compile-time or be forced to convert to hardware

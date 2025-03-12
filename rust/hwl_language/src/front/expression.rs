@@ -149,10 +149,7 @@ impl CompileState<'_> {
                             match value {
                                 MaybeCompile::Compile(value) => MaybeCompile::Compile(value),
                                 MaybeCompile::Other(value) => {
-                                    let versioned = vars.value_versioned(
-                                        diags,
-                                        Spanned::new(eval.span, SignalOrVariable::Variable(var)),
-                                    )?;
+                                    let versioned = vars.value_versioned(SignalOrVariable::Variable(var));
                                     return Ok(apply_implications(ctx, versioned, value));
                                 }
                             }
@@ -163,10 +160,7 @@ impl CompileState<'_> {
                             let port_info = &self.ports[port];
                             match port_info.direction.inner {
                                 PortDirection::Input => {
-                                    let versioned = vars.value_versioned(
-                                        diags,
-                                        Spanned::new(eval.span, SignalOrVariable::Signal(Signal::Port(port))),
-                                    )?;
+                                    let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Port(port)));
                                     return Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()));
                                 }
                                 PortDirection::Output => {
@@ -188,10 +182,7 @@ impl CompileState<'_> {
                             )?;
                             let value_expr_raw = value_stored.to_general_expression();
 
-                            let versioned = vars.value_versioned(
-                                diags,
-                                Spanned::new(eval.span, SignalOrVariable::Signal(Signal::Wire(wire))),
-                            )?;
+                            let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Wire(wire)));
                             return Ok(apply_implications(ctx, versioned, value_expr_raw));
                         }
                         NamedValue::Register(reg) => {
@@ -208,10 +199,7 @@ impl CompileState<'_> {
                             )?;
                             let value_expr_raw = value_stored.to_general_expression();
 
-                            let versioned = vars.value_versioned(
-                                diags,
-                                Spanned::new(eval.span, SignalOrVariable::Signal(Signal::Register(reg))),
-                            )?;
+                            let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Register(reg)));
                             return Ok(apply_implications(ctx, versioned, value_expr_raw));
                         }
                     },
@@ -1753,9 +1741,14 @@ fn push_range_implications(
 
 fn apply_implications<C: ExpressionContext>(
     ctx: &C,
-    versioned: ValueVersioned,
+    versioned: Option<ValueVersioned>,
     expr_raw: TypedIrExpression,
 ) -> ExpressionEvaluated {
+    let versioned = match versioned {
+        None => return ExpressionEvaluated::simple(MaybeCompile::Other(expr_raw)),
+        Some(versioned) => versioned,
+    };
+
     let value_expr = if let HardwareType::Int(ty) = &expr_raw.ty {
         let mut range = ClosedIncRangeMulti::from_range(ty.clone());
         ctx.for_each_implication(versioned, |implication| {
