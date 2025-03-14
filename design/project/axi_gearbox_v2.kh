@@ -124,10 +124,8 @@ fn clog2(a: natural) -> natural {
 }
 
 // TODO this should be an intrinsic, this is a placeholder technically correct implementation
-// TODO check the type of "left", currently it keeps unnecesarily expanding,
-//   because we take take into account the "if" implications
+// TODO check the type of "left", currently it keeps unnecessarily expanding
 fn uint_to_bits(bits: uint, value: uint_bits(bits)) -> bool[bits] {
-
     var left = value;
     var result: bool[bits] = [false] * bits;
 

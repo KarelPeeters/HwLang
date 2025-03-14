@@ -496,6 +496,7 @@ impl CompileState<'_> {
                         Ok((then_ir, then_end, else_ir, else_end))
                     })?;
 
+                // TODO merged values should get their implications applied so their types can automatically constrain
                 let then_vars = then_end.unwrap_normal_todo_in_if(diags, cond.span);
                 let else_vars = else_end.unwrap_normal_todo_in_if(diags, cond.span);
                 let then_vars = then_vars?;

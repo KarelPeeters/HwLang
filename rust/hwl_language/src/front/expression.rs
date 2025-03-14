@@ -764,7 +764,9 @@ impl CompileState<'_> {
                 ("fn", "typeof", [value]) => return Ok(CompileValue::Type(value.ty())),
                 ("fn", "print", [value]) => {
                     let value_str = match value {
+                        // TODO print strings without quotes
                         MaybeCompile::Compile(v) => v.to_diagnostic_string(),
+                        // TODO less ugly formatting for TypedIrExpression
                         MaybeCompile::Other(v) => {
                             let TypedIrExpression { ty, domain, expr: _ } = v;
                             let ty_str = ty.to_diagnostic_string();
@@ -775,6 +777,8 @@ impl CompileState<'_> {
                     self.print_handler.println(&value_str);
                     return Ok(CompileValue::Tuple(vec![]));
                 }
+                // TODO add print_com/print_sim, assert_com/assert_sim, error_com/error_sim
+                // TODO is there an elegant general way to have both variants of a bunch of similar functions?
                 // fallthrough into err
                 _ => {}
             }
