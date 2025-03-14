@@ -3,7 +3,7 @@ use crate::front::check::{check_type_contains_compile_value, check_type_contains
 use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::expression::{eval_binary_expression, ExpressionEvaluated};
+use crate::front::expression::{eval_binary_expression, ExpressionWithImplications};
 use crate::front::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
@@ -269,8 +269,8 @@ impl CompileState<'_> {
                     diags,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
-                    Spanned::new(target.span, ExpressionEvaluated::simple(target_eval)),
-                    right_eval.map_inner(ExpressionEvaluated::simple),
+                    Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
+                    right_eval.map_inner(ExpressionWithImplications::simple),
                 )?
                 .value;
                 let value_eval = match value_eval {
@@ -368,14 +368,14 @@ impl CompileState<'_> {
                 Some(op_inner) => {
                     let target_eval = Spanned::new(
                         target.span,
-                        ExpressionEvaluated::simple(vars.get(diags, target.span, var)?.value.clone()),
+                        ExpressionWithImplications::simple(vars.get(diags, target.span, var)?.value.clone()),
                     );
                     let value_eval = eval_binary_expression(
                         diags,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         target_eval,
-                        right_eval.map_inner(ExpressionEvaluated::simple),
+                        right_eval.map_inner(ExpressionWithImplications::simple),
                     )?
                     .value;
                     Spanned::new(stmt_span, value_eval)
@@ -426,8 +426,8 @@ impl CompileState<'_> {
                         diags,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, ExpressionEvaluated::simple(target_eval)),
-                        right_eval.map_inner(ExpressionEvaluated::simple),
+                        Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
+                        right_eval.map_inner(ExpressionWithImplications::simple),
                     )?
                     .value;
                     Spanned::new(stmt_span, value_eval)
@@ -494,9 +494,9 @@ impl CompileState<'_> {
                         Spanned::new(op.span, op_inner),
                         Spanned::new(
                             target.span,
-                            ExpressionEvaluated::simple(MaybeCompile::Compile(target_eval)),
+                            ExpressionWithImplications::simple(MaybeCompile::Compile(target_eval)),
                         ),
-                        right_eval.map_inner(|e| ExpressionEvaluated::simple(MaybeCompile::Compile(e))),
+                        right_eval.map_inner(|e| ExpressionWithImplications::simple(MaybeCompile::Compile(e))),
                     )?
                     .value;
                     let value = match value {

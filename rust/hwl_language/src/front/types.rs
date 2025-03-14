@@ -307,6 +307,14 @@ impl<T> ClosedIncRange<T> {
         }
     }
 
+    pub fn map(self, mut f: impl FnMut(T) -> T) -> Self {
+        let ClosedIncRange { start_inc, end_inc } = self;
+        ClosedIncRange {
+            start_inc: f(start_inc),
+            end_inc: f(end_inc),
+        }
+    }
+
     pub fn contains(&self, value: &T) -> bool
     where
         T: PartialOrd,

@@ -7,7 +7,7 @@ use crate::front::check::{
 use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp};
+use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp,
     IrStatement, IrVariable, IrVariableInfo,
@@ -30,25 +30,22 @@ use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{Num, One, Pow, Signed, ToPrimitive, Zero};
 use std::cmp::{max, min};
-use std::collections::Bound;
-use std::ops::{RangeBounds, Sub};
+use std::ops::Sub;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
-pub struct ExpressionEvaluated {
+pub struct ExpressionWithImplications {
     pub value: MaybeCompile<TypedIrExpression>,
     pub value_versioned: Option<ValueVersioned>,
-    pub implications_if_true: Vec<Implication>,
-    pub implications_if_false: Vec<Implication>,
+    pub implications: Implications,
 }
 
-impl ExpressionEvaluated {
+impl ExpressionWithImplications {
     pub fn simple(value: MaybeCompile<TypedIrExpression>) -> Self {
         Self {
             value,
             value_versioned: None,
-            implications_if_true: vec![],
-            implications_if_false: vec![],
+            implications: Implications::default(),
         }
     }
 }
@@ -93,7 +90,7 @@ impl CompileState<'_> {
         vars: &VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<Spanned<ExpressionEvaluated>, ErrorGuaranteed> {
+    ) -> Result<Spanned<ExpressionWithImplications>, ErrorGuaranteed> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
         Ok(Spanned {
             span: expr.span,
@@ -114,7 +111,7 @@ impl CompileState<'_> {
         vars: &VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<ExpressionEvaluated, ErrorGuaranteed> {
+    ) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
         let diags = self.diags;
 
         let result_simple: MaybeCompile<TypedIrExpression> = match &expr.inner {
@@ -158,15 +155,15 @@ impl CompileState<'_> {
                             ctx.check_ir_context(diags, expr.span, "port")?;
 
                             let port_info = &self.ports[port];
-                            match port_info.direction.inner {
+                            return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Port(port)));
-                                    return Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()));
+                                    Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()))
                                 }
                                 PortDirection::Output => {
-                                    return Err(self.diags.report_todo(expr.span, "read back from output port"));
+                                    Err(self.diags.report_todo(expr.span, "read back from output port"))
                                 }
-                            }
+                            };
                         }
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
@@ -536,31 +533,37 @@ impl CompileState<'_> {
                     }
                 }
                 UnaryOp::Not => {
-                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
+                    let operand =
+                        self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
 
                     check_type_contains_value(
                         diags,
                         TypeContainsReason::Operator(op.span),
                         &Type::Bool,
-                        operand.as_ref(),
+                        operand.as_ref().map_inner(|operand| &operand.value),
                         false,
                         false,
                     )?;
 
-                    match operand.inner {
+                    match operand.inner.value {
                         MaybeCompile::Compile(c) => match c {
                             // TODO support boolean array
                             CompileValue::Bool(b) => MaybeCompile::Compile(CompileValue::Bool(!b)),
                             _ => return Err(diags.report_internal_error(expr.span, "expected bool for unary not")),
                         },
-                        // TODO implications
                         MaybeCompile::Other(v) => {
                             let result = TypedIrExpression {
                                 ty: HardwareType::Bool,
                                 domain: v.domain,
                                 expr: IrExpression::BoolNot(Box::new(v.expr)),
                             };
-                            MaybeCompile::Other(result)
+                            let result = MaybeCompile::Other(result);
+
+                            return Ok(ExpressionWithImplications {
+                                value: result,
+                                value_versioned: None,
+                                implications: operand.inner.implications.invert(),
+                            });
                         }
                     }
                 }
@@ -618,7 +621,7 @@ impl CompileState<'_> {
             }
         };
 
-        Ok(ExpressionEvaluated::simple(result_simple))
+        Ok(ExpressionWithImplications::simple(result_simple))
     }
 
     fn eval_array_index_expression<C: ExpressionContext>(
@@ -1158,9 +1161,9 @@ pub fn eval_binary_expression(
     diags: &Diagnostics,
     expr_span: Span,
     op: Spanned<BinaryOp>,
-    left: Spanned<ExpressionEvaluated>,
-    right: Spanned<ExpressionEvaluated>,
-) -> Result<ExpressionEvaluated, ErrorGuaranteed> {
+    left: Spanned<ExpressionWithImplications>,
+    right: Spanned<ExpressionWithImplications>,
+) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
     let op_reason = TypeContainsReason::Operator(op.span);
 
     let check_both_int = |left, right| {
@@ -1500,37 +1503,36 @@ pub fn eval_binary_expression(
         BinaryOp::Shr => return Err(diags.report_todo(expr_span, "binary op Shr")),
     };
 
-    Ok(ExpressionEvaluated::simple(result_simple))
+    Ok(ExpressionWithImplications::simple(result_simple))
 }
 
 fn eval_binary_bool(
     diags: &Diagnostics,
     op_reason: TypeContainsReason,
-    left: Spanned<ExpressionEvaluated>,
-    right: Spanned<ExpressionEvaluated>,
+    left: Spanned<ExpressionWithImplications>,
+    right: Spanned<ExpressionWithImplications>,
     op: IrBoolBinaryOp,
-) -> Result<ExpressionEvaluated, ErrorGuaranteed> {
+) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
     fn build_bool_gate(
-        table: (bool, bool),
-        inner_eval: ExpressionEvaluated,
+        f: impl Fn(bool) -> bool,
+        inner_eval: ExpressionWithImplications,
         inner_ir: TypedIrExpression<()>,
-    ) -> ExpressionEvaluated {
-        match table {
+    ) -> ExpressionWithImplications {
+        match (f(false), f(true)) {
             // constants
-            (false, false) => ExpressionEvaluated::simple(MaybeCompile::Compile(CompileValue::Bool(false))),
-            (true, true) => ExpressionEvaluated::simple(MaybeCompile::Compile(CompileValue::Bool(true))),
+            (false, false) => ExpressionWithImplications::simple(MaybeCompile::Compile(CompileValue::Bool(false))),
+            (true, true) => ExpressionWithImplications::simple(MaybeCompile::Compile(CompileValue::Bool(true))),
             // pass gate
             (false, true) => inner_eval,
             // not gate
-            (true, false) => ExpressionEvaluated {
+            (true, false) => ExpressionWithImplications {
                 value: MaybeCompile::Other(TypedIrExpression {
                     ty: HardwareType::Bool,
                     domain: inner_ir.domain,
                     expr: IrExpression::BoolNot(Box::new(inner_ir.expr)),
                 }),
                 value_versioned: None,
-                implications_if_true: inner_eval.implications_if_false,
-                implications_if_false: inner_eval.implications_if_true,
+                implications: inner_eval.implications.invert(),
             },
         }
     }
@@ -1545,18 +1547,16 @@ fn eval_binary_bool(
         // full compile-tim eval
         (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => {
             let result = op.eval(left, right);
-            Ok(ExpressionEvaluated::simple(MaybeCompile::Compile(CompileValue::Bool(
-                result,
-            ))))
+            Ok(ExpressionWithImplications::simple(MaybeCompile::Compile(
+                CompileValue::Bool(result),
+            )))
         }
         // partial compile-time eval
         (MaybeCompile::Compile(left_value), MaybeCompile::Other(right_value)) => {
-            let table = (op.eval(left_value, false), op.eval(left_value, true));
-            Ok(build_bool_gate(table, right.inner, right_value))
+            Ok(build_bool_gate(|b| op.eval(left_value, b), right.inner, right_value))
         }
         (MaybeCompile::Other(left_value), MaybeCompile::Compile(right_value)) => {
-            let table = (op.eval(false, right_value), op.eval(true, right_value));
-            Ok(build_bool_gate(table, left.inner, left_value))
+            Ok(build_bool_gate(|b| op.eval(b, right_value), left.inner, left_value))
         }
         // full hardware
         (MaybeCompile::Other(left_value), MaybeCompile::Other(right_value)) => {
@@ -1566,23 +1566,22 @@ fn eval_binary_bool(
                 expr: IrExpression::BoolBinary(op, Box::new(left_value.expr), Box::new(right_value.expr)),
             };
 
-            let (impl_true, impl_false) = match op {
-                IrBoolBinaryOp::And => (
-                    vec_concat(left.inner.implications_if_true, right.inner.implications_if_true),
-                    vec![],
-                ),
-                IrBoolBinaryOp::Or => (
-                    vec![],
-                    vec_concat(left.inner.implications_if_false, right.inner.implications_if_false),
-                ),
-                IrBoolBinaryOp::Xor => (vec![], vec![]),
+            let implications = match op {
+                IrBoolBinaryOp::And => Implications {
+                    if_true: vec_concat(left.inner.implications.if_true, right.inner.implications.if_true),
+                    if_false: vec![],
+                },
+                IrBoolBinaryOp::Or => Implications {
+                    if_true: vec![],
+                    if_false: vec_concat(left.inner.implications.if_false, right.inner.implications.if_false),
+                },
+                IrBoolBinaryOp::Xor => Implications::default(),
             };
 
-            Ok(ExpressionEvaluated {
+            Ok(ExpressionWithImplications {
                 value: MaybeCompile::Other(expr),
                 value_versioned: None,
-                implications_if_true: impl_true,
-                implications_if_false: impl_false,
+                implications,
             })
         }
     }
@@ -1591,10 +1590,10 @@ fn eval_binary_bool(
 fn eval_binary_int_compare(
     diags: &Diagnostics,
     op_reason: TypeContainsReason,
-    left: Spanned<ExpressionEvaluated>,
-    right: Spanned<ExpressionEvaluated>,
+    left: Spanned<ExpressionWithImplications>,
+    right: Spanned<ExpressionWithImplications>,
     op: IrIntCompareOp,
-) -> Result<ExpressionEvaluated, ErrorGuaranteed> {
+) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
     let left_versioned = left.inner.value_versioned;
     let right_versioned = right.inner.value_versioned;
 
@@ -1606,66 +1605,27 @@ fn eval_binary_int_compare(
     match pair_compile_int(left, right) {
         MaybeCompile::Compile((left, right)) => {
             let result = op.eval(&left.inner, &right.inner);
-            Ok(ExpressionEvaluated::simple(MaybeCompile::Compile(CompileValue::Bool(
-                result,
-            ))))
+            Ok(ExpressionWithImplications::simple(MaybeCompile::Compile(
+                CompileValue::Bool(result),
+            )))
         }
         MaybeCompile::Other((left, right)) => {
             // TODO warning if the result is always true/false (depending on the ranges)
             //   or maybe just return a compile-time value again?
 
             // build implications
-            let left_range = left.inner.ty;
-            let right_range = right.inner.ty;
-
-            let mut implications = vec![];
-            let impls = &mut implications;
-
-            match op {
-                IrIntCompareOp::Lt => {
-                    push_range_implications(impls, left_versioned, ..&right_range.start_inc);
-                    push_range_implications(impls, right_versioned, left_range.end_inc + 1..);
-                }
-                IrIntCompareOp::Lte => {
-                    push_range_implications(impls, left_versioned, ..=&right_range.start_inc);
-                    push_range_implications(impls, right_versioned, left_range.end_inc..);
-                }
-                IrIntCompareOp::Gt => {
-                    push_range_implications(impls, left_versioned, right_range.end_inc + 1..);
-                    push_range_implications(impls, right_versioned, ..&left_range.start_inc);
-                }
-                IrIntCompareOp::Gte => {
-                    push_range_implications(impls, left_versioned, right_range.end_inc..);
-                    push_range_implications(impls, right_versioned, ..=&left_range.start_inc);
-                }
-                IrIntCompareOp::Eq => {
-                    // imply that each value is in the range of the other
-                    push_range_implications(impls, left_versioned, right_range);
-                    push_range_implications(impls, right_versioned, left_range);
-                }
-                IrIntCompareOp::Neq => {
-                    // TODO this is not yet perfect, currently "a != b" and "!(a == b)" are not equivalent
-                    // imply neqs if we know exact values
-                    if let Some(left_versioned) = left_versioned {
-                        if let Some(right) = right_range.as_single() {
-                            implications.push(Implication {
-                                value: left_versioned,
-                                op: ImplicationOp::Neq,
-                                right: right.clone(),
-                            });
-                        }
-                    }
-                    if let Some(right_versioned) = right_versioned {
-                        if let Some(left) = left_range.as_single() {
-                            implications.push(Implication {
-                                value: right_versioned,
-                                op: ImplicationOp::Neq,
-                                right: left.clone(),
-                            });
-                        }
-                    }
-                }
-            }
+            let lv = left_versioned;
+            let rv = right_versioned;
+            let lr = left.inner.ty;
+            let rr = right.inner.ty;
+            let implications = match op {
+                IrIntCompareOp::Lt => implications_lt(lv, lr, rv, rr),
+                IrIntCompareOp::Lte => implications_lte(lv, lr, rv, rr),
+                IrIntCompareOp::Gt => implications_lt(rv, rr, lv, lr),
+                IrIntCompareOp::Gte => implications_lte(rv, rr, lv, lr),
+                IrIntCompareOp::Eq => implications_eq(lv, lr, rv, rr),
+                IrIntCompareOp::Neq => implications_eq(lv, lr, rv, rr).invert(),
+            };
 
             // build the resulting expression
             let result = TypedIrExpression {
@@ -1673,12 +1633,10 @@ fn eval_binary_int_compare(
                 domain: left.inner.domain.join(&right.inner.domain),
                 expr: IrExpression::IntCompare(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
             };
-
-            let eval = ExpressionEvaluated {
+            let eval = ExpressionWithImplications {
                 value: MaybeCompile::Other(result),
                 value_versioned: None,
-                implications_if_true: implications,
-                implications_if_false: vec![],
+                implications,
             };
             Ok(eval)
         }
@@ -1700,52 +1658,85 @@ fn build_binary_int_arithmetic_op(
     }
 }
 
-fn push_range_implications(
-    impls: &mut Vec<Implication>,
-    value: Option<ValueVersioned>,
-    range: impl RangeBounds<BigInt>,
-) {
-    let value = match value {
-        Some(value) => value,
-        None => return,
-    };
+fn implications_lt(
+    left: Option<ValueVersioned>,
+    left_range: ClosedIncRange<BigInt>,
+    right: Option<ValueVersioned>,
+    right_range: ClosedIncRange<BigInt>,
+) -> Implications {
+    let mut if_true = vec![];
+    let mut if_false = vec![];
 
-    match range.start_bound() {
-        Bound::Included(start_inc) => impls.push(Implication {
-            value,
-            op: ImplicationOp::Gt,
-            right: start_inc - 1,
-        }),
-        Bound::Excluded(start_ex) => impls.push(Implication {
-            value,
-            op: ImplicationOp::Gt,
-            right: start_ex.clone(),
-        }),
-        Bound::Unbounded => {}
+    if let Some(left) = left {
+        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc));
+        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc - 1));
+    }
+    if let Some(right) = right {
+        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc));
+        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc + 1));
     }
 
-    match range.end_bound() {
-        Bound::Included(end_inc) => impls.push(Implication {
-            value,
-            op: ImplicationOp::Lt,
-            right: end_inc + 1,
-        }),
-        Bound::Excluded(end_ex) => impls.push(Implication {
-            value,
-            op: ImplicationOp::Lt,
-            right: end_ex.clone(),
-        }),
-        Bound::Unbounded => {}
+    Implications { if_true, if_false }
+}
+
+fn implications_lte(
+    left: Option<ValueVersioned>,
+    left_range: ClosedIncRange<BigInt>,
+    right: Option<ValueVersioned>,
+    right_range: ClosedIncRange<BigInt>,
+) -> Implications {
+    let mut if_true = vec![];
+    let mut if_false = vec![];
+
+    if let Some(left) = left {
+        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc + 1));
+        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc));
     }
+    if let Some(right) = right {
+        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc - 1));
+        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc));
+    }
+
+    Implications { if_true, if_false }
+}
+
+fn implications_eq(
+    left: Option<ValueVersioned>,
+    left_range: ClosedIncRange<BigInt>,
+    right: Option<ValueVersioned>,
+    right_range: ClosedIncRange<BigInt>,
+) -> Implications {
+    let mut if_true = vec![];
+    let mut if_false = vec![];
+
+    if let Some(left) = left {
+        if_true.push(Implication::new(left, ImplicationOp::Lt, &right_range.end_inc + 1));
+        if_true.push(Implication::new(left, ImplicationOp::Gt, &right_range.start_inc - 1));
+
+        if let Some(right) = right_range.as_single() {
+            if_false.push(Implication::new(left, ImplicationOp::Neq, right.clone()));
+        }
+    }
+
+    if let Some(right) = right {
+        if_true.push(Implication::new(right, ImplicationOp::Lt, &left_range.end_inc + 1));
+        if_true.push(Implication::new(right, ImplicationOp::Gt, &left_range.start_inc - 1));
+
+        if let Some(left) = left_range.as_single() {
+            if_false.push(Implication::new(right, ImplicationOp::Neq, left.clone()));
+        }
+    }
+
+    Implications { if_true, if_false }
 }
 
 fn apply_implications<C: ExpressionContext>(
     ctx: &C,
     versioned: Option<ValueVersioned>,
     expr_raw: TypedIrExpression,
-) -> ExpressionEvaluated {
+) -> ExpressionWithImplications {
     let versioned = match versioned {
-        None => return ExpressionEvaluated::simple(MaybeCompile::Other(expr_raw)),
+        None => return ExpressionWithImplications::simple(MaybeCompile::Other(expr_raw)),
         Some(versioned) => versioned,
     };
 
@@ -1768,10 +1759,9 @@ fn apply_implications<C: ExpressionContext>(
         expr_raw
     };
 
-    ExpressionEvaluated {
+    ExpressionWithImplications {
         value: MaybeCompile::Other(value_expr),
         value_versioned: Some(versioned),
-        implications_if_true: vec![],
-        implications_if_false: vec![],
+        implications: Implications::default(),
     }
 }

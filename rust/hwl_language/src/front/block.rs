@@ -476,13 +476,13 @@ impl CompileState<'_> {
                     ctx.with_condition_domain(diags, cond_domain, |ctx_mid| {
                         // lower then
                         let (then_ir, then_end) =
-                            ctx_mid.with_implications(diags, cond.inner.implications_if_true, |ctx_inner| {
+                            ctx_mid.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
                                 self.elaborate_block(ctx_inner, vars.clone(), scope, block)
                             })?;
 
                         // lower else
                         let else_end =
-                            ctx_mid.with_implications(diags, cond.inner.implications_if_false, |ctx_inner| {
+                            ctx_mid.with_implications(diags, cond.inner.implications.if_false, |ctx_inner| {
                                 self.elaborate_if_statement(
                                     ctx_inner,
                                     &mut else_ir,

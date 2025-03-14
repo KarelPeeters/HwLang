@@ -3,11 +3,32 @@ use crate::front::types::ClosedIncRange;
 use itertools::Itertools;
 use num_bigint::BigInt;
 
+#[derive(Debug, Default)]
+pub struct Implications {
+    pub if_true: Vec<Implication>,
+    pub if_false: Vec<Implication>,
+}
+
+impl Implications {
+    pub fn invert(self) -> Self {
+        Self {
+            if_true: self.if_false,
+            if_false: self.if_true,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Implication {
     pub value: ValueVersioned,
     pub op: ImplicationOp,
     pub right: BigInt,
+}
+
+impl Implication {
+    pub fn new(value: ValueVersioned, op: ImplicationOp, right: BigInt) -> Self {
+        Self { value, op, right }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -17,6 +38,7 @@ pub enum ImplicationOp {
     Gt,
 }
 
+#[derive(Debug)]
 pub struct ClosedIncRangeMulti {
     ranges: Vec<ClosedIncRange<BigInt>>,
 }
