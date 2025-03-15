@@ -208,8 +208,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
     } = module_info;
     let module_name = ctx.top_name_scope.make_unique_id(diags, debug_info_id)?;
 
-    let mut result_str = String::new();
-    let f = &mut result_str;
+    let mut f = String::new();
 
     swriteln!(f, "// module {}", debug_info_id.string);
     swriteln!(
@@ -228,12 +227,12 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
     let mut module_name_scope = LoweredNameScope::default();
 
     swrite!(f, "module {}(", module_name);
-    let port_name_map = lower_module_ports(diags, ports, &mut module_name_scope, f)?;
+    let port_name_map = lower_module_ports(diags, ports, &mut module_name_scope, &mut f)?;
     swriteln!(f, ");");
 
     let mut newline = NewlineGenerator::new();
     let (reg_name_map, wire_name_map) =
-        lower_module_signals(diags, &mut module_name_scope, registers, wires, &mut newline, f)?;
+        lower_module_signals(diags, &mut module_name_scope, registers, wires, &mut newline, &mut f)?;
 
     lower_module_statements(
         ctx,
@@ -244,7 +243,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
         registers,
         processes,
         &mut newline,
-        f,
+        &mut f,
     )?;
 
     swriteln!(f, "endmodule");
@@ -254,7 +253,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
         ports: port_name_map,
     };
 
-    ctx.lowered_modules.push(result_str);
+    ctx.lowered_modules.push(f);
     ctx.module_map.insert_first(module, lowered_module.clone());
 
     Ok(lowered_module)

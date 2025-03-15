@@ -113,12 +113,29 @@ pub fn result_pair_split<A, B, E: Copy>(r: Result<(A, B), E>) -> (Result<A, E>, 
     }
 }
 
+pub trait StringMut {
+    fn as_mut_string(&mut self) -> &mut String;
+}
+
+impl StringMut for String {
+    fn as_mut_string(&mut self) -> &mut String {
+        self
+    }
+}
+
+impl StringMut for &mut String {
+    fn as_mut_string(&mut self) -> &mut String {
+        self
+    }
+}
+
 /// Variant of write! that only works for strings, and doesn't return a spurious error.
 #[macro_export]
 macro_rules! swrite {
     ($dst:expr, $($arg:tt)*) => {{
         use std::fmt::Write;
-        let dst: &mut String = $dst;
+        use $crate::util::StringMut;
+        let dst = $dst.as_mut_string();
         write!(dst, $($arg)*).unwrap();
     }};
 }
@@ -128,12 +145,14 @@ macro_rules! swrite {
 macro_rules! swriteln {
     ($dst:expr $(,)?) => {{
         use std::fmt::Write;
-        let dst: &mut String = $dst;
+        use $crate::util::StringMut;
+        let dst = $dst.as_mut_string();
         writeln!(dst).unwrap();
     }};
     ($dst:expr, $($arg:tt)*) => {{
         use std::fmt::Write;
-        let dst: &mut String = $dst;
+        use $crate::util::StringMut;
+        let dst = $dst.as_mut_string();
         writeln!(dst, $($arg)*).unwrap();
     }};
 }

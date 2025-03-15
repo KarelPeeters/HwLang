@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModuleChild,
-    IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
-    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule,
+    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
+    IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
@@ -25,8 +25,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
-    let mut source = String::new();
-    let f = &mut source;
+    let mut f = String::new();
     swriteln!(f, "#include <cstdint>");
     swriteln!(f, "#include <stdlib.h>");
     swriteln!(f, "#include <array>");
@@ -34,255 +33,256 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     swriteln!(f, "#include <algorithm>");
     swriteln!(f);
 
-    for (module, module_info) in &ir.modules {
-        let IrModuleInfo {
-            ports,
-            registers,
-            wires,
-            children,
-            debug_info_id: _,
-            debug_info_generic_args: _,
-        } = module_info;
-        let module_index = module.inner().index();
+    for (i, (module, module_info)) in enumerate(&ir.modules) {
+        if i != 0 {
+            swriteln!(f);
+        }
 
-        // TODO include module debug name and add generic args as a comment
-        let module_struct = format!("ModuleSignals_{module_index}");
+        swrite!(f, "{}", codegen_module(diags, module, module_info)?);
+    }
 
-        // TODO convert functions into member functions of the struct?
-        //   more generally, think about what the API and memory layout should look like
-        swriteln!(f, "struct {module_struct} {{",);
+    Ok(f)
+}
 
-        // factory method that initializes everything
-        let mut create_params = String::new();
-        let mut create_body = String::new();
-        let fp = &mut create_params;
-        let fb = &mut create_body;
+fn codegen_module(
+    diags: &Diagnostics,
+    module: IrModule,
+    module_info: &IrModuleInfo,
+) -> Result<String, ErrorGuaranteed> {
+    let IrModuleInfo {
+        ports,
+        registers,
+        wires,
+        children,
+        debug_info_id: _,
+        debug_info_generic_args: _,
+    } = module_info;
+    let module_index = module.inner().index();
+
+    // TODO include module debug name and add generic args as a comment or even in the name
+    let struct_signals = format!("ModuleSignals_{module_index}");
+    let struct_ports_ptr = format!("ModulePortsPtr_{module_index}");
+    let struct_ports_val = format!("ModulePortsVal_{module_index}");
+
+    // ports
+    let mut f_structs_ptr = String::new();
+    let mut f_structs_val = String::new();
+    let mut f_structs_to_ptr = String::new();
+
+    swriteln!(f_structs_ptr, "struct {struct_ports_ptr} {{");
+    swriteln!(f_structs_val, "struct {struct_ports_val} {{");
+    swriteln!(f_structs_to_ptr, "{I}{struct_ports_ptr} as_ptrs() {{");
+    swriteln!(f_structs_to_ptr, "{I}{I}return {struct_ports_ptr} {{");
+
+    for (port_i, (port, port_info)) in enumerate(ports) {
+        let ty_str = type_to_cpp(diags, port_info.debug_info_id.span, &port_info.ty)?;
+        let name = port_str(port, port_info);
+        swriteln!(f_structs_ptr, "{I}{ty_str} *{name};");
+        swriteln!(f_structs_val, "{I}{ty_str} {name};");
         swriteln!(
-            fb,
-            "{I}{I}{module_struct} *result = ({module_struct}*) calloc(1, sizeof({module_struct}));"
+            f_structs_to_ptr,
+            "{I}{I}{I}&this->{name}{}",
+            end_comma(port_i, ports.len())
         );
+    }
 
-        let mut all_body = String::new();
-        let fa = &mut all_body;
+    swrite!(f_structs_ptr, "}};\n\n");
+    swrite!(f_structs_to_ptr, "{I}{I}}};\n{I}}};\n");
+    swrite!(f_structs_val, "\n{f_structs_to_ptr}\n}};\n\n");
 
-        // signals
-        for (i_port, (port, port_info)) in enumerate(ports) {
-            let ty_str = type_to_cpp(diags, port_info.debug_info_id.span, &port_info.ty)?;
-            let name = port_str(port, port_info);
+    let mut f_structs = f_structs_ptr;
+    f_structs.push_str(&f_structs_val);
+    drop(f_structs_val);
 
-            swriteln!(f, "{I}{ty_str} *{name};");
-            let end = if i_port == ports.len() - 1 { "" } else { "," };
-            swriteln!(fp, "{I}{I}{ty_str} *{name}{end}");
-            swriteln!(fb, "{I}{I}result->{name} = {name};");
-        }
-        for (reg, reg_info) in registers {
-            let ty_str = type_to_cpp(diags, reg_info.debug_info_id.span(), &reg_info.ty)?;
-            let name = reg_str(reg, reg_info);
-            swriteln!(f, "{I}{ty_str} {name};");
-        }
-        for (wire, wire_info) in wires {
-            let ty_str = type_to_cpp(diags, wire_info.debug_info_id.span(), &wire_info.ty)?;
-            let name = wire_str(wire, wire_info);
-            swriteln!(f, "{I}{ty_str} {name};");
-        }
-        // children
-        for (child_index, child) in enumerate(children) {
-            if let IrModuleChild::ModuleInstance(child) = child {
+    // signals
+    swriteln!(f_structs, "struct {struct_signals} {{");
+    for (reg, reg_info) in registers {
+        let ty_str = type_to_cpp(diags, reg_info.debug_info_id.span(), &reg_info.ty)?;
+        let name = reg_str(reg, reg_info);
+        swriteln!(f_structs, "{I}{ty_str} {name};");
+    }
+    for (wire, wire_info) in wires {
+        let ty_str = type_to_cpp(diags, wire_info.debug_info_id.span(), &wire_info.ty)?;
+        let name = wire_str(wire, wire_info);
+        swriteln!(f_structs, "{I}{ty_str} {name};");
+    }
+
+    // children
+    let (prev, next) = (Stage::Prev, Stage::Next);
+    let step_params = format!("{struct_signals} &{prev}_signals, {struct_ports_ptr} {prev}_ports, {struct_signals} &{next}_signals, {struct_ports_ptr} {next}_ports");
+    let step_args: String = format!("{prev}_signals, {prev}_ports, {next}_signals, {next}_ports");
+
+    let mut f_step = String::new();
+    let mut f_step_ports = String::new();
+    let mut f_step_all = String::new();
+    swriteln!(f_step_all, "void module_{module_index}_all({step_params}) {{");
+
+    for (child_index, child) in enumerate(children) {
+        match child {
+            IrModuleChild::ClockedProcess(proc) => {
+                let IrClockedProcess {
+                    domain,
+                    locals,
+                    on_clock,
+                    on_reset,
+                } = proc;
+
+                // reset function
+                let func_step_reset = format!("module_{module_index}_child_{child_index}_clocked_reset");
+                swriteln!(f_step_all, "{I}{func_step_reset}({step_args});");
+
+                swriteln!(f_step, "void {func_step_reset}({step_params}) {{");
+                let mut ctx = CodegenBlockContext {
+                    diags,
+                    module_info,
+                    locals,
+                    f: &mut f_step,
+                    indent: Indent::new(1),
+                    next_temporary_index: 0,
+                };
+                let reset_eval = ctx.eval(domain.span, &domain.inner.reset, Stage::Next)?;
+                swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
+                swriteln!(ctx.f, "{I}{I}return;");
+                swriteln!(ctx.f, "{I}}}");
+                swriteln!(ctx.f);
+
+                //   reset doesn't need locals
+                ctx.generate_block(on_reset, Stage::Next)?;
+
+                swriteln!(f_step, "}}");
+                swriteln!(f_step);
+
+                // clock function
+                let func_step_clock = format!("module_{module_index}_child_{child_index}_clocked_clock");
+                swriteln!(f_step_all, "{I}{func_step_clock}({step_args});");
+
+                swriteln!(f_step, "void {func_step_clock}({step_params}) {{");
+                let mut ctx = CodegenBlockContext {
+                    diags,
+                    module_info,
+                    locals,
+                    f: &mut f_step,
+                    indent: Indent::new(1),
+                    next_temporary_index: 0,
+                };
+                let clock_prev_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Prev)?;
+                let clock_next_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Next)?;
+                // TODO also skip if reset is active
+                // TODO maybe switch to a single function for both?
+                //   or maybe that just mixes sensitivities for no good reason
+                swriteln!(ctx.f, "{I}if (!(!({clock_prev_eval}) && ({clock_next_eval}))) {{");
+                swriteln!(ctx.f, "{I}{I}return;");
+                swriteln!(ctx.f, "{I}}}");
+                swriteln!(ctx.f);
+
+                //   declare locals
+                for (var, var_info) in locals {
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
+                    let name = var_str(var, var_info);
+                    swriteln!(ctx.f, "{I}{ty_str} {name};");
+                }
+                ctx.generate_block(on_clock, Stage::Prev)?;
+
+                swriteln!(f_step, "}}");
+                swriteln!(f_step);
+            }
+            IrModuleChild::CombinatorialProcess(proc) => {
+                let IrCombinatorialProcess { locals, block } = proc;
+
+                let func_step = format!("module_{module_index}_child_{child_index}_comb");
+                swriteln!(f_step_all, "{I}{func_step}({step_args});");
+
+                swriteln!(f_step, "void {func_step}({step_params}) {{");
+                let mut ctx = CodegenBlockContext {
+                    diags,
+                    module_info,
+                    locals,
+                    f: &mut f_step,
+                    indent: Indent::new(1),
+                    next_temporary_index: 0,
+                };
+                for (var, var_info) in locals {
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
+                    let name = var_str(var, var_info);
+                    swriteln!(ctx.f, "{I}{ty_str} {name};");
+                }
+                ctx.generate_block(block, Stage::Next)?;
+
+                swriteln!(f_step, "}}");
+                swriteln!(f_step);
+            }
+            IrModuleChild::ModuleInstance(instance) => {
                 let &IrModuleInstance {
                     name: _,
                     module: child_module,
                     ref port_connections,
-                } = child;
-
+                } = instance;
                 // create field to store child data
                 let child_module_index = child_module.inner().index();
-                let child_struct = format!("ModuleSignals_{child_module_index}");
-                swriteln!(f, "{I}{child_struct} *child_{child_index};");
+                let struct_child_signals = format!("ModuleSignals_{child_module_index}");
+                let struct_child_ports = format!("ModulePortsPtr_{child_module_index}");
+                swriteln!(f_structs, "{I}{struct_child_signals} child_{child_index};");
 
-                // create child instance
-                swriteln!(fb, "{I}{I}result->child_{child_index} = {child_struct}::create(");
+                // create port struct constructor, used in step function
+                let func_child_ports: String = format!("module_{module_index}_child_{child_module_index}_ports");
+                swriteln!(
+                    f_step_ports,
+                    "{struct_child_ports} {func_child_ports}({struct_signals} &signals, {struct_ports_ptr} ports) {{"
+                );
+                swriteln!(f_step_ports, "{I}return {struct_child_ports} {{");
                 for (i_connection, (_, connection)) in enumerate(port_connections) {
                     let connection_str = match &connection.inner {
-                        IrPortConnection::Input(expr) => {
-                            // create an additional process
-                            match expr.inner {
-                                IrExpression::Port(port) => port_str(port, &module_info.ports[port]),
-                                IrExpression::Wire(wire) => {
-                                    let wire = wire_str(wire, &module_info.wires[wire]);
-                                    format!("&result->{wire}")
-                                }
-                                IrExpression::Register(reg) => {
-                                    let reg = reg_str(reg, &module_info.registers[reg]);
-                                    format!("&result->{reg}")
-                                }
-                                // TODO remove this as an option for ports, the frontend can handle this
-                                _ => {
-                                    return Err(
-                                        diags.report_todo(connection.span, "codegen instance input general expression")
-                                    )
-                                }
+                        IrPortConnection::Input(expr) => match expr.inner {
+                            IrExpression::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
+                            IrExpression::Wire(wire) => {
+                                format!("&signals->{}", wire_str(wire, &module_info.wires[wire]))
                             }
-                        }
-                        &IrPortConnection::Output(signal) => match signal {
-                            None => return Err(diags.report_todo(connection.span, "codegen instance output dummy")),
-                            Some(IrWireOrPort::Port(port)) => port_str(port, &module_info.ports[port]),
+                            IrExpression::Register(reg) => {
+                                format!("&signals->{}", reg_str(reg, &module_info.registers[reg]))
+                            }
+                            // TODO maybe just remove this from IR, we can't guarantee that every expression is lowerable as a single expression
+                            _ => return Err(diags.report_todo(expr.span, "simulator input port general expression")),
+                        },
+                        &IrPortConnection::Output(expr) => match expr {
+                            None => return Err(diags.report_todo(connection.span, "simulator output port dummy")),
+                            Some(IrWireOrPort::Port(port)) => {
+                                format!("ports.{}", port_str(port, &module_info.ports[port]))
+                            }
                             Some(IrWireOrPort::Wire(wire)) => {
-                                let wire = wire_str(wire, &module_info.wires[wire]);
-                                format!("&result->{wire}")
+                                format!("&signals->{}", wire_str(wire, &module_info.wires[wire]))
                             }
                         },
                     };
 
-                    let end = if i_connection == port_connections.len() - 1 {
-                        ""
-                    } else {
-                        ","
-                    };
-                    swriteln!(fb, "{I}{I}{I}{connection_str}{end}");
+                    let end = end_comma(i_connection, port_connections.len());
+                    swriteln!(f_step_ports, "{I}{I}{connection_str}{end}")
                 }
+                swriteln!(f_step_ports, "{I}}};");
+                swriteln!(f_step_ports, "}}");
+                swriteln!(f_step_ports);
 
-                swriteln!(fb, "{I}{I});");
+                // delegate step to child
+                let field_name = format!("child_{child_index}");
+                swriteln!(f_step_all, "{I}module_{child_module_index}_all(");
+                swriteln!(f_step_all, "{I}{I}{prev}_signals.{field_name},");
+                swriteln!(f_step_all, "{I}{I}{func_child_ports}({prev}_signals, {prev}_ports),");
+                swriteln!(f_step_all, "{I}{I}{next}_signals.{field_name},");
+                swriteln!(f_step_all, "{I}{I}{func_child_ports}({next}_signals, {next}_ports)");
+                swriteln!(f_step_all, "{I});");
             }
         }
-
-        swriteln!(fb, "{I}{I}return result;");
-
-        swriteln!(f, "{I}static {module_struct} *create(");
-        f.push_str(&create_params);
-        swriteln!(f, "{I}) {{");
-        f.push_str(&create_body);
-        swriteln!(f, "{I}}}");
-
-        // make struct non-movable and non-copyable
-        swriteln!(f, "{I}{module_struct} &operator=({module_struct}&&) = delete;");
-
-        swriteln!(f, "}};");
-        swriteln!(f);
-
-        for (child_index, child) in enumerate(children) {
-            match child {
-                IrModuleChild::ClockedProcess(proc) => {
-                    let IrClockedProcess {
-                        domain,
-                        locals,
-                        on_clock,
-                        on_reset,
-                    } = proc;
-
-                    // reset function
-                    let func_reset_name = format!("module_{module_index}_child_{child_index}_clocked_reset");
-                    swriteln!(fa, "{I}{func_reset_name}(prev, next);");
-
-                    let (prev, next) = (Stage::Prev, Stage::Next);
-                    swriteln!(
-                        f,
-                        "void {func_reset_name}({module_struct} &{prev}, {module_struct} &{next}) {{"
-                    );
-                    let mut ctx = CodegenBlockContext {
-                        diags,
-                        module_info,
-                        locals,
-                        f,
-                        indent: Indent::new(1),
-                        next_temporary_index: 0,
-                    };
-                    let reset_eval = ctx.eval(domain.span, &domain.inner.reset, Stage::Next)?;
-                    swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
-                    swriteln!(ctx.f, "{I}{I}return;");
-                    swriteln!(ctx.f, "{I}}}");
-                    swriteln!(ctx.f);
-
-                    //   reset doesn't need locals
-                    ctx.generate_block(on_reset, Stage::Next)?;
-
-                    swriteln!(f, "}}");
-                    swriteln!(f);
-
-                    // clock function
-                    let func_clock_name = format!("module_{module_index}_child_{child_index}_clocked_clock");
-                    swriteln!(fa, "{I}{func_clock_name}(prev, next);");
-
-                    swriteln!(
-                        f,
-                        "void {func_clock_name}({module_struct} &{prev}, {module_struct} &{next}) {{"
-                    );
-                    let mut ctx = CodegenBlockContext {
-                        diags,
-                        module_info,
-                        locals,
-                        f,
-                        indent: Indent::new(1),
-                        next_temporary_index: 0,
-                    };
-                    let clock_prev_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Prev)?;
-                    let clock_next_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Next)?;
-                    // TODO also skip if reset is active
-                    // TODO maybe switch to a single function for both?
-                    //   or maybe that just mixes sensitivities for no good reason
-                    swriteln!(ctx.f, "{I}if (!(!({clock_prev_eval}) && ({clock_next_eval}))) {{");
-                    swriteln!(ctx.f, "{I}{I}return;");
-                    swriteln!(ctx.f, "{I}}}");
-                    swriteln!(ctx.f);
-
-                    //   declare locals
-                    for (var, var_info) in locals {
-                        let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
-                        let name = var_str(var, var_info);
-                        swriteln!(ctx.f, "{I}{ty_str} {name};");
-                    }
-                    ctx.generate_block(on_clock, Stage::Prev)?;
-
-                    swriteln!(f, "}}");
-                    swriteln!(f);
-                }
-                IrModuleChild::CombinatorialProcess(proc) => {
-                    let IrCombinatorialProcess { locals, block } = proc;
-
-                    let func_name = format!("module_{module_index}_child_{child_index}_combinatorial");
-                    swriteln!(fa, "{I}{func_name}(next);");
-
-                    let next = Stage::Next;
-                    swriteln!(f, "void {func_name}({module_struct} &{next}) {{");
-                    let mut ctx = CodegenBlockContext {
-                        diags,
-                        module_info,
-                        locals,
-                        f,
-                        indent: Indent::new(1),
-                        next_temporary_index: 0,
-                    };
-                    for (var, var_info) in locals {
-                        let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
-                        let name = var_str(var, var_info);
-                        swriteln!(ctx.f, "{I}{ty_str} {name};");
-                    }
-                    ctx.generate_block(block, Stage::Next)?;
-
-                    swriteln!(f, "}}");
-                    swriteln!(f);
-                }
-                IrModuleChild::ModuleInstance(instance) => {
-                    // delegate to child
-                    let child_module_index = instance.module.inner().index();
-                    let field_name = format!("child_{child_index}");
-                    swriteln!(
-                        fa,
-                        "{I}module_{child_module_index}_all(*prev.{field_name}, *next.{field_name});"
-                    );
-                }
-            }
-        }
-
-        swriteln!(
-            f,
-            "void module_{module_index}_all({module_struct} &prev, {module_struct} &next) {{"
-        );
-        f.push_str(&all_body);
-        swriteln!(f, "}}");
-        swriteln!(f);
     }
 
-    Ok(source)
+    swriteln!(f_structs, "}};\n");
+    swriteln!(f_step_all, "}}");
+
+    // combine all
+    let mut f_result = String::new();
+    swrite!(f_result, "{f_structs}");
+    swrite!(f_result, "{f_step}");
+    swrite!(f_result, "{f_step_ports}");
+    swrite!(f_result, "{f_step_all}");
+    Ok(f_result)
 }
 
 enum Evaluated {
@@ -336,7 +336,7 @@ struct CodegenBlockContext<'a> {
 impl CodegenBlockContext<'_> {
     fn eval(&mut self, span: Span, expr: &IrExpression, stage_read: Stage) -> Result<Evaluated, ErrorGuaranteed> {
         let indent = self.indent;
-        let todo = |kind: &str| self.diags.report_todo(span, format!("codegen IrExpression::{kind}"));
+        let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
 
         let result = match expr {
             &IrExpression::Bool(b) => Evaluated::Inline(format!("{b}")),
@@ -344,15 +344,15 @@ impl CodegenBlockContext<'_> {
             IrExpression::Int(v) => Evaluated::Inline(format!("INT64_C({v})")),
             &IrExpression::Port(port) => {
                 let name = port_str(port, &self.module_info.ports[port]);
-                Evaluated::Inline(format!("(*{stage_read}.{name})"))
+                Evaluated::Inline(format!("(*{stage_read}_ports.{name})"))
             }
             &IrExpression::Wire(wire) => {
                 let name = wire_str(wire, &self.module_info.wires[wire]);
-                Evaluated::Inline(format!("{stage_read}.{name}"))
+                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
             }
             &IrExpression::Register(reg) => {
                 let name = reg_str(reg, &self.module_info.registers[reg]);
-                Evaluated::Inline(format!("{stage_read}.{name}"))
+                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
             }
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
             IrExpression::BoolNot(inner) => {
@@ -547,15 +547,15 @@ impl CodegenBlockContext<'_> {
         let base_str = match *base {
             IrAssignmentTargetBase::Port(port) => {
                 let port_str = port_str(port, &self.module_info.ports[port]);
-                format!("*{next}.{port_str}")
+                format!("*{next}_ports.{port_str}")
             }
             IrAssignmentTargetBase::Register(reg) => {
                 let reg_str = reg_str(reg, &self.module_info.registers[reg]);
-                format!("{next}.{reg_str}")
+                format!("{next}_signals.{reg_str}")
             }
             IrAssignmentTargetBase::Wire(wire) => {
                 let wire_str = wire_str(wire, &self.module_info.wires[wire]);
-                format!("{next}.{wire_str}")
+                format!("{next}_signals.{wire_str}")
             }
             IrAssignmentTargetBase::Variable(var) => var_str(var, &self.locals[var]),
         };
@@ -606,10 +606,10 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, E
                 // TODO use smaller types when appropriate
                 "int64_t".to_string()
             } else {
-                return Err(diags.report_todo(span, format!("codegen wide integer type: {range}")));
+                return Err(diags.report_todo(span, format!("simulator wide integer type: {range}")));
             }
         }
-        IrType::Tuple(_) => return Err(diags.report_todo(span, "codegen type Tuple")),
+        IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type Tuple")),
         IrType::Array(inner, len) => {
             // TODO we want to represent boolean arrays als bitfields, either through a template optimization trick
             //   or through a special case here (and in every other place that interacts with arrays)
@@ -658,3 +658,11 @@ fn name_str(prefix: &str, index: Idx, id: MaybeIdentifier<&Identifier>) -> Strin
 }
 
 const I: &str = Indent::I;
+
+fn end_comma(i: usize, len: usize) -> &'static str {
+    if i == len - 1 {
+        ""
+    } else {
+        ","
+    }
+}
