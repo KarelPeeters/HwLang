@@ -737,6 +737,8 @@ impl CompileState<'_> {
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
+        let diags = self.diags;
+
         // evaluate args
         let args_eval = args
             .inner
@@ -762,7 +764,7 @@ impl CompileState<'_> {
                     return Ok(CompileValue::Type(Type::Int(range.clone())));
                 }
                 ("fn", "typeof", [value]) => return Ok(CompileValue::Type(value.ty())),
-                ("fn", "print", [value]) => {
+                ("fn", "print_during_compile", [value]) => {
                     let value_str = match value {
                         // TODO print strings without quotes
                         MaybeCompile::Compile(v) => v.to_diagnostic_string(),
@@ -777,7 +779,12 @@ impl CompileState<'_> {
                     self.print_handler.println(&value_str);
                     return Ok(CompileValue::Tuple(vec![]));
                 }
-                // TODO add print_com/print_sim, assert_com/assert_sim, error_com/error_sim
+                ("fn", "print_during_simulation", [MaybeCompile::Compile(CompileValue::String(value))]) => {
+                    let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
+                    ctx.push_ir_statement(diags, ctx_block, stmt)?;
+                    return Ok(CompileValue::Tuple(vec![]));
+                }
+                // TODO add assert_com/assert_sim, error_com/error_sim
                 // TODO is there an elegant general way to have both variants of a bunch of similar functions?
                 // fallthrough into err
                 _ => {}
@@ -790,7 +797,7 @@ impl CompileState<'_> {
             .add_error(args.span, "invalid args")
             .finish()
             .finish();
-        Err(self.diags.report(diag))
+        Err(diags.report(diag))
     }
 
     pub fn eval_expression_as_compile(

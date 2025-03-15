@@ -116,6 +116,7 @@ impl IrBlock {
                         else_block.validate(diags, module, locals)?;
                     }
                 }
+                IrStatement::PrintLn(_) => {}
             }
         }
         Ok(())

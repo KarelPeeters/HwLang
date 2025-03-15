@@ -3,7 +3,7 @@ import std.types.[
     bool, int_range, int, uint, natural,
     int_bits, uint_bits, any,
 ];
-import std.util.[print, typeof];
+import std.util.[typeof, print, print_compile];
 
 pub module axi_gearbox_v2 generics(
     input_width: natural,
@@ -42,6 +42,7 @@ pub module axi_gearbox_v2 generics(
     clocked(clk, rst) {
         // handle input
         // TODO off by one (<= vs <), bug in original?
+        // TODO use input_ready port here? but then the level type may overflow
         if (input_valid && level < (buffer_size - input_width) / step) {
             const data_width = input_width + step * (2**shift_bits - 1);
             const mask_width = input_width / step + (2**shift_bits - 1);

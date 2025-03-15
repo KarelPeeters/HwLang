@@ -1,10 +1,13 @@
 import std.types.any;
 
-// TODO separate "print during elaboration" from "print during simulation", same with assert
-pub fn print(value: any) {
-    __builtin("fn", "print", value);
-}
-
 pub fn typeof(value: any) -> type {
     return __builtin("fn", "typeof", value);
+}
+
+pub fn print(value: any) {
+    __builtin("fn", "print_during_simulation", value);
+}
+
+pub fn print_compile(value: any) {
+    __builtin("fn", "print_during_compile", value);
 }

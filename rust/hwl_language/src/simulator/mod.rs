@@ -31,6 +31,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     swriteln!(f, "#include <array>");
     swriteln!(f, "#include <utility>");
     swriteln!(f, "#include <algorithm>");
+    swriteln!(f, "#include <iostream>");
     swriteln!(f);
 
     for (i, (module, module_info)) in enumerate(&ir.modules) {
@@ -528,6 +529,12 @@ impl CodegenBlockContext<'_> {
                     }
 
                     swriteln!(self.f);
+                }
+                IrStatement::PrintLn(s) => {
+                    // TODO properly escape string
+                    // TODO write to a user-passed in stream, to save users from capturing hacks
+                    //   this should probably live in a general context object that deals with any outside IO
+                    swriteln!(self.f, "{indent}std::cout << \"{s}\" << std::endl;");
                 }
             }
         }

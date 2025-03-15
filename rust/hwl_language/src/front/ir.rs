@@ -143,9 +143,9 @@ pub struct IrBlock {
 #[derive(Debug)]
 pub enum IrStatement {
     Assign(IrAssignmentTarget, IrExpression),
-
     Block(IrBlock),
     If(IrIfStatement),
+    PrintLn(String),
 }
 
 #[derive(Debug)]

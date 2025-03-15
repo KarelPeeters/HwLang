@@ -677,6 +677,7 @@ fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) 
                     collect_written_registers(else_block, result);
                 }
             }
+            IrStatement::PrintLn(_) => {}
         }
     }
 }
@@ -725,6 +726,10 @@ fn lower_block(
                 }
 
                 swriteln!(f);
+            }
+            IrStatement::PrintLn(s) => {
+                // TODO properly escape string
+                swriteln!(f, "{indent}$display(\"{s}\");");
             }
         }
     }
