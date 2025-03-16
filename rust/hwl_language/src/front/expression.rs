@@ -616,9 +616,7 @@ impl CompileState<'_> {
 
                 result_value
             }
-            ExpressionKind::Builtin(ref args) => {
-                MaybeCompile::Compile(self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?)
-            }
+            ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
         };
 
         Ok(ExpressionWithImplications::simple(result_simple))
@@ -736,7 +734,7 @@ impl CompileState<'_> {
         vars: &VariableValues,
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let diags = self.diags;
 
         // evaluate args
@@ -757,13 +755,13 @@ impl CompileState<'_> {
         {
             let rest = &args_eval[2..];
             match (a0.as_str(), a1.as_str(), rest) {
-                ("type", "any", []) => return Ok(CompileValue::Type(Type::Any)),
-                ("type", "bool", []) => return Ok(CompileValue::Type(Type::Bool)),
-                ("type", "Range", []) => return Ok(CompileValue::Type(Type::Range)),
+                ("type", "any", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Any))),
+                ("type", "bool", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Bool))),
+                ("type", "Range", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Range))),
                 ("type", "int_range", [MaybeCompile::Compile(CompileValue::IntRange(range))]) => {
-                    return Ok(CompileValue::Type(Type::Int(range.clone())));
+                    return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Int(range.clone()))));
                 }
-                ("fn", "typeof", [value]) => return Ok(CompileValue::Type(value.ty())),
+                ("fn", "typeof", [value]) => return Ok(MaybeCompile::Compile(CompileValue::Type(value.ty()))),
                 ("fn", "print_during_compile", [value]) => {
                     let value_str = match value {
                         // TODO print strings without quotes
@@ -777,13 +775,23 @@ impl CompileState<'_> {
                         }
                     };
                     self.print_handler.println(&value_str);
-                    return Ok(CompileValue::Tuple(vec![]));
+                    return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
                 }
                 ("fn", "print_during_simulation", [MaybeCompile::Compile(CompileValue::String(value))]) => {
                     let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
                     ctx.push_ir_statement(diags, ctx_block, stmt)?;
-                    return Ok(CompileValue::Tuple(vec![]));
+                    return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
                 }
+                ("fn", "unsafe_cast_clock", [MaybeCompile::Other(v)]) => match v.ty {
+                    HardwareType::Bool => {
+                        return Ok(MaybeCompile::Other(TypedIrExpression {
+                            ty: HardwareType::Clock,
+                            domain: ValueDomain::Clock,
+                            expr: v.expr.clone(),
+                        }));
+                    }
+                    _ => {}
+                },
                 // TODO add assert_com/assert_sim, error_com/error_sim
                 // TODO is there an elegant general way to have both variants of a bunch of similar functions?
                 // fallthrough into err

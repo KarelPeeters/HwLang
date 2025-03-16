@@ -1,4 +1,4 @@
-import std.types.any;
+import std.types.[bool, any];
 
 pub fn typeof(value: any) -> type {
     return __builtin("fn", "typeof", value);
@@ -10,4 +10,9 @@ pub fn print(value: any) {
 
 pub fn print_compile(value: any) {
     __builtin("fn", "print_during_compile", value);
+}
+
+// TODO parse "clock" as return type here?
+pub fn unsafe_cast_clock(value: bool) -> any {
+    return __builtin("fn", "unsafe_cast_clock", value);
 }

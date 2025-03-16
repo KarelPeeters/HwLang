@@ -3,7 +3,7 @@ import std.types.[
     int_bits, uint_bits, any,
 ];
 import std.math.[gcd, min, max];
-import std.util.print;
+import std.util.[print, print_compile, unsafe_cast_clock];
 import axi_gearbox_v2.axi_gearbox_v2;
 
 const input_width = 8;
@@ -23,17 +23,35 @@ pub module top ports(
         output_ready: in bool,
     }
 ) body {
-    instance axi_gearbox_v2 generics(
-        input_width=input_width,
-        output_width=output_width,
-    ) ports(
-        .clk(clk),
-        .rst(rst),
-        .input_data(input_data),
-        .input_valid(input_valid),
-        .input_ready(input_ready),
-        .output_data(output_data),
-        .output_valid(output_valid),
-        .output_ready(output_ready),
-    );
+    reg clk_div_reg: sync(clk, rst) bool = false;
+    wire clk_div: clock = unsafe_cast_clock(clk_div_reg);
+
+    clocked(clk, rst) {
+        print("clk tick");
+        clk_div_reg = !clk_div_reg;
+    }
+
+    clocked(clk_div, rst) {
+        print("clk_div tick");
+    }
+
+//    instance axi_gearbox_v2 generics(
+//        input_width=input_width,
+//        output_width=output_width,
+//    ) ports(
+//        .clk(clk),
+//        .rst(rst),
+//        .input_data(input_data),
+//        .input_valid(input_valid),
+//        .input_ready(input_ready),
+//        .output_data(output_data),
+//        .output_valid(output_valid),
+//        .output_ready(output_ready),
+//    );
+
+    comb  {
+        input_ready = true;
+        output_valid = input_valid;
+        output_data = [false] * output_width;
+    }
 }
