@@ -2,6 +2,7 @@ import module
 from vcd import VCDWriter
 
 sim = module.Simulator()
+ports = sim.ports
 
 # TODO actually plot ints
 labels = ['clk', 'rst', 'input_data', 'input_valid', 'input_ready', 'output_data', 'output_valid', 'output_ready']
@@ -10,9 +11,9 @@ data = []
 def step():
     sim.step()
     data.append((
-        sim.port_clk, sim.port_rst,
-        sim.port_input_data[0], sim.port_input_valid, sim.port_input_ready,
-        sim.port_output_data[0], sim.port_output_valid, sim.port_output_ready,
+        ports.clk, ports.rst,
+        ports.input_data[0], ports.input_valid, ports.input_ready,
+        ports.output_data[0], ports.output_valid, ports.output_ready,
     ))
 
 def plot():
@@ -24,31 +25,31 @@ def plot():
             
 
 def cycle():
-    sim.port_clk = True
+    ports.clk = True
     step()
-    sim.port_clk = False
+    ports.clk = False
     step()
 
 step()
-sim.port_rst = True
+ports.rst = True
 cycle()
-sim.port_rst = False
+ports.rst = False
 cycle()
-sim.port_input_valid = True
-sim.port_input_data = [True] * 16
+ports.input_valid = True
+ports.input_data = [True] * 16
 cycle()
-sim.port_input_valid = False
-cycle()
-cycle()
-cycle()
-sim.port_output_ready = True
-cycle()
-sim.port_output_ready = False
+ports.input_valid = False
 cycle()
 cycle()
-sim.port_output_ready = True
 cycle()
-sim.port_output_ready = False
+ports.output_ready = True
+cycle()
+ports.output_ready = False
+cycle()
+cycle()
+ports.output_ready = True
+cycle()
+ports.output_ready = False
 cycle()
 
 plot()
