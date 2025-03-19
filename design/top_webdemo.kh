@@ -3,7 +3,7 @@ import std.types.[
     int_bits, uint_bits, any,
 ];
 import std.math.[gcd, min, max];
-import std.util.[print, typeof];
+import std.util.[typeof, print, print_compile];
 
 pub module top ports(
     clk: in clock,
@@ -26,7 +26,6 @@ pub module top ports(
             d0 = x;
         }
         t = select(bool, enable, false, true);
-        print(t);
     }
 
     instance child generics(
