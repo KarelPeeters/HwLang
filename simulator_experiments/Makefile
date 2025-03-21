@@ -11,7 +11,7 @@ run_main: build/main
 
 build/main: ../rust/ignored/simulator.cpp wrapper.cpp main.cpp
 	mkdir -p build
-	clang++ \
+	clang++ -O3 \
 	  -I../rust/ignored main.cpp \
 	  -o build/main
 
@@ -20,7 +20,7 @@ run_python: build/module$(EXTENSION_SUFFIX)
 
 build/module$(EXTENSION_SUFFIX): ../rust/ignored/simulator.cpp wrapper.cpp module.cpp
 	mkdir -p build
-	clang++ \
+	clang++ -O3 \
 	  -I../rust/ignored -I../extern/pybind11/include $(PYTHON_INCLUDES) \
 	  module.cpp \
 	  -shared -fPIC -o build/module$(EXTENSION_SUFFIX)
