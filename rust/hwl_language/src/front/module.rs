@@ -509,7 +509,8 @@ impl BodyElaborationState<'_, '_> {
 
         // eval module and generics
         let no_vars = VariableValues::new_no_vars();
-        let module = state.eval_expression_as_compile(scope_body, &no_vars, module, "module instance");
+        let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
+            state.eval_expression_as_compile(scope_body, &no_vars, module, "module instance");
         let generic_args = generic_args
             .as_ref()
             .map(|generic_args| {

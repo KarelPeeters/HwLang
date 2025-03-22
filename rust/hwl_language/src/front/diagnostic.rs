@@ -58,6 +58,13 @@ impl Diagnostics {
         }
     }
 
+    pub fn clone_without_handler(&self) -> Self {
+        Self {
+            handler: None,
+            diagnostics: self.diagnostics.clone(),
+        }
+    }
+
     // TODO go through and try to avoid early-exits as much as possible
     pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
         if let Some(handler) = &self.handler {
@@ -87,6 +94,10 @@ impl Diagnostics {
     //   especially with the graph traversal stuff, the order can be very arbitrary
     pub fn finish(self) -> Vec<Diagnostic> {
         self.diagnostics.into_inner()
+    }
+
+    pub fn len(&self) -> usize {
+        self.diagnostics.borrow().len()
     }
 }
 

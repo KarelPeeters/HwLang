@@ -12,13 +12,11 @@ use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
 impl CompileState<'_> {
-    pub fn eval_item_as_ty_or_value(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
+    pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
         if !self.items.contains_key(&item) {
             let result = self
-                .check_compile_loop(ElaborationStackEntry::Item(item), |s| {
-                    s.eval_item_as_ty_or_value_new(item)
-                })
+                .check_compile_loop(ElaborationStackEntry::Item(item), |s| s.eval_item_new(item))
                 .unwrap_or_else(Err);
 
             self.items.insert_first(item, result).as_ref_ok()
@@ -69,7 +67,7 @@ impl CompileState<'_> {
         self.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 
-    fn eval_item_as_ty_or_value_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
+    fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
         let file_scope = self.file_scope(item.file())?;
 

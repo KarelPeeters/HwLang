@@ -10,5 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 hwl_language.workspace = true
 
-# TODO specify ABI?
-pyo3 = { version = "0.24.0", features = ["extension-module"] }
+itertools.workspace = true
+num-bigint.workspace = true
+pyo3.workspace = true

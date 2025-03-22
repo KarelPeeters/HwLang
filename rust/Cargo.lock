@@ -330,6 +330,8 @@ name = "hwl_python"
 version = "0.1.0"
 dependencies = [
  "hwl_language",
+ "itertools 0.13.0",
+ "num-bigint",
  "pyo3",
 ]
 
@@ -637,6 +639,7 @@ dependencies = [
  "indoc",
  "libc",
  "memoffset",
+ "num-bigint",
  "once_cell",
  "portable-atomic",
  "pyo3-build-config",

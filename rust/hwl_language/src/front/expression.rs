@@ -59,7 +59,7 @@ impl CompileState<'_> {
         let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
         let result = match *found.value {
-            ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item_as_ty_or_value(item)?.clone()),
+            ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item(item)?.clone()),
             ScopedEntry::Direct(value) => MaybeCompile::Other(value),
         };
         Ok(Spanned {

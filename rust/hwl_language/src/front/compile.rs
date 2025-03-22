@@ -31,96 +31,11 @@ pub fn compile(
     parsed: &ParsedDatabase,
     print_handler: &mut dyn PrintHandler,
 ) -> IrDatabase {
-    // populate file scopes
-    let mut map_file_scopes = IndexMap::new();
-    let mut scopes = Scopes::new();
-
-    let files = source.files();
-    let mut all_items_except_imports = vec![];
-
-    for &file in &files {
-        let file_source = &source[file];
-
-        let scope = parsed[file].as_ref_ok().map(|ast| {
-            // build declaration scope
-            // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-            let file_span = file_source.offsets.full_span(file);
-            let scope_declare = scopes.new_root(file_span);
-            let scope_import = scopes.new_child(scope_declare, file_span, Visibility::Private);
-
-            let local_scope_info = &mut scopes[scope_declare];
-
-            for (ast_item_ref, ast_item) in ast.items_with_ref() {
-                if let Some(declaration_info) = ast_item.declaration_info() {
-                    let vis = match declaration_info.vis {
-                        ast::Visibility::Public(_) => Visibility::Public,
-                        ast::Visibility::Private => Visibility::Private,
-                    };
-                    local_scope_info.maybe_declare(
-                        diags,
-                        declaration_info.id,
-                        Ok(ScopedEntry::Item(ast_item_ref)),
-                        vis,
-                    );
-                }
-
-                match ast_item {
-                    ast::Item::Import(_) => {}
-                    _ => all_items_except_imports.push(ast_item_ref),
-                }
-            }
-
-            FileScopes {
-                scope_outer_declare: scope_declare,
-                scope_inner_import: scope_import,
-            }
-        });
-
-        map_file_scopes.insert_first(file, scope);
-    }
-
-    // populate import scopes
-    for &file in &files {
-        if let Ok(file_scopes) = map_file_scopes.get(&file).as_ref().unwrap() {
-            let file_ast = parsed[file].as_ref_ok().unwrap();
-            for item in &file_ast.items {
-                if let ast::Item::Import(item) = item {
-                    add_import_to_scope(
-                        diags,
-                        source,
-                        &mut scopes,
-                        &map_file_scopes,
-                        file_scopes.scope_inner_import,
-                        item,
-                    );
-                }
-            }
-        }
-    }
-
-    // group into state
-    let mut state = CompileState {
-        diags,
-        source,
-        parsed,
-        print_handler,
-        scopes,
-        file_scopes: map_file_scopes,
-        constants: Arena::default(),
-        parameters: Arena::default(),
-        registers: Arena::default(),
-        ports: Arena::default(),
-        wires: Arena::default(),
-        variables: Arena::default(),
-        ir_modules: Arena::default(),
-        elaborated_modules_cache: IndexMap::new(),
-        elaboration_stack: vec![],
-        items: IndexMap::default(),
-    };
+    let (mut state, all_items_except_imports) = CompileState::new(diags, source, parsed, print_handler);
 
     // visit all items, possibly using them as an elaboration starting point
     for item in all_items_except_imports {
-        let _ = state.eval_item_as_ty_or_value(item);
+        let _ = state.eval_item(item);
     }
 
     // get the top module (it will always hit the elaboration cache)
@@ -158,7 +73,7 @@ pub struct CompileState<'a> {
     pub print_handler: &'a mut dyn PrintHandler,
 
     pub scopes: Scopes,
-    file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
     pub constants: Arena<Constant, ConstantInfo>,
     pub parameters: Arena<Parameter, ParameterInfo>,
@@ -399,7 +314,103 @@ fn find_parent_scope(
         .map(|scopes| scopes.scope_outer_declare)
 }
 
-impl CompileState<'_> {
+impl<'a> CompileState<'a> {
+    pub fn new(
+        diags: &'a Diagnostics,
+        source: &'a SourceDatabase,
+        parsed: &'a ParsedDatabase,
+        print_handler: &'a mut dyn PrintHandler,
+    ) -> (Self, Vec<AstRefItem>) {
+        // populate file scopes
+        let mut map_file_scopes = IndexMap::new();
+        let mut scopes = Scopes::new();
+
+        let files = source.files();
+        let mut all_items_except_imports = vec![];
+
+        for &file in &files {
+            let file_source = &source[file];
+
+            let scope = parsed[file].as_ref_ok().map(|ast| {
+                // build declaration scope
+                // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
+                let file_span = file_source.offsets.full_span(file);
+                let scope_declare = scopes.new_root(file_span);
+                let scope_import = scopes.new_child(scope_declare, file_span, Visibility::Private);
+
+                let local_scope_info = &mut scopes[scope_declare];
+
+                for (ast_item_ref, ast_item) in ast.items_with_ref() {
+                    if let Some(declaration_info) = ast_item.declaration_info() {
+                        let vis = match declaration_info.vis {
+                            ast::Visibility::Public(_) => Visibility::Public,
+                            ast::Visibility::Private => Visibility::Private,
+                        };
+                        local_scope_info.maybe_declare(
+                            diags,
+                            declaration_info.id,
+                            Ok(ScopedEntry::Item(ast_item_ref)),
+                            vis,
+                        );
+                    }
+
+                    match ast_item {
+                        ast::Item::Import(_) => {}
+                        _ => all_items_except_imports.push(ast_item_ref),
+                    }
+                }
+
+                FileScopes {
+                    scope_outer_declare: scope_declare,
+                    scope_inner_import: scope_import,
+                }
+            });
+
+            map_file_scopes.insert_first(file, scope);
+        }
+
+        // populate import scopes
+        for &file in &files {
+            if let Ok(file_scopes) = map_file_scopes.get(&file).as_ref().unwrap() {
+                let file_ast = parsed[file].as_ref_ok().unwrap();
+                for item in &file_ast.items {
+                    if let ast::Item::Import(item) = item {
+                        add_import_to_scope(
+                            diags,
+                            source,
+                            &mut scopes,
+                            &map_file_scopes,
+                            file_scopes.scope_inner_import,
+                            item,
+                        );
+                    }
+                }
+            }
+        }
+
+        // group into state
+        let state = CompileState {
+            diags,
+            source,
+            parsed,
+            print_handler,
+            scopes,
+            file_scopes: map_file_scopes,
+            constants: Arena::default(),
+            parameters: Arena::default(),
+            registers: Arena::default(),
+            ports: Arena::default(),
+            wires: Arena::default(),
+            variables: Arena::default(),
+            ir_modules: Arena::default(),
+            elaborated_modules_cache: IndexMap::new(),
+            elaboration_stack: vec![],
+            items: IndexMap::default(),
+        };
+
+        (state, all_items_except_imports)
+    }
+
     pub fn not_eq_stack(&self) -> StackNotEq {
         StackNotEq(self.elaboration_stack.len())
     }
