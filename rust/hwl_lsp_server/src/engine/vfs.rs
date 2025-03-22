@@ -50,7 +50,7 @@ impl VirtualFileSystem {
         };
 
         // initialize files from disk
-        recurse_for_each_file(&root_path, &mut |_, f| {
+        recurse_for_each_file(&root_path, |_, f| -> Result<(), IoErrorWithPath> {
             let path = f.path();
             if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
                 return Ok(());

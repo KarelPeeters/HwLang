@@ -2,7 +2,7 @@ use std::path::Path;
 
 use hwl_language::{
     syntax::{parse_file_content, pos::FileId},
-    util::io::recurse_for_each_file,
+    util::io::{recurse_for_each_file, IoErrorWithPath},
 };
 
 fn test_parse(path: impl AsRef<Path>) {
@@ -38,7 +38,7 @@ fn parse_top() {
 
 #[test]
 fn parse_std_all() {
-    recurse_for_each_file(Path::new("../../design/project/std"), &mut |_, entry| {
+    recurse_for_each_file::<IoErrorWithPath>(Path::new("../../design/project/std"), |_, entry| {
         test_parse(entry.path());
         Ok(())
     })

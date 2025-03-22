@@ -1587,12 +1587,12 @@ fn eval_binary_bool(
 
             let implications = match op {
                 IrBoolBinaryOp::And => Implications {
-                    if_true: vec_concat(left.inner.implications.if_true, right.inner.implications.if_true),
+                    if_true: vec_concat([left.inner.implications.if_true, right.inner.implications.if_true]),
                     if_false: vec![],
                 },
                 IrBoolBinaryOp::Or => Implications {
                     if_true: vec![],
-                    if_false: vec_concat(left.inner.implications.if_false, right.inner.implications.if_false),
+                    if_false: vec_concat([left.inner.implications.if_false, right.inner.implications.if_false]),
                 },
                 IrBoolBinaryOp::Xor => Implications::default(),
             };

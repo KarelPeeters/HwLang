@@ -3,19 +3,23 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-pub fn recurse_for_each_file(
+pub fn recurse_for_each_file<E: From<IoErrorWithPath>>(
     dir: &Path,
-    f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), IoErrorWithPath>,
-) -> Result<(), IoErrorWithPath> {
+    mut f: impl FnMut(&[OsString], &DirEntry) -> Result<(), E>,
+    // TODO does the compiler realize this bound is redundant?
+) -> Result<(), E>
+where
+    E: From<IoErrorWithPath>,
+{
     let mut stack = vec![];
-    recurse_for_each_file_impl(dir, &mut stack, f)
+    recurse_for_each_file_impl(dir, &mut stack, &mut f)
 }
 
-pub fn recurse_for_each_file_impl(
+fn recurse_for_each_file_impl<E: From<IoErrorWithPath>>(
     root: &Path,
     stack: &mut Vec<OsString>,
-    f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), IoErrorWithPath>,
-) -> Result<(), IoErrorWithPath> {
+    f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), E>,
+) -> Result<(), E> {
     if root.is_dir() {
         let read_dir = fs::read_dir(root).map_err(|e| IoErrorWithPath {
             path: root.to_owned(),

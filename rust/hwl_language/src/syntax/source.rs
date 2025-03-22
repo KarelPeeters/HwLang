@@ -1,9 +1,13 @@
+use crate::constants::LANGUAGE_FILE_EXTENSION;
 use crate::syntax::pos::{FileId, LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::Arena;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{vec_concat, IndexMapExt};
+use crate::util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use crate::{new_index_type, throw};
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 /// The full set of source files that are part of this compilation.
 /// Immutable once all files have been added.
@@ -19,6 +23,14 @@ pub struct SourceDatabase {
 pub enum SourceSetError {
     EmptyPath,
     DuplicatePath(FilePath),
+    NonUtf8Path(PathBuf),
+    MissingFileName(PathBuf),
+}
+
+#[derive(Debug)]
+pub enum SourceSetOrIoError {
+    SourceSet(SourceSetError),
+    Io(IoErrorWithPath),
 }
 
 /// Path relative to the root of the source database, without the trailing extension.
@@ -111,6 +123,46 @@ impl SourceDatabase {
         Ok(file_id)
     }
 
+    pub fn add_tree(&mut self, prefix: Vec<String>, root_path: &Path) -> Result<(), SourceSetOrIoError> {
+        if !root_path.exists() {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound)
+                .with_path(root_path.to_owned())
+                .into());
+        }
+        if !root_path.is_dir() {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory)
+                .with_path(root_path.to_owned())
+                .into());
+        }
+
+        recurse_for_each_file(root_path, |stack, f| -> Result<(), SourceSetOrIoError> {
+            let path = f.path();
+            if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
+                return Ok(());
+            }
+
+            let mut stack: Vec<String> = stack
+                .iter()
+                .map(|s| to_str_or_err(&path, s).map(str::to_owned))
+                .try_collect()?;
+
+            let file_stem = path
+                .file_stem()
+                .ok_or_else(|| SourceSetError::MissingFileName(path.clone()))?;
+            stack.push(to_str_or_err(&path, file_stem)?.to_owned());
+
+            let filepath = FilePath(vec_concat([prefix.clone(), stack]));
+            let source = std::fs::read_to_string(&path).map_err(|e| e.with_path(path.clone()))?;
+            self.add_file(filepath, path.to_str().unwrap().to_owned(), source)
+                .unwrap();
+
+            Ok(())
+        })
+        .unwrap();
+
+        Ok(())
+    }
+
     fn get_directory(&mut self, path: &FilePath) -> Directory {
         let mut curr_dir = self.root_directory;
         for (i, path_item) in enumerate(&path.0) {
@@ -152,4 +204,20 @@ impl std::ops::Index<Directory> for SourceDatabase {
     fn index(&self, index: Directory) -> &Self::Output {
         &self.directories[index]
     }
+}
+
+impl From<SourceSetError> for SourceSetOrIoError {
+    fn from(e: SourceSetError) -> Self {
+        SourceSetOrIoError::SourceSet(e)
+    }
+}
+
+impl From<IoErrorWithPath> for SourceSetOrIoError {
+    fn from(e: IoErrorWithPath) -> Self {
+        SourceSetOrIoError::Io(e)
+    }
+}
+
+fn to_str_or_err<'s>(path: &Path, s: &'s OsStr) -> Result<&'s str, SourceSetError> {
+    s.to_str().ok_or_else(|| SourceSetError::NonUtf8Path(path.to_owned()))
 }

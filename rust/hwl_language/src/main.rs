@@ -1,16 +1,13 @@
 use clap::Parser;
-use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::front::compile::{compile, StdoutPrintHandler};
 use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
+use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
-use hwl_language::util::io::{recurse_for_each_file, IoErrorExt};
-use itertools::Itertools;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -23,7 +20,7 @@ struct Args {
     profile: bool,
 }
 
-fn main() {
+fn main() -> ExitCode {
     // spawn a new thread with a larger stack size
     // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
     std::thread::Builder::new()
@@ -31,10 +28,10 @@ fn main() {
         .spawn(main_inner)
         .unwrap()
         .join()
-        .unwrap();
+        .unwrap()
 }
 
-fn main_inner() {
+fn main_inner() -> ExitCode {
     let Args {
         root,
         print_diagnostics_immediately,
@@ -44,13 +41,16 @@ fn main_inner() {
     // collect source
     let start_all = Instant::now();
     let start_source = Instant::now();
-    let source = match build_source_database(&root) {
-        Ok(db) => db,
+
+    let mut source = SourceDatabase::new();
+    match source.add_tree(vec![], &root) {
+        Ok(()) => {}
         Err(e) => {
             eprintln!("building source database failed: {e:?}");
-            std::process::exit(1);
+            return ExitCode::FAILURE;
         }
-    };
+    }
+
     let source = Rc::new(source);
     let time_source = start_source.elapsed();
 
@@ -143,36 +143,8 @@ fn main_inner() {
 
     // proper exit code
     if any_error {
-        std::process::exit(1);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
-}
-
-fn build_source_database(root: &Path) -> Result<SourceDatabase, SourceSetError> {
-    let mut source_database = SourceDatabase::new();
-
-    // TODO proper error handling for IO and string conversion errors
-    // TODO make parsing a separate step?
-    recurse_for_each_file(root, &mut |stack, f| {
-        let path = f.path();
-        if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
-            return Ok(());
-        }
-
-        let mut stack = stack.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
-        stack.push(path.file_stem().unwrap().to_str().unwrap().to_owned());
-
-        let source = std::fs::read_to_string(&path).map_err(|e| e.with_path(path.clone()))?;
-        source_database
-            .add_file(FilePath(stack), path.to_str().unwrap().to_owned(), source)
-            .unwrap();
-
-        Ok(())
-    })
-    .unwrap();
-
-    if source_database.file_count() == 0 {
-        println!("Warning: no input files found");
-    }
-
-    Ok(source_database)
 }

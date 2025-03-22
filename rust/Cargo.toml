@@ -3,6 +3,7 @@ members = [
     "hwl_language",
     "hwl_lsp_server",
     "hwl_wasm",
+    "hwl_python",
 ]
 resolver = "2"
 
@@ -63,3 +64,7 @@ get_first = "allow"
 # These should be investigated and fixed and some point.
 result_large_err = "allow"
 large_enum_variant = "allow"
+
+# Allow some cfgs that are set by wasm
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test_coverage)'] }
