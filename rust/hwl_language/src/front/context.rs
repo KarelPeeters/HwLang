@@ -59,6 +59,8 @@ pub trait ExpressionContext {
 
     fn for_each_implication(&self, value: ValueVersioned, f: impl FnMut(&Implication));
 
+    fn is_ir_context(&self) -> bool;
+
     fn check_ir_context(&self, diags: &Diagnostics, span: Span, reason: &str) -> Result<(), ErrorGuaranteed>;
 }
 
@@ -154,6 +156,10 @@ impl ExpressionContext for CompileTimeExpressionContext {
 
     fn for_each_implication(&self, _: ValueVersioned, _: impl FnMut(&Implication)) {
         // do nothing
+    }
+    
+    fn is_ir_context(&self) -> bool {
+        false
     }
 
     fn check_ir_context(&self, diags: &Diagnostics, span: Span, access: &str) -> Result<(), ErrorGuaranteed> {
@@ -307,6 +313,10 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
                 f(implication);
             }
         }
+    }
+
+    fn is_ir_context(&self) -> bool {
+        true
     }
 
     fn check_ir_context(&self, _: &Diagnostics, _: Span, _: &str) -> Result<(), ErrorGuaranteed> {

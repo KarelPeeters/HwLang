@@ -6,6 +6,7 @@ pub type any = __builtin("type", "any");
 
 // TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");
+pub type str = __builtin("type", "str");
 
 pub type Range = __builtin("type", "Range");
 

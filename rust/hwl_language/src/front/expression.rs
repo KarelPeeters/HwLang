@@ -754,33 +754,46 @@ impl CompileState<'_> {
         ) = (args_eval.get(0), args_eval.get(1))
         {
             let rest = &args_eval[2..];
+            let mut print_compile = |v: &MaybeCompile<TypedIrExpression>| {
+                let value_str = match v {
+                    // TODO print strings without quotes
+                    MaybeCompile::Compile(v) => v.to_diagnostic_string(),
+                    // TODO less ugly formatting for TypedIrExpression
+                    MaybeCompile::Other(v) => {
+                        let TypedIrExpression { ty, domain, expr: _ } = v;
+                        let ty_str = ty.to_diagnostic_string();
+                        let domain_str = domain.to_diagnostic_string(self);
+                        format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
+                    }
+                };
+                self.print_handler.println(&value_str);
+            };
+
             match (a0.as_str(), a1.as_str(), rest) {
                 ("type", "any", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Any))),
                 ("type", "bool", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Bool))),
+                ("type", "str", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::String))),
                 ("type", "Range", []) => return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Range))),
                 ("type", "int_range", [MaybeCompile::Compile(CompileValue::IntRange(range))]) => {
                     return Ok(MaybeCompile::Compile(CompileValue::Type(Type::Int(range.clone()))));
                 }
                 ("fn", "typeof", [value]) => return Ok(MaybeCompile::Compile(CompileValue::Type(value.ty()))),
-                ("fn", "print_during_compile", [value]) => {
-                    let value_str = match value {
-                        // TODO print strings without quotes
-                        MaybeCompile::Compile(v) => v.to_diagnostic_string(),
-                        // TODO less ugly formatting for TypedIrExpression
-                        MaybeCompile::Other(v) => {
-                            let TypedIrExpression { ty, domain, expr: _ } = v;
-                            let ty_str = ty.to_diagnostic_string();
-                            let domain_str = domain.to_diagnostic_string(self);
-                            format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
-                        }
-                    };
-                    self.print_handler.println(&value_str);
+                ("fn", "print_compile", [value]) => {
+                    print_compile(value);
                     return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
                 }
-                ("fn", "print_during_simulation", [MaybeCompile::Compile(CompileValue::String(value))]) => {
-                    let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
-                    ctx.push_ir_statement(diags, ctx_block, stmt)?;
-                    return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
+                ("fn", "print", [value]) => {
+                    if ctx.is_ir_context() {
+                        if let MaybeCompile::Compile(CompileValue::String(value)) = value {
+                            let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
+                            ctx.push_ir_statement(diags, ctx_block, stmt)?;
+                            return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
+                        }
+                        // fallthough
+                    } else {
+                        print_compile(value);
+                        return Ok(MaybeCompile::Compile(CompileValue::Tuple(vec![])));
+                    }
                 }
                 ("fn", "unsafe_cast_clock", [MaybeCompile::Other(v)]) => match v.ty {
                     HardwareType::Bool => {
