@@ -157,7 +157,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
     fn for_each_implication(&self, _: ValueVersioned, _: impl FnMut(&Implication)) {
         // do nothing
     }
-    
+
     fn is_ir_context(&self) -> bool {
         false
     }

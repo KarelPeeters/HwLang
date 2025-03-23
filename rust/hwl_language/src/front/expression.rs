@@ -56,7 +56,7 @@ impl CompileState<'_> {
         scope: Scope,
         id: &Identifier,
     ) -> Result<Spanned<MaybeCompile<NamedValue>>, ErrorGuaranteed> {
-        let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
+        let found = self.state.scopes[scope].find(&self.state.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
         let result = match *found.value {
             ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item(item)?.clone()),
@@ -135,8 +135,8 @@ impl CompileState<'_> {
                 match eval.inner {
                     MaybeCompile::Compile(c) => MaybeCompile::Compile(c),
                     MaybeCompile::Other(value) => match value {
-                        NamedValue::Constant(cst) => MaybeCompile::Compile(self.constants[cst].value.clone()),
-                        NamedValue::Parameter(param) => self.parameters[param].value.clone(),
+                        NamedValue::Constant(cst) => MaybeCompile::Compile(self.state.constants[cst].value.clone()),
+                        NamedValue::Parameter(param) => self.state.parameters[param].value.clone(),
                         // TODO report error when combinatorial block
                         //   reads something it has not written yet but will later write to
                         // TODO more generally, report combinatorial cycles
@@ -154,7 +154,7 @@ impl CompileState<'_> {
                         NamedValue::Port(port) => {
                             ctx.check_ir_context(diags, expr.span, "port")?;
 
-                            let port_info = &self.ports[port];
+                            let port_info = &self.state.ports[port];
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Port(port)));
@@ -168,7 +168,7 @@ impl CompileState<'_> {
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
 
-                            let wire_info = &self.wires[wire];
+                            let wire_info = &self.state.wires[wire];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
                                 ctx_block,
@@ -185,7 +185,7 @@ impl CompileState<'_> {
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
 
-                            let reg_info = &self.registers[reg];
+                            let reg_info = &self.state.registers[reg];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
                                 ctx_block,
@@ -762,7 +762,7 @@ impl CompileState<'_> {
                     MaybeCompile::Other(v) => {
                         let TypedIrExpression { ty, domain, expr: _ } = v;
                         let ty_str = ty.to_diagnostic_string();
-                        let domain_str = domain.to_diagnostic_string(self);
+                        let domain_str = domain.to_diagnostic_string(self.state);
                         format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
                     }
                 };
@@ -845,7 +845,10 @@ impl CompileState<'_> {
             MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
-                format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
+                format!(
+                    "got value with domain `{}`",
+                    ir_expr.domain.to_diagnostic_string(self.state)
+                ),
             )),
         }
     }
@@ -914,7 +917,7 @@ impl CompileState<'_> {
                         AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
                     }
                     NamedValue::Port(p) => {
-                        let direction = self.ports[p].direction;
+                        let direction = self.state.ports[p].direction;
                         match direction.inner {
                             PortDirection::Input => return Err(build_err("input port")),
                             PortDirection::Output => {

@@ -14,14 +14,14 @@ use crate::util::ResultExt;
 impl CompileState<'_> {
     pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
-        if !self.items.contains_key(&item) {
+        if !self.state.items.contains_key(&item) {
             let result = self
                 .check_compile_loop(ElaborationStackEntry::Item(item), |s| s.eval_item_new(item))
                 .unwrap_or_else(Err);
 
-            self.items.insert_first(item, result).as_ref_ok()
+            self.state.items.insert_first(item, result).as_ref_ok()
         } else {
-            self.items.get(&item).unwrap().as_ref_ok()
+            self.state.items.get(&item).unwrap().as_ref_ok()
         }
     }
 
@@ -58,13 +58,13 @@ impl CompileState<'_> {
 
     pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
         let entry = self.const_eval(scope, decl).map(|value| {
-            let cst = self.constants.push(ConstantInfo {
+            let cst = self.state.constants.push(ConstantInfo {
                 id: decl.id.clone(),
                 value,
             });
             ScopedEntry::Direct(NamedValue::Constant(cst))
         });
-        self.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
+        self.state.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 
     fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {

@@ -2,7 +2,7 @@ use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::front::scope::{Scope, ScopeInfo, Scopes, Visibility};
+use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast;
@@ -29,9 +29,16 @@ pub fn compile(
     diags: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    print_handler: &mut dyn PrintHandler,
+    print_handler: &mut (dyn PrintHandler),
 ) -> IrDatabase {
-    let (mut state, all_items_except_imports) = CompileState::new(diags, source, parsed, print_handler);
+    let PopulatedScopes {
+        scopes,
+        file_scopes,
+        all_items_except_imports,
+    } = PopulatedScopes::new(diags, source, parsed);
+
+    let mut state_long = CompileStateLong::new(scopes, file_scopes);
+    let mut state = CompileState::new(diags, source, parsed, &mut state_long, print_handler);
 
     // visit all items, possibly using them as an elaboration starting point
     for item in all_items_except_imports {
@@ -52,7 +59,7 @@ pub fn compile(
     assert!(state.elaboration_stack.is_empty());
     let mut db = IrDatabase {
         top_module,
-        modules: state.ir_modules,
+        modules: state_long.ir_modules,
     };
 
     // validate
@@ -66,12 +73,7 @@ pub fn compile(
     db
 }
 
-pub struct CompileState<'a> {
-    pub diags: &'a Diagnostics,
-    pub source: &'a SourceDatabase,
-    pub parsed: &'a ParsedDatabase,
-    pub print_handler: &'a mut dyn PrintHandler,
-
+pub struct CompileStateLong {
     pub scopes: Scopes,
     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
@@ -86,6 +88,15 @@ pub struct CompileState<'a> {
     pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<(IrModule, Vec<Port>), ErrorGuaranteed>>,
 
     pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
+}
+
+pub struct CompileState<'a> {
+    pub diags: &'a Diagnostics,
+    pub source: &'a SourceDatabase,
+    pub parsed: &'a ParsedDatabase,
+
+    pub state: &'a mut CompileStateLong,
+    pub print_handler: &'a mut dyn PrintHandler,
 
     elaboration_stack: Vec<ElaborationStackEntry>,
 }
@@ -121,6 +132,8 @@ pub struct ModuleElaborationInfo {
 
 impl ModuleElaborationInfo {
     pub fn to_cache_key(&self) -> ModuleElaborationCacheKey {
+        // TODO this is really the wrong place to cache, caching should happen after the params have been matched (so ordering stops mattering)
+        //   fixing that should also improve error messages
         ModuleElaborationCacheKey {
             item: self.item,
             args: self.args.as_ref().map(|args| {
@@ -314,13 +327,15 @@ fn find_parent_scope(
         .map(|scopes| scopes.scope_outer_declare)
 }
 
-impl<'a> CompileState<'a> {
-    pub fn new(
-        diags: &'a Diagnostics,
-        source: &'a SourceDatabase,
-        parsed: &'a ParsedDatabase,
-        print_handler: &'a mut dyn PrintHandler,
-    ) -> (Self, Vec<AstRefItem>) {
+pub struct PopulatedScopes {
+    pub scopes: Scopes,
+    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    // TODO maybe imports should not be items in the first place?
+    pub all_items_except_imports: Vec<AstRefItem>,
+}
+
+impl PopulatedScopes {
+    pub fn new(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> Self {
         // populate file scopes
         let mut map_file_scopes = IndexMap::new();
         let mut scopes = Scopes::new();
@@ -388,14 +403,19 @@ impl<'a> CompileState<'a> {
             }
         }
 
-        // group into state
-        let state = CompileState {
-            diags,
-            source,
-            parsed,
-            print_handler,
+        PopulatedScopes {
             scopes,
             file_scopes: map_file_scopes,
+            all_items_except_imports,
+        }
+    }
+}
+
+impl CompileStateLong {
+    pub fn new(scopes: Scopes, file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>) -> Self {
+        CompileStateLong {
+            scopes,
+            file_scopes,
             constants: Arena::default(),
             parameters: Arena::default(),
             registers: Arena::default(),
@@ -404,11 +424,27 @@ impl<'a> CompileState<'a> {
             variables: Arena::default(),
             ir_modules: Arena::default(),
             elaborated_modules_cache: IndexMap::new(),
-            elaboration_stack: vec![],
             items: IndexMap::default(),
-        };
+        }
+    }
+}
 
-        (state, all_items_except_imports)
+impl<'a> CompileState<'a> {
+    pub fn new(
+        diags: &'a Diagnostics,
+        source: &'a SourceDatabase,
+        parsed: &'a ParsedDatabase,
+        state: &'a mut CompileStateLong,
+        print_handler: &'a mut dyn PrintHandler,
+    ) -> Self {
+        CompileState {
+            diags,
+            source,
+            parsed,
+            state,
+            print_handler,
+            elaboration_stack: vec![],
+        }
     }
 
     pub fn not_eq_stack(&self) -> StackNotEq {
@@ -472,7 +508,7 @@ impl<'a> CompileState<'a> {
     ) -> Result<(IrModule, Vec<Port>), ErrorGuaranteed> {
         // check cache
         let cache_key = module_elaboration.to_cache_key();
-        if let Some(result) = self.elaborated_modules_cache.get(&cache_key) {
+        if let Some(result) = self.state.elaborated_modules_cache.get(&cache_key) {
             return result.clone();
         }
 
@@ -480,7 +516,7 @@ impl<'a> CompileState<'a> {
         let elaboration_result = self
             .check_compile_loop(ElaborationStackEntry::ModuleElaboration(cache_key.clone()), |s| {
                 let (ir_module_info, ports) = s.elaborate_module_new(module_elaboration)?;
-                let ir_module = s.ir_modules.push(ir_module_info);
+                let ir_module = s.state.ir_modules.push(ir_module_info);
                 Ok((ir_module, ports))
             })
             .flatten_err();
@@ -488,7 +524,8 @@ impl<'a> CompileState<'a> {
         // put into cache and return
         // this is correct even for errors caused by cycles:
         //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
-        self.elaborated_modules_cache
+        self.state
+            .elaborated_modules_cache
             .insert_first(cache_key, elaboration_result.clone());
 
         elaboration_result
@@ -506,12 +543,13 @@ impl<'a> CompileState<'a> {
                 diags.report(Diagnostic::new(title).finish())
             })?;
         let top_file_scope = self
+            .state
             .file_scopes
             .get(&top_file)
             .unwrap()
             .as_ref_ok()?
             .scope_outer_declare;
-        let top_entry = self[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
+        let top_entry = self.state.scopes[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
 
         match top_entry.value {
             &ScopedEntry::Item(item) => match &self.parsed[item] {
@@ -536,7 +574,7 @@ impl<'a> CompileState<'a> {
     }
 
     pub fn file_scope(&self, file: FileId) -> Result<Scope, ErrorGuaranteed> {
-        match self.file_scopes.get(&file) {
+        match self.state.file_scopes.get(&file) {
             None => Err(self
                 .diags
                 .report_internal_error(self.source[file].offsets.full_span(file), "file scopes not found")),
@@ -548,9 +586,9 @@ impl<'a> CompileState<'a> {
     pub fn domain_signal_to_ir(&self, signal: &DomainSignal) -> IrExpression {
         let &Polarized { inverted, signal } = signal;
         let inner = match signal {
-            Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
-            Signal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
-            Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
+            Signal::Port(port) => IrExpression::Port(self.state.ports[port].ir),
+            Signal::Wire(wire) => IrExpression::Wire(self.state.wires[wire].ir),
+            Signal::Register(reg) => IrExpression::Register(self.state.registers[reg].ir),
         };
         if inverted {
             IrExpression::BoolNot(Box::new(inner))
@@ -567,19 +605,6 @@ pub struct FileScopes {
     /// Child scope of [scope_outer_declare] that includes all imported items.
     pub scope_inner_import: Scope,
 }
-
-macro_rules! impl_index {
-    ($arena:ident, $index:ty, $info:ty) => {
-        impl std::ops::Index<$index> for CompileState<'_> {
-            type Output = $info;
-            fn index(&self, index: $index) -> &Self::Output {
-                &self.$arena[index]
-            }
-        }
-    };
-}
-
-impl_index!(scopes, Scope, ScopeInfo);
 
 // TODO rename/expand to handle all external interation: IO, env vars, ...
 pub trait PrintHandler {

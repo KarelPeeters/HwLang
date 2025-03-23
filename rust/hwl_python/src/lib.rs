@@ -4,37 +4,56 @@ use std::{path::Path, vec};
 
 use hwl_language::{
     front::{
-        compile::{CompileState, NoPrintHandler},
+        compile::{
+            CompileState, CompileStateLong, ModuleElaborationInfo, NoPrintHandler, PopulatedScopes, Port as RustPort,
+        },
+        context::CompileTimeExpressionContext,
         diagnostic::{DiagnosticStringSettings, Diagnostics, ErrorGuaranteed},
+        function::FunctionValue,
+        ir::IrModule,
         misc::ScopedEntry,
         scope::Visibility,
-        types::IncRange as RustIncRange,
-        value::CompileValue as RustCompileValue,
+        types::{IncRange as RustIncRange, Type as RustType},
+        value::{CompileValue, MaybeCompile},
     },
     syntax::{
-        parsed::ParsedDatabase as RustParsedDatabase,
+        ast::{Arg, Args, Identifier, Spanned},
+        parsed::{AstRefModule, ParsedDatabase as RustParsedDatabase},
+        pos::Span,
         source::{SourceDatabase as RustSourceDatabase, SourceSetError, SourceSetOrIoError},
     },
     util::{io::IoErrorWithPath, ResultExt},
 };
-use pyo3::{create_exception, exceptions::PyException, prelude::*, types::PyTuple, IntoPyObjectExt};
+use pyo3::{
+    create_exception,
+    exceptions::PyException,
+    prelude::*,
+    types::{PyDict, PyList, PyTuple},
+    IntoPyObjectExt,
+};
 
 #[pyclass]
-struct SourceDatabase {
+struct Source {
     source: RustSourceDatabase,
 }
 
 #[pyclass]
-struct ParsedDatabase {
-    source: Py<SourceDatabase>,
+struct Parsed {
+    source: Py<Source>,
     parsed: RustParsedDatabase,
+}
+
+#[pyclass]
+struct Compile {
+    parsed: Py<Parsed>,
+    state: CompileStateLong,
 }
 
 #[pyclass]
 struct Undefined;
 
 #[pyclass]
-struct Type(#[allow(dead_code)] String);
+struct Type(RustType);
 
 #[pyclass]
 struct IncRange {
@@ -45,30 +64,58 @@ struct IncRange {
 }
 
 #[pyclass]
-struct Module(#[allow(dead_code)] String);
+struct Function {
+    compile: Py<Compile>,
+    function_value: FunctionValue,
+}
 
 #[pyclass]
-struct Function;
+struct Module {
+    compile: Py<Compile>,
+    module: AstRefModule,
+}
 
 #[pyclass]
-pub struct Simulator {}
+struct ModuleInstance {
+    #[allow(dead_code)]
+    compile: Py<Compile>,
+    #[allow(dead_code)]
+    module_ir: IrModule,
+    #[allow(dead_code)]
+    ports: Vec<RustPort>,
+}
+
+#[pyclass]
+struct Simulator {}
 
 create_exception!(hwl, HwlException, PyException);
 create_exception!(hwl, SourceSetException, HwlException);
 create_exception!(hwl, DiagnosticException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
+create_exception!(hwl, ValueException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<SourceDatabase>()?;
+    m.add_class::<Source>()?;
+    m.add_class::<Parsed>()?;
+    m.add_class::<Compile>()?;
+    m.add_class::<Undefined>()?;
+    m.add_class::<Type>()?;
+    m.add_class::<IncRange>()?;
+    m.add_class::<Function>()?;
+    m.add_class::<Module>()?;
+    m.add_class::<ModuleInstance>()?;
     m.add_class::<Simulator>()?;
+    m.add("HwlException", py.get_type::<HwlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
+    m.add("ResolveException", py.get_type::<ResolveException>())?;
+    m.add("ValueException", py.get_type::<ValueException>())?;
     Ok(())
 }
 
 #[pymethods]
-impl SourceDatabase {
+impl Source {
     #[new]
     fn new(root_dir: &str) -> PyResult<Self> {
         let mut source = RustSourceDatabase::new();
@@ -101,7 +148,7 @@ impl SourceDatabase {
             .collect()
     }
 
-    fn parse(slf: Py<SourceDatabase>, py: Python) -> PyResult<ParsedDatabase> {
+    fn parse(slf: Py<Self>, py: Python) -> PyResult<Parsed> {
         let diags = Diagnostics::new();
         let source = slf.borrow(py);
         let parsed = RustParsedDatabase::new(&diags, &source.source);
@@ -109,94 +156,244 @@ impl SourceDatabase {
         check_diags(&source.source, &diags)?;
 
         drop(source);
-        Ok(ParsedDatabase { source: slf, parsed })
+
+        Ok(Parsed { source: slf, parsed })
     }
 }
 
 #[pymethods]
-impl ParsedDatabase {
-    fn resolve(&self, py: Python, path: &str) -> PyResult<Py<PyAny>> {
-        if path.is_empty() {
-            return Err(ResolveException::new_err("resolve path cannot be empty"));
-        }
+impl Parsed {
+    fn compile(slf: Py<Self>, py: Python) -> PyResult<Compile> {
+        let state = {
+            let diags = Diagnostics::new();
+            let parsed = slf.borrow(py);
+            let source = parsed.source.borrow(py);
 
-        // create temporary state
-        let diags = Diagnostics::new();
-        let source = &self.source.borrow(py).source;
-        let mut print_handler = NoPrintHandler;
-        let (mut state, _) = CompileState::new(&diags, source, &self.parsed, &mut print_handler);
-        check_diags(source, &diags)?;
+            let scopes = PopulatedScopes::new(&diags, &source.source, &parsed.parsed);
+            let state = CompileStateLong::new(scopes.scopes, scopes.file_scopes);
 
-        // find directory, file and scope
-        let steps: Vec<&str> = path.split('.').collect_vec();
-        let (item_name, steps) = steps.split_last().unwrap();
+            check_diags(&source.source, &diags)?;
+            state
+        };
 
-        let mut curr_dir = source.root_directory;
-        for (i_step, &step) in enumerate(steps) {
-            curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
-                ResolveException::new_err(format!(
-                    "path `{}` does not have child `{}`",
-                    steps[..i_step].iter().join("."),
-                    step
-                ))
+        Ok(Compile { parsed: slf, state })
+    }
+}
+
+#[pymethods]
+impl Compile {
+    fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
+        let value = {
+            // unwrap self
+            let slf_ref = &mut *slf.borrow_mut(py);
+            let state = &mut slf_ref.state;
+
+            let parsed_ref = slf_ref.parsed.borrow(py);
+            let parsed = &parsed_ref.parsed;
+            let source = &parsed_ref.source.borrow(py).source;
+
+            // find directory, file and scope
+            if path.is_empty() {
+                return Err(ResolveException::new_err("resolve path cannot be empty"));
+            }
+            let steps: Vec<&str> = path.split('.').collect_vec();
+            let (item_name, steps) = steps.split_last().unwrap();
+
+            let mut curr_dir = source.root_directory;
+            for (i_step, &step) in enumerate(steps) {
+                curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
+                    ResolveException::new_err(format!(
+                        "path `{}` does not have child `{}`",
+                        steps[..i_step].iter().join("."),
+                        step
+                    ))
+                })?;
+            }
+            let file = source[curr_dir].file.ok_or_else(|| {
+                ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
             })?;
-        }
-        let file = source[curr_dir].file.ok_or_else(|| {
-            ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
-        })?;
+            let scope = state.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
 
-        let scope =
-            unwrap_diag_error(source, &diags, state.file_scopes.get(&file).unwrap().as_ref_ok())?.scope_outer_declare;
+            // look up the item
+            let diags = Diagnostics::new();
+            let found = unwrap_diag_error(
+                source,
+                &diags,
+                state.scopes[scope.scope_outer_declare].find_immediate_str(&diags, item_name, Visibility::Public),
+            )?;
+            let item = match found.value {
+                &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
+                ScopedEntry::Direct(_) => {
+                    let e = diags.report_internal_error(
+                        found.defining_span,
+                        "file scope should only contain items, not direct values",
+                    );
+                    return Err(convert_diag_error(source, &diags, e));
+                }
+            };
 
-        // look up the item
-        let found = unwrap_diag_error(
-            source,
-            &diags,
-            state.scopes[scope].find_immediate_str(&diags, item_name, Visibility::Public),
-        )?;
-        let item = match found.value {
-            &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-            ScopedEntry::Direct(_) => {
-                let e = diags.report_internal_error(
-                    found.defining_span,
-                    "file scope should only contain items, not direct values",
-                );
-                return Err(convert_diag_error(source, &diags, e));
+            // evaluate the item
+            let mut print_handler = NoPrintHandler;
+            let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
+
+            let value = state_short.eval_item(item);
+            let value = unwrap_diag_error(source, &diags, value)?;
+            value.clone()
+        };
+
+        compile_value_to_py(py, &slf, value)
+    }
+}
+
+#[pymethods]
+impl Type {
+    fn __str__(&self) -> String {
+        self.0.to_diagnostic_string()
+    }
+}
+
+#[pymethods]
+impl IncRange {
+    #[new]
+    fn new(start_inc: Option<BigInt>, end_inc: Option<BigInt>) -> Self {
+        Self { start_inc, end_inc }
+    }
+
+    fn __str__(&self) -> String {
+        let range = RustIncRange {
+            start_inc: self.start_inc.as_ref(),
+            end_inc: self.end_inc.as_ref(),
+        };
+        format!("IncRange({range})")
+    }
+}
+
+#[pymethods]
+impl Function {
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__(
+        &self,
+        py: Python,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let diags = Diagnostics::new();
+
+        let returned = {
+            // borrow self
+            let compile_ref = &mut *self.compile.borrow_mut(py);
+            let state = &mut compile_ref.state;
+            let parsed_ref = compile_ref.parsed.borrow(py);
+            let parsed = &parsed_ref.parsed;
+            let source = &parsed_ref.source.borrow(py).source;
+            let dummy_span = parsed[self.function_value.item].common_info().span_short;
+
+            // convert args
+            let f_arg = |v| Spanned::new(dummy_span, MaybeCompile::Compile(v));
+            let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
+
+            // call function
+            let mut print_handler = NoPrintHandler;
+            let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
+            check_diags(source, &diags)?;
+
+            let mut ctx = CompileTimeExpressionContext {
+                span: dummy_span,
+                reason: "external call".to_owned(),
+            };
+            let returned = self.function_value.call(&mut state_short, &mut ctx, args);
+            let ((), returned) = unwrap_diag_error(source, &diags, returned)?;
+
+            // unwrap compile
+            match returned {
+                MaybeCompile::Compile(returned) => returned,
+                MaybeCompile::Other(_) => {
+                    let err = diags.report_internal_error(
+                        dummy_span,
+                        "function called with only compile-time args should return compile-time value",
+                    );
+                    return Err(convert_diag_error(source, &diags, err));
+                }
             }
         };
 
-        // evaluate the item
-        let value = state.eval_item(item);
-        let value = unwrap_diag_error(source, &diags, value)?;
-        compile_value_to_py(py, value.clone(), &state)
+        compile_value_to_py(py, &self.compile, returned)
+    }
+}
+
+#[pymethods]
+impl Module {
+    #[pyo3(signature = (*args, **kwargs))]
+    fn instance(
+        &self,
+        py: Python,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<ModuleInstance> {
+        // borrow self
+        let compile_ref = &mut *self.compile.borrow_mut(py);
+        let state = &mut compile_ref.state;
+        let parsed_ref = compile_ref.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source = &parsed_ref.source.borrow(py).source;
+        let dummy_span = parsed[self.module].id.span;
+
+        // evaluate args
+        let f_arg = |v| Spanned::new(dummy_span, v);
+        let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
+        // TODO this is really hacky, maybe the Some/None disctintion should not exist for generics?
+        let args = if args.inner.len() == 0 && parsed[self.module].params.is_none() {
+            None
+        } else {
+            Some(args)
+        };
+
+        // instantiate module
+        let diags = Diagnostics::new();
+        let mut print_handler = NoPrintHandler;
+
+        let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
+
+        let elaboration_info = ModuleElaborationInfo {
+            item: self.module,
+            args,
+        };
+        let (module_ir, ports) = unwrap_diag_error(source, &diags, state_short.elaborate_module(elaboration_info))?;
+
+        let module_instance = ModuleInstance {
+            compile: self.compile.clone_ref(py),
+            module_ir,
+            ports,
+        };
+        Ok(module_instance)
     }
 }
 
 #[pymethods]
 impl Simulator {}
 
-fn compile_value_to_py(py: Python, value: RustCompileValue, state: &CompileState) -> PyResult<Py<PyAny>> {
+fn compile_value_to_py(py: Python, state: &Py<Compile>, value: CompileValue) -> PyResult<Py<PyAny>> {
     match value {
-        RustCompileValue::Undefined => Undefined.into_py_any(py),
-        RustCompileValue::Type(x) => Type(x.to_diagnostic_string()).into_py_any(py),
-        RustCompileValue::Bool(x) => x.into_py_any(py),
-        RustCompileValue::Int(x) => x.into_py_any(py),
-        RustCompileValue::String(x) => x.into_py_any(py),
-        RustCompileValue::Tuple(x) => {
+        CompileValue::Undefined => Undefined.into_py_any(py),
+        CompileValue::Type(x) => Type(x).into_py_any(py),
+        CompileValue::Bool(x) => x.into_py_any(py),
+        CompileValue::Int(x) => x.into_py_any(py),
+        CompileValue::String(x) => x.into_py_any(py),
+        CompileValue::Tuple(x) => {
             let items: Vec<_> = x
                 .into_iter()
-                .map(|item| compile_value_to_py(py, item, state))
+                .map(|item| compile_value_to_py(py, state, item))
                 .try_collect()?;
             PyTuple::new(py, items.into_iter())?.into_py_any(py)
         }
-        RustCompileValue::Array(x) => {
+        CompileValue::Array(x) => {
             let items: Vec<_> = x
                 .into_iter()
-                .map(|item| compile_value_to_py(py, item, state))
+                .map(|item| compile_value_to_py(py, state, item))
                 .try_collect()?;
             items.into_py_any(py)
         }
-        RustCompileValue::IntRange(x) => {
+        CompileValue::IntRange(x) => {
             let RustIncRange { start_inc, end_inc } = x;
             IncRange {
                 start_inc: start_inc.clone(),
@@ -204,9 +401,105 @@ fn compile_value_to_py(py: Python, value: RustCompileValue, state: &CompileState
             }
             .into_py_any(py)
         }
-        RustCompileValue::Module(x) => Module(state.parsed[x].id.string.clone()).into_py_any(py),
-        RustCompileValue::Function(_) => Function.into_py_any(py),
+        CompileValue::Module(m) => {
+            let m = Module {
+                compile: state.clone_ref(py),
+                module: m,
+            };
+            m.into_py_any(py)
+        }
+        CompileValue::Function(f) => {
+            let f = Function {
+                compile: state.clone_ref(py),
+                function_value: f,
+            };
+            f.into_py_any(py)
+        }
     }
+}
+
+fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
+    // TODO should we use downcast or extract here?
+    //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
+    if let Ok(_) = value.extract::<PyRef<Undefined>>() {
+        return Ok(CompileValue::Undefined);
+    }
+    if let Ok(value) = value.extract::<PyRef<Type>>() {
+        return Ok(CompileValue::Type(value.0.clone()));
+    }
+    if let Ok(value) = value.extract::<bool>() {
+        return Ok(CompileValue::Bool(value));
+    }
+    if let Ok(value) = value.extract::<BigInt>() {
+        return Ok(CompileValue::Int(value));
+    }
+    if let Ok(value) = value.extract::<String>() {
+        return Ok(CompileValue::String(value));
+    }
+    if let Ok(value) = value.downcast::<PyTuple>() {
+        let items: Vec<_> = value.iter().map(compile_value_from_py).try_collect()?;
+        return Ok(CompileValue::Tuple(items));
+    }
+    if let Ok(value) = value.downcast::<PyList>() {
+        let items: Vec<_> = value.into_iter().map(compile_value_from_py).try_collect()?;
+        return Ok(CompileValue::Array(items));
+    }
+    if let Ok(value) = value.extract::<PyRef<IncRange>>() {
+        let IncRange { start_inc, end_inc } = &*value;
+        return Ok(CompileValue::IntRange(RustIncRange {
+            start_inc: start_inc.clone(),
+            end_inc: end_inc.clone(),
+        }));
+    }
+    if let Ok(_) = value.extract::<PyRef<Module>>() {
+        todo!()
+    }
+    if let Ok(value) = value.extract::<PyRef<Function>>() {
+        // TODO avoid clone?
+        return Ok(CompileValue::Function(value.function_value.clone()));
+    }
+
+    Err(PyException::new_err(format!(
+        "cannot convert value of type `{}` to compile-time value",
+        value.get_type()
+    )))
+}
+
+fn convert_python_args<T>(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+    dummy_span: Span,
+    f: impl Fn(CompileValue) -> T,
+) -> PyResult<Args<Option<Identifier>, T>> {
+    let mut args_inner = vec![];
+    for value in args {
+        let value = compile_value_from_py(value)?;
+        args_inner.push(Arg {
+            span: dummy_span,
+            name: None,
+            value: f(value),
+        });
+    }
+    if let Some(kwargs) = kwargs {
+        for (name, value) in kwargs {
+            let name = name.extract::<String>()?;
+            let value = compile_value_from_py(value)?;
+            let name = Some(Identifier {
+                span: dummy_span,
+                string: name,
+            });
+            args_inner.push(Arg {
+                span: dummy_span,
+                name,
+                value: f(value),
+            });
+        }
+    }
+
+    Ok(Args {
+        span: dummy_span,
+        inner: args_inner,
+    })
 }
 
 fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {

@@ -88,7 +88,7 @@ impl CompileState<'_> {
 
         let (params_scope, debug_info_generic_args) = match (params, args) {
             (None, None) => {
-                let params_scope = self.scopes.new_child(file_scope, def_span, Visibility::Private);
+                let params_scope = self.state.scopes.new_child(file_scope, def_span, Visibility::Private);
                 (params_scope, None)
             }
             (Some(params), Some(args)) => {
@@ -113,7 +113,7 @@ impl CompileState<'_> {
 
         let mut ports_vec: Vec<Port> = vec![];
         let mut ir_ports = Arena::default();
-        let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
+        let ports_scope = self.state.scopes.new_child(params_scope, def_span, Visibility::Private);
 
         for port_item in &ports.inner {
             match port_item {
@@ -154,9 +154,9 @@ impl CompileState<'_> {
                             ty: ty.inner.to_ir(),
                             debug_info_id: id.clone(),
                             debug_info_ty: ty.inner.clone(),
-                            debug_info_domain: domain.inner.to_diagnostic_string(self),
+                            debug_info_domain: domain.inner.to_diagnostic_string(self.state),
                         });
-                        let port = self.ports.push(PortInfo {
+                        let port = self.state.ports.push(PortInfo {
                             id: id.clone(),
                             direction: *direction,
                             domain,
@@ -167,7 +167,7 @@ impl CompileState<'_> {
                         ScopedEntry::Direct(NamedValue::Port(port))
                     });
 
-                    self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                    self.state.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
                 }
                 ModulePortItem::Block(port_item) => {
                     let ModulePortBlock { span: _, domain, ports } = port_item;
@@ -196,9 +196,9 @@ impl CompileState<'_> {
                                 ty: ty.inner.to_ir(),
                                 debug_info_id: id.clone(),
                                 debug_info_ty: ty.inner.clone(),
-                                debug_info_domain: domain.inner.to_diagnostic_string(self),
+                                debug_info_domain: domain.inner.to_diagnostic_string(self.state),
                             });
-                            let port = self.ports.push(PortInfo {
+                            let port = self.state.ports.push(PortInfo {
                                 id: id.clone(),
                                 direction: *direction,
                                 domain,
@@ -209,7 +209,7 @@ impl CompileState<'_> {
                             ScopedEntry::Direct(NamedValue::Port(port))
                         });
 
-                        self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                        self.state.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
                     }
                 }
             }
@@ -227,7 +227,7 @@ impl CompileState<'_> {
         scope_ports: Scope,
         body: &Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
-        let scope_body = self.scopes.new_child(scope_ports, body.span, Visibility::Private);
+        let scope_body = self.state.scopes.new_child(scope_ports, body.span, Visibility::Private);
 
         let mut state = BodyElaborationState {
             state: self,
@@ -251,7 +251,7 @@ impl CompileState<'_> {
 
         // create driver entries for remaining (= non-reg) output ports
         for &port in ports {
-            match state.state.ports[port].direction.inner {
+            match state.state.state.ports[port].direction.inner {
                 PortDirection::Input => {
                     // do nothing
                 }
@@ -279,8 +279,8 @@ impl CompileState<'_> {
             let mut statements = vec![];
 
             for (&out_port, &reg) in &state.out_port_register_connections {
-                let out_port_ir = state.state.ports[out_port].ir;
-                let reg_info = &state.state.registers[reg];
+                let out_port_ir = state.state.state.ports[out_port].ir;
+                let reg_info = &state.state.state.registers[reg];
                 let reg_ir = reg_info.ir;
                 let statement =
                     IrStatement::Assign(IrAssignmentTarget::port(out_port_ir), IrExpression::Register(reg_ir));
@@ -332,7 +332,7 @@ impl BodyElaborationState<'_, '_> {
                     });
 
                     let state = &mut self.state;
-                    state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    state.state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(decl));
@@ -351,7 +351,12 @@ impl BodyElaborationState<'_, '_> {
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
-                    self.state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    self.state.state.scopes[scope_body].maybe_declare(
+                        diags,
+                        decl.id.as_ref(),
+                        entry,
+                        Visibility::Private,
+                    );
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     // declare register that shadows the outer port, which is exactly what we want
@@ -365,7 +370,7 @@ impl BodyElaborationState<'_, '_> {
                             self.out_port_register_connections.insert_first(port, reg_init.reg);
 
                             let entry = Ok(ScopedEntry::Direct(NamedValue::Register(reg_init.reg)));
-                            self.state.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
+                            self.state.state.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
                         }
                         Err(e) => {
                             // don't do anything, as if the marker is not there
@@ -567,7 +572,7 @@ impl BodyElaborationState<'_, '_> {
             match self.elaborate_instance_port_connection(scope_body, stmt_index, &port_signals, port, connection) {
                 Ok((signal, connection)) => {
                     port_signals.insert_first(port, signal);
-                    ir_connections.insert_first(self.state.ports[port].ir, connection);
+                    ir_connections.insert_first(self.state.state.ports[port].ir, connection);
                 }
                 Err(e) => {
                     any_port_err = Err(e);
@@ -604,7 +609,7 @@ impl BodyElaborationState<'_, '_> {
             domain: ref port_domain_raw,
             ty: ref port_ty_hw,
             ir: _,
-        } = &self.state.ports[port];
+        } = &self.state.state.ports[port];
 
         let port_id = port_id.clone();
         let port_ty_hw = port_ty_hw.clone();
@@ -737,7 +742,7 @@ impl BodyElaborationState<'_, '_> {
                             ty: port_ty_hw.inner.to_ir(),
                             debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
                             debug_info_ty: port_ty_hw.inner.clone(),
-                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.state),
+                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.state.state),
                         });
 
                         ctx_block.statements.push(Spanned {
@@ -780,7 +785,7 @@ impl BodyElaborationState<'_, '_> {
 
                         let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
                             MaybeCompile::Other(NamedValue::Wire(wire)) => {
-                                let wire_info = &self.state.wires[wire];
+                                let wire_info = &self.state.state.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
                                     Signal::Wire(wire),
@@ -789,7 +794,7 @@ impl BodyElaborationState<'_, '_> {
                                 )
                             }
                             MaybeCompile::Other(NamedValue::Port(port)) => {
-                                let port_info = &self.state.ports[port];
+                                let port_info = &self.state.state.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
                                     Signal::Port(port),
@@ -862,22 +867,26 @@ impl BodyElaborationState<'_, '_> {
 
         // wire-like signals, just check
         for (&port, drivers) in &output_port_drivers {
-            any_err = any_err.and(self.check_drivers_for_port_or_wire("port", self.state.ports[port].id.span, drivers));
+            any_err =
+                any_err.and(self.check_drivers_for_port_or_wire("port", self.state.state.ports[port].id.span, drivers));
         }
         for (&wire, drivers) in &wire_drivers {
-            any_err =
-                any_err.and(self.check_drivers_for_port_or_wire("wire", self.state.wires[wire].id.span(), drivers));
+            any_err = any_err.and(self.check_drivers_for_port_or_wire(
+                "wire",
+                self.state.state.wires[wire].id.span(),
+                drivers,
+            ));
         }
 
         // registers: check and collect resets
         for (&reg, drivers) in &reg_drivers {
-            let decl_span = self.state.registers[reg].id.span();
+            let decl_span = self.state.state.registers[reg].id.span();
 
             any_err = any_err.and(self.check_drivers_for_reg(decl_span, drivers));
 
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
-            match self.check_exactly_one_driver("register", self.state.registers[reg].id.span(), drivers) {
+            match self.check_exactly_one_driver("register", self.state.state.registers[reg].id.span(), drivers) {
                 Err(e) => any_err = Err(e),
                 Ok(driver) => any_err = any_err.and(self.pull_register_init_into_process(reg, driver)),
             }
@@ -896,7 +905,7 @@ impl BodyElaborationState<'_, '_> {
 
     fn pull_register_init_into_process(&mut self, reg: Register, driver: Driver) -> Result<(), ErrorGuaranteed> {
         let diags = self.state.diags;
-        let reg_info = &self.state.registers[reg];
+        let reg_info = &self.state.state.registers[reg];
 
         if let Driver::ClockedBlock(stmt_index) = driver {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
@@ -1126,9 +1135,9 @@ impl BodyElaborationState<'_, '_> {
             ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
-            debug_info_domain: domain.inner.to_diagnostic_string(state),
+            debug_info_domain: domain.inner.to_diagnostic_string(state.state),
         });
-        let wire = state.wires.push(WireInfo {
+        let wire = state.state.wires.push(WireInfo {
             id: id.clone(),
             domain,
             ty,
@@ -1200,9 +1209,9 @@ impl BodyElaborationState<'_, '_> {
             ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
-            debug_info_domain: sync.inner.to_diagnostic_string(state),
+            debug_info_domain: sync.inner.to_diagnostic_string(state.state),
         });
-        let reg = state.registers.push(RegisterInfo {
+        let reg = state.state.registers.push(RegisterInfo {
             id: id.clone(),
             domain: sync,
             ty,
@@ -1223,7 +1232,7 @@ impl BodyElaborationState<'_, '_> {
         let RegOutPortMarker { span: _, id, init } = decl;
 
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
-        let port = state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
+        let port = state.state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
         let port = match port.value {
             &ScopedEntry::Direct(NamedValue::Port(port)) => Ok(port),
             _ => Err(diags.report_internal_error(id.span, "found non-port in port scope")),
@@ -1234,7 +1243,7 @@ impl BodyElaborationState<'_, '_> {
         let init = state.eval_expression_as_compile(scope_body, &no_vars, init, "register reset value");
 
         let port = port?;
-        let port_info = &state.ports[port];
+        let port_info = &state.state.ports[port];
         let mut direction_err = Ok(());
 
         // check port is output
@@ -1284,9 +1293,9 @@ impl BodyElaborationState<'_, '_> {
             ty: port_info.ty.inner.to_ir(),
             debug_info_id: MaybeIdentifier::Identifier(id.clone()),
             debug_info_ty: port_info.ty.inner.clone(),
-            debug_info_domain: domain.to_diagnostic_string(state),
+            debug_info_domain: domain.to_diagnostic_string(state.state),
         });
-        let reg = state.registers.push(RegisterInfo {
+        let reg = state.state.registers.push(RegisterInfo {
             id: MaybeIdentifier::Identifier(id.clone()),
             domain: Spanned {
                 span: port_info.domain.span,

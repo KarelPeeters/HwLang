@@ -52,8 +52,8 @@ impl CompileState<'_> {
         };
 
         valid.map_err(|invalid_reason| {
-            let target_str = target.inner.to_diagnostic_string(self);
-            let source_str = source.inner.to_diagnostic_string(self);
+            let target_str = target.inner.to_diagnostic_string(self.state);
+            let source_str = source.inner.to_diagnostic_string(self.state);
             let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
                 .add_error(crossing_span, "invalid domain crossing here")
                 .add_info(target.span, format!("target domain is {target_str}"))

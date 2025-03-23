@@ -165,7 +165,10 @@ impl CompileState<'_> {
         let diags = self.diags;
         let Block { span: _, statements } = block;
 
-        let scope = self.scopes.new_child(scope_parent, block.span, Visibility::Private);
+        let scope = self
+            .state
+            .scopes
+            .new_child(scope_parent, block.span, Visibility::Private);
         let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
@@ -213,7 +216,7 @@ impl CompileState<'_> {
                             mutable,
                             ty,
                         };
-                        let variable = self.variables.push(info);
+                        let variable = self.state.variables.push(info);
 
                         // store value
                         let assigned = match init {
@@ -230,7 +233,7 @@ impl CompileState<'_> {
                         Ok(ScopedEntry::Direct(NamedValue::Variable(variable)))
                     });
 
-                    self.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
+                    self.state.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(stmt) => {
                     let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, scope, stmt)?;
@@ -626,7 +629,7 @@ impl CompileState<'_> {
         let then_ty = then_value.value.ty();
         let else_ty = else_value.value.ty();
         let ty = then_ty.union(&else_ty, false);
-        let var_info = &self.variables[var];
+        let var_info = &self.state.variables[var];
 
         let ty_hw = ty.as_hardware_type().ok_or_else(|| {
             let diag = Diagnostic::new(
@@ -829,13 +832,16 @@ impl CompileState<'_> {
         } = stmt.inner;
 
         // create inner scope with index variable
-        let scope_index = self.scopes.new_child(scope_parent, stmt.span, Visibility::Private);
-        let index_var = self.variables.push(VariableInfo {
+        let scope_index = self
+            .state
+            .scopes
+            .new_child(scope_parent, stmt.span, Visibility::Private);
+        let index_var = self.state.variables.push(VariableInfo {
             id: index_id.clone(),
             mutable: false,
             ty: None,
         });
-        self.scopes[scope_index].maybe_declare(
+        self.state.scopes[scope_index].maybe_declare(
             diags,
             index_id.as_ref(),
             Ok(ScopedEntry::Direct(NamedValue::Variable(index_var))),

@@ -177,6 +177,7 @@ impl CompileState<'_> {
         }
 
         let scope_params = self
+            .state
             .scopes
             .new_child(scope_outer, span_scope_inner, Visibility::Private);
         let mut param_values_vec = vec![];
@@ -203,12 +204,12 @@ impl CompileState<'_> {
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
             // declare param in scope
-            let param = self.parameters.push(ParameterInfo {
+            let param = self.state.parameters.push(ParameterInfo {
                 id: MaybeIdentifier::Identifier(param_id.clone()),
                 value: arg_value_maybe.inner,
             });
             let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
-            self.scopes[scope_params].declare_already_checked(
+            self.state.scopes[scope_params].declare_already_checked(
                 diags,
                 param_id.string.clone(),
                 param_id.span,

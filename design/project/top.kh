@@ -49,3 +49,9 @@ pub module top ports(
         .output_ready(output_ready),
     );
 }
+
+pub fn foo_function(a: int, b: int) -> int {
+    return a + b;
+}
+
+pub module foo_module generics(T: type) ports() body{}
