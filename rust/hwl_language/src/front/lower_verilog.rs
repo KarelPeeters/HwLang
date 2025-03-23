@@ -24,7 +24,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::num::NonZeroU32;
 
-use super::ir::IrModules;
+use super::ir::{ir_modules_topological_sort, IrModules};
 
 #[derive(Debug, Clone)]
 pub struct LoweredVerilog {
@@ -58,8 +58,13 @@ pub fn lower(
         lowered_modules: vec![],
     };
 
-    let top_name = &lower_module(&mut ctx, top_module)?.name;
+    let modules = ir_modules_topological_sort(modules, top_module);
+    for module in modules {
+        let result = lower_module(&mut ctx, module)?;
+        ctx.module_map.insert_first(module, result);
+    }
 
+    let top_name = ctx.module_map.get(&top_module).unwrap().name.clone();
     Ok(LoweredVerilog {
         verilog_source: ctx.lowered_modules.join("\n\n"),
         top_module_name: top_name.0.clone(),
@@ -191,11 +196,7 @@ struct NameMap<'a> {
 
 fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModule, ErrorGuaranteed> {
     let diags = ctx.diags;
-
-    if let Some(lowered) = ctx.module_map.get(&module) {
-        // TODO return a reference instead
-        return Ok(lowered.clone());
-    }
+    assert!(!ctx.module_map.contains_key(&module));
 
     // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
     //   or maybe verilog has separate namespaces, then it's fine
@@ -257,8 +258,6 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
     };
 
     ctx.lowered_modules.push(f);
-    ctx.module_map.insert_first(module, lowered_module.clone());
-
     Ok(lowered_module)
 }
 
@@ -513,7 +512,7 @@ fn lower_module_statements(
                     port_connections,
                 } = instance;
 
-                let inner_module = lower_module(ctx, *module)?;
+                let inner_module = ctx.module_map.get(module).unwrap();
                 let inner_module_name = &inner_module.name;
 
                 if let Some(name) = name {
@@ -881,6 +880,7 @@ fn lower_expression(
             // verilog does not care much about types, this is just a concatenation
             //  (assuming all sub-expression have the right width, which they should)
             // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions
+            // TODO use repeat operator if array elements are repeated
             swrite!(f, "{{");
             for (i, elem) in enumerate(elements) {
                 if i != 0 {

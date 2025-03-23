@@ -1,9 +1,10 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild,
-    IrModuleInfo, IrModuleInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
-    IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
+    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort, IrPortConnection,
+    IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables,
+    IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
@@ -26,10 +27,6 @@ pub fn simulator_codegen(
     modules: &IrModules,
     top_module: IrModule,
 ) -> Result<String, ErrorGuaranteed> {
-    // TODO walk down module tree, or just generate all of them?
-    // TODO make just create a common utility function to generate a module postorder from a top module
-    let _ = top_module;
-
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
@@ -42,11 +39,12 @@ pub fn simulator_codegen(
     swriteln!(f, "#include <iostream>");
     swriteln!(f);
 
-    for (i, (module, module_info)) in enumerate(modules) {
+    for (i, module) in enumerate(ir_modules_topological_sort(modules, top_module)) {
         if i != 0 {
             swriteln!(f);
         }
 
+        let module_info = &modules[module];
         swrite!(f, "{}", codegen_module(diags, module, module_info)?);
     }
 

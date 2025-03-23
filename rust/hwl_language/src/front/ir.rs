@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::vec;
+
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
@@ -16,6 +19,33 @@ pub struct IrDatabase {
 }
 
 pub type IrModules = Arena<IrModule, IrModuleInfo>;
+
+pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<IrModule> {
+    let mut result = vec![];
+    let mut seen = HashSet::new();
+    let mut todo = vec![top];
+
+    while let Some(module) = todo.pop() {
+        if seen.contains(&module) {
+            continue;
+        }
+
+        seen.insert(module);
+        result.push(module);
+
+        for child in modules[module].children.iter().rev() {
+            match child {
+                IrModuleChild::ModuleInstance(inst) => {
+                    todo.push(inst.module);
+                }
+                IrModuleChild::ClockedProcess(_) | IrModuleChild::CombinatorialProcess(_) => {}
+            }
+        }
+    }
+
+    result.reverse();
+    result
+}
 
 /// Variant of [Type] that can only represent types that are valid in hardware.
 #[derive(Debug, Clone, Eq, PartialEq)]

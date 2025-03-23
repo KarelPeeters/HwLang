@@ -23,7 +23,7 @@ print(foo_function(4, b=5))
 ty_bool = compile.resolve("std.types.bool")
 foo_inst = foo_module.instance(T=ty_bool)
 
-foo_verilog = foo_inst.to_verilog()
+foo_verilog = foo_module.instance().to_verilog()
 print(foo_verilog.source)
 
 # TODO instantiate module into simulator
