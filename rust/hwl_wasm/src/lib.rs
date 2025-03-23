@@ -7,6 +7,7 @@ use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::source::FilePath;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
+use hwl_language::util::ResultExt;
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -69,8 +70,12 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let parsed = ParsedDatabase::new(&diags, &source);
     let mut print_handler = CollectPrintHandler::new();
     let compiled = compile(&diags, &source, &parsed, &mut print_handler);
-    let lowered = lower(&diags, &source, &parsed, &compiled);
-    let sim = simulator_codegen(&diags, &compiled);
+    let lowered = compiled
+        .as_ref_ok()
+        .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
+    let sim = compiled
+        .as_ref_ok()
+        .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();

@@ -6,6 +6,7 @@ use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
+use hwl_language::util::ResultExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -79,11 +80,15 @@ fn main_inner() -> ExitCode {
     let time_compile = start_compile.elapsed();
 
     let start_lower = Instant::now();
-    let lowered = lower(&diags, &source, &parsed, &compiled);
+    let lowered = compiled
+        .as_ref_ok()
+        .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
     let time_lower = start_lower.elapsed();
 
     let start_simulator = Instant::now();
-    let simulator_code = simulator_codegen(&diags, &compiled);
+    let simulator_code = compiled
+        .as_ref_ok()
+        .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
     let time_simulator = start_simulator.elapsed();
 
     let time_all = start_all.elapsed();

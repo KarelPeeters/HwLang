@@ -1,4 +1,3 @@
-use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
@@ -12,9 +11,11 @@ use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
 pub struct IrDatabase {
-    pub modules: Arena<IrModule, IrModuleInfo>,
-    pub top_module: Result<IrModule, ErrorGuaranteed>,
+    pub modules: IrModules,
+    pub top_module: IrModule,
 }
+
+pub type IrModules = Arena<IrModule, IrModuleInfo>;
 
 /// Variant of [Type] that can only represent types that are valid in hardware.
 #[derive(Debug, Clone, Eq, PartialEq)]

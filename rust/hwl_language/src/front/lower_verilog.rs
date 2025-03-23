@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule,
-    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
-    IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild,
+    IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -24,6 +24,8 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::num::NonZeroU32;
 
+use super::ir::IrModules;
+
 #[derive(Debug, Clone)]
 pub struct LoweredVerilog {
     pub verilog_source: String,
@@ -40,7 +42,8 @@ pub fn lower(
     diags: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    compiled: &IrDatabase,
+    modules: &IrModules,
+    top_module: IrModule,
 ) -> Result<LoweredVerilog, ErrorGuaranteed> {
     // the fact that we're not using `parsed` is good, all information should be contained in `compiled`
     // ideally `source` would also not be used
@@ -49,13 +52,13 @@ pub fn lower(
     let mut ctx = LowerContext {
         diags,
         source,
-        compiled,
+        modules,
         module_map: IndexMap::new(),
         top_name_scope: LoweredNameScope::default(),
         lowered_modules: vec![],
     };
 
-    let top_name = &lower_module(&mut ctx, compiled.top_module?)?.name;
+    let top_name = &lower_module(&mut ctx, top_module)?.name;
 
     Ok(LoweredVerilog {
         verilog_source: ctx.lowered_modules.join("\n\n"),
@@ -67,7 +70,7 @@ pub fn lower(
 struct LowerContext<'a> {
     diags: &'a Diagnostics,
     source: &'a SourceDatabase,
-    compiled: &'a IrDatabase,
+    modules: &'a IrModules,
     module_map: IndexMap<IrModule, LoweredModule>,
     top_name_scope: LoweredNameScope,
     lowered_modules: Vec<String>,
@@ -197,7 +200,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
     // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
     //   or maybe verilog has separate namespaces, then it's fine
 
-    let module_info = &ctx.compiled.modules[module];
+    let module_info = &ctx.modules[module];
     let IrModuleInfo {
         debug_info_id,
         debug_info_generic_args,

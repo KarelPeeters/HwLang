@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrDatabase, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule,
-    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
+    IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild,
+    IrModuleInfo, IrModuleInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
     IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
@@ -21,7 +21,15 @@ use unwrap_match::unwrap_match;
 //   only one for each signal, maybe also a separate one for each array element?
 //   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
 //   skip operations on undefined values, we don't want to cause undefined C++ behavior!
-pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String, ErrorGuaranteed> {
+pub fn simulator_codegen(
+    diags: &Diagnostics,
+    modules: &IrModules,
+    top_module: IrModule,
+) -> Result<String, ErrorGuaranteed> {
+    // TODO walk down module tree, or just generate all of them?
+    // TODO make just create a common utility function to generate a module postorder from a top module
+    let _ = top_module;
+
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
@@ -34,7 +42,7 @@ pub fn simulator_codegen(diags: &Diagnostics, ir: &IrDatabase) -> Result<String,
     swriteln!(f, "#include <iostream>");
     swriteln!(f);
 
-    for (i, (module, module_info)) in enumerate(&ir.modules) {
+    for (i, (module, module_info)) in enumerate(modules) {
         if i != 0 {
             swriteln!(f);
         }

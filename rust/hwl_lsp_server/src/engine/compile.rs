@@ -36,7 +36,7 @@ impl ServerState {
             let diags = Diagnostics::new();
             let parsed = ParsedDatabase::new(&diags, &source);
             let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler);
-            let _ = lower(&diags, &source, &parsed, &compiled);
+            let _ = compiled.and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI

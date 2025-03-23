@@ -1,6 +1,6 @@
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
+use crate::front::ir::{IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{Scope, Scopes, Visibility};
 use crate::front::types::{HardwareType, Type};
@@ -18,6 +18,8 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
+use super::ir::IrDatabase;
+
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
 // TODO extend the set of "type-checking" root points:
@@ -30,7 +32,7 @@ pub fn compile(
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     print_handler: &mut (dyn PrintHandler),
-) -> IrDatabase {
+) -> Result<IrDatabase, ErrorGuaranteed> {
     let PopulatedScopes {
         scopes,
         file_scopes,
@@ -53,24 +55,16 @@ pub fn compile(
         };
         let (module_ir, _) = state.elaborate_module(elaboration_info)?;
         Ok(module_ir)
-    });
+    })?;
 
     // return result
     assert!(state.elaboration_stack.is_empty());
-    let mut db = IrDatabase {
+    let db = IrDatabase {
         top_module,
         modules: state_long.ir_modules,
     };
-
-    // validate
-    match db.validate(diags) {
-        Ok(()) => {}
-        Err(e) => {
-            db.top_module = Err(e);
-        }
-    }
-
-    db
+    db.validate(diags)?;
+    Ok(db)
 }
 
 pub struct CompileStateLong {
