@@ -44,18 +44,14 @@ pub fn simulator_codegen(
             swriteln!(f);
         }
 
-        let module_info = &modules[module];
-        swrite!(f, "{}", codegen_module(diags, module, module_info)?);
+        swrite!(f, "{}", codegen_module(diags, modules, module)?);
     }
 
     Ok(f)
 }
 
-fn codegen_module(
-    diags: &Diagnostics,
-    module: IrModule,
-    module_info: &IrModuleInfo,
-) -> Result<String, ErrorGuaranteed> {
+fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) -> Result<String, ErrorGuaranteed> {
+    let module_info = &modules[module];
     let IrModuleInfo {
         ports,
         registers,
@@ -225,6 +221,7 @@ fn codegen_module(
                     ref port_connections,
                 } = instance;
                 // create field to store child data
+                let child_module_info = &modules[child_module];
                 let child_module_index = child_module.inner().index();
                 let struct_child_signals = format!("ModuleSignals_{child_module_index}");
                 let struct_child_ports = format!("ModulePortsPtr_{child_module_index}");
@@ -237,31 +234,36 @@ fn codegen_module(
                     "{struct_child_ports} {func_child_ports}({struct_signals} &signals, {struct_ports_ptr} ports) {{"
                 );
                 swriteln!(f_step_ports, "{I}return {struct_child_ports} {{");
-                for (i_connection, (_, connection)) in enumerate(port_connections) {
+                for (connection_index, (&port, connection)) in enumerate(port_connections) {
                     let connection_str = match &connection.inner {
                         IrPortConnection::Input(expr) => match expr.inner {
                             IrExpression::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
                             IrExpression::Wire(wire) => {
-                                format!("&signals->{}", wire_str(wire, &module_info.wires[wire]))
+                                format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
                             }
                             IrExpression::Register(reg) => {
-                                format!("&signals->{}", reg_str(reg, &module_info.registers[reg]))
+                                format!("&signals.{}", reg_str(reg, &module_info.registers[reg]))
                             }
                             // TODO maybe just remove this from IR, we can't guarantee that every expression is lowerable as a single expression
                             _ => return Err(diags.report_todo(expr.span, "simulator input port general expression")),
                         },
                         &IrPortConnection::Output(expr) => match expr {
-                            None => return Err(diags.report_todo(connection.span, "simulator output port dummy")),
+                            None => {
+                                // connect to dummy "signal"
+                                let port_ty = type_to_cpp(diags, connection.span, &child_module_info.ports[port].ty)?;
+                                swriteln!(f_structs, "{I}{port_ty} dummy_{child_index}_{connection_index};");
+                                format!("&signals.dummy_{child_index}_{connection_index}")
+                            }
                             Some(IrWireOrPort::Port(port)) => {
                                 format!("ports.{}", port_str(port, &module_info.ports[port]))
                             }
                             Some(IrWireOrPort::Wire(wire)) => {
-                                format!("&signals->{}", wire_str(wire, &module_info.wires[wire]))
+                                format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
                             }
                         },
                     };
 
-                    let end = end_comma(i_connection, port_connections.len());
+                    let end = end_comma(connection_index, port_connections.len());
                     swriteln!(f_step_ports, "{I}{I}{connection_str}{end}")
                 }
                 swriteln!(f_step_ports, "{I}}};");
