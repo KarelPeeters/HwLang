@@ -66,7 +66,7 @@ pub struct ItemDefType {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParameter>>>,
+    pub params: Option<Spanned<Vec<Parameter>>>,
     pub inner: Box<Expression>,
 }
 
@@ -76,7 +76,7 @@ pub struct ItemDefStruct {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParameter>>>,
+    pub params: Option<Spanned<Vec<Parameter>>>,
     pub fields: Vec<StructField>,
 }
 
@@ -93,7 +93,7 @@ pub struct ItemDefEnum {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParameter>>>,
+    pub params: Option<Spanned<Vec<Parameter>>>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -111,7 +111,7 @@ pub struct ItemDefFunction {
     pub id: Identifier,
     /// All function parameters are "generic", which means they can be types.
     /// It doesn't make sense to force a distinction similar to modules.
-    pub params: Spanned<Vec<GenericParameter>>,
+    pub params: Spanned<Vec<Parameter>>,
     // TODO should the return type by "generic" too, ie. should functions be allowed to return types?
     pub ret_ty: Option<Expression>,
     pub body: Block<BlockStatement>,
@@ -122,7 +122,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility,
     pub id: Identifier,
-    pub params: Option<Spanned<Vec<GenericParameter>>>,
+    pub params: Option<Spanned<Vec<Parameter>>>,
     pub ports: Spanned<Vec<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
 }
@@ -149,7 +149,7 @@ pub struct InterfaceField {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct GenericParameter {
+pub struct Parameter {
     pub span: Span,
     pub id: Identifier,
     pub ty: Expression,

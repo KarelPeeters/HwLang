@@ -48,6 +48,21 @@ pub module top ports(
         .output_valid(output_valid),
         .output_ready(output_ready),
     );
+
+    wire w: sync(clk, rst) bool = false;
+    instance axi_gearbox_v2 generics(
+        input_width=input_width,
+        output_width=output_width,
+    ) ports(
+        .clk(clk),
+        .rst(rst),
+        .input_data(input_data),
+        .input_valid(input_valid),
+        .input_ready(_),
+        .output_data(_),
+        .output_valid(_),
+        .output_ready(w),
+    );
 }
 
 pub fn foo_function(a: int, b: int) -> int {

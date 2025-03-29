@@ -9,7 +9,7 @@ use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, GenericParameter, Identifier, MaybeIdentifier, Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
@@ -30,7 +30,7 @@ pub struct FunctionValue {
 
     // TODO avoid ast cloning
     // TODO Eq+Hash are a bit weird for types containing ast nodes
-    pub params: Spanned<Vec<GenericParameter>>,
+    pub params: Spanned<Vec<AstParameter>>,
 
     pub body_span: Span,
     pub body: FunctionBody,
@@ -63,7 +63,7 @@ pub enum FunctionBody {
 impl CompileState<'_> {
     pub fn match_args_to_params_and_typecheck<I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
         &mut self,
-        params: &Spanned<Vec<GenericParameter>>,
+        params: &Spanned<Vec<AstParameter>>,
         args: &Args<I, Spanned<V>>,
         scope_outer: Scope,
         span_scope_inner: Span,

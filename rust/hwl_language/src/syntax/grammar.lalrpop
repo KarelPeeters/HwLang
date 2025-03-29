@@ -114,15 +114,15 @@ Item: Item = {
         => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
     ConstDeclaration<Vis> =>
         Item::Const(<>),
-    <start:@L> <vis:Vis> "type" <id:Id> <params:Parameters<GenericParameter>?> "=" <inner:BoxExpr> ";" <end:@R>
+    <start:@L> <vis:Vis> "type" <id:Id> <params:Parameters<Parameter>?> "=" <inner:BoxExpr> ";" <end:@R>
         => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<GenericParameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
+    <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<Parameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<GenericParameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
+    <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<Parameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
 
     <start:@L> <vis:Vis> "module" <id:Id>
-    <params:("generics" <Parameters<GenericParameter>>)?>
+    <params:("generics" <Parameters<Parameter>>)?>
     <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
     "body" <body:Block<ModuleStatement>> <end:@R>
     => {
@@ -132,7 +132,7 @@ Item: Item = {
 
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     // TODO allow specifying "const" before function params to make error messages nicer
-    <start:@L> <vis:Vis> "fn" <id:Id> <params:Parameters<GenericParameter>> <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
+    <start:@L> <vis:Vis> "fn" <id:Id> <params:Parameters<Parameter>> <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
         => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
@@ -300,8 +300,8 @@ Parameters<P>: Spanned<Vec<P>> = {
     <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
-GenericParameter: GenericParameter = {
-    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => GenericParameter { id, ty, span: loc.span(start, end) },
+Parameter: Parameter = {
+    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => Parameter { id, ty, span: loc.span(start, end) },
 }
 
 // TODO get rid of the need for a comma after a block

@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
 use super::ir::IrDatabase;
+use super::module::{ElaboratedModule, ModuleElaborationCacheKey};
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -49,12 +50,8 @@ pub fn compile(
 
     // get the top module (it will always hit the elaboration cache)
     let top_module = state.find_top_module().and_then(|top_item| {
-        let elaboration_info = ModuleElaborationInfo {
-            item: top_item,
-            args: None,
-        };
-        let (module_ir, _) = state.elaborate_module(elaboration_info)?;
-        Ok(module_ir)
+        let elaborated = state.elaborate_module(top_item, None)?;
+        Ok(elaborated.ir_module)
     })?;
 
     // return result
@@ -79,7 +76,7 @@ pub struct CompileStateLong {
     pub registers: Arena<Register, RegisterInfo>,
 
     pub ir_modules: Arena<IrModule, IrModuleInfo>,
-    pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<(IrModule, Vec<Port>), ErrorGuaranteed>>,
+    pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
 
     pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
 }
@@ -117,34 +114,6 @@ new_index_type!(pub Variable);
 new_index_type!(pub Port);
 new_index_type!(pub Wire);
 new_index_type!(pub Register);
-
-#[derive(Debug, Clone)]
-pub struct ModuleElaborationInfo {
-    pub item: AstRefModule,
-    pub args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
-}
-
-impl ModuleElaborationInfo {
-    pub fn to_cache_key(&self) -> ModuleElaborationCacheKey {
-        // TODO this is really the wrong place to cache, caching should happen after the params have been matched (so ordering stops mattering)
-        //   fixing that should also improve error messages
-        ModuleElaborationCacheKey {
-            item: self.item,
-            args: self.args.as_ref().map(|args| {
-                args.inner
-                    .iter()
-                    .map(|arg| (arg.name.as_ref().map(|id| id.string.clone()), arg.value.inner.clone()))
-                    .collect_vec()
-            }),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ModuleElaborationCacheKey {
-    pub item: AstRefModule,
-    pub args: Option<Vec<(Option<String>, CompileValue)>>,
-}
 
 #[derive(Debug)]
 pub struct ConstantInfo {
@@ -463,8 +432,7 @@ impl<'a> CompileState<'a> {
                         diag = diag.add_error(span, format!("({i}): module instantiation"));
                     }
                     ElaborationStackEntry::ModuleElaboration(elem) => {
-                        let item = elem.item;
-                        diag = diag.add_error(self.parsed[item].id.span, format!("({i}): module"));
+                        diag = diag.add_error(self.parsed[elem.module].id.span, format!("({i}): module"));
                     }
                     &ElaborationStackEntry::Item(item) => {
                         diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): item"));
@@ -498,10 +466,13 @@ impl<'a> CompileState<'a> {
 
     pub fn elaborate_module(
         &mut self,
-        module_elaboration: ModuleElaborationInfo,
-    ) -> Result<(IrModule, Vec<Port>), ErrorGuaranteed> {
+        module: AstRefModule,
+        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
+    ) -> Result<ElaboratedModule, ErrorGuaranteed> {
+        let params = self.elaborate_module_params(module, args)?;
+
         // check cache
-        let cache_key = module_elaboration.to_cache_key();
+        let cache_key = params.cache_key();
         if let Some(result) = self.state.elaborated_modules_cache.get(&cache_key) {
             return result.clone();
         }
@@ -509,9 +480,7 @@ impl<'a> CompileState<'a> {
         // new elaboration
         let elaboration_result = self
             .check_compile_loop(ElaborationStackEntry::ModuleElaboration(cache_key.clone()), |s| {
-                let (ir_module_info, ports) = s.elaborate_module_new(module_elaboration)?;
-                let ir_module = s.state.ir_modules.push(ir_module_info);
-                Ok((ir_module, ports))
+                s.elaborate_module_body_new(params)
             })
             .flatten_err();
 

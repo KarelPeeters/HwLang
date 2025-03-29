@@ -3,9 +3,7 @@ use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
-use crate::front::compile::{
-    CompileState, ModuleElaborationInfo, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
-};
+use crate::front::compile::{CompileState, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::front::context::{ExpressionContext, IrBuilderExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
@@ -19,11 +17,12 @@ use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, GenericParameter, Identifier,
-    MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle,
-    ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker, Spanned,
-    SyncDomain, WireDeclaration, WireKind,
+    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
+    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement,
+    ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain,
+    WireDeclaration, WireKind,
 };
+use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::arena::Arena;
@@ -34,6 +33,8 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Either, Itertools};
 use std::hash::Hash;
+
+use super::ir::IrModule;
 
 struct BodyElaborationState<'a, 'b> {
     state: &'a mut CompileState<'b>,
@@ -53,54 +54,105 @@ struct BodyElaborationState<'a, 'b> {
     processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
 }
 
+pub struct ElaboratedModuleParams {
+    pub module: AstRefModule,
+    pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
+    pub scope_params: Scope,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ModuleElaborationCacheKey {
+    pub module: AstRefModule,
+    pub params: Option<Vec<CompileValue>>,
+}
+
+impl ElaboratedModuleParams {
+    pub fn cache_key(&self) -> ModuleElaborationCacheKey {
+        ModuleElaborationCacheKey {
+            module: self.module,
+            params: self
+                .params
+                .as_ref()
+                .map(|params| params.iter().map(|(_, v)| v.clone()).collect()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ElaboratedModule {
+    pub ir_module: IrModule,
+    pub ports: Vec<Port>,
+}
+
 impl CompileState<'_> {
-    pub fn elaborate_module_new(
+    pub fn elaborate_module_params(
         &mut self,
-        elaboration_info: ModuleElaborationInfo,
-    ) -> Result<(IrModuleInfo, Vec<Port>), ErrorGuaranteed> {
-        let ModuleElaborationInfo { item, args } = elaboration_info;
+        module: AstRefModule,
+        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
+    ) -> Result<ElaboratedModuleParams, ErrorGuaranteed> {
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
-            id: ref def_id,
+            id: _,
             ref params,
-            ref ports,
-            ref body,
-        } = &self.parsed[item];
-        let scope_file = self.file_scope(item.file())?;
+            ports: _,
+            body: _,
+        } = &self.parsed[module];
+        let scope_file = self.file_scope(module.file())?;
 
-        let (scope_params, debug_info_generic_args) =
-            self.elaborate_module_generics(def_span, scope_file, params, args)?;
-        let (scope_ports, ports_vec, ir_ports) = self.elaborate_module_ports(def_span, scope_params, ports);
-        let ir_module =
-            self.elaborate_module_body(def_id, debug_info_generic_args, &ports_vec, ir_ports, scope_ports, body)?;
-        Ok((ir_module, ports_vec))
-    }
-
-    fn elaborate_module_generics(
-        &mut self,
-        def_span: Span,
-        file_scope: Scope,
-        params: &Option<Spanned<Vec<GenericParameter>>>,
-        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
-    ) -> Result<(Scope, Option<Vec<(Identifier, CompileValue)>>), ErrorGuaranteed> {
         let diags = self.diags;
 
-        let (params_scope, debug_info_generic_args) = match (params, args) {
+        let (scope_params, param_values) = match (params, args) {
             (None, None) => {
-                let params_scope = self.state.scopes.new_child(file_scope, def_span, Visibility::Private);
+                let params_scope = self.state.scopes.new_child(scope_file, def_span, Visibility::Private);
                 (params_scope, None)
             }
             (Some(params), Some(args)) => {
                 let span_params = Span::new(params.span.start, def_span.end);
                 let (params_scope, param_values) =
-                    self.match_args_to_params_and_typecheck(params, &args, file_scope, span_params)?;
+                    self.match_args_to_params_and_typecheck(params, &args, scope_file, span_params)?;
                 (params_scope, Some(param_values))
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
         };
 
-        Ok((params_scope, debug_info_generic_args))
+        Ok(ElaboratedModuleParams {
+            module,
+            params: param_values,
+            scope_params,
+        })
+    }
+
+    pub fn elaborate_module_body_new(
+        &mut self,
+        params: ElaboratedModuleParams,
+    ) -> Result<ElaboratedModule, ErrorGuaranteed> {
+        let ElaboratedModuleParams {
+            module,
+            params,
+            scope_params,
+        } = params;
+        let &ast::ItemDefModule {
+            span: def_span,
+            vis: _,
+            id: ref def_id,
+            params: _,
+            ref ports,
+            ref body,
+        } = &self.parsed[module];
+
+        // ports
+        let (scope_ports, ports_vec, ports_ir) = self.elaborate_module_ports(def_span, scope_params, ports);
+
+        // body
+        let ir_module_info =
+            self.elaborate_module_body_impl(def_id, params.clone(), &ports_vec, ports_ir, scope_ports, body)?;
+        let ir_module = self.state.ir_modules.push(ir_module_info);
+
+        Ok(ElaboratedModule {
+            ir_module,
+            ports: ports_vec,
+        })
     }
 
     fn elaborate_module_ports(
@@ -218,10 +270,10 @@ impl CompileState<'_> {
         (ports_scope, ports_vec, ir_ports)
     }
 
-    fn elaborate_module_body(
+    fn elaborate_module_body_impl(
         &mut self,
         def_id: &Identifier,
-        debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
+        params: Option<Vec<(Identifier, CompileValue)>>,
         ports: &Vec<Port>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         scope_ports: Scope,
@@ -306,7 +358,7 @@ impl CompileState<'_> {
             wires: state.ir_wires,
             children: processes,
             debug_info_id: def_id.clone(),
-            debug_info_generic_args,
+            debug_info_generic_args: params,
         })
     }
 }
@@ -539,12 +591,10 @@ impl BodyElaborationState<'_, '_> {
         let module_ast = &state.parsed[module_ast_ref];
 
         // elaborate module
+        // TODO split module header and body elaboration, so we can delay and parallelize body elaboration
         let generic_args = generic_args?;
-        let elaboration = ModuleElaborationInfo {
-            item: module_ast_ref,
-            args: generic_args,
-        };
-        let (module_ir, ports) = self.state.elaborate_module(elaboration)?;
+        let elaborated = self.state.elaborate_module(module_ast_ref, generic_args)?;
+        let ElaboratedModule { ir_module, ports } = elaborated;
 
         // eval and check port connections
         // TODO allow port re-ordering as long as domain ordering constraints are respected
@@ -584,7 +634,7 @@ impl BodyElaborationState<'_, '_> {
 
         Ok(IrModuleInstance {
             name: name.as_ref().map(|name| name.string.clone()),
-            module: module_ir,
+            module: ir_module,
             port_connections: ir_connections,
         })
     }
