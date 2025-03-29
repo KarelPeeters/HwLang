@@ -234,7 +234,9 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     "{struct_child_ports} {func_child_ports}({struct_signals} &signals, {struct_ports_ptr} ports) {{"
                 );
                 swriteln!(f_step_ports, "{I}return {struct_child_ports} {{");
-                for (connection_index, (&port, connection)) in enumerate(port_connections) {
+                for (connection_index, connection) in enumerate(port_connections) {
+                    let port_info = child_module_info.ports.get_by_index(connection_index).unwrap().1;
+
                     let connection_str = match &connection.inner {
                         IrPortConnection::Input(expr) => match expr.inner {
                             IrExpression::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
@@ -250,7 +252,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                         &IrPortConnection::Output(expr) => match expr {
                             None => {
                                 // connect to dummy "signal"
-                                let port_ty = type_to_cpp(diags, connection.span, &child_module_info.ports[port].ty)?;
+                                let port_ty = type_to_cpp(diags, connection.span, &port_info.ty)?;
                                 swriteln!(f_structs, "{I}{port_ty} dummy_{child_index}_{connection_index};");
                                 format!("&signals.dummy_{child_index}_{connection_index}")
                             }

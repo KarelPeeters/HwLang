@@ -60,6 +60,14 @@ pub struct ElaboratedModuleParams {
     pub scope_params: Scope,
 }
 
+pub struct ElaboratedModuleHeader {
+    pub module: AstRefModule,
+    pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
+    pub scope_ports: Scope,
+    pub ports: Vec<Port>,
+    pub ports_ir: Arena<IrPort, IrPortInfo>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ModuleElaborationCacheKey {
     pub module: AstRefModule,
@@ -123,10 +131,10 @@ impl CompileState<'_> {
         })
     }
 
-    pub fn elaborate_module_body_new(
+    pub fn elaborate_module_ports_new(
         &mut self,
         params: ElaboratedModuleParams,
-    ) -> Result<ElaboratedModule, ErrorGuaranteed> {
+    ) -> Result<ElaboratedModuleHeader, ErrorGuaranteed> {
         let ElaboratedModuleParams {
             module,
             params,
@@ -135,27 +143,47 @@ impl CompileState<'_> {
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
-            id: ref def_id,
+            id: _,
             params: _,
             ref ports,
-            ref body,
+            body: _,
         } = &self.parsed[module];
 
-        // ports
-        let (scope_ports, ports_vec, ports_ir) = self.elaborate_module_ports(def_span, scope_params, ports);
+        let (scope_ports, ports_vec, ports_ir) = self.elaborate_module_ports_impl(def_span, scope_params, ports);
 
-        // body
-        let ir_module_info =
-            self.elaborate_module_body_impl(def_id, params.clone(), &ports_vec, ports_ir, scope_ports, body)?;
-        let ir_module = self.state.ir_modules.push(ir_module_info);
-
-        Ok(ElaboratedModule {
-            ir_module,
+        Ok(ElaboratedModuleHeader {
+            module,
+            params,
+            scope_ports,
             ports: ports_vec,
+            ports_ir,
         })
     }
 
-    fn elaborate_module_ports(
+    pub fn elaborate_module_body_new(
+        &mut self,
+        ports: ElaboratedModuleHeader,
+    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
+        let ElaboratedModuleHeader {
+            module,
+            params,
+            scope_ports,
+            ports,
+            ports_ir,
+        } = ports;
+        let &ast::ItemDefModule {
+            span: _,
+            vis: _,
+            id: ref def_id,
+            params: _,
+            ports: _,
+            ref body,
+        } = &self.parsed[module];
+
+        self.elaborate_module_body_impl(def_id, params.clone(), &ports, ports_ir, scope_ports, body)
+    }
+
+    fn elaborate_module_ports_impl(
         &mut self,
         def_span: Span,
         params_scope: Scope,
@@ -597,8 +625,8 @@ impl BodyElaborationState<'_, '_> {
         let ElaboratedModule { ir_module, ports } = elaborated;
 
         // eval and check port connections
-        // TODO allow port re-ordering as long as domain ordering constraints are respected
-        // TODO improve error message to specify which port name is actually missing, instead of focusing on counts
+        // TODO use function parameter matching for ports too?
+        //   we need at least reordering and proper error messagages
         if ports.len() != port_connections.inner.len() {
             let diag = Diagnostic::new("mismatched port connections for module instance")
                 .add_error(
@@ -616,13 +644,13 @@ impl BodyElaborationState<'_, '_> {
         let mut any_port_err = Ok(());
 
         let mut port_signals = IndexMap::new();
-        let mut ir_connections = IndexMap::new();
+        let mut ir_connections = vec![];
 
         for (&port, connection) in zip_eq(&ports, &port_connections.inner) {
             match self.elaborate_instance_port_connection(scope_body, stmt_index, &port_signals, port, connection) {
                 Ok((signal, connection)) => {
                     port_signals.insert_first(port, signal);
-                    ir_connections.insert_first(self.state.state.ports[port].ir, connection);
+                    ir_connections.push(connection);
                 }
                 Err(e) => {
                     any_port_err = Err(e);

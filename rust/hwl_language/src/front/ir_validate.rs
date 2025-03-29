@@ -4,11 +4,15 @@ use crate::front::ir::{
     IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement, IrTargetStep, IrType, IrVariables,
     IrWireOrPort,
 };
+use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
+use itertools::zip_eq;
 use num_bigint::BigUint;
 use num_traits::Zero;
 use std::borrow::Cow;
 use unwrap_match::unwrap_match;
+
+use super::ir::IrPortInfo;
 
 // TODO expand all of this
 
@@ -59,18 +63,33 @@ impl IrModuleInfo {
                     process.block.validate(diags, self, &process.locals)?;
                 }
                 IrModuleChild::ModuleInstance(instance) => {
-                    for (&port, connection) in &instance.port_connections {
-                        let port_ty = &db.modules[instance.module].ports[port].ty;
+                    let child_module_info = &db.modules[instance.module];
+
+                    for ((_, port_info), connection) in zip_eq(&child_module_info.ports, &instance.port_connections) {
+                        let IrPortInfo {
+                            direction,
+                            ref ty,
+                            debug_info_id: _,
+                            debug_info_ty: _,
+                            debug_info_domain: _,
+                        } = *port_info;
+
                         let conn_ty = match &connection.inner {
                             IrPortConnection::Input(expr) => {
+                                check_dir_match(diags, connection.span, PortDirection::Input, direction)?;
                                 expr.inner.validate(diags, self, no_variables, expr.span)?;
                                 expr.inner.ty(self, no_variables)
                             }
-                            &IrPortConnection::Output(Some(IrWireOrPort::Wire(wire))) => self.wires[wire].ty.clone(),
-                            &IrPortConnection::Output(Some(IrWireOrPort::Port(port))) => self.ports[port].ty.clone(),
-                            &IrPortConnection::Output(None) => continue,
+                            &IrPortConnection::Output(expr) => {
+                                check_dir_match(diags, connection.span, PortDirection::Output, direction)?;
+                                match expr {
+                                    Some(IrWireOrPort::Wire(wire)) => self.wires[wire].ty.clone(),
+                                    Some(IrWireOrPort::Port(port)) => self.ports[port].ty.clone(),
+                                    None => continue,
+                                }
+                            }
                         };
-                        check_type_match(diags, connection.span, port_ty, &conn_ty)?;
+                        check_type_match(diags, connection.span, &ty, &conn_ty)?;
                     }
                 }
             }
@@ -216,10 +235,22 @@ fn check_type_match(
     expected: &IrType,
     actual: &IrType,
 ) -> Result<(), ErrorGuaranteed> {
-    if expected == actual {
-        Ok(())
-    } else {
+    if expected != actual {
         let msg = format!("ir type mismatch: expected {:?}, got {:?}", expected, actual);
-        Err(diags.report_internal_error(span, msg))
+        return Err(diags.report_internal_error(span, msg));
     }
+    Ok(())
+}
+
+fn check_dir_match(
+    diags: &Diagnostics,
+    span: Span,
+    expected: PortDirection,
+    actual: PortDirection,
+) -> Result<(), ErrorGuaranteed> {
+    if expected != actual {
+        let msg = format!("ir port direction mismatch: expected {:?}, got {:?}", expected, actual);
+        return Err(diags.report_internal_error(span, msg));
+    }
+    Ok(())
 }

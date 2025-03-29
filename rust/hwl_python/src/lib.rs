@@ -3,7 +3,7 @@ use convert::{compile_value_to_py, convert_python_args};
 use hwl_language::{
     front::{
         compile::{
-            CompileState, CompileStateLong, ModuleElaborationInfo, NoPrintHandler, PopulatedScopes, Port as RustPort,
+            CompileState, CompileStateLong, NoPrintHandler, PopulatedScopes, Port as RustPort,
         },
         context::CompileTimeExpressionContext,
         diagnostic::Diagnostics,

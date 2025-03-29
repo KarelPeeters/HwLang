@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
@@ -12,14 +14,14 @@ use crate::syntax::pos::{FileId, Span};
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::util::{ResultDoubleExt, ResultExt};
+use crate::util::ResultExt;
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
 use super::ir::IrDatabase;
-use super::module::{ElaboratedModule, ModuleElaborationCacheKey};
+use super::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -47,23 +49,31 @@ pub fn compile(
     for item in all_items_except_imports {
         let _ = state.eval_item(item);
     }
-
-    // get the top module (it will always hit the elaboration cache)
-    let top_module = state.find_top_module().and_then(|top_item| {
+    // get the top module
+    let (top_module, top_item) = state.find_top_module().and_then(|top_item| {
         let elaborated = state.elaborate_module(top_item, None)?;
-        Ok(elaborated.ir_module)
+        Ok((elaborated.ir_module, top_item))
     })?;
 
-    // return result
+    // run until everything is elaborated
+    state.run_elaboration_loop();
+
+    // return result (at this point all modules should have been fully elaborated)
     assert!(state.elaboration_stack.is_empty());
-    let db = IrDatabase {
-        top_module,
-        modules: state_long.ir_modules,
-    };
+    let modules = state_long.ir_modules.try_map_values(|v| match v {
+        Some(Ok(v)) => Ok(v),
+        Some(Err(e)) => Err(e),
+        None => Err(diags.report_internal_error(parsed[top_item].span, "not all modules were elaborated")),
+    })?;
+
+    let db = IrDatabase { top_module, modules };
     db.validate(diags)?;
     Ok(db)
 }
 
+// TODO split into per-file and longer term state, so we can parralize the per-module stuff
+//   file scopes, constants, items and module elaboration details are global and long term,
+//   but variables, wires, ports, registers, ... are all only relevant within modules
 pub struct CompileStateLong {
     pub scopes: Scopes,
     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
@@ -75,8 +85,10 @@ pub struct CompileStateLong {
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
 
-    pub ir_modules: Arena<IrModule, IrModuleInfo>,
+    // contains None for placeholder modules that have not yet had their bodies elaborated
+    pub ir_modules: Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
     pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+    pub elaborated_modules_todo: VecDeque<(IrModule, ElaboratedModuleHeader)>,
 
     pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
 }
@@ -387,6 +399,7 @@ impl CompileStateLong {
             variables: Arena::default(),
             ir_modules: Arena::default(),
             elaborated_modules_cache: IndexMap::new(),
+            elaborated_modules_todo: VecDeque::new(),
             items: IndexMap::default(),
         }
     }
@@ -464,6 +477,16 @@ impl<'a> CompileState<'a> {
         }
     }
 
+    pub fn run_elaboration_loop(&mut self) {
+        while let Some((ir_module, header)) = self.state.elaborated_modules_todo.pop_front() {
+            let info = self.elaborate_module_body_new(header);
+
+            let slot = &mut self.state.ir_modules[ir_module];
+            assert!(slot.is_none());
+            *slot = Some(info);
+        }
+    }
+
     pub fn elaborate_module(
         &mut self,
         module: AstRefModule,
@@ -478,20 +501,23 @@ impl<'a> CompileState<'a> {
         }
 
         // new elaboration
-        let elaboration_result = self
-            .check_compile_loop(ElaborationStackEntry::ModuleElaboration(cache_key.clone()), |s| {
-                s.elaborate_module_body_new(params)
-            })
-            .flatten_err();
-
-        // put into cache and return
-        // this is correct even for errors caused by cycles:
-        //   _every_ item in the cycle would always trigger the cycle, so we can mark all of them as errors
-        self.state
-            .elaborated_modules_cache
-            .insert_first(cache_key, elaboration_result.clone());
-
-        elaboration_result
+        let header = self.elaborate_module_ports_new(params);
+        match header {
+            Ok(header) => {
+                // reserve placeholder ir module, will be filled in later
+                let ir_module: IrModule = self.state.ir_modules.push(None);
+                let result = ElaboratedModule {
+                    ir_module,
+                    ports: header.ports.clone(),
+                };
+                self.state.elaborated_modules_todo.push_back((ir_module, header));
+                Ok(result)
+            }
+            Err(e) => {
+                self.state.elaborated_modules_cache.insert_first(cache_key, Err(e));
+                Err(e)
+            }
+        }
     }
 
     fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {

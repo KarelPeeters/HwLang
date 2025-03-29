@@ -7,7 +7,6 @@ use crate::new_index_type;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
 use crate::util::int::IntRepresentation;
-use indexmap::IndexMap;
 use num_bigint::{BigInt, BigUint};
 use num_traits::One;
 use unwrap_match::unwrap_match;
@@ -146,7 +145,7 @@ pub struct IrCombinatorialProcess {
 pub struct IrModuleInstance {
     pub name: Option<String>,
     pub module: IrModule,
-    pub port_connections: IndexMap<IrPort, Spanned<IrPortConnection>>,
+    pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
 #[derive(Debug)]

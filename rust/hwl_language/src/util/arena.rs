@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
 use indexmap::map::IndexMap;
+use itertools::Itertools;
 use rand::random;
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
@@ -96,6 +97,26 @@ impl<K: IndexType, T> Arena<K, T> {
 
     pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
         self.into_iter().map(|(k, _)| k)
+    }
+
+    pub fn try_map_values<U, E>(self, f: impl FnMut(T) -> Result<U, E>) -> Result<Arena<K, U>, E> {
+        Ok(Arena {
+            values: self.values.into_iter().map(f).try_collect()?,
+            check: self.check,
+            ph: PhantomData,
+        })
+    }
+
+    pub fn get_by_index(&self, index: usize) -> Option<(K, &T)> {
+        if index < self.values.len() {
+            let k = K::new(Idx {
+                index,
+                check: self.check,
+            });
+            Some((k, &self[k]))
+        } else {
+            None
+        }
     }
 }
 

@@ -6,7 +6,7 @@ use crate::front::function::{FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::value::{CompileValue, NamedValue};
-use crate::syntax::ast::{ConstDeclaration, Item, ItemDefFunction, ItemDefType};
+use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
@@ -128,8 +128,26 @@ impl CompileState<'_> {
                 };
                 Ok(CompileValue::Function(function))
             }
-            Item::Module(_) => {
+            Item::Module(module) => {
                 let ast_ref = AstRefModule::new_unchecked(item);
+
+                // elaborate modules without params immediately, for earlier error messages
+                // TODO this is a strange place, modules don't _really_ participate in item evaluation
+                match &module.params {
+                    None => {
+                        let _ = self.elaborate_module(ast_ref, None);
+                    },
+                    Some(params) => {
+                        if params.inner.is_empty() {
+                            let args = Args {
+                                span: module.id.span,
+                                inner: vec![],
+                            };
+                            let _ = self.elaborate_module(ast_ref, Some(args));
+                        }
+                    },
+                }
+
                 Ok(CompileValue::Module(ast_ref))
             }
             Item::Interface(item) => Err(diags.report_todo(item.span, "visit item kind Interface")),

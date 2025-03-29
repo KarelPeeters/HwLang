@@ -535,9 +535,10 @@ fn lower_module_statements(
                     variables: &IndexMap::new(),
                 };
 
-                for (port_index, (&port, connection)) in enumerate(port_connections) {
-                    let port_name = inner_module.ports.get(&port).unwrap();
+                for (port_index, connection) in enumerate(port_connections) {
+                    let port_name = inner_module.ports.get_index(port_index).unwrap().1;
                     swrite!(f, "{I}{I}.{port_name}(");
+
                     match &connection.inner {
                         IrPortConnection::Input(expr) => {
                             lower_expression(diags, name_map, expr.span, &expr.inner, f)?;
