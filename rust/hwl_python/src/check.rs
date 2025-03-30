@@ -7,6 +7,8 @@ use pyo3::prelude::*;
 
 use crate::DiagnosticException;
 
+// TODO general issue with this approach: we might encounter an error and report it, but the python caller could catch that and re-call the same thing,
+//   immediately resulting in the same (cached) error value, with a corresponding diagnostic message, which would cause this to panic
 pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
     if diags.len() == 0 {
         Ok(())

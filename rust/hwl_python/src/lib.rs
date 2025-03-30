@@ -2,9 +2,7 @@ use check::{check_diags, convert_diag_error, unwrap_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
 use hwl_language::{
     front::{
-        compile::{
-            CompileState, CompileStateLong, NoPrintHandler, PopulatedScopes, Port as RustPort,
-        },
+        compile::{CompileState, CompileStateLong, NoPrintHandler, PopulatedScopes, Port as RustPort},
         context::CompileTimeExpressionContext,
         diagnostic::Diagnostics,
         function::FunctionValue,
@@ -18,6 +16,7 @@ use hwl_language::{
     syntax::{
         ast::Spanned,
         parsed::{AstRefModule, ParsedDatabase as RustParsedDatabase},
+        pos::Span,
         source::{SourceDatabase as RustSourceDatabase, SourceSetError, SourceSetOrIoError},
     },
     util::{io::IoErrorWithPath, ResultExt},
@@ -80,12 +79,11 @@ struct Module {
 
 #[pyclass]
 struct ModuleInstance {
-    #[allow(dead_code)]
     compile: Py<Compile>,
-    #[allow(dead_code)]
     ir_module: IrModule,
     #[allow(dead_code)]
     ports: Vec<RustPort>,
+    dummy_span: Span,
 }
 
 #[pyclass]
@@ -366,16 +364,14 @@ impl Module {
 
         let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
 
-        let elaboration_info = ModuleElaborationInfo {
-            item: self.module,
-            args,
-        };
-        let (ir_module, ports) = unwrap_diag_error(source, &diags, state_short.elaborate_module(elaboration_info))?;
+        let elab = state_short.elaborate_module(self.module, args);
+        let elab = unwrap_diag_error(source, &diags, elab)?;
 
         let module_instance = ModuleInstance {
             compile: self.compile.clone_ref(py),
-            ir_module,
-            ports,
+            ir_module: elab.ir_module,
+            ports: elab.ports,
+            dummy_span,
         };
         Ok(module_instance)
     }
@@ -383,16 +379,28 @@ impl Module {
 
 #[pymethods]
 impl ModuleInstance {
-    fn to_verilog(&self, py: Python) -> PyResult<ModuleVerilog> {
+    fn to_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
         // borrow self
-        let compile = self.compile.borrow(py);
+        let compile = &mut *self.compile.borrow_mut(py);
         let parsed_red = compile.parsed.borrow(py);
         let parsed = &parsed_red.parsed;
         let source = &parsed_red.source.borrow(py).source;
 
         // lower
         let diags = Diagnostics::new();
-        let lowered = lower(&diags, source, parsed, &compile.state.ir_modules, self.ir_module);
+
+        // take out the old compiler
+        // TODO this is really weird, don't do this
+        let replacement_scopes = PopulatedScopes::new(&diags, source, &parsed);
+        let replacement_state = CompileStateLong::new(replacement_scopes.scopes, replacement_scopes.file_scopes);
+        let state = std::mem::replace(&mut compile.state, replacement_state);
+
+        // check that all modules are resolved
+        let ir_modules = state.finish_ir_modules(&diags, self.dummy_span);
+        let ir_modules = unwrap_diag_error(source, &diags, ir_modules)?;
+
+        // actual lowering
+        let lowered = lower(&diags, source, parsed, &ir_modules, self.ir_module);
         let lowerd = unwrap_diag_error(source, &diags, lowered)?;
         Ok(ModuleVerilog {
             module_name: lowerd.top_module_name,

@@ -20,7 +20,7 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 
-use super::ir::IrDatabase;
+use super::ir::{IrDatabase, IrModules};
 use super::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
@@ -60,11 +60,7 @@ pub fn compile(
 
     // return result (at this point all modules should have been fully elaborated)
     assert!(state.elaboration_stack.is_empty());
-    let modules = state_long.ir_modules.try_map_values(|v| match v {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => Err(e),
-        None => Err(diags.report_internal_error(parsed[top_item].span, "not all modules were elaborated")),
-    })?;
+    let modules = state_long.finish_ir_modules(diags, parsed[top_item].span)?;
 
     let db = IrDatabase { top_module, modules };
     db.validate(diags)?;
@@ -402,6 +398,18 @@ impl CompileStateLong {
             elaborated_modules_todo: VecDeque::new(),
             items: IndexMap::default(),
         }
+    }
+
+    pub fn finish_ir_modules(
+        self,
+        diags: &Diagnostics,
+        dummy_span: Span,
+    ) -> Result<IrModules, ErrorGuaranteed> {
+        self.ir_modules.try_map_values(|v| match v {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(e),
+            None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
+        })
     }
 }
 
