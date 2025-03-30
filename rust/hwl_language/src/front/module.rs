@@ -244,7 +244,7 @@ impl CompileState<'_> {
                             ir: ir_port,
                         });
                         ports_vec.push(port);
-                        ScopedEntry::Direct(NamedValue::Port(port))
+                        ScopedEntry::Named(NamedValue::Port(port))
                     });
 
                     self.state.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -286,7 +286,7 @@ impl CompileState<'_> {
                                 ir: ir_port,
                             });
                             ports_vec.push(port);
-                            ScopedEntry::Direct(NamedValue::Port(port))
+                            ScopedEntry::Named(NamedValue::Port(port))
                         });
 
                         self.state.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
@@ -408,7 +408,7 @@ impl BodyElaborationState<'_, '_> {
                     let entry = reg.map(|reg_init| {
                         self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                         self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
-                        ScopedEntry::Direct(NamedValue::Register(reg_init.reg))
+                        ScopedEntry::Named(NamedValue::Register(reg_init.reg))
                     });
 
                     let state = &mut self.state;
@@ -430,7 +430,7 @@ impl BodyElaborationState<'_, '_> {
                         self.processes.push(process.map(IrModuleChild::CombinatorialProcess));
                     }
 
-                    let entry = wire.map(|wire| ScopedEntry::Direct(NamedValue::Wire(wire)));
+                    let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
                     self.state.state.scopes[scope_body].maybe_declare(
                         diags,
                         decl.id.as_ref(),
@@ -449,7 +449,7 @@ impl BodyElaborationState<'_, '_> {
                             self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                             self.out_port_register_connections.insert_first(port, reg_init.reg);
 
-                            let entry = Ok(ScopedEntry::Direct(NamedValue::Register(reg_init.reg)));
+                            let entry = Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg)));
                             self.state.state.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
                         }
                         Err(e) => {
@@ -1312,7 +1312,7 @@ impl BodyElaborationState<'_, '_> {
         // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
         let port = state.state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
         let port = match port.value {
-            &ScopedEntry::Direct(NamedValue::Port(port)) => Ok(port),
+            &ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
             _ => Err(diags.report_internal_error(id.span, "found non-port in port scope")),
         };
 

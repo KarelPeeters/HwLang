@@ -1,5 +1,5 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{Constant, Parameter, Port, Register, Variable, Wire};
+use crate::front::compile::{Parameter, Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
 use crate::front::ir::{IrArrayLiteralElement, IrExpression};
@@ -23,7 +23,6 @@ pub enum MaybeCompile<T, C = CompileValue> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum NamedValue {
-    Constant(Constant),
     Parameter(Parameter),
     Variable(Variable),
 

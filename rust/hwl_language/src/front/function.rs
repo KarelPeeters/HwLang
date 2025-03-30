@@ -208,7 +208,7 @@ impl CompileState<'_> {
                 id: MaybeIdentifier::Identifier(param_id.clone()),
                 value: arg_value_maybe.inner,
             });
-            let entry = ScopedEntry::Direct(NamedValue::Parameter(param));
+            let entry = ScopedEntry::Named(NamedValue::Parameter(param));
             self.state.scopes[scope_params].declare_already_checked(
                 diags,
                 param_id.string.clone(),

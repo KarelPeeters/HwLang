@@ -230,7 +230,7 @@ impl CompileState<'_> {
                         };
                         vars.set(diags, id.span(), variable, assigned)?;
 
-                        Ok(ScopedEntry::Direct(NamedValue::Variable(variable)))
+                        Ok(ScopedEntry::Named(NamedValue::Variable(variable)))
                     });
 
                     self.state.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
@@ -844,7 +844,7 @@ impl CompileState<'_> {
         self.state.scopes[scope_index].maybe_declare(
             diags,
             index_id.as_ref(),
-            Ok(ScopedEntry::Direct(NamedValue::Variable(index_var))),
+            Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
             Visibility::Private,
         );
 

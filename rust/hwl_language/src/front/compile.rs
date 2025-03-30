@@ -74,7 +74,6 @@ pub struct CompileStateLong {
     pub scopes: Scopes,
     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
-    pub constants: Arena<Constant, ConstantInfo>,
     pub parameters: Arena<Parameter, ParameterInfo>,
     pub variables: Arena<Variable, VariableInfo>,
     pub ports: Arena<Port, PortInfo>,
@@ -116,7 +115,6 @@ pub enum ElaborationStackEntry {
     FunctionRun(AstRefItem, Vec<MaybeCompile<TypedIrExpression>>),
 }
 
-new_index_type!(pub Constant);
 new_index_type!(pub Parameter);
 new_index_type!(pub Variable);
 new_index_type!(pub Port);
@@ -387,7 +385,6 @@ impl CompileStateLong {
         CompileStateLong {
             scopes,
             file_scopes,
-            constants: Arena::default(),
             parameters: Arena::default(),
             registers: Arena::default(),
             ports: Arena::default(),
@@ -558,11 +555,11 @@ impl<'a> CompileState<'a> {
                 },
                 _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
             },
-            ScopedEntry::Direct(_) => {
+            ScopedEntry::Named(_) | ScopedEntry::Const(_) => {
                 // TODO include "got" string
                 // TODO is this even ever possible? direct should only be inside of scopes
                 Err(diags.report_simple(
-                    "top should be an item, got a direct",
+                    "top should be an item, got a named or const",
                     top_entry.defining_span,
                     "defined here",
                 ))

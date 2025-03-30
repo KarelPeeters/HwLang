@@ -7,12 +7,14 @@ use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
 
 use super::compile::CompileStateLong;
+use super::value::CompileValue;
 
 // TODO move this to a better place
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
     Item(AstRefItem),
-    Direct(NamedValue),
+    Named(NamedValue),
+    Const(CompileValue),
 }
 
 pub type DomainSignal = Polarized<Signal>;

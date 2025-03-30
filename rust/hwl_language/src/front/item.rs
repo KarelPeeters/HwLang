@@ -1,11 +1,11 @@
 use crate::front::assignment::VariableValues;
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{CompileState, ConstantInfo, ElaborationStackEntry};
+use crate::front::compile::{CompileState, ElaborationStackEntry};
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::{Scope, Visibility};
-use crate::front::value::{CompileValue, NamedValue};
+use crate::front::value::CompileValue;
 use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
 use crate::util::data::IndexMapExt;
@@ -57,13 +57,7 @@ impl CompileState<'_> {
     }
 
     pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
-        let entry = self.const_eval(scope, decl).map(|value| {
-            let cst = self.state.constants.push(ConstantInfo {
-                id: decl.id.clone(),
-                value,
-            });
-            ScopedEntry::Direct(NamedValue::Constant(cst))
-        });
+        let entry = self.const_eval(scope, decl).map(ScopedEntry::Const);
         self.state.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 
@@ -136,7 +130,7 @@ impl CompileState<'_> {
                 match &module.params {
                     None => {
                         let _ = self.elaborate_module(ast_ref, None);
-                    },
+                    }
                     Some(params) => {
                         if params.inner.is_empty() {
                             let args = Args {
@@ -145,7 +139,7 @@ impl CompileState<'_> {
                             };
                             let _ = self.elaborate_module(ast_ref, Some(args));
                         }
-                    },
+                    }
                 }
 
                 Ok(CompileValue::Module(ast_ref))

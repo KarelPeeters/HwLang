@@ -58,9 +58,10 @@ impl CompileState<'_> {
     ) -> Result<Spanned<MaybeCompile<NamedValue>>, ErrorGuaranteed> {
         let found = self.state.scopes[scope].find(&self.state.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
-        let result = match *found.value {
-            ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item(item)?.clone()),
-            ScopedEntry::Direct(value) => MaybeCompile::Other(value),
+        let result = match found.value {
+            &ScopedEntry::Item(item) => MaybeCompile::Compile(self.eval_item(item)?.clone()),
+            &ScopedEntry::Named(value) => MaybeCompile::Other(value),
+            ScopedEntry::Const(value) => MaybeCompile::Compile(value.clone()),
         };
         Ok(Spanned {
             span: def_span,
@@ -135,7 +136,6 @@ impl CompileState<'_> {
                 match eval.inner {
                     MaybeCompile::Compile(c) => MaybeCompile::Compile(c),
                     MaybeCompile::Other(value) => match value {
-                        NamedValue::Constant(cst) => MaybeCompile::Compile(self.state.constants[cst].value.clone()),
                         NamedValue::Parameter(param) => self.state.parameters[param].value.clone(),
                         // TODO report error when combinatorial block
                         //   reads something it has not written yet but will later write to
@@ -911,7 +911,6 @@ impl CompileState<'_> {
             ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
                 MaybeCompile::Compile(_) => return Err(build_err("compile-time constant")),
                 MaybeCompile::Other(s) => match s {
-                    NamedValue::Constant(_) => return Err(build_err("constant")),
                     NamedValue::Parameter(_) => return Err(build_err("parameter")),
                     NamedValue::Variable(v) => {
                         AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
@@ -1011,7 +1010,6 @@ impl CompileState<'_> {
                 match value.inner {
                     MaybeCompile::Compile(_) => Err(build_err("compile-time value")),
                     MaybeCompile::Other(s) => match s {
-                        NamedValue::Constant(_) => Err(build_err("constant")),
                         NamedValue::Parameter(_) => Err(build_err("parameter")),
                         NamedValue::Variable(_) => Err(build_err("variable")),
                         NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
