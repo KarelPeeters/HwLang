@@ -95,8 +95,8 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
             end_inc: end_inc.clone(),
         }));
     }
-    if let Ok(_) = value.extract::<PyRef<Module>>() {
-        todo!()
+    if let Ok(module) = value.extract::<PyRef<Module>>() {
+        return Ok(CompileValue::Module(module));
     }
     if let Ok(value) = value.extract::<PyRef<Function>>() {
         // TODO avoid clone?

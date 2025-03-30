@@ -19,6 +19,7 @@ pub enum Visibility {
 // TODO rename to ItemDef
 #[derive(Debug, Clone)]
 pub enum Item {
+    // TODO maybe imports should not be items, they don't actually define anything
     Import(ItemImport),
     // Package(ItemDefPackage),
     Const(ConstDeclaration<Visibility>),

@@ -1,13 +1,10 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{Port, Register, Variable, Wire};
+use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
 use crate::front::ir::{IrAssignmentTargetBase, IrExpression};
 use crate::front::types::HardwareType;
-use crate::front::value::NamedValue;
+use crate::front::value::{MaybeCompile, NamedValue};
 use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
-
-use super::compile::CompileStateLong;
-use super::value::MaybeCompile;
 
 // TODO move this to a better place
 #[derive(Debug, Clone)]
@@ -52,6 +49,8 @@ pub enum PortDomain {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,
+    // TODO add "constant" domain, for values that are constant but not compile-time,
+    //   eg. dummy wires, tie ports, ...
     Clock,
     // TODO allow separate sync/async per edge, necessary for "async" reset
     Async,
@@ -81,7 +80,7 @@ impl ValueDomain {
         }
     }
 
-    pub fn to_diagnostic_string(&self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         match self {
             ValueDomain::CompileTime => "compile-time".to_owned(),
             ValueDomain::Clock => "clock".to_owned(),
@@ -140,7 +139,7 @@ impl<V> Polarized<V> {
 }
 
 impl Polarized<Signal> {
-    pub fn to_diagnostic_string(self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
         let Polarized { inverted, signal } = self;
         let signal_str = signal.to_diagnostic_string(s);
         match inverted {
@@ -151,7 +150,7 @@ impl Polarized<Signal> {
 }
 
 impl Signal {
-    pub fn to_diagnostic_string(self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
         match self {
             Signal::Port(port) => s.ports[port].id.string.clone(),
             Signal::Wire(wire) => s.wires[wire].id.string().to_owned(),
@@ -159,7 +158,7 @@ impl Signal {
         }
     }
 
-    pub fn ty<'s>(self, state: &'s CompileStateLong) -> Spanned<&'s HardwareType> {
+    pub fn ty<'s>(self, state: &'s CompileState) -> Spanned<&'s HardwareType> {
         match self {
             Signal::Port(port) => state.ports[port].ty.as_ref(),
             Signal::Wire(wire) => state.wires[wire].ty.as_ref(),
@@ -167,7 +166,7 @@ impl Signal {
         }
     }
 
-    pub fn domain(self, state: &CompileStateLong) -> Spanned<ValueDomain> {
+    pub fn domain(self, state: &CompileState) -> Spanned<ValueDomain> {
         match self {
             Signal::Port(port) => state.ports[port]
                 .domain
@@ -178,7 +177,7 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_target_base(self, state: &CompileStateLong) -> IrAssignmentTargetBase {
+    pub fn as_ir_target_base(self, state: &CompileState) -> IrAssignmentTargetBase {
         match self {
             Signal::Port(port) => IrAssignmentTargetBase::Port(state.ports[port].ir),
             Signal::Wire(wire) => IrAssignmentTargetBase::Wire(state.wires[wire].ir),
@@ -186,7 +185,7 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_expression(self, state: &CompileStateLong) -> TypedIrExpression {
+    pub fn as_ir_expression(self, state: &CompileState) -> TypedIrExpression {
         match self {
             Signal::Port(port) => {
                 let port_info = &state.ports[port];
@@ -217,13 +216,13 @@ impl Signal {
 }
 
 impl PortDomain {
-    pub fn to_diagnostic_string(self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(self, s: &CompileState) -> String {
         ValueDomain::from_port_domain(self).to_diagnostic_string(s)
     }
 }
 
 impl DomainKind<Polarized<Signal>> {
-    pub fn to_diagnostic_string(&self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         match self {
             DomainKind::Async => "async".to_owned(),
             DomainKind::Sync(sync) => sync.to_diagnostic_string(s),
@@ -232,7 +231,7 @@ impl DomainKind<Polarized<Signal>> {
 }
 
 impl SyncDomain<Polarized<Signal>> {
-    pub fn to_diagnostic_string(&self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         format!(
             "sync({}, {})",
             self.clock.to_diagnostic_string(s),
@@ -242,7 +241,7 @@ impl SyncDomain<Polarized<Signal>> {
 }
 
 impl SyncDomain<Polarized<Port>> {
-    pub fn to_diagnostic_string(&self, s: &CompileStateLong) -> String {
+    pub fn to_diagnostic_string(&self, s: &CompileState) -> String {
         self.map_inner(|p| p.map_inner(Signal::Port)).to_diagnostic_string(s)
     }
 }

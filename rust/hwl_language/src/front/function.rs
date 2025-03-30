@@ -5,7 +5,7 @@ use crate::front::compile::{CompileState, ElaborationStackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ScopedEntry;
-use crate::front::scope::{Scope, Visibility};
+use crate::front::scope::{Scope, ScopeFile, ScopeInner, Visibility};
 use crate::front::types::Type;
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{
@@ -26,7 +26,8 @@ pub struct FunctionValue {
     //   this will certainly need to be expanded once lambdas are supported
     pub item: AstRefItem,
 
-    pub outer_scope: Scope,
+    // TODO allow capturing here, implying non-file scopes
+    pub outer_scope: ScopeFile,
 
     // TODO avoid ast cloning
     // TODO Eq+Hash are a bit weird for types containing ast nodes
@@ -67,7 +68,7 @@ impl CompileState<'_> {
         args: &Args<I, Spanned<V>>,
         scope_outer: Scope,
         span_scope_inner: Span,
-    ) -> Result<(Scope, Vec<(Identifier, V)>), ErrorGuaranteed>
+    ) -> Result<(ScopeInner, Vec<(Identifier, V)>), ErrorGuaranteed>
     where
         for<'i> &'i I: Into<Option<&'i Identifier>>,
     {
@@ -177,9 +178,9 @@ impl CompileState<'_> {
         }
 
         let scope_params = self
-            .state
             .scopes
             .new_child(scope_outer, span_scope_inner, Visibility::Private);
+
         let mut param_values_vec = vec![];
         let no_vars = VariableValues::new_no_vars();
 
@@ -187,7 +188,7 @@ impl CompileState<'_> {
             let param_id = &param_info.id;
 
             // check param type
-            let param_ty = self.eval_expression_as_ty(scope_params, &no_vars, &param_info.ty)?;
+            let param_ty = self.eval_expression_as_ty(Scope::Inner(scope_params), &no_vars, &param_info.ty)?;
             let (_, _, arg_value) = args_passed.get(&param_id.string).ok_or_else(|| {
                 diags.report_internal_error(params.span, "finished matching args, but got missing param name")
             })?;
@@ -205,7 +206,7 @@ impl CompileState<'_> {
 
             // declare param in scope
             let entry = ScopedEntry::Value(arg_value_maybe.inner);
-            self.state.scopes[scope_params].declare_already_checked(
+            self.scopes[scope_params].declare_already_checked(
                 diags,
                 param_id.string.clone(),
                 param_id.span,
@@ -230,7 +231,8 @@ impl FunctionValue {
         // TODO discard scope after use?
         let span_scope_inner = self.params.span.join(self.body_span);
         let (param_scope, param_values) =
-            state.match_args_to_params_and_typecheck(&self.params, &args, self.outer_scope, span_scope_inner)?;
+            state.match_args_to_params_and_typecheck(&self.params, &args, self.outer_scope.into(), span_scope_inner)?;
+        let param_scope = Scope::Inner(param_scope);
 
         // TODO cache function calls?
         // TODO we already do this for module elaborations, which are similar

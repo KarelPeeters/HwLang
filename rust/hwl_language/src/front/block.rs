@@ -165,15 +165,13 @@ impl CompileState<'_> {
         let diags = self.diags;
         let Block { span: _, statements } = block;
 
-        let scope = self
-            .state
-            .scopes
-            .new_child(scope_parent, block.span, Visibility::Private);
+        let scope_as_inner = self.scopes.new_child(scope_parent, block.span, Visibility::Private);
+        let scope = Scope::Inner(scope_as_inner);
         let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
             match &stmt.inner {
-                BlockStatementKind::ConstDeclaration(decl) => self.const_eval_and_declare(scope, decl),
+                BlockStatementKind::ConstDeclaration(decl) => self.const_eval_and_declare(scope_as_inner, decl),
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {
                         span: _,
@@ -216,7 +214,7 @@ impl CompileState<'_> {
                             mutable,
                             ty,
                         };
-                        let variable = self.state.variables.push(info);
+                        let variable = self.variables.push(info);
 
                         // store value
                         let assigned = match init {
@@ -233,7 +231,7 @@ impl CompileState<'_> {
                         Ok(ScopedEntry::Named(NamedValue::Variable(variable)))
                     });
 
-                    self.state.scopes[scope].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
+                    self.scopes[scope_as_inner].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
                 }
                 BlockStatementKind::Assignment(stmt) => {
                     let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, scope, stmt)?;
@@ -629,7 +627,7 @@ impl CompileState<'_> {
         let then_ty = then_value.value.ty();
         let else_ty = else_value.value.ty();
         let ty = then_ty.union(&else_ty, false);
-        let var_info = &self.state.variables[var];
+        let var_info = &self.variables[var];
 
         let ty_hw = ty.as_hardware_type().ok_or_else(|| {
             let diag = Diagnostic::new(
@@ -832,16 +830,13 @@ impl CompileState<'_> {
         } = stmt.inner;
 
         // create inner scope with index variable
-        let scope_index = self
-            .state
-            .scopes
-            .new_child(scope_parent, stmt.span, Visibility::Private);
-        let index_var = self.state.variables.push(VariableInfo {
+        let scope_index = self.scopes.new_child(scope_parent, stmt.span, Visibility::Private);
+        let index_var = self.variables.push(VariableInfo {
             id: index_id.clone(),
             mutable: false,
             ty: None,
         });
-        self.state.scopes[scope_index].maybe_declare(
+        self.scopes[scope_index].maybe_declare(
             diags,
             index_id.as_ref(),
             Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
@@ -877,7 +872,7 @@ impl CompileState<'_> {
             )?;
 
             // run body
-            let (body_block, body_end) = self.elaborate_block(ctx, vars, scope_index, body)?;
+            let (body_block, body_end) = self.elaborate_block(ctx, vars, scope_index.into(), body)?;
 
             let body_block_spanned = Spanned {
                 span: body.span,

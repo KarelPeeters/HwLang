@@ -3,7 +3,7 @@ members = [
     "hwl_language",
     "hwl_lsp_server",
     "hwl_wasm",
-    "hwl_python",
+    # "hwl_python",
 ]
 resolver = "2"
 
@@ -38,6 +38,7 @@ memchr = "2.7.4"
 num-bigint = "0.4.5"
 num-integer = "0.1.46"
 num-traits = "0.2.19"
+parking_lot = "0.12.3"
 pyo3 = { version = "0.24.0", features = ["extension-module", "num-bigint"] } # TODO specify ABI?
 rand = "0.8.5"
 regex = "1.10.5"

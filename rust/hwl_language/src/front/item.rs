@@ -4,29 +4,13 @@ use crate::front::compile::{CompileState, ElaborationStackEntry};
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
-use crate::front::scope::{Scope, Visibility};
-use crate::front::value::CompileValue;
+use crate::front::scope::{Scope, ScopeInner, Visibility};
+use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
-use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
-use super::value::MaybeCompile;
-
 impl CompileState<'_> {
-    pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
-        // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
-        if !self.state.items.contains_key(&item) {
-            let result = self
-                .check_compile_loop(ElaborationStackEntry::Item(item), |s| s.eval_item_new(item))
-                .unwrap_or_else(Err);
-
-            self.state.items.insert_first(item, result).as_ref_ok()
-        } else {
-            self.state.items.get(&item).unwrap().as_ref_ok()
-        }
-    }
-
     pub fn const_eval<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
         let ConstDeclaration {
             span: _,
@@ -58,24 +42,34 @@ impl CompileState<'_> {
         Ok(value.inner)
     }
 
-    pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
+    pub fn const_eval_and_declare<V>(&mut self, scope: ScopeInner, decl: &ConstDeclaration<V>) {
         let entry = self
-            .const_eval(scope, decl)
+            .const_eval(scope.into(), decl)
             .map(|v| ScopedEntry::Value(MaybeCompile::Compile(v)));
-        self.state.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
+        self.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 
-    fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
+        let slot = self.shared.cache_item_values.get(&item).unwrap();
+        slot.get_or_compute(|| self.eval_item_new(item)).as_ref_ok()
+    }
+
+    pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
+        self.check_compile_loop(ElaborationStackEntry::Item(item), |s| s.eval_item_new_impl(item))
+            .unwrap_or_else(Err)
+    }
+
+    fn eval_item_new_impl(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
         let file_scope = self.file_scope(item.file())?;
 
-        match &self.parsed[item] {
+        match &self.fixed.parsed[item] {
             // imports were already handled in a separate import resolution pass
             Item::Import(item_inner) => Err(diags.report_internal_error(
                 item_inner.span,
                 "import items should have been resolved in a separate pass already",
             )),
-            Item::Const(item_inner) => self.const_eval(file_scope, item_inner),
+            Item::Const(item_inner) => self.const_eval(file_scope.into(), item_inner),
             Item::Type(item_inner) => {
                 let ItemDefType {
                     span: _,
@@ -87,12 +81,12 @@ impl CompileState<'_> {
                 match params {
                     None => {
                         let vars = VariableValues::new_no_vars();
-                        let ty = self.eval_expression_as_ty(file_scope, &vars, inner)?;
+                        let ty = self.eval_expression_as_ty(file_scope.into(), &vars, inner)?;
                         Ok(CompileValue::Type(ty.inner))
                     }
                     Some(params) => {
                         let func = FunctionValue {
-                            outer_scope: file_scope,
+                            outer_scope: file_scope.into(),
                             item,
                             params: params.clone(),
                             body_span: inner.span,

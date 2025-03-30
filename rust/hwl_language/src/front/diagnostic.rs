@@ -42,35 +42,18 @@ macro_rules! impl_from_error_guaranteed {
 
 #[must_use]
 pub struct Diagnostics {
-    handler: Option<Box<dyn Fn(&Diagnostic)>>,
     diagnostics: RefCell<Vec<Diagnostic>>,
 }
 
 impl Diagnostics {
     pub fn new() -> Self {
-        Self::new_with_handler(None)
-    }
-
-    pub fn new_with_handler(handler: Option<Box<dyn Fn(&Diagnostic)>>) -> Self {
         Self {
-            handler,
             diagnostics: RefCell::new(vec![]),
-        }
-    }
-
-    pub fn clone_without_handler(&self) -> Self {
-        Self {
-            handler: None,
-            diagnostics: self.diagnostics.clone(),
         }
     }
 
     // TODO go through and try to avoid early-exits as much as possible
     pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
-        if let Some(handler) = &self.handler {
-            handler(&diag);
-        }
-
         self.diagnostics.borrow_mut().push(diag);
         ErrorGuaranteed(())
     }

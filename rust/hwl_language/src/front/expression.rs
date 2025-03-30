@@ -58,7 +58,7 @@ pub enum EvaluatedId {
 
 impl CompileState<'_> {
     pub fn eval_id(&mut self, scope: Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
-        let found = self.state.scopes[scope].find(&self.state.scopes, self.diags, id, Visibility::Private)?;
+        let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
         let def_span = found.defining_span;
         let result = match found.value {
             &ScopedEntry::Named(value) => EvaluatedId::Named(value),
@@ -154,7 +154,7 @@ impl CompileState<'_> {
                         NamedValue::Port(port) => {
                             ctx.check_ir_context(diags, expr.span, "port")?;
 
-                            let port_info = &self.state.ports[port];
+                            let port_info = &self.ports[port];
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Port(port)));
@@ -168,7 +168,7 @@ impl CompileState<'_> {
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
 
-                            let wire_info = &self.state.wires[wire];
+                            let wire_info = &self.wires[wire];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
                                 ctx_block,
@@ -185,7 +185,7 @@ impl CompileState<'_> {
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
 
-                            let reg_info = &self.state.registers[reg];
+                            let reg_info = &self.registers[reg];
                             let value_stored = store_ir_expression_in_dedicated_variable(
                                 ctx,
                                 ctx_block,
@@ -754,7 +754,7 @@ impl CompileState<'_> {
         ) = (args_eval.get(0), args_eval.get(1))
         {
             let rest = &args_eval[2..];
-            let mut print_compile = |v: &MaybeCompile<TypedIrExpression>| {
+            let print_compile = |v: &MaybeCompile<TypedIrExpression>| {
                 let value_str = match v {
                     // TODO print strings without quotes
                     MaybeCompile::Compile(v) => v.to_diagnostic_string(),
@@ -762,11 +762,11 @@ impl CompileState<'_> {
                     MaybeCompile::Other(v) => {
                         let TypedIrExpression { ty, domain, expr: _ } = v;
                         let ty_str = ty.to_diagnostic_string();
-                        let domain_str = domain.to_diagnostic_string(self.state);
+                        let domain_str = domain.to_diagnostic_string(self);
                         format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
                     }
                 };
-                self.print_handler.println(&value_str);
+                self.shared.print_handler.println(&value_str);
             };
 
             match (a0.as_str(), a1.as_str(), rest) {
@@ -845,10 +845,7 @@ impl CompileState<'_> {
             MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
-                format!(
-                    "got value with domain `{}`",
-                    ir_expr.domain.to_diagnostic_string(self.state)
-                ),
+                format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
             )),
         }
     }
@@ -915,7 +912,7 @@ impl CompileState<'_> {
                         AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
                     }
                     NamedValue::Port(p) => {
-                        let direction = self.state.ports[p].direction;
+                        let direction = self.ports[p].direction;
                         match direction.inner {
                             PortDirection::Input => return Err(build_err("input port")),
                             PortDirection::Output => {

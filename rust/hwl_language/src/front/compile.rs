@@ -1,10 +1,12 @@
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::sync::Mutex;
 
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrExpression, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire};
+use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister, IrWire};
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::front::scope::{Scope, Scopes, Visibility};
+use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
+use crate::front::scope::{Scope, ScopeFile, ScopeInfo, Scopes, Visibility};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast;
@@ -14,14 +16,12 @@ use crate::syntax::pos::{FileId, Span};
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
+use crate::util::sync::{ComputeOnce, SharedQueue};
 use crate::util::ResultExt;
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
-
-use super::ir::{IrDatabase, IrModules};
-use super::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -36,77 +36,133 @@ pub fn compile(
     parsed: &ParsedDatabase,
     print_handler: &mut (dyn PrintHandler),
 ) -> Result<IrDatabase, ErrorGuaranteed> {
-    let PopulatedScopes {
-        scopes,
+    let PopulatedFileScopes {
         file_scopes,
+        file_to_scopes,
         all_items_except_imports,
-    } = PopulatedScopes::new(diags, source, parsed);
+    } = populate_file_scopes(diags, source, parsed);
 
-    let mut state_long = CompileStateLong::new(scopes, file_scopes);
-    let mut state = CompileState::new(diags, source, parsed, &mut state_long, print_handler);
+    // TODO randomize order to avoid all threads working on similar items and running into each other?
+    let work_queue = SharedQueue::new(1);
+    work_queue.push_batch(all_items_except_imports.iter().copied().map(WorkItem::EvaluateItem));
 
-    // visit all items, possibly using them as an elaboration starting point
-    for item in all_items_except_imports {
-        let _ = state.eval_item(item);
-    }
+    let fixed = CompileFixed { source, parsed };
+    let shared = CompileShared {
+        file_scopes,
+        file_to_scopes,
+        work_queue,
+        cache_item_values: all_items_except_imports
+            .iter()
+            .map(|&item| (item, ComputeOnce::new()))
+            .collect(),
+        cache_modules: Mutex::new(CompileSharedModules {
+            elaborations: IndexMap::new(),
+            ir_modules: Arena::default(),
+        }),
+        print_handler,
+    };
+
     // get the top module
-    let (top_module, top_item) = state.find_top_module().and_then(|top_item| {
-        let elaborated = state.elaborate_module(top_item, None)?;
+    let (top_module, top_item) = find_top_module(diags, fixed, &shared).and_then(|top_item| {
+        let mut tmp_state = CompileState::new(fixed, &shared, diags);
+        let elaborated = tmp_state.elaborate_module(top_item, None)?;
+        tmp_state.finish();
         Ok((elaborated.ir_module, top_item))
     })?;
 
     // run until everything is elaborated
-    state.run_elaboration_loop();
+    // TODO actually use multiple threads
+    // TODO merge and sort diags
+    run_elaboration_loop(diags, fixed, &shared);
 
     // return result (at this point all modules should have been fully elaborated)
-    assert!(state.elaboration_stack.is_empty());
-    let modules = state_long.finish_ir_modules(diags, parsed[top_item].span)?;
+    let modules = shared.finish_ir_modules(diags, parsed[top_item].span)?;
 
     let db = IrDatabase { top_module, modules };
     db.validate(diags)?;
     Ok(db)
 }
 
-// TODO split into per-file and longer term state, so we can parralize the per-module stuff
-//   file scopes, constants, items and module elaboration details are global and long term,
-//   but variables, wires, ports, registers, ... are all only relevant within modules
-pub struct CompileStateLong {
-    pub scopes: Scopes,
-    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+fn run_elaboration_loop(diags: &Diagnostics, fixed: CompileFixed, shared: &CompileShared) {
+    while let Some(work_item) = shared.work_queue.pop() {
+        let mut state = CompileState::new(fixed, shared, diags);
 
+        match work_item {
+            WorkItem::EvaluateItem(item) => {
+                let slot = shared.cache_item_values.get(&item).unwrap();
+                slot.offer_to_compute(|| state.eval_item_new(item));
+            }
+            WorkItem::ElaborateModule(ir_module, header) => {
+                // TODO this lock is a bottleneck, it prevents elaborating multiple modules at once, which was the whole point!
+                let cache = shared.cache_modules.lock().unwrap();
+                let slot = &cache.ir_modules[ir_module];
+                slot.offer_to_compute(|| state.elaborate_module_body_new(header));
+            }
+        }
+
+        state.finish();
+    }
+}
+
+/// globally shared, constant state
+#[derive(Copy, Clone)]
+pub struct CompileFixed<'a> {
+    pub source: &'a SourceDatabase,
+    pub parsed: &'a ParsedDatabase,
+}
+
+pub enum WorkItem {
+    EvaluateItem(AstRefItem),
+    ElaborateModule(IrModule, ElaboratedModuleHeader),
+}
+
+/// long-term shared between threads
+pub struct CompileShared<'a> {
+    pub file_scopes: Arena<ScopeFile, ScopeInfo>,
+    pub file_to_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+
+    pub work_queue: SharedQueue<WorkItem>,
+
+    pub cache_item_values: IndexMap<AstRefItem, ComputeOnce<Result<CompileValue, ErrorGuaranteed>>>,
+    // TODO turn this mutex into an RWLock and add a ComputeOnce wrapper to the values
+    // TODO combine elaborations with ir_modules?
+    pub cache_modules: Mutex<CompileSharedModules>,
+
+    // TODO is there a reasonable way to get deterministic prints?
+    pub print_handler: &'a dyn PrintHandler,
+}
+
+pub struct CompileSharedModules {
+    elaborations: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+    ir_modules: Arena<IrModule, ComputeOnce<Result<IrModuleInfo, ErrorGuaranteed>>>,
+}
+
+// short-term state for a single item evaluation or module elaboration
+pub struct CompileState<'a> {
+    pub fixed: CompileFixed<'a>,
+    pub shared: &'a CompileShared<'a>,
+    pub diags: &'a Diagnostics,
+
+    // TODO maybe these should not be here, but only when in the relevant context?
     pub variables: Arena<Variable, VariableInfo>,
     pub ports: Arena<Port, PortInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
+    pub scopes: Scopes<'a>,
 
-    // contains None for placeholder modules that have not yet had their bodies elaborated
-    pub ir_modules: Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
-    pub elaborated_modules_cache: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
-    pub elaborated_modules_todo: VecDeque<(IrModule, ElaboratedModuleHeader)>,
-
-    pub items: IndexMap<AstRefItem, Result<CompileValue, ErrorGuaranteed>>,
-}
-
-pub struct CompileState<'a> {
-    pub diags: &'a Diagnostics,
-    pub source: &'a SourceDatabase,
-    pub parsed: &'a ParsedDatabase,
-
-    pub state: &'a mut CompileStateLong,
-    pub print_handler: &'a mut dyn PrintHandler,
-
-    elaboration_stack: Vec<ElaborationStackEntry>,
+    pub stack: Vec<ElaborationStackEntry>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct StackNotEq(usize);
 
+// TODO cleanup
+// TODO also set some stack limit to ensure we get properly formatted error messages (diags instead of rust stacktraces)
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ElaborationStackEntry {
     // TODO properly refer to ast instantiation site
     /// Module instantiation is only here to provide nicer error messages.
     ModuleInstantiation(Span, StackNotEq),
-    ModuleElaboration(ModuleElaborationCacheKey),
     // TODO better name, is this ItemEvaluation, ItemSignature, ...?
     Item(AstRefItem),
     // TODO better names
@@ -190,9 +246,9 @@ impl RegisterInfo {
 fn add_import_to_scope(
     diags: &Diagnostics,
     source: &SourceDatabase,
-    scopes: &mut Scopes,
-    file_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
-    target_scope: Scope,
+    file_to_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+    file_scopes: &mut Arena<ScopeFile, ScopeInfo>,
+    target_scope: ScopeFile,
     item: &ast::ItemImport,
 ) {
     // TODO the current path design does not allow private sub-modules
@@ -205,24 +261,24 @@ fn add_import_to_scope(
         entry,
     } = item;
 
-    let parent_scope = find_parent_scope(diags, source, file_scopes, parents);
+    let parent_scope = find_path_delcare_scope(diags, source, file_to_scopes, parents);
 
     let import_entries = match &entry.inner {
         ast::ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
         ast::ImportFinalKind::Multi(entries) => entries,
     };
-
     for import_entry in import_entries {
         let ast::ImportEntry { span: _, id, as_ } = import_entry;
 
         // TODO allow private visibility into child scopes?
         let entry = parent_scope.and_then(|parent_scope| {
-            scopes[parent_scope]
-                .find(scopes, diags, id, Visibility::Public)
+            let tmp_scopes = Scopes::new(file_scopes);
+            file_scopes[parent_scope]
+                .find(&tmp_scopes, diags, id, Visibility::Public)
                 .map(|entry| entry.value.clone())
         });
 
-        let target_scope = &mut scopes[target_scope];
+        let target_scope = &mut file_scopes[target_scope];
         match as_ {
             Some(as_) => target_scope.maybe_declare(diags, as_.as_ref(), entry, Visibility::Private),
             None => target_scope.declare(diags, id, entry, Visibility::Private),
@@ -230,30 +286,25 @@ fn add_import_to_scope(
     }
 }
 
-fn find_parent_scope(
+fn find_path_delcare_scope(
     diags: &Diagnostics,
     source: &SourceDatabase,
     file_scopes: &IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
-    parents: &Spanned<Vec<Identifier>>,
-) -> Result<Scope, ErrorGuaranteed> {
+    path: &Spanned<Vec<Identifier>>,
+) -> Result<ScopeFile, ErrorGuaranteed> {
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
     let mut curr_dir = source.root_directory;
 
     // get the span without the trailing separator
-    let parents_span = if parents.inner.is_empty() {
-        parents.span
+    let parents_span = if path.inner.is_empty() {
+        path.span
     } else {
-        parents
-            .inner
-            .first()
-            .unwrap()
-            .span
-            .join(parents.inner.last().unwrap().span)
+        path.inner.first().unwrap().span.join(path.inner.last().unwrap().span)
     };
 
-    for step in &parents.inner {
+    for step in &path.inner {
         let curr_dir_info = &source[curr_dir];
 
         curr_dir = match curr_dir_info.children.get(&step.string) {
@@ -264,7 +315,7 @@ fn find_parent_scope(
 
                 // TODO without trailing separator
                 let diag = Diagnostic::new("import not found")
-                    .snippet(parents.span)
+                    .snippet(path.span)
                     .add_error(step.span, "failed step")
                     .finish()
                     .footer(Level::Info, format!("possible options: {:?}", options))
@@ -288,108 +339,138 @@ fn find_parent_scope(
         .map(|scopes| scopes.scope_outer_declare)
 }
 
-pub struct PopulatedScopes {
-    pub scopes: Scopes,
-    pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
+// TODO move to the scope module?
+pub struct PopulatedFileScopes {
+    pub file_scopes: Arena<ScopeFile, ScopeInfo>,
+    pub file_to_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
     // TODO maybe imports should not be items in the first place?
     pub all_items_except_imports: Vec<AstRefItem>,
 }
 
-impl PopulatedScopes {
-    pub fn new(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> Self {
-        // populate file scopes
-        let mut map_file_scopes = IndexMap::new();
-        let mut scopes = Scopes::new();
+fn populate_file_scopes(diags: &Diagnostics, source: &SourceDatabase, parsed: &ParsedDatabase) -> PopulatedFileScopes {
+    let mut file_to_scopes = IndexMap::new();
+    let mut file_scopes: Arena<ScopeFile, _> = Arena::default();
 
-        let files = source.files();
-        let mut all_items_except_imports = vec![];
+    let files = source.files();
+    let mut all_items_except_imports = vec![];
 
-        for &file in &files {
-            let file_source = &source[file];
+    for &file in &files {
+        let file_source = &source[file];
 
-            let scope = parsed[file].as_ref_ok().map(|ast| {
-                // build declaration scope
-                // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
-                let file_span = file_source.offsets.full_span(file);
-                let scope_declare = scopes.new_root(file_span);
-                let scope_import = scopes.new_child(scope_declare, file_span, Visibility::Private);
+        let scope = parsed[file].as_ref_ok().map(|ast| {
+            // build declaration scope
+            // TODO should users declare other libraries they will be importing from to avoid scope conflict issues?
+            let file_span = file_source.offsets.full_span(file);
+            let scope_declare = file_scopes.push(ScopeInfo::new(file_span, None));
+            let scope_import = file_scopes.push(ScopeInfo::new(
+                file_span,
+                Some((Scope::File(scope_declare), Visibility::Private)),
+            ));
 
-                let local_scope_info = &mut scopes[scope_declare];
+            let declare_scope_info = &mut file_scopes[scope_declare];
 
-                for (ast_item_ref, ast_item) in ast.items_with_ref() {
-                    if let Some(declaration_info) = ast_item.declaration_info() {
-                        let vis = match declaration_info.vis {
-                            ast::Visibility::Public(_) => Visibility::Public,
-                            ast::Visibility::Private => Visibility::Private,
-                        };
-                        local_scope_info.maybe_declare(
-                            diags,
-                            declaration_info.id,
-                            Ok(ScopedEntry::Item(ast_item_ref)),
-                            vis,
-                        );
-                    }
-
-                    match ast_item {
-                        ast::Item::Import(_) => {}
-                        _ => all_items_except_imports.push(ast_item_ref),
-                    }
+            for (ast_item_ref, ast_item) in ast.items_with_ref() {
+                if let Some(declaration_info) = ast_item.declaration_info() {
+                    let vis = match declaration_info.vis {
+                        ast::Visibility::Public(_) => Visibility::Public,
+                        ast::Visibility::Private => Visibility::Private,
+                    };
+                    declare_scope_info.maybe_declare(
+                        diags,
+                        declaration_info.id,
+                        Ok(ScopedEntry::Item(ast_item_ref)),
+                        vis,
+                    );
                 }
 
-                FileScopes {
-                    scope_outer_declare: scope_declare,
-                    scope_inner_import: scope_import,
+                match ast_item {
+                    ast::Item::Import(_) => {}
+                    _ => all_items_except_imports.push(ast_item_ref),
                 }
-            });
+            }
 
-            map_file_scopes.insert_first(file, scope);
-        }
+            FileScopes {
+                scope_outer_declare: scope_declare,
+                scope_inner_import: scope_import,
+            }
+        });
 
-        // populate import scopes
-        for &file in &files {
-            if let Ok(file_scopes) = map_file_scopes.get(&file).as_ref().unwrap() {
-                let file_ast = parsed[file].as_ref_ok().unwrap();
-                for item in &file_ast.items {
-                    if let ast::Item::Import(item) = item {
-                        add_import_to_scope(
-                            diags,
-                            source,
-                            &mut scopes,
-                            &map_file_scopes,
-                            file_scopes.scope_inner_import,
-                            item,
-                        );
-                    }
+        file_to_scopes.insert_first(file, scope);
+    }
+
+    // populate import scopes
+    for &file in &files {
+        if let Ok(scopes) = file_to_scopes.get(&file).as_ref().unwrap() {
+            let file_ast = parsed[file].as_ref_ok().unwrap();
+            for item in &file_ast.items {
+                if let ast::Item::Import(item) = item {
+                    add_import_to_scope(
+                        diags,
+                        source,
+                        &file_to_scopes,
+                        &mut file_scopes,
+                        scopes.scope_inner_import,
+                        item,
+                    );
                 }
             }
         }
+    }
 
-        PopulatedScopes {
-            scopes,
-            file_scopes: map_file_scopes,
-            all_items_except_imports,
+    PopulatedFileScopes {
+        file_scopes,
+        file_to_scopes,
+        all_items_except_imports,
+    }
+}
+
+fn find_top_module(
+    diags: &Diagnostics,
+    fixed: CompileFixed,
+    shared: &CompileShared,
+) -> Result<AstRefModule, ErrorGuaranteed> {
+    let top_file = fixed.source[fixed.source.root_directory]
+        .children
+        .get("top")
+        .and_then(|&top_dir| fixed.source[top_dir].file)
+        .ok_or_else(|| {
+            let title = "no top file found, should be called `top` and be in the root directory of the project";
+            diags.report(Diagnostic::new(title).finish())
+        })?;
+    let top_file_scope = shared
+        .file_to_scopes
+        .get(&top_file)
+        .unwrap()
+        .as_ref_ok()?
+        .scope_outer_declare;
+    let top_entry = shared.file_scopes[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
+
+    match top_entry.value {
+        &ScopedEntry::Item(item) => match &fixed.parsed[item] {
+            ast::Item::Module(module) => match &module.params {
+                None => Ok(AstRefModule::new_unchecked(item)),
+                Some(_) => {
+                    Err(diags.report_simple("`top` cannot have generic parameters", module.id.span, "defined here"))
+                }
+            },
+            _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
+        },
+        ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
+            // TODO include "got" string
+            // TODO is this even ever possible? direct should only be inside of scopes
+            Err(diags.report_simple(
+                "top should be an item, got a named/value",
+                top_entry.defining_span,
+                "defined here",
+            ))
         }
     }
 }
 
-impl CompileStateLong {
-    pub fn new(scopes: Scopes, file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>) -> Self {
-        CompileStateLong {
-            scopes,
-            file_scopes,
-            registers: Arena::default(),
-            ports: Arena::default(),
-            wires: Arena::default(),
-            variables: Arena::default(),
-            ir_modules: Arena::default(),
-            elaborated_modules_cache: IndexMap::new(),
-            elaborated_modules_todo: VecDeque::new(),
-            items: IndexMap::default(),
-        }
-    }
-
+impl CompileShared<'_> {
     pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
-        self.ir_modules.try_map_values(|v| match v {
+        let ir_modules = self.cache_modules.into_inner().unwrap().ir_modules;
+        ir_modules.try_map_values(|v| match v.into_inner() {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
             None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
@@ -398,25 +479,27 @@ impl CompileStateLong {
 }
 
 impl<'a> CompileState<'a> {
-    pub fn new(
-        diags: &'a Diagnostics,
-        source: &'a SourceDatabase,
-        parsed: &'a ParsedDatabase,
-        state: &'a mut CompileStateLong,
-        print_handler: &'a mut dyn PrintHandler,
-    ) -> Self {
+    pub fn new(fixed: CompileFixed<'a>, shared: &'a CompileShared, diags: &'a Diagnostics) -> Self {
         CompileState {
+            fixed,
+            shared,
             diags,
-            source,
-            parsed,
-            state,
-            print_handler,
-            elaboration_stack: vec![],
+            variables: Arena::default(),
+            ports: Arena::default(),
+            wires: Arena::default(),
+            registers: Arena::default(),
+            stack: vec![],
+            scopes: Scopes::new(&shared.file_scopes),
         }
     }
 
+    pub fn finish(self) {
+        assert!(self.stack.is_empty());
+        let _ = self;
+    }
+
     pub fn not_eq_stack(&self) -> StackNotEq {
-        StackNotEq(self.elaboration_stack.len())
+        StackNotEq(self.stack.len())
     }
 
     // TODO add stack limit
@@ -425,9 +508,12 @@ impl<'a> CompileState<'a> {
         entry: ElaborationStackEntry,
         f: impl FnOnce(&mut Self) -> T,
     ) -> Result<T, ErrorGuaranteed> {
-        if let Some(loop_start) = self.elaboration_stack.iter().position(|x| x == &entry) {
+        let diags = self.diags;
+        let parsed = self.fixed.parsed;
+
+        if let Some(loop_start) = self.stack.iter().position(|x| x == &entry) {
             // report elaboration loop
-            let cycle = &self.elaboration_stack[loop_start..];
+            let cycle = &self.stack[loop_start..];
 
             let mut diag = Diagnostic::new("encountered elaboration cycle");
             for (i, elem) in enumerate(cycle) {
@@ -436,46 +522,30 @@ impl<'a> CompileState<'a> {
                         // TODO include generic args
                         diag = diag.add_error(span, format!("({i}): module instantiation"));
                     }
-                    ElaborationStackEntry::ModuleElaboration(elem) => {
-                        diag = diag.add_error(self.parsed[elem.module].id.span, format!("({i}): module"));
-                    }
                     &ElaborationStackEntry::Item(item) => {
-                        diag = diag.add_error(self.parsed[item].common_info().span_short, format!("({i}): item"));
+                        diag = diag.add_error(parsed[item].common_info().span_short, format!("({i}): item"));
                     }
                     &ElaborationStackEntry::FunctionCall(expr_span, _not_eq) => {
                         diag = diag.add_error(expr_span, format!("({i}): function call"));
                     }
                     &ElaborationStackEntry::FunctionRun(item, _) => {
                         // TODO include args
-                        diag = diag.add_error(
-                            self.parsed[item].common_info().span_short,
-                            format!("({i}): function run"),
-                        );
+                        diag = diag.add_error(parsed[item].common_info().span_short, format!("({i}): function run"));
                     }
                 }
             }
 
-            Err(self.diags.report(diag.finish()))
+            Err(diags.report(diag.finish()))
         } else {
-            self.elaboration_stack.push(entry);
-            let len_expected = self.elaboration_stack.len();
+            self.stack.push(entry);
+            let len_expected = self.stack.len();
 
             let result = f(self);
 
-            assert_eq!(self.elaboration_stack.len(), len_expected);
-            self.elaboration_stack.pop().unwrap();
+            assert_eq!(self.stack.len(), len_expected);
+            self.stack.pop().unwrap();
 
             Ok(result)
-        }
-    }
-
-    pub fn run_elaboration_loop(&mut self) {
-        while let Some((ir_module, header)) = self.state.elaborated_modules_todo.pop_front() {
-            let info = self.elaborate_module_body_new(header);
-
-            let slot = &mut self.state.ir_modules[ir_module];
-            assert!(slot.is_none());
-            *slot = Some(info);
         }
     }
 
@@ -488,77 +558,38 @@ impl<'a> CompileState<'a> {
 
         // check cache
         let cache_key = params.cache_key();
-        if let Some(result) = self.state.elaborated_modules_cache.get(&cache_key) {
+        let mut cache = self.shared.cache_modules.lock().unwrap();
+        if let Some(result) = cache.elaborations.get(&cache_key) {
             return result.clone();
         }
 
         // new elaboration
-        let header = self.elaborate_module_ports_new(params);
-        match header {
-            Ok(header) => {
-                // reserve placeholder ir module, will be filled in later
-                let ir_module: IrModule = self.state.ir_modules.push(None);
-                let result = ElaboratedModule {
-                    ir_module,
-                    ports: header.ports.clone(),
-                };
-                self.state.elaborated_modules_todo.push_back((ir_module, header));
-                Ok(result)
-            }
-            Err(e) => {
-                self.state.elaborated_modules_cache.insert_first(cache_key, Err(e));
-                Err(e)
-            }
-        }
+        let elaborated = self.elaborate_module_ports_new(params).map(|header| {
+            // reserve placeholder ir module, will be filled in later
+            let ir_module: IrModule = cache.ir_modules.push(ComputeOnce::new());
+            let elaborated = ElaboratedModule {
+                ir_module,
+                ports: header.ports.clone(),
+            };
+            self.shared
+                .work_queue
+                .push(WorkItem::ElaborateModule(ir_module, header));
+            elaborated
+        });
+
+        // insert into cache
+        cache.elaborations.insert_first(cache_key, elaborated.clone());
+        drop(cache);
+
+        elaborated
     }
 
-    fn find_top_module(&self) -> Result<AstRefModule, ErrorGuaranteed> {
+    pub fn file_scope(&self, file: FileId) -> Result<ScopeFile, ErrorGuaranteed> {
         let diags = self.diags;
+        let source = self.fixed.source;
 
-        let top_file = self.source[self.source.root_directory]
-            .children
-            .get("top")
-            .and_then(|&top_dir| self.source[top_dir].file)
-            .ok_or_else(|| {
-                let title = "no top file found, should be called `top` and be in the root directory of the project";
-                diags.report(Diagnostic::new(title).finish())
-            })?;
-        let top_file_scope = self
-            .state
-            .file_scopes
-            .get(&top_file)
-            .unwrap()
-            .as_ref_ok()?
-            .scope_outer_declare;
-        let top_entry = self.state.scopes[top_file_scope].find_immediate_str(diags, "top", Visibility::Public)?;
-
-        match top_entry.value {
-            &ScopedEntry::Item(item) => match &self.parsed[item] {
-                ast::Item::Module(module) => match &module.params {
-                    None => Ok(AstRefModule::new_unchecked(item)),
-                    Some(_) => {
-                        Err(diags.report_simple("`top` cannot have generic parameters", module.id.span, "defined here"))
-                    }
-                },
-                _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
-            },
-            ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
-                // TODO include "got" string
-                // TODO is this even ever possible? direct should only be inside of scopes
-                Err(diags.report_simple(
-                    "top should be an item, got a named/value",
-                    top_entry.defining_span,
-                    "defined here",
-                ))
-            }
-        }
-    }
-
-    pub fn file_scope(&self, file: FileId) -> Result<Scope, ErrorGuaranteed> {
-        match self.state.file_scopes.get(&file) {
-            None => Err(self
-                .diags
-                .report_internal_error(self.source[file].offsets.full_span(file), "file scopes not found")),
+        match self.shared.file_to_scopes.get(&file) {
+            None => Err(diags.report_internal_error(source[file].offsets.full_span(file), "file scopes not found")),
             Some(Ok(scopes)) => Ok(scopes.scope_inner_import),
             Some(&Err(e)) => Err(e),
         }
@@ -567,9 +598,9 @@ impl<'a> CompileState<'a> {
     pub fn domain_signal_to_ir(&self, signal: &DomainSignal) -> IrExpression {
         let &Polarized { inverted, signal } = signal;
         let inner = match signal {
-            Signal::Port(port) => IrExpression::Port(self.state.ports[port].ir),
-            Signal::Wire(wire) => IrExpression::Wire(self.state.wires[wire].ir),
-            Signal::Register(reg) => IrExpression::Register(self.state.registers[reg].ir),
+            Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
+            Signal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
+            Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
         };
         if inverted {
             IrExpression::BoolNot(Box::new(inner))
@@ -582,44 +613,44 @@ impl<'a> CompileState<'a> {
 #[derive(Debug)]
 pub struct FileScopes {
     /// The scope that only includes top-level items defined in this file.
-    pub scope_outer_declare: Scope,
+    pub scope_outer_declare: ScopeFile,
     /// Child scope of [scope_outer_declare] that includes all imported items.
-    pub scope_inner_import: Scope,
+    pub scope_inner_import: ScopeFile,
 }
 
 // TODO rename/expand to handle all external interation: IO, env vars, ...
 pub trait PrintHandler {
-    fn println(&mut self, s: &str);
+    fn println(&self, s: &str);
 }
 
 pub struct NoPrintHandler;
 
 impl PrintHandler for NoPrintHandler {
-    fn println(&mut self, _: &str) {}
+    fn println(&self, _: &str) {}
 }
 
 pub struct StdoutPrintHandler;
 
 impl PrintHandler for StdoutPrintHandler {
-    fn println(&mut self, s: &str) {
+    fn println(&self, s: &str) {
         println!("{}", s);
     }
 }
 
-pub struct CollectPrintHandler(Vec<String>);
+pub struct CollectPrintHandler(RefCell<Vec<String>>);
 
 impl CollectPrintHandler {
     pub fn new() -> Self {
-        CollectPrintHandler(Vec::new())
+        CollectPrintHandler(RefCell::new(Vec::new()))
     }
 
     pub fn finish(self) -> Vec<String> {
-        self.0
+        self.0.into_inner()
     }
 }
 
 impl PrintHandler for CollectPrintHandler {
-    fn println(&mut self, s: &str) {
-        self.0.push(s.to_owned());
+    fn println(&self, s: &str) {
+        self.0.borrow_mut().push(s.to_string());
     }
 }

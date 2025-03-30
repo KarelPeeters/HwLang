@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrDatabase, IrExpression,
-    IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrStatement, IrTargetStep, IrType, IrVariables,
-    IrWireOrPort,
+    IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType,
+    IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -12,10 +12,7 @@ use num_traits::Zero;
 use std::borrow::Cow;
 use unwrap_match::unwrap_match;
 
-use super::ir::IrPortInfo;
-
 // TODO expand all of this
-
 impl IrDatabase {
     pub fn validate(&self, diags: &Diagnostics) -> Result<(), ErrorGuaranteed> {
         for (_, info) in self.modules.iter() {

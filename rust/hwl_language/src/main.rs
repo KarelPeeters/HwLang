@@ -1,6 +1,6 @@
 use clap::Parser;
 use hwl_language::front::compile::{compile, StdoutPrintHandler};
-use hwl_language::front::diagnostic::{Diagnostic, DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
@@ -15,8 +15,6 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 struct Args {
     root: PathBuf,
-    #[arg(long)]
-    print_diagnostics_immediately: bool,
     #[arg(long)]
     profile: bool,
 }
@@ -33,11 +31,7 @@ fn main() -> ExitCode {
 }
 
 fn main_inner() -> ExitCode {
-    let Args {
-        root,
-        print_diagnostics_immediately,
-        profile,
-    } = Args::parse();
+    let Args { root, profile } = Args::parse();
 
     // collect source
     let start_all = Instant::now();
@@ -55,20 +49,8 @@ fn main_inner() -> ExitCode {
     let source = Rc::new(source);
     let time_source = start_source.elapsed();
 
-    // build diagnostic handler
-    let handler: Option<Box<dyn Fn(&Diagnostic)>> = if print_diagnostics_immediately {
-        let source_database = source.clone();
-        let handler = move |diag: &Diagnostic| {
-            let s = diag
-                .clone()
-                .to_string(&source_database, DiagnosticStringSettings::default());
-            eprintln!("{}\n", s);
-        };
-        Some(Box::new(handler))
-    } else {
-        None
-    };
-    let diags = Diagnostics::new_with_handler(handler);
+    // build diagnostics
+    let diags = Diagnostics::new();
 
     // run compilation
     let start_parse = Instant::now();
@@ -96,11 +78,9 @@ fn main_inner() -> ExitCode {
     // print diagnostics
     let diagnostics = diags.finish();
     let any_error = !diagnostics.is_empty();
-    if !print_diagnostics_immediately {
-        for diag in diagnostics {
-            let s = diag.to_string(&source, DiagnosticStringSettings::default());
-            eprintln!("{}\n", s);
-        }
+    for diag in diagnostics {
+        let s = diag.to_string(&source, DiagnosticStringSettings::default());
+        eprintln!("{}\n", s);
     }
 
     // save lowered verilog

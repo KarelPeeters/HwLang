@@ -205,16 +205,12 @@ impl CompileState<'_> {
 
         // figure out expected type if any
         let target_base_ty = match target_base.inner {
-            AssignmentTargetBase::Port(port) => {
-                Some(self.state.ports[port].ty.as_ref().map_inner(HardwareType::as_type))
-            }
-            AssignmentTargetBase::Wire(wire) => {
-                Some(self.state.wires[wire].ty.as_ref().map_inner(HardwareType::as_type))
-            }
+            AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
+            AssignmentTargetBase::Wire(wire) => Some(self.wires[wire].ty.as_ref().map_inner(HardwareType::as_type)),
             AssignmentTargetBase::Register(reg) => {
-                Some(self.state.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
+                Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
             }
-            AssignmentTargetBase::Variable(var) => self.state.variables[var].ty.clone(),
+            AssignmentTargetBase::Variable(var) => self.variables[var].ty.clone(),
         };
         let target_expected_ty = match target_base_ty {
             None => Type::Any,
@@ -257,7 +253,7 @@ impl CompileState<'_> {
         ctx.report_assignment(diags, Spanned::new(target_base.span, target_base_signal), &mut vars)?;
 
         // get inner type and steps
-        let target_base_ty = target_base_signal.ty(self.state).map_inner(Clone::clone);
+        let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
 
         // evaluate the full value
@@ -265,7 +261,7 @@ impl CompileState<'_> {
             None => right_eval,
             Some(op_inner) => {
                 // TODO apply implications
-                let target_base_eval = target_base_signal.as_ir_expression(self.state);
+                let target_base_eval = target_base_signal.as_ir_expression(self);
                 let target_eval = target_steps
                     .apply_to_value(diags, Spanned::new(target.span, MaybeCompile::Other(target_base_eval)))?;
 
@@ -309,14 +305,14 @@ impl CompileState<'_> {
             ctx.block_domain(),
             ctx.condition_domains(),
             op.span,
-            target_base_signal.domain(self.state).as_ref(),
+            target_base_signal.domain(self).as_ref(),
             target_steps,
             value_domain,
         )?;
 
         // get ir target
         let target_ir = IrAssignmentTarget {
-            base: target_base_signal.as_ir_target_base(self.state),
+            base: target_base_signal.as_ir_target_base(self),
             steps: target_steps_ir,
         };
 
@@ -355,13 +351,10 @@ impl CompileState<'_> {
 
         // TODO move all of this into a function
         // check mutable
-        if !self.state.variables[var].mutable {
+        if !self.variables[var].mutable {
             let diag = Diagnostic::new("assignment to immutable variable")
                 .add_error(target_base.span, "variable assigned to here")
-                .add_info(
-                    self.state.variables[var].id.span(),
-                    "variable declared as immutable here",
-                )
+                .add_info(self.variables[var].id.span(), "variable declared as immutable here")
                 .finish();
             return Err(diags.report(diag));
         }
@@ -390,7 +383,7 @@ impl CompileState<'_> {
             };
 
             // check type
-            if let Some(ty) = &self.state.variables[var].ty {
+            if let Some(ty) = &self.variables[var].ty {
                 let reason = TypeContainsReason::Assignment {
                     span_target: target.span,
                     span_target_ty: ty.span,
@@ -521,7 +514,7 @@ impl CompileState<'_> {
             };
 
             // check type
-            if let Some(var_ty) = &self.state.variables[var].ty {
+            if let Some(var_ty) = &self.variables[var].ty {
                 let reason = TypeContainsReason::Assignment {
                     span_target: target.span,
                     span_target_ty: var_ty.span,
@@ -561,16 +554,13 @@ impl CompileState<'_> {
         let diags = self.diags;
 
         // pick a type and convert the current base value to hardware
-        let target_base_ty = self.state.variables[var].ty.as_ref().ok_or_else(|| {
+        let target_base_ty = self.variables[var].ty.as_ref().ok_or_else(|| {
             let diag = Diagnostic::new("variable needs type annotation")
                 .add_error(
                     target_span,
                     "for the assignment here the variable needs to be converted to hardware",
                 )
-                .add_info(
-                    self.state.variables[var].id.span(),
-                    "variable declared without a type here",
-                )
+                .add_info(self.variables[var].id.span(), "variable declared without a type here")
                 .finish();
             diags.report(diag)
         })?;
@@ -595,7 +585,7 @@ impl CompileState<'_> {
         // create ir variable and replace the variable with it
         let var_ir_info = IrVariableInfo {
             ty: target_base_ty_hw.inner.to_ir(),
-            debug_info_id: self.state.variables[var].id.clone(),
+            debug_info_id: self.variables[var].id.clone(),
         };
         let var_ir = ctx.new_ir_variable(diags, target_base_span, var_ir_info)?;
 

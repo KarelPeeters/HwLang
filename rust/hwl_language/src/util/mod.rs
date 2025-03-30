@@ -5,6 +5,7 @@ pub mod data;
 pub mod int;
 pub mod io;
 pub mod iter;
+pub mod sync;
 
 // TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]

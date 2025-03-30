@@ -12,7 +12,14 @@ use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
 
-new_index_type!(pub Scope);
+#[derive(Debug, Copy, Clone)]
+pub enum Scope {
+    File(ScopeFile),
+    Inner(ScopeInner),
+}
+
+new_index_type!(pub ScopeFile);
+new_index_type!(pub ScopeInner);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Visibility {
@@ -23,8 +30,6 @@ pub enum Visibility {
 #[derive(Debug)]
 pub struct ScopeInfo {
     span: Span,
-    #[allow(dead_code)]
-    scope: Scope,
     parent: Option<(Scope, Visibility)>,
     values: IndexMap<String, DeclaredValue>,
 }
@@ -48,32 +53,25 @@ pub struct ScopeFound<'s> {
     pub value: &'s ScopedEntry,
 }
 
-pub struct Scopes {
-    arena: Arena<Scope, ScopeInfo>,
+pub struct Scopes<'a> {
+    file_scopes: &'a Arena<ScopeFile, ScopeInfo>,
+    inner_scopes: Arena<ScopeInner, ScopeInfo>,
 }
 
 // TODO rethink: have a separate scope builder that needs all declarations to be provided before any lookups can start?
 //   more safe and elegant, but makes "a bunch of nested scopes" like in generic params much slower
-impl Scopes {
-    pub fn new() -> Self {
+impl<'a> Scopes<'a> {
+    pub fn new(file_scopes: &'a Arena<ScopeFile, ScopeInfo>) -> Self {
         Self {
-            arena: Arena::default(),
+            file_scopes,
+            inner_scopes: Arena::default(),
         }
     }
 
-    pub fn new_root(&mut self, span: Span) -> Scope {
-        self.arena.push_with_index(|scope| ScopeInfo {
+    pub fn new_child(&mut self, parent: impl Into<Scope>, span: Span, vis: Visibility) -> ScopeInner {
+        let parent = parent.into();
+        self.inner_scopes.push(ScopeInfo {
             span,
-            scope,
-            parent: None,
-            values: Default::default(),
-        })
-    }
-
-    pub fn new_child(&mut self, parent: Scope, span: Span, vis: Visibility) -> Scope {
-        self.arena.push_with_index(|child| ScopeInfo {
-            span,
-            scope: child,
             parent: Some((parent, vis)),
             values: Default::default(),
         })
@@ -81,6 +79,14 @@ impl Scopes {
 }
 
 impl ScopeInfo {
+    pub fn new(span: Span, parent: Option<(Scope, Visibility)>) -> Self {
+        Self {
+            span,
+            parent,
+            values: Default::default(),
+        }
+    }
+
     /// Declare a value in this scope.
     ///
     /// Allows shadowing identifiers in the parent scope, but not in the local scope.
@@ -270,16 +276,26 @@ impl ScopeInfo {
     }
 }
 
-impl std::ops::Index<Scope> for Scopes {
+impl std::ops::Index<Scope> for Scopes<'_> {
     type Output = ScopeInfo;
     fn index(&self, index: Scope) -> &Self::Output {
-        &self.arena[index]
+        match index {
+            Scope::File(index) => &self.file_scopes[index],
+            Scope::Inner(index) => &self.inner_scopes[index],
+        }
     }
 }
 
-impl std::ops::IndexMut<Scope> for Scopes {
-    fn index_mut(&mut self, index: Scope) -> &mut Self::Output {
-        &mut self.arena[index]
+impl std::ops::Index<ScopeInner> for Scopes<'_> {
+    type Output = ScopeInfo;
+    fn index(&self, index: ScopeInner) -> &Self::Output {
+        &self.inner_scopes[index]
+    }
+}
+
+impl std::ops::IndexMut<ScopeInner> for Scopes<'_> {
+    fn index_mut(&mut self, index: ScopeInner) -> &mut Self::Output {
+        &mut self.inner_scopes[index]
     }
 }
 
@@ -306,5 +322,17 @@ impl Display for Visibility {
             Visibility::Public => write!(f, "public"),
             Visibility::Private => write!(f, "private"),
         }
+    }
+}
+
+impl From<ScopeInner> for Scope {
+    fn from(inner: ScopeInner) -> Self {
+        Scope::Inner(inner)
+    }
+}
+
+impl From<ScopeFile> for Scope {
+    fn from(file: ScopeFile) -> Self {
+        Scope::File(file)
     }
 }

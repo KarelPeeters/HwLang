@@ -1,9 +1,10 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild,
-    IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
-    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
+    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort, IrPortConnection,
+    IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables,
+    IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -23,8 +24,6 @@ use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::num::NonZeroU32;
-
-use super::ir::{ir_modules_topological_sort, IrModules};
 
 #[derive(Debug, Clone)]
 pub struct LoweredVerilog {
