@@ -15,8 +15,11 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 struct Args {
     root: PathBuf,
+
     #[arg(long)]
     profile: bool,
+    #[arg(long)]
+    print_files: bool,
 }
 
 fn main() -> ExitCode {
@@ -31,7 +34,7 @@ fn main() -> ExitCode {
 }
 
 fn main_inner() -> ExitCode {
-    let Args { root, profile } = Args::parse();
+    let Args { root, profile, print_files } = Args::parse();
 
     // collect source
     let start_all = Instant::now();
@@ -48,6 +51,14 @@ fn main_inner() -> ExitCode {
 
     let source = Rc::new(source);
     let time_source = start_source.elapsed();
+
+    // print source info
+    if print_files {
+        eprintln!("Collected sources:");
+        for file in source.files() {
+            eprintln!("  [{}]: {:?}", file.0, &source[file].path_raw);
+        }
+    }
 
     // build diagnostics
     let diags = Diagnostics::new();

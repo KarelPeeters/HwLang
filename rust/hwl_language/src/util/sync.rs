@@ -6,6 +6,8 @@ pub struct ComputeOnce<T> {
     inner: std::sync::OnceLock<T>,
 }
 
+// TODO add some cycle deadlock detection, what if we're already the thread that is computing this,
+//   but then we're asking for it again?
 impl<T> ComputeOnce<T> {
     pub fn new() -> Self {
         Self {

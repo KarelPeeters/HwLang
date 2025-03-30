@@ -19,6 +19,7 @@ pub struct IrDatabase {
 
 pub type IrModules = Arena<IrModule, IrModuleInfo>;
 
+// TODO check for circular instantiations
 pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<IrModule> {
     let mut result = vec![];
     let mut seen = HashSet::new();

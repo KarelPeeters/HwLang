@@ -8,7 +8,7 @@ use crate::front::scope::{Scope, ScopeInner, Visibility};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, ItemDefType};
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
-use crate::util::ResultExt;
+use crate::util::{ResultDoubleExt, ResultExt};
 
 impl CompileState<'_> {
     pub fn const_eval<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) -> Result<CompileValue, ErrorGuaranteed> {
@@ -50,16 +50,14 @@ impl CompileState<'_> {
     }
 
     pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
-        let slot = self.shared.cache_item_values.get(&item).unwrap();
-        slot.get_or_compute(|| self.eval_item_new(item)).as_ref_ok()
+        self.with_recursion(ElaborationStackEntry::Item(item), |s| {
+            let slot = s.shared.cache_item_values.get(&item).unwrap();
+            slot.get_or_compute(|| s.eval_item_new(item)).as_ref_ok()
+        })
+        .flatten_err()
     }
 
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
-        self.check_compile_loop(ElaborationStackEntry::Item(item), |s| s.eval_item_new_impl(item))
-            .unwrap_or_else(Err)
-    }
-
-    fn eval_item_new_impl(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.diags;
         let file_scope = self.file_scope(item.file())?;
 

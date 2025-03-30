@@ -63,12 +63,12 @@ pub fn compile(
     };
 
     // get the top module
-    let (top_module, top_item) = find_top_module(diags, fixed, &shared).and_then(|top_item| {
+    let top_module_and_item = find_top_module(diags, fixed, &shared).and_then(|top_item| {
         let mut tmp_state = CompileState::new(fixed, &shared, diags);
-        let elaborated = tmp_state.elaborate_module(top_item, None)?;
+        let elaborated: ElaboratedModule = tmp_state.elaborate_module(top_item, None)?;
         tmp_state.finish();
         Ok((elaborated.ir_module, top_item))
-    })?;
+    });
 
     // run until everything is elaborated
     // TODO actually use multiple threads
@@ -76,6 +76,7 @@ pub fn compile(
     run_elaboration_loop(diags, fixed, &shared);
 
     // return result (at this point all modules should have been fully elaborated)
+    let (top_module, top_item) = top_module_and_item?;
     let modules = shared.finish_ir_modules(diags, parsed[top_item].span)?;
 
     let db = IrDatabase { top_module, modules };
@@ -90,7 +91,12 @@ fn run_elaboration_loop(diags: &Diagnostics, fixed: CompileFixed, shared: &Compi
         match work_item {
             WorkItem::EvaluateItem(item) => {
                 let slot = shared.cache_item_values.get(&item).unwrap();
-                slot.offer_to_compute(|| state.eval_item_new(item));
+                let result = state.with_recursion(ElaborationStackEntry::Item(item), |s| {
+                    slot.offer_to_compute(|| s.eval_item_new(item));
+                });
+
+                // this is the first stack entry so it can't be a cycle yet
+                result.unwrap();
             }
             WorkItem::ElaborateModule(ir_module, header) => {
                 // TODO this lock is a bottleneck, it prevents elaborating multiple modules at once, which was the whole point!
@@ -503,7 +509,7 @@ impl<'a> CompileState<'a> {
     }
 
     // TODO add stack limit
-    pub fn check_compile_loop<T>(
+    pub fn with_recursion<T>(
         &mut self,
         entry: ElaborationStackEntry,
         f: impl FnOnce(&mut Self) -> T,

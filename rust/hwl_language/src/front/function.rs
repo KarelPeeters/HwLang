@@ -239,7 +239,7 @@ impl FunctionValue {
         let param_key = param_values.into_iter().map(|(_, v)| v).collect_vec();
         let stack_entry = ElaborationStackEntry::FunctionRun(self.item, param_key);
         state
-            .check_compile_loop(stack_entry, |state| {
+            .with_recursion(stack_entry, |state| {
                 // run the body
                 // TODO add execution limits?
                 match &self.body {

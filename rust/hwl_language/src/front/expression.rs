@@ -605,7 +605,7 @@ impl CompileState<'_> {
                 // actually do the call
                 let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
                 let (result_block, result_value) = self
-                    .check_compile_loop(entry, |s| target.call(s, ctx, args))
+                    .with_recursion(entry, |s| target.call(s, ctx, args))
                     .flatten_err()?;
 
                 let result_block_spanned = Spanned {
