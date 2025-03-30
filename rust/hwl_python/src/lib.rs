@@ -233,10 +233,10 @@ impl Compile {
             )?;
             let item = match found.value {
                 &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-                ScopedEntry::Named(_) | ScopedEntry::Const(_) => {
+                ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
                     let e = diags.report_internal_error(
                         found.defining_span,
-                        "file scope should only contain items, not named or consts",
+                        "file scope should only contain items, not named/value",
                     );
                     return Err(convert_diag_error(source, &diags, e));
                 }

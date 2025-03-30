@@ -11,6 +11,8 @@ use crate::syntax::parsed::{AstRefItem, AstRefModule};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 
+use super::value::MaybeCompile;
+
 impl CompileState<'_> {
     pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
         // the cache lookup is written in a strange way to workaround borrow checker limitations when returning values
@@ -57,7 +59,9 @@ impl CompileState<'_> {
     }
 
     pub fn const_eval_and_declare<V>(&mut self, scope: Scope, decl: &ConstDeclaration<V>) {
-        let entry = self.const_eval(scope, decl).map(ScopedEntry::Const);
+        let entry = self
+            .const_eval(scope, decl)
+            .map(|v| ScopedEntry::Value(MaybeCompile::Compile(v)));
         self.state.scopes[scope].maybe_declare(self.diags, decl.id.as_ref(), entry, Visibility::Private);
     }
 

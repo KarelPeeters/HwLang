@@ -7,14 +7,18 @@ use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
 
 use super::compile::CompileStateLong;
-use super::value::CompileValue;
+use super::value::MaybeCompile;
 
 // TODO move this to a better place
 #[derive(Debug, Clone)]
 pub enum ScopedEntry {
+    /// Indirection though an item, the item should be evaluated.
     Item(AstRefItem),
+    /// A named value: port, register, wire, variable.
+    /// These are not fully evaluated immediately, they might be used symbolically as assignment targets or in domain expressions.
     Named(NamedValue),
-    Const(CompileValue),
+    /// A simple value: constants or parameters.
+    Value(MaybeCompile<TypedIrExpression>),
 }
 
 pub type DomainSignal = Polarized<Signal>;

@@ -74,7 +74,6 @@ pub struct CompileStateLong {
     pub scopes: Scopes,
     pub file_scopes: IndexMap<FileId, Result<FileScopes, ErrorGuaranteed>>,
 
-    pub parameters: Arena<Parameter, ParameterInfo>,
     pub variables: Arena<Variable, VariableInfo>,
     pub ports: Arena<Port, PortInfo>,
     pub wires: Arena<Wire, WireInfo>,
@@ -115,7 +114,6 @@ pub enum ElaborationStackEntry {
     FunctionRun(AstRefItem, Vec<MaybeCompile<TypedIrExpression>>),
 }
 
-new_index_type!(pub Parameter);
 new_index_type!(pub Variable);
 new_index_type!(pub Port);
 new_index_type!(pub Wire);
@@ -125,12 +123,6 @@ new_index_type!(pub Register);
 pub struct ConstantInfo {
     pub id: MaybeIdentifier,
     pub value: CompileValue,
-}
-
-#[derive(Debug)]
-pub struct ParameterInfo {
-    pub id: MaybeIdentifier,
-    pub value: MaybeCompile<TypedIrExpression>,
 }
 
 #[derive(Debug)]
@@ -385,7 +377,6 @@ impl CompileStateLong {
         CompileStateLong {
             scopes,
             file_scopes,
-            parameters: Arena::default(),
             registers: Arena::default(),
             ports: Arena::default(),
             wires: Arena::default(),
@@ -397,11 +388,7 @@ impl CompileStateLong {
         }
     }
 
-    pub fn finish_ir_modules(
-        self,
-        diags: &Diagnostics,
-        dummy_span: Span,
-    ) -> Result<IrModules, ErrorGuaranteed> {
+    pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
         self.ir_modules.try_map_values(|v| match v {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
@@ -555,11 +542,11 @@ impl<'a> CompileState<'a> {
                 },
                 _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
             },
-            ScopedEntry::Named(_) | ScopedEntry::Const(_) => {
+            ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
                 // TODO include "got" string
                 // TODO is this even ever possible? direct should only be inside of scopes
                 Err(diags.report_simple(
-                    "top should be an item, got a named or const",
+                    "top should be an item, got a named/value",
                     top_entry.defining_span,
                     "defined here",
                 ))

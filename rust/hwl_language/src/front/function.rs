@@ -1,15 +1,15 @@
 use crate::front::assignment::VariableValues;
 use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileState, ElaborationStackEntry, ParameterInfo};
+use crate::front::compile::{CompileState, ElaborationStackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::{Scope, Visibility};
 use crate::front::types::Type;
-use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
@@ -204,11 +204,7 @@ impl CompileState<'_> {
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
             // declare param in scope
-            let param = self.state.parameters.push(ParameterInfo {
-                id: MaybeIdentifier::Identifier(param_id.clone()),
-                value: arg_value_maybe.inner,
-            });
-            let entry = ScopedEntry::Named(NamedValue::Parameter(param));
+            let entry = ScopedEntry::Value(arg_value_maybe.inner);
             self.state.scopes[scope_params].declare_already_checked(
                 diags,
                 param_id.string.clone(),

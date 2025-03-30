@@ -34,6 +34,7 @@ use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Either, Itertools};
 use std::hash::Hash;
 
+use super::expression::EvaluatedId;
 use super::ir::IrModule;
 
 struct BodyElaborationState<'a, 'b> {
@@ -862,7 +863,7 @@ impl BodyElaborationState<'_, '_> {
                         let named = self.state.eval_id(scope, id)?;
 
                         let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
-                            MaybeCompile::Other(NamedValue::Wire(wire)) => {
+                            EvaluatedId::Named(NamedValue::Wire(wire)) => {
                                 let wire_info = &self.state.state.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
@@ -871,7 +872,7 @@ impl BodyElaborationState<'_, '_> {
                                     &wire_info.domain,
                                 )
                             }
-                            MaybeCompile::Other(NamedValue::Port(port)) => {
+                            EvaluatedId::Named(NamedValue::Port(port)) => {
                                 let port_info = &self.state.state.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
