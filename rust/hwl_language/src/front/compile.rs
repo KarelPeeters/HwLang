@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
@@ -677,20 +676,20 @@ impl PrintHandler for StdoutPrintHandler {
     }
 }
 
-pub struct CollectPrintHandler(RefCell<Vec<String>>);
+pub struct CollectPrintHandler(Mutex<Vec<String>>);
 
 impl CollectPrintHandler {
     pub fn new() -> Self {
-        CollectPrintHandler(RefCell::new(Vec::new()))
+        CollectPrintHandler(Mutex::new(Vec::new()))
     }
 
     pub fn finish(self) -> Vec<String> {
-        self.0.into_inner()
+        self.0.into_inner().unwrap()
     }
 }
 
 impl PrintHandler for CollectPrintHandler {
     fn println(&self, s: &str) {
-        self.0.borrow_mut().push(s.to_string());
+        self.0.lock().unwrap().push(s.to_string());
     }
 }

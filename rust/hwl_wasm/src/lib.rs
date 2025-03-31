@@ -7,7 +7,7 @@ use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::source::FilePath;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
-use hwl_language::util::ResultExt;
+use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -69,7 +69,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
     let mut print_handler = CollectPrintHandler::new();
-    let compiled = compile(&diags, &source, &parsed, &mut print_handler);
+    let compiled = compile(&diags, &source, &parsed, &mut print_handler, NON_ZERO_USIZE_ONE);
     let lowered = compiled
         .as_ref_ok()
         .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
