@@ -11,6 +11,7 @@ use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::FileId;
 use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
+use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
 use lsp_types::{
@@ -35,7 +36,7 @@ impl ServerState {
             self.log("source database built, compiling");
             let diags = Diagnostics::new();
             let parsed = ParsedDatabase::new(&diags, &source);
-            let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler);
+            let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler, NON_ZERO_USIZE_ONE);
             let _ = compiled.and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
             self.log("compilation finished");
 

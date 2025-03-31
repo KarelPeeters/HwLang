@@ -1,6 +1,8 @@
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
+use crate::constants::THREAD_STACK_SIZE;
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister, IrWire};
@@ -34,7 +36,8 @@ pub fn compile(
     diags: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
-    print_handler: &mut (dyn PrintHandler),
+    print_handler: &mut (dyn PrintHandler + Sync),
+    thread_count: NonZeroUsize,
 ) -> Result<IrDatabase, ErrorGuaranteed> {
     let PopulatedFileScopes {
         file_scopes,
@@ -43,7 +46,8 @@ pub fn compile(
     } = populate_file_scopes(diags, source, parsed);
 
     // TODO randomize order to avoid all threads working on similar items and running into each other?
-    let work_queue = SharedQueue::new(1);
+    let thread_count = thread_count.get();
+    let work_queue = SharedQueue::new(thread_count);
     work_queue.push_batch(all_items_except_imports.iter().copied().map(WorkItem::EvaluateItem));
 
     let fixed = CompileFixed { source, parsed };
@@ -71,9 +75,39 @@ pub fn compile(
     });
 
     // run until everything is elaborated
-    // TODO actually use multiple threads
-    // TODO merge and sort diags
-    run_elaboration_loop(diags, fixed, &shared);
+    if thread_count > 1 {
+        // TODO manage thread pool externally, and re-use it between parsing and elaboration
+        std::thread::scope(|s| {
+            let mut handles = vec![];
+            for thread_index in 0..thread_count {
+                let shared = &shared;
+                let f = move || {
+                    let thread_diags = Diagnostics::new();
+                    run_elaboration_loop(&thread_diags, fixed, shared);
+                    thread_diags
+                };
+
+                let name = format!("compile_{thread_index}");
+                let h = std::thread::Builder::new()
+                    .name(name)
+                    .stack_size(THREAD_STACK_SIZE)
+                    .spawn_scoped(s, f)
+                    .unwrap();
+
+                handles.push(h);
+            }
+
+            // TODO sort diags
+            for h in handles {
+                let thread_diags = h.join().unwrap();
+                for d in thread_diags.finish() {
+                    diags.report(d);
+                }
+            }
+        });
+    } else {
+        run_elaboration_loop(diags, fixed, &shared);
+    }
 
     // return result (at this point all modules should have been fully elaborated)
     let (top_module, top_item) = top_module_and_item?;
@@ -135,7 +169,7 @@ pub struct CompileShared<'a> {
     pub cache_modules: Mutex<CompileSharedModules>,
 
     // TODO is there a reasonable way to get deterministic prints?
-    pub print_handler: &'a dyn PrintHandler,
+    pub print_handler: &'a (dyn PrintHandler + Sync),
 }
 
 pub struct CompileSharedModules {

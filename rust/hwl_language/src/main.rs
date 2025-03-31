@@ -1,4 +1,5 @@
 use clap::Parser;
+use hwl_language::constants::THREAD_STACK_SIZE;
 use hwl_language::front::compile::{compile, StdoutPrintHandler};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
@@ -6,7 +7,8 @@ use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
-use hwl_language::util::ResultExt;
+use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -14,8 +16,14 @@ use std::time::Instant;
 
 #[derive(Parser, Debug)]
 struct Args {
+    // input data
     root: PathBuf,
 
+    // performance options
+    #[arg(long, short = 'j')]
+    thread_count: Option<NonZeroUsize>,
+
+    // debug options
     #[arg(long)]
     profile: bool,
     #[arg(long)]
@@ -26,7 +34,7 @@ fn main() -> ExitCode {
     // spawn a new thread with a larger stack size
     // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
     std::thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
+        .stack_size(THREAD_STACK_SIZE)
         .spawn(main_inner)
         .unwrap()
         .join()
@@ -34,7 +42,13 @@ fn main() -> ExitCode {
 }
 
 fn main_inner() -> ExitCode {
-    let Args { root, profile, print_files } = Args::parse();
+    let Args {
+        root,
+        thread_count,
+        profile,
+        print_files,
+    } = Args::parse();
+    let thread_count = thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE));
 
     // collect source
     let start_all = Instant::now();
@@ -64,14 +78,16 @@ fn main_inner() -> ExitCode {
     let diags = Diagnostics::new();
 
     // run compilation
+    // TODO parallelize parsing
     let start_parse = Instant::now();
     let parsed = ParsedDatabase::new(&diags, &source);
     let time_parse = start_parse.elapsed();
 
     let start_compile = Instant::now();
-    let compiled = compile(&diags, &source, &parsed, &mut StdoutPrintHandler);
+    let compiled = compile(&diags, &source, &parsed, &mut StdoutPrintHandler, thread_count);
     let time_compile = start_compile.elapsed();
 
+    // TODO parallelize lowering?
     let start_lower = Instant::now();
     let lowered = compiled
         .as_ref_ok()
