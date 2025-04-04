@@ -1,12 +1,11 @@
+use indexmap::map::IndexMap;
+use itertools::Itertools;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
-use indexmap::map::IndexMap;
-use itertools::Itertools;
-use rand::random;
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
 //   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
@@ -149,7 +148,7 @@ impl<K: IndexType, T> Default for Arena<K, T> {
     fn default() -> Self {
         Self {
             values: vec![],
-            check: random(),
+            check: rand::random(),
             ph: PhantomData,
         }
     }

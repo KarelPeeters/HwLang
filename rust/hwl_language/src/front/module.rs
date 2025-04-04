@@ -3,7 +3,7 @@ use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
-use crate::front::compile::{CompileState, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
+use crate::front::compile::{CompileItemContext, CompileRefs, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
 use crate::front::context::{ExpressionContext, IrBuilderExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::EvaluatedId;
@@ -13,34 +13,29 @@ use crate::front::ir::{
     IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::front::scope::{Scope, ScopeInner, Visibility};
+use crate::front::scope::{Scope, ScopeContent};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
-use crate::syntax::ast;
+use crate::syntax::ast::{self, ModuleStatement, ModuleStatementKind};
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
-    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, ModuleStatement,
-    ModuleStatementKind, PortConnection, PortDirection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain,
-    WireDeclaration, WireKind,
+    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection,
+    PortDirection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
-use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, result_pair_split, ResultExt};
+use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Either, Itertools};
 use std::hash::Hash;
 
-struct BodyElaborationState<'a, 'b> {
-    state: &'a mut CompileState<'b>,
-
-    scope_ports: Scope,
-    scope_body: Scope,
-    scope_body_as_inner: ScopeInner,
+struct BodyElaborationContext<'a, 's> {
+    ctx: &'a mut CompileItemContext<'a, 's>,
 
     ir_ports: Arena<IrPort, IrPortInfo>,
     ir_wires: Arena<IrWire, IrWireInfo>,
@@ -54,17 +49,21 @@ struct BodyElaborationState<'a, 'b> {
     processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
 }
 
+// TODO rename, this should really be "module ports, viewed from the outside"
+new_index_type!(pub InstancePort);
+pub type InstancePorts = Arena<InstancePort, PortInfo<InstancePort>>;
+
 pub struct ElaboratedModuleParams {
     pub module: AstRefModule,
     pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
-    pub scope_params: ScopeInner,
+    pub scope_header: ScopeContent,
 }
 
 pub struct ElaboratedModuleHeader {
     pub module: AstRefModule,
     pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
-    pub scope_ports: ScopeInner,
-    pub ports: Vec<Port>,
+    pub scope_header: ScopeContent,
+    pub ports: Arena<Port, PortInfo<Port>>,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
 }
 
@@ -76,30 +75,35 @@ pub struct ModuleElaborationCacheKey {
 
 impl ElaboratedModuleParams {
     pub fn cache_key(&self) -> ModuleElaborationCacheKey {
+        let &ElaboratedModuleParams {
+            module,
+            ref params,
+            ref scope_header,
+        } = self;
+        // derived from params, so no need to track separately
+        let _ = scope_header;
+
         ModuleElaborationCacheKey {
-            module: self.module,
-            params: self
-                .params
+            module,
+            params: params
                 .as_ref()
                 .map(|params| params.iter().map(|(_, v)| v.clone()).collect()),
         }
     }
 }
 
-#[derive(Clone)]
 pub struct ElaboratedModule {
     pub ir_module: IrModule,
-    pub ports: Vec<Port>,
+    pub ports: InstancePorts,
 }
 
-impl CompileState<'_> {
-    pub fn elaborate_module_params(
-        &mut self,
+impl CompileRefs<'_, '_> {
+    pub fn elaborate_module_params_new(
+        &self,
         module: AstRefModule,
         args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
     ) -> Result<ElaboratedModuleParams, ErrorGuaranteed> {
         let diags = self.diags;
-
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
@@ -108,18 +112,18 @@ impl CompileState<'_> {
             ports: _,
             body: _,
         } = &self.fixed.parsed[module];
-        let scope_file = Scope::File(self.file_scope(module.file())?);
 
-        let (scope_params, param_values) = match (params, args) {
-            (None, None) => {
-                let params_scope = self.scopes.new_child(scope_file, def_span, Visibility::Private);
-                (params_scope, None)
-            }
+        // create header scope
+        let scope_file = self.shared.file_scope(module.file())?;
+        let mut scope = Scope::new_child(def_span, scope_file);
+
+        // evaluate params/args
+        let param_values = match (params, args) {
+            (None, None) => None,
             (Some(params), Some(args)) => {
-                let span_params = Span::new(params.span.start, def_span.end);
-                let (params_scope, param_values) =
-                    self.match_args_to_params_and_typecheck(params, &args, scope_file, span_params)?;
-                (params_scope, Some(param_values))
+                let mut ctx = CompileItemContext::new(*self);
+                let param_values = ctx.match_args_to_params_and_typecheck(&mut scope, params, &args)?;
+                Some(param_values)
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
         };
@@ -127,18 +131,18 @@ impl CompileState<'_> {
         Ok(ElaboratedModuleParams {
             module,
             params: param_values,
-            scope_params: scope_params,
+            scope_header: scope.into_content(),
         })
     }
 
     pub fn elaborate_module_ports_new(
-        &mut self,
+        self,
         params: ElaboratedModuleParams,
-    ) -> Result<ElaboratedModuleHeader, ErrorGuaranteed> {
+    ) -> Result<(InstancePorts, ElaboratedModuleHeader), ErrorGuaranteed> {
         let ElaboratedModuleParams {
             module,
             params,
-            scope_params,
+            scope_header,
         } = params;
         let &ast::ItemDefModule {
             span: def_span,
@@ -149,30 +153,31 @@ impl CompileState<'_> {
             body: _,
         } = &self.fixed.parsed[module];
 
-        let (scope_ports, ports_vec, ports_ir) = self.elaborate_module_ports_impl(def_span, scope_params, ports);
+        let file_scope = self.shared.file_scope(module.file())?;
+        let mut scope_header = Scope::restore_child_from_content(def_span, file_scope, scope_header);
 
-        Ok(ElaboratedModuleHeader {
+        let (ports_external, ports_internal, ports_ir) = self.elaborate_module_ports_impl(&mut scope_header, ports);
+
+        let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
             module,
             params,
-            scope_ports,
-            ports: ports_vec,
+            scope_header: scope_header.into_content(),
+            ports: ports_internal,
             ports_ir,
-        })
+        };
+        Ok((ports_external, header))
     }
 
-    pub fn elaborate_module_body_new(
-        &mut self,
-        ports: ElaboratedModuleHeader,
-    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
+    pub fn elaborate_module_body_new(&self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ElaboratedModuleHeader {
             module,
             params,
-            scope_ports,
+            scope_header: scope,
             ports,
             ports_ir,
         } = ports;
         let &ast::ItemDefModule {
-            span: _,
+            span: def_span,
             vis: _,
             id: ref def_id,
             params: _,
@@ -180,29 +185,65 @@ impl CompileState<'_> {
             ref body,
         } = &self.fixed.parsed[module];
 
-        self.elaborate_module_body_impl(def_id, params.clone(), &ports, ports_ir, scope_ports.into(), body)
+        let scope_file = self.shared.file_scope(module.file())?;
+        let scope = Scope::restore_child_from_content(def_span, scope_file, scope);
+        self.elaborate_module_body_impl(def_id, params.clone(), ports, ports_ir, &scope, body)
     }
 
     fn elaborate_module_ports_impl(
-        &mut self,
-        def_span: Span,
-        params_scope: ScopeInner,
+        &self,
+        scope_header: &mut Scope,
         ports: &Spanned<Vec<ModulePortItem>>,
-    ) -> (ScopeInner, Vec<Port>, Arena<IrPort, IrPortInfo>) {
+    ) -> (InstancePorts, Arena<Port, PortInfo<Port>>, Arena<IrPort, IrPortInfo>) {
         let diags = self.diags;
 
-        let mut ports_vec: Vec<Port> = vec![];
-        let mut ir_ports = Arena::default();
-        let ports_scope = self.scopes.new_child(params_scope, def_span, Visibility::Private);
+        let mut ports_external: InstancePorts = Arena::default();
+        let mut port_to_external: IndexMap<Port, InstancePort> = IndexMap::new();
+        let mut push_port = |ctx: &mut CompileItemContext,
+                             ports_ir: &mut Arena<_, _>,
+                             id: &Identifier,
+                             direction: Spanned<PortDirection>,
+                             domain: Spanned<PortDomain<Port>>,
+                             ty: Spanned<HardwareType>| {
+            let ir_port = ports_ir.push(IrPortInfo {
+                direction: direction.inner,
+                ty: ty.inner.to_ir(),
+                debug_info_id: id.clone(),
+                debug_info_ty: ty.inner.clone(),
+                debug_info_domain: domain.inner.to_diagnostic_string(&ctx),
+            });
+            let port = ctx.ports.push(PortInfo {
+                id: id.clone(),
+                direction,
+                domain,
+                ty: ty.clone(),
+                ir: ir_port,
+            });
+
+            let port_external = ports_external.push(PortInfo {
+                id: id.clone(),
+                direction,
+                domain: domain.map_inner(|p| p.map_inner(|p| *port_to_external.get(&p).unwrap())),
+                ty,
+                ir: ir_port,
+            });
+
+            port_to_external.insert_first(port, port_external);
+
+            port
+        };
+
+        let mut ports_ir = Arena::default();
+        let mut ctx = CompileItemContext::new(*self);
 
         for port_item in &ports.inner {
             match port_item {
                 ModulePortItem::Single(port_item) => {
-                    let ModulePortSingle {
+                    let &ModulePortSingle {
                         span: _,
-                        id,
+                        ref id,
                         direction,
-                        kind,
+                        ref kind,
                     } = port_item;
 
                     // eval kind
@@ -220,100 +261,81 @@ impl CompileState<'_> {
                         WireKind::Normal { domain, ty } => {
                             let no_vars = VariableValues::new_no_vars();
                             (
-                                self.eval_port_domain(ports_scope.into(), domain)
+                                ctx.eval_port_domain(scope_header, domain)
                                     .map(|d| d.map_inner(PortDomain::Kind)),
-                                self.eval_expression_as_ty_hardware(ports_scope.into(), &no_vars, ty, "port"),
+                                ctx.eval_expression_as_ty_hardware(scope_header, &no_vars, ty, "port"),
                             )
                         }
                     };
 
                     // build entry
                     let entry = result_pair(domain, ty).map(|(domain, ty)| {
-                        let ir_port = ir_ports.push(IrPortInfo {
-                            direction: direction.inner,
-                            ty: ty.inner.to_ir(),
-                            debug_info_id: id.clone(),
-                            debug_info_ty: ty.inner.clone(),
-                            debug_info_domain: domain.inner.to_diagnostic_string(self),
-                        });
-                        let port = self.ports.push(PortInfo {
-                            id: id.clone(),
-                            direction: *direction,
-                            domain,
-                            ty,
-                            ir: ir_port,
-                        });
-                        ports_vec.push(port);
+                        let port = push_port(&mut ctx, &mut ports_ir, id, direction, domain, ty);
                         ScopedEntry::Named(NamedValue::Port(port))
                     });
 
-                    self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                    scope_header.declare(diags, id, entry);
                 }
                 ModulePortItem::Block(port_item) => {
                     let ModulePortBlock { span: _, domain, ports } = port_item;
 
                     // eval domain
-                    let domain = self
-                        .eval_port_domain(ports_scope.into(), domain)
+                    let domain = ctx
+                        .eval_port_domain(&scope_header, domain)
                         .map(|d| d.map_inner(PortDomain::Kind));
 
                     for port in ports {
-                        let ModulePortInBlock {
+                        let &ModulePortInBlock {
                             span: _,
-                            id,
+                            ref id,
                             direction,
-                            ty,
+                            ref ty,
                         } = port;
 
                         // eval ty
                         let no_vars = VariableValues::new_no_vars();
-                        let ty = self.eval_expression_as_ty_hardware(ports_scope.into(), &no_vars, ty, "port");
+                        let ty = ctx.eval_expression_as_ty_hardware(&scope_header, &no_vars, ty, "port");
 
                         // build entry
                         let entry = result_pair(domain.as_ref_ok(), ty).map(|(&domain, ty)| {
-                            let ir_port = ir_ports.push(IrPortInfo {
-                                direction: direction.inner,
-                                ty: ty.inner.to_ir(),
-                                debug_info_id: id.clone(),
-                                debug_info_ty: ty.inner.clone(),
-                                debug_info_domain: domain.inner.to_diagnostic_string(self),
-                            });
-                            let port = self.ports.push(PortInfo {
-                                id: id.clone(),
-                                direction: *direction,
-                                domain,
-                                ty,
-                                ir: ir_port,
-                            });
-                            ports_vec.push(port);
+                            let port = push_port(&mut ctx, &mut ports_ir, id, direction, domain, ty);
                             ScopedEntry::Named(NamedValue::Port(port))
                         });
 
-                        self.scopes[ports_scope].declare(diags, id, entry, Visibility::Private);
+                        scope_header.declare(diags, id, entry);
                     }
                 }
             }
         }
 
-        (ports_scope, ports_vec, ir_ports)
+        assert_eq!(ctx.ports.len(), ports_external.len());
+        assert_eq!(ctx.ports.len(), ports_ir.len());
+
+        (ports_external, ctx.ports, ports_ir)
     }
 
     fn elaborate_module_body_impl(
-        &mut self,
+        &self,
         def_id: &Identifier,
         params: Option<Vec<(Identifier, CompileValue)>>,
-        ports: &Vec<Port>,
+        ports: Arena<Port, PortInfo<Port>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
-        scope_ports: Scope,
+        scope_header: &Scope,
         body: &Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
-        let scope_body = self.scopes.new_child(scope_ports, body.span, Visibility::Private);
+        let mut scope_body = Scope::new_child(body.span, scope_header);
 
-        let mut state = BodyElaborationState {
-            state: self,
-            scope_ports,
-            scope_body: scope_body.into(),
-            scope_body_as_inner: scope_body,
+        let mut ctx = CompileItemContext {
+            refs: *self,
+            variables: Default::default(),
+            ports,
+            wires: Default::default(),
+            registers: Default::default(),
+            stack: Default::default(),
+        };
+
+        let mut ctx = BodyElaborationContext {
+            ctx: &mut ctx,
             ir_ports,
             ir_wires: Arena::default(),
             ir_registers: Arena::default(),
@@ -328,46 +350,46 @@ impl CompileState<'_> {
         // process declarations
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future declarations
-        state.pass_0_declarations(body);
+        ctx.pass_0_declarations(&mut scope_body, body);
 
         // create driver entries for remaining (= non-reg) output ports
-        for &port in ports {
-            match state.state.ports[port].direction.inner {
+        for (port, port_info) in &ctx.ctx.ports {
+            match port_info.direction.inner {
                 PortDirection::Input => {
                     // do nothing
                 }
                 PortDirection::Output => {
-                    state.drivers.output_port_drivers.entry(port).or_default();
+                    ctx.drivers.output_port_drivers.entry(port).or_default();
                 }
             }
         }
 
         // process processes
-        state.pass_1_processes(body);
+        ctx.pass_1_processes(&scope_body, body);
 
         // stop if any errors have happened so far, we don't want redundant errors about drivers
-        for p in &state.processes {
+        for p in &ctx.processes {
             p.as_ref_ok()?;
         }
 
         // check driver validness
         // TODO more checking: combinatorial blocks can't read values they will later write,
         //   unless they have already written them
-        state.pass_2_check_drivers_and_populate_resets()?;
+        ctx.pass_2_check_drivers_and_populate_resets()?;
 
         // create process for registered output ports
-        if !state.out_port_register_connections.is_empty() {
+        if !ctx.out_port_register_connections.is_empty() {
             let mut statements = vec![];
 
-            for (&out_port, &reg) in &state.out_port_register_connections {
-                let out_port_ir = state.state.ports[out_port].ir;
-                let reg_info = &state.state.registers[reg];
+            for (&out_port, &reg) in &ctx.out_port_register_connections {
+                let out_port_ir = ctx.ctx.ports[out_port].ir;
+                let reg_info = &ctx.ctx.registers[reg];
                 let reg_ir = reg_info.ir;
-                let statement =
+                let ctxment =
                     IrStatement::Assign(IrAssignmentTarget::port(out_port_ir), IrExpression::Register(reg_ir));
                 statements.push(Spanned {
                     span: reg_info.id.span(),
-                    inner: statement,
+                    inner: ctxment,
                 })
             }
 
@@ -375,16 +397,16 @@ impl CompileState<'_> {
                 locals: IrVariables::default(),
                 block: IrBlock { statements },
             };
-            state.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
+            ctx.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
         }
 
         // return result
-        let processes = state.processes.into_iter().try_collect()?;
+        let processes = ctx.processes.into_iter().try_collect()?;
 
         Ok(IrModuleInfo {
-            ports: state.ir_ports,
-            registers: state.ir_registers,
-            wires: state.ir_wires,
+            ports: ctx.ir_ports,
+            registers: ctx.ir_registers,
+            wires: ctx.ir_wires,
             children: processes,
             debug_info_id: def_id.clone(),
             debug_info_generic_args: params,
@@ -392,31 +414,29 @@ impl CompileState<'_> {
     }
 }
 
-impl BodyElaborationState<'_, '_> {
-    fn pass_0_declarations(&mut self, body: &Block<ModuleStatement>) {
-        let diags = self.state.diags;
-        let scope_body = self.scope_body_as_inner;
+impl BodyElaborationContext<'_, '_> {
+    fn pass_0_declarations(&mut self, scope_body: &mut Scope, body: &Block<ModuleStatement>) {
+        let diags = self.ctx.refs.diags;
 
         let Block { span: _, statements } = body;
         for stmt in statements {
             match &stmt.inner {
                 // declarations
                 ModuleStatementKind::ConstDeclaration(decl) => {
-                    self.state.const_eval_and_declare(scope_body.into(), decl);
+                    self.ctx.const_eval_and_declare(scope_body, decl);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let reg = self.elaborate_module_declaration_reg(decl);
+                    let reg = self.elaborate_module_declaration_reg(scope_body, decl);
                     let entry = reg.map(|reg_init| {
                         self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                         self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                         ScopedEntry::Named(NamedValue::Register(reg_init.reg))
                     });
 
-                    let state = &mut self.state;
-                    state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    scope_body.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(decl));
+                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(&scope_body, decl));
                     let process = process.transpose();
 
                     if let Ok(wire) = wire {
@@ -432,11 +452,11 @@ impl BodyElaborationState<'_, '_> {
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
-                    self.state.scopes[scope_body].maybe_declare(diags, decl.id.as_ref(), entry, Visibility::Private);
+                    scope_body.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(decl) {
+                    match self.elaborate_module_declaration_reg_out_port(&scope_body, decl) {
                         Ok((port, reg_init)) => {
                             let mut port_drivers = IndexMap::new();
                             port_drivers.insert_first(Driver::OutputPortConnectionToReg, decl.span);
@@ -446,7 +466,7 @@ impl BodyElaborationState<'_, '_> {
                             self.out_port_register_connections.insert_first(port, reg_init.reg);
 
                             let entry = Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg)));
-                            self.state.scopes[scope_body].declare(diags, &decl.id, entry, Visibility::Private);
+                            scope_body.declare(diags, &decl.id, entry);
                         }
                         Err(e) => {
                             // don't do anything, as if the marker is not there
@@ -462,11 +482,10 @@ impl BodyElaborationState<'_, '_> {
         }
     }
 
-    fn pass_1_processes(&mut self, body: &Block<ModuleStatement>) {
-        let diags = self.state.diags;
-        let scope_body = self.scope_body;
-
+    fn pass_1_processes(&mut self, scope_body: &Scope, body: &Block<ModuleStatement>) {
+        let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
+
         for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // declarations, already handled
@@ -489,9 +508,9 @@ impl BodyElaborationState<'_, '_> {
                     };
 
                     let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                    let ir_block =
-                        self.state
-                            .elaborate_block(&mut ctx, VariableValues::new(), scope_body.into(), block);
+                    let ir_block = self
+                        .ctx
+                        .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
 
                     let ir_block = ir_block.and_then(|(ir_block, end)| {
                         let ir_variables = ctx.finish();
@@ -515,13 +534,13 @@ impl BodyElaborationState<'_, '_> {
 
                     let domain = domain
                         .as_ref()
-                        .map_inner(|d| self.state.eval_domain_sync(scope_body.into(), d))
+                        .map_inner(|d| self.ctx.eval_domain_sync(scope_body, d))
                         .transpose();
 
                     let ir_process = domain.and_then(|domain| {
                         let ir_domain = SyncDomain {
-                            clock: self.state.domain_signal_to_ir(&domain.inner.clock),
-                            reset: self.state.domain_signal_to_ir(&domain.inner.reset),
+                            clock: self.ctx.domain_signal_to_ir(&domain.inner.clock),
+                            reset: self.ctx.domain_signal_to_ir(&domain.inner.reset),
                         };
 
                         let block_domain = Spanned {
@@ -535,9 +554,9 @@ impl BodyElaborationState<'_, '_> {
                         };
 
                         let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                        let ir_block =
-                            self.state
-                                .elaborate_block(&mut ctx, VariableValues::new(), scope_body.into(), block);
+                        let ir_block = self
+                            .ctx
+                            .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
 
                         ir_block.and_then(|(ir_block, end)| {
                             let ir_variables = ctx.finish();
@@ -563,7 +582,7 @@ impl BodyElaborationState<'_, '_> {
                         .insert_first(stmt_index, process_index);
                 }
                 ModuleStatementKind::Instance(instance) => {
-                    let instance_ir = self.elaborate_instance(scope_body.into(), stmt_index, instance);
+                    let instance_ir = self.elaborate_instance(scope_body, stmt_index, instance);
                     self.processes.push(instance_ir.map(IrModuleChild::ModuleInstance));
                 }
             }
@@ -572,12 +591,12 @@ impl BodyElaborationState<'_, '_> {
 
     fn elaborate_instance(
         &mut self,
-        scope_body: Scope,
+        scope_body: &Scope,
         stmt_index: usize,
         instance: &ModuleInstance,
     ) -> Result<IrModuleInstance, ErrorGuaranteed> {
-        let state = &mut self.state;
-        let diags = state.diags;
+        let ctx = &mut self.ctx;
+        let diags = ctx.refs.diags;
 
         let ModuleInstance {
             span: _,
@@ -591,12 +610,12 @@ impl BodyElaborationState<'_, '_> {
         // eval module and generics
         let no_vars = VariableValues::new_no_vars();
         let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
-            state.eval_expression_as_compile(scope_body, &no_vars, module, "module instance");
+            ctx.eval_expression_as_compile(&scope_body, &no_vars, module, "module instance");
         let generic_args = generic_args
             .as_ref()
             .map(|generic_args| {
                 generic_args
-                    .try_map_inner_all(|a| state.eval_expression_as_compile(scope_body, &no_vars, a, "generic arg"))
+                    .try_map_inner_all(|a| ctx.eval_expression_as_compile(&scope_body, &no_vars, a, "generic arg"))
             })
             .transpose();
 
@@ -612,13 +631,13 @@ impl BodyElaborationState<'_, '_> {
                 )
             }
         };
-        let module_ast = &state.fixed.parsed[module_ast_ref];
+        let module_ast = &ctx.refs.fixed.parsed[module_ast_ref];
 
         // elaborate module
         // TODO split module header and body elaboration, so we can delay and parallelize body elaboration
         let generic_args = generic_args?;
-        let elaborated = self.state.elaborate_module(module_ast_ref, generic_args)?;
-        let ElaboratedModule { ir_module, ports } = elaborated;
+        let elaborated = ctx.refs.elaborate_module(module_ast_ref, generic_args)?;
+        let &ElaboratedModule { ir_module, ref ports } = elaborated;
 
         // eval and check port connections
         // TODO use function parameter matching for ports too?
@@ -642,8 +661,15 @@ impl BodyElaborationState<'_, '_> {
         let mut port_signals = IndexMap::new();
         let mut ir_connections = vec![];
 
-        for (&port, connection) in zip_eq(&ports, &port_connections.inner) {
-            match self.elaborate_instance_port_connection(scope_body, stmt_index, &port_signals, port, connection) {
+        for (port, connection) in zip_eq(ports.keys(), &port_connections.inner) {
+            match self.elaborate_instance_port_connection(
+                &scope_body,
+                stmt_index,
+                &ports,
+                &port_signals,
+                port,
+                connection,
+            ) {
                 Ok((signal, connection)) => {
                     port_signals.insert_first(port, signal);
                     ir_connections.push(connection);
@@ -665,13 +691,14 @@ impl BodyElaborationState<'_, '_> {
 
     fn elaborate_instance_port_connection(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         stmt_index: usize,
-        prev_port_signals: &IndexMap<Port, ConnectionSignal>,
-        port: Port,
+        ports: &InstancePorts,
+        prev_port_signals: &IndexMap<InstancePort, ConnectionSignal>,
+        port: InstancePort,
         connection: &Spanned<PortConnection>,
     ) -> Result<(ConnectionSignal, Spanned<IrPortConnection>), ErrorGuaranteed> {
-        let diags = self.state.diags;
+        let diags = self.ctx.refs.diags;
 
         let PortConnection {
             id: connection_id,
@@ -683,7 +710,7 @@ impl BodyElaborationState<'_, '_> {
             domain: ref port_domain_raw,
             ty: ref port_ty_hw,
             ir: _,
-        } = &self.state.ports[port];
+        } = &ports[port];
 
         let port_id = port_id.clone();
         let port_ty_hw = port_ty_hw.clone();
@@ -743,7 +770,7 @@ impl BodyElaborationState<'_, '_> {
         let signal = match &connection_expr.inner {
             ExpressionKind::Dummy => ConnectionSignal::Dummy(connection_expr.span),
             _ => match self
-                .state
+                .ctx
                 .try_eval_expression_as_domain_signal(scope, connection_expr, |_| ())
             {
                 Ok(signal) => ConnectionSignal::Signal(signal.inner),
@@ -770,7 +797,7 @@ impl BodyElaborationState<'_, '_> {
                 let mut ctx_block = ctx.new_ir_block();
 
                 let no_vars = VariableValues::new_no_vars();
-                let connection_value = self.state.eval_expression(
+                let connection_value = self.ctx.eval_expression(
                     &mut ctx,
                     &mut ctx_block,
                     scope,
@@ -793,7 +820,7 @@ impl BodyElaborationState<'_, '_> {
                     inner: &port_domain.as_ref_ok()?.inner,
                 };
                 let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
-                let check_domain = self.state.check_valid_domain_crossing(
+                let check_domain = self.ctx.check_valid_domain_crossing(
                     connection.span,
                     target_domain,
                     source_domain,
@@ -816,7 +843,7 @@ impl BodyElaborationState<'_, '_> {
                             ty: port_ty_hw.inner.to_ir(),
                             debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
                             debug_info_ty: port_ty_hw.inner.clone(),
-                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.state),
+                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
                         });
 
                         ctx_block.statements.push(Spanned {
@@ -855,11 +882,11 @@ impl BodyElaborationState<'_, '_> {
                 match &connection_expr.inner {
                     ExpressionKind::Dummy => IrPortConnection::Output(None),
                     ExpressionKind::Id(id) => {
-                        let named = self.state.eval_id(scope, id)?;
+                        let named = self.ctx.refs.eval_id(scope, id)?;
 
                         let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
                             EvaluatedId::Named(NamedValue::Wire(wire)) => {
-                                let wire_info = &self.state.wires[wire];
+                                let wire_info = &self.ctx.wires[wire];
                                 (
                                     IrWireOrPort::Wire(wire_info.ir),
                                     Signal::Wire(wire),
@@ -868,7 +895,7 @@ impl BodyElaborationState<'_, '_> {
                                 )
                             }
                             EvaluatedId::Named(NamedValue::Port(port)) => {
-                                let port_info = &self.state.ports[port];
+                                let port_info = &self.ctx.ports[port];
                                 (
                                     IrWireOrPort::Port(port_info.ir),
                                     Signal::Port(port),
@@ -897,7 +924,7 @@ impl BodyElaborationState<'_, '_> {
                         ));
 
                         // check domain
-                        any_err = any_err.and(self.state.check_valid_domain_crossing(
+                        any_err = any_err.and(self.ctx.check_valid_domain_crossing(
                             connection.span,
                             signal_domain.as_ref(),
                             Spanned {
@@ -941,22 +968,21 @@ impl BodyElaborationState<'_, '_> {
 
         // wire-like signals, just check
         for (&port, drivers) in &output_port_drivers {
-            any_err = any_err.and(self.check_drivers_for_port_or_wire("port", self.state.ports[port].id.span, drivers));
+            any_err = any_err.and(self.check_drivers_for_port_or_wire("port", self.ctx.ports[port].id.span, drivers));
         }
         for (&wire, drivers) in &wire_drivers {
-            any_err =
-                any_err.and(self.check_drivers_for_port_or_wire("wire", self.state.wires[wire].id.span(), drivers));
+            any_err = any_err.and(self.check_drivers_for_port_or_wire("wire", self.ctx.wires[wire].id.span(), drivers));
         }
 
         // registers: check and collect resets
         for (&reg, drivers) in &reg_drivers {
-            let decl_span = self.state.registers[reg].id.span();
+            let decl_span = self.ctx.registers[reg].id.span();
 
             any_err = any_err.and(self.check_drivers_for_reg(decl_span, drivers));
 
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
-            match self.check_exactly_one_driver("register", self.state.registers[reg].id.span(), drivers) {
+            match self.check_exactly_one_driver("register", self.ctx.registers[reg].id.span(), drivers) {
                 Err(e) => any_err = Err(e),
                 Ok(driver) => any_err = any_err.and(self.pull_register_init_into_process(reg, driver)),
             }
@@ -974,8 +1000,8 @@ impl BodyElaborationState<'_, '_> {
     }
 
     fn pull_register_init_into_process(&mut self, reg: Register, driver: Driver) -> Result<(), ErrorGuaranteed> {
-        let diags = self.state.diags;
-        let reg_info = &self.state.registers[reg];
+        let diags = self.ctx.refs.diags;
+        let reg_info = &self.ctx.registers[reg];
 
         if let Driver::ClockedBlock(stmt_index) = driver {
             if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
@@ -1034,6 +1060,8 @@ impl BodyElaborationState<'_, '_> {
         decl_span: Span,
         drivers: &IndexMap<Driver, Span>,
     ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.ctx.refs.diags;
+
         let mut any_err = Ok(());
 
         for (&driver, &span) in drivers {
@@ -1047,7 +1075,7 @@ impl BodyElaborationState<'_, '_> {
                             format!("either drive the {kind} from a combinatorial block or turn it into a register"),
                         )
                         .finish();
-                    any_err = Err(self.state.diags.report(diag));
+                    any_err = Err(diags.report(diag));
                 }
                 DriverKind::WiredConnection => {
                     // correct, do nothing
@@ -1056,11 +1084,12 @@ impl BodyElaborationState<'_, '_> {
         }
 
         any_err = any_err.and(self.check_exactly_one_driver(kind, decl_span, drivers).map(|_| ()));
-
         any_err
     }
 
     fn check_drivers_for_reg(&self, decl_span: Span, drivers: &IndexMap<Driver, Span>) -> Result<(), ErrorGuaranteed> {
+        let diags = self.ctx.refs.diags;
+
         let mut any_err = Ok(());
 
         for (&driver, &span) in drivers {
@@ -1077,7 +1106,7 @@ impl BodyElaborationState<'_, '_> {
                             "drive the register from a clocked block or turn it into a wire",
                         )
                         .finish();
-                    any_err = Err(self.state.diags.report(diag));
+                    any_err = Err(diags.report(diag));
                 }
             }
         }
@@ -1091,12 +1120,14 @@ impl BodyElaborationState<'_, '_> {
         decl_span: Span,
         drivers: &IndexMap<Driver, Span>,
     ) -> Result<Driver, ErrorGuaranteed> {
+        let diags = self.ctx.refs.diags;
+
         match drivers.len() {
             0 => {
                 let diag = Diagnostic::new(format!("{kind} has no driver"))
                     .add_error(decl_span, "declared here")
                     .finish();
-                Err(self.state.diags.report(diag))
+                Err(diags.report(diag))
             }
             1 => {
                 let (&driver, _) = drivers.iter().single().unwrap();
@@ -1108,18 +1139,18 @@ impl BodyElaborationState<'_, '_> {
                     diag = diag.add_error(span, "driven here");
                 }
                 let diag = diag.add_info(decl_span, "declared here").finish();
-                Err(self.state.diags.report(diag))
+                Err(diags.report(diag))
             }
         }
     }
 
     fn elaborate_module_declaration_wire(
         &mut self,
+        scope_body: &Scope,
         decl: &WireDeclaration,
     ) -> Result<(Wire, Option<IrCombinatorialProcess>), ErrorGuaranteed> {
-        let state = &mut self.state;
-        let diags = state.diags;
-        let scope_body = self.scope_body;
+        let ctx = &mut self.ctx;
+        let diags = ctx.refs.diags;
 
         let WireDeclaration {
             span: _,
@@ -1142,32 +1173,23 @@ impl BodyElaborationState<'_, '_> {
                 }),
             ),
             WireKind::Normal { domain, ty } => {
-                let domain = state
-                    .eval_domain(scope_body.into(), domain)
+                let domain = ctx
+                    .eval_domain(&scope_body, domain)
                     .map(|d| d.map_inner(ValueDomain::from_domain_kind));
-                let ty = state.eval_expression_as_ty_hardware(scope_body.into(), &no_vars, ty, "wire");
+                let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &no_vars, ty, "wire");
                 (domain, ty)
             }
         };
 
         // TODO move wire value creation/checking into pass 2, to better preserve the process order
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
-        let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
-        let mut ctx_block = ctx.new_ir_block();
+        let mut ctx_expr = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
+        let mut ctx_block = ctx_expr.new_ir_block();
 
         let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
         let value: Result<Option<Spanned<MaybeCompile<TypedIrExpression>>>, ErrorGuaranteed> = value
             .as_ref()
-            .map(|value| {
-                state.eval_expression(
-                    &mut ctx,
-                    &mut ctx_block,
-                    scope_body.into(),
-                    &no_vars,
-                    &expected_ty,
-                    value,
-                )
-            })
+            .map(|value| ctx.eval_expression(&mut ctx_expr, &mut ctx_block, scope_body, &no_vars, &expected_ty, value))
             .transpose();
 
         let domain = domain?;
@@ -1190,12 +1212,8 @@ impl BodyElaborationState<'_, '_> {
                     span: value.span,
                     inner: value_domain,
                 };
-                let check_domain = state.check_valid_domain_crossing(
-                    decl.span,
-                    domain.as_ref(),
-                    value_domain_spanned,
-                    "value to wire",
-                );
+                let check_domain =
+                    ctx.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
 
                 check_ty?;
                 check_domain?;
@@ -1214,9 +1232,9 @@ impl BodyElaborationState<'_, '_> {
             ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
-            debug_info_domain: domain.inner.to_diagnostic_string(state),
+            debug_info_domain: domain.inner.to_diagnostic_string(ctx),
         });
-        let wire = state.wires.push(WireInfo {
+        let wire = ctx.wires.push(WireInfo {
             id: id.clone(),
             domain,
             ty,
@@ -1240,7 +1258,7 @@ impl BodyElaborationState<'_, '_> {
             None
         } else {
             Some(IrCombinatorialProcess {
-                locals: ctx.finish(),
+                locals: ctx_expr.finish(),
                 block: ctx_block,
             })
         };
@@ -1248,10 +1266,13 @@ impl BodyElaborationState<'_, '_> {
         Ok((wire, process))
     }
 
-    fn elaborate_module_declaration_reg(&mut self, decl: &RegDeclaration) -> Result<RegisterInit, ErrorGuaranteed> {
-        let state = &mut self.state;
-        let diags = state.diags;
-        let scope_body = self.scope_body;
+    fn elaborate_module_declaration_reg(
+        &mut self,
+        scope_body: &Scope,
+        decl: &RegDeclaration,
+    ) -> Result<RegisterInit, ErrorGuaranteed> {
+        let ctx = &mut self.ctx;
+        let diags = ctx.refs.diags;
 
         let RegDeclaration {
             span: _,
@@ -1265,10 +1286,10 @@ impl BodyElaborationState<'_, '_> {
         let no_vars = VariableValues::new_no_vars();
         let sync = sync
             .as_ref()
-            .map_inner(|sync| state.eval_domain_sync(scope_body.into(), sync))
+            .map_inner(|sync| ctx.eval_domain_sync(&scope_body, sync))
             .transpose();
-        let ty = state.eval_expression_as_ty_hardware(scope_body, &no_vars, ty, "register");
-        let init = state.eval_expression_as_compile(scope_body, &no_vars, init.as_ref(), "register reset value");
+        let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &no_vars, ty, "register");
+        let init = ctx.eval_expression_as_compile(&scope_body, &no_vars, init.as_ref(), "register reset value");
 
         let sync = sync?;
         let ty = ty?;
@@ -1288,9 +1309,9 @@ impl BodyElaborationState<'_, '_> {
             ty: ty.inner.to_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
-            debug_info_domain: sync.inner.to_diagnostic_string(state),
+            debug_info_domain: sync.inner.to_diagnostic_string(ctx),
         });
-        let reg = state.registers.push(RegisterInfo {
+        let reg = ctx.registers.push(RegisterInfo {
             id: id.clone(),
             domain: sync,
             ty,
@@ -1301,28 +1322,31 @@ impl BodyElaborationState<'_, '_> {
 
     fn elaborate_module_declaration_reg_out_port(
         &mut self,
+        scope_body: &Scope,
         decl: &RegOutPortMarker,
     ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
-        let state = &mut self.state;
-        let diags = state.diags;
-        let scope_body = self.scope_body;
-        let scope_ports = self.scope_ports;
-
+        let ctx = &mut self.ctx;
+        let diags = ctx.refs.diags;
         let RegOutPortMarker { span: _, id, init } = decl;
 
-        // find port (looking only at the port scope to avoid shadowing or hitting outer identifiers)
-        let port = state.scopes[scope_ports].find_immediate_str(diags, &id.string, Visibility::Private)?;
-        let port = match port.value {
+        // find port
+        let port = scope_body.find(diags, id).and_then(|port| match port.value {
             &ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
-            _ => Err(diags.report_internal_error(id.span, "found non-port in port scope")),
-        };
+            _ => {
+                let diag = Diagnostic::new("register port marker needs to be on a port")
+                    .add_error(id.span, "non-port value here")
+                    .add_info(port.defining_span, "declared here")
+                    .finish();
+                Err(diags.report(diag))
+            }
+        });
 
         // evaluate init
         let no_vars = VariableValues::new_no_vars();
-        let init = state.eval_expression_as_compile(scope_body, &no_vars, init, "register reset value");
+        let init = ctx.eval_expression_as_compile(&scope_body, &no_vars, init, "register reset value");
 
         let port = port?;
-        let port_info = &state.ports[port];
+        let port_info = &ctx.ports[port];
         let mut direction_err = Ok(());
 
         // check port is output
@@ -1372,9 +1396,9 @@ impl BodyElaborationState<'_, '_> {
             ty: port_info.ty.inner.to_ir(),
             debug_info_id: MaybeIdentifier::Identifier(id.clone()),
             debug_info_ty: port_info.ty.inner.clone(),
-            debug_info_domain: domain.to_diagnostic_string(state),
+            debug_info_domain: domain.to_diagnostic_string(ctx),
         });
-        let reg = state.registers.push(RegisterInfo {
+        let reg = ctx.registers.push(RegisterInfo {
             id: MaybeIdentifier::Identifier(id.clone()),
             domain: Spanned {
                 span: port_info.domain.span,

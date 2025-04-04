@@ -1,6 +1,6 @@
 use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileState, Port, Register, Variable, Wire};
+use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::{eval_binary_expression, ExpressionWithImplications};
@@ -179,16 +179,16 @@ impl VariableValues {
     }
 }
 
-impl CompileState<'_> {
+impl CompileItemContext<'_, '_> {
     pub fn elaborate_assignment<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
         mut vars: VariableValues,
-        scope: Scope,
+        scope: &Scope,
         stmt: &Assignment,
     ) -> Result<VariableValues, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let Assignment {
             span: _,
             op,
@@ -343,7 +343,7 @@ impl CompileState<'_> {
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let AssignmentTarget {
             base: target_base,
             array_steps: target_steps,
@@ -551,7 +551,7 @@ impl CompileState<'_> {
         var: Variable,
         target_base_eval: &MaybeCompile<TypedIrExpression>,
     ) -> Result<(Spanned<HardwareType>, ValueDomain, IrVariable), ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         // pick a type and convert the current base value to hardware
         let target_base_ty = self.variables[var].ty.as_ref().ok_or_else(|| {
@@ -605,7 +605,7 @@ impl CompileState<'_> {
         steps: &ArraySteps,
         value_domain: Spanned<&ValueDomain>,
     ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         match block_domain {
             BlockDomain::CompileTime => {
                 for d in [&target_base_domain, &value_domain] {

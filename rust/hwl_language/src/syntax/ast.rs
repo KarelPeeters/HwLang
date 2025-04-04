@@ -10,8 +10,8 @@ pub struct FileContent {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Visibility {
-    Public(Span),
+pub enum Visibility<S> {
+    Public(S),
     Private,
 }
 
@@ -22,7 +22,7 @@ pub enum Item {
     // TODO maybe imports should not be items, they don't actually define anything
     Import(ItemImport),
     // Package(ItemDefPackage),
-    Const(ConstDeclaration<Visibility>),
+    Const(ConstDeclaration<Visibility<Span>>),
     Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
@@ -65,7 +65,7 @@ pub struct ItemDefPackage {
 #[derive(Debug, Clone)]
 pub struct ItemDefType {
     pub span: Span,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: Identifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub inner: Box<Expression>,
@@ -75,7 +75,7 @@ pub struct ItemDefType {
 #[derive(Debug, Clone)]
 pub struct ItemDefStruct {
     pub span: Span,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: Identifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub fields: Vec<StructField>,
@@ -92,7 +92,7 @@ pub struct StructField {
 #[derive(Debug, Clone)]
 pub struct ItemDefEnum {
     pub span: Span,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: Identifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub variants: Vec<EnumVariant>,
@@ -108,7 +108,7 @@ pub struct EnumVariant {
 #[derive(Debug, Clone)]
 pub struct ItemDefFunction {
     pub span: Span,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: Identifier,
     /// All function parameters are "generic", which means they can be types.
     /// It doesn't make sense to force a distinction similar to modules.
@@ -121,7 +121,7 @@ pub struct ItemDefFunction {
 #[derive(Debug, Clone)]
 pub struct ItemDefModule {
     pub span: Span,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: Identifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub ports: Spanned<Vec<ModulePortItem>>,
@@ -133,7 +133,7 @@ pub struct ItemDefModule {
 pub struct ItemDefInterface {
     pub span: Span,
     pub id: Identifier,
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     // either None or non-empty
     pub modes: Option<Vec<Identifier>>,
     // TODO params?
@@ -154,6 +154,7 @@ pub struct Parameter {
     pub span: Span,
     pub id: Identifier,
     pub ty: Expression,
+    // TODO add default value
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +205,15 @@ pub struct SyncDomain<S> {
     pub clock: S,
     // TODO make reset optional
     pub reset: S,
+}
+
+impl<S> DomainKind<S> {
+    pub fn map_inner<U>(self, f: impl FnMut(S) -> U) -> DomainKind<U> {
+        match self {
+            DomainKind::Async => DomainKind::Async,
+            DomainKind::Sync(sync) => DomainKind::Sync(sync.map_inner(f)),
+        }
+    }
 }
 
 impl<S> SyncDomain<S> {
@@ -775,7 +785,7 @@ pub struct ItemCommonInfo {
 
 #[derive(Debug)]
 pub struct ItemDeclarationInfo<'s> {
-    pub vis: Visibility,
+    pub vis: Visibility<Span>,
     pub id: MaybeIdentifier<&'s Identifier>,
 }
 

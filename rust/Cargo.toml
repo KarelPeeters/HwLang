@@ -39,6 +39,7 @@ num_cpus = "1.16.0"
 num-bigint = "0.4.5"
 num-integer = "0.1.46"
 num-traits = "0.2.19"
+once_map = "0.4.21"
 parking_lot = "0.12.3"
 pyo3 = { version = "0.24.0", features = ["extension-module", "num-bigint"] } # TODO specify ABI?
 rand = "0.8.5"

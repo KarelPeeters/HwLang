@@ -1,23 +1,21 @@
 use crate::front::assignment::VariableValues;
 use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileState, ElaborationStackEntry};
+use crate::front::compile::{CompileItemContext, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ScopedEntry;
-use crate::front::scope::{Scope, ScopeFile, ScopeInner, Visibility};
+use crate::front::scope::Scope;
 use crate::front::types::Type;
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{FileId, Span};
 use crate::util::data::IndexMapExt;
-use crate::util::ResultDoubleExt;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::Itertools;
 use std::hash::Hash;
 
 #[derive(Debug, Clone)]
@@ -27,7 +25,9 @@ pub struct FunctionValue {
     pub item: AstRefItem,
 
     // TODO allow capturing here, implying non-file scopes
-    pub outer_scope: ScopeFile,
+    //   for capturing: take a copy of all parent scopes,
+    //   only copying compile-time values and putting error traps in place of signals
+    pub scope_captured: FileId,
 
     // TODO avoid ast cloning
     // TODO Eq+Hash are a bit weird for types containing ast nodes
@@ -61,18 +61,18 @@ pub enum FunctionBody {
        // Struct(/*TODO*/),
 }
 
-impl CompileState<'_> {
+impl CompileItemContext<'_, '_> {
+    // TODO remove return type, callers can just look at the scope if they want a hashkey or debug info
     pub fn match_args_to_params_and_typecheck<I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
         &mut self,
+        scope: &mut Scope,
         params: &Spanned<Vec<AstParameter>>,
         args: &Args<I, Spanned<V>>,
-        scope_outer: Scope,
-        span_scope_inner: Span,
-    ) -> Result<(ScopeInner, Vec<(Identifier, V)>), ErrorGuaranteed>
+    ) -> Result<Vec<(Identifier, V)>, ErrorGuaranteed>
     where
         for<'i> &'i I: Into<Option<&'i Identifier>>,
     {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         // check params unique
         // TODO we could do this earlier, but then parameters that only exist conditionally can't get checked yet
@@ -177,18 +177,14 @@ impl CompileState<'_> {
             return Err(diags.report_internal_error(args.span, "finished matching args, but got wrong final length"));
         }
 
-        let scope_params = self
-            .scopes
-            .new_child(scope_outer, span_scope_inner, Visibility::Private);
-
         let mut param_values_vec = vec![];
         let no_vars = VariableValues::new_no_vars();
 
         for param_info in &params.inner {
             let param_id = &param_info.id;
 
-            // check param type
-            let param_ty = self.eval_expression_as_ty(Scope::Inner(scope_params), &no_vars, &param_info.ty)?;
+            // eval and check param type
+            let param_ty = self.eval_expression_as_ty(scope, &no_vars, &param_info.ty)?;
             let (_, _, arg_value) = args_passed.get(&param_id.string).ok_or_else(|| {
                 diags.report_internal_error(params.span, "finished matching args, but got missing param name")
             })?;
@@ -206,73 +202,60 @@ impl CompileState<'_> {
 
             // declare param in scope
             let entry = ScopedEntry::Value(arg_value_maybe.inner);
-            self.scopes[scope_params].declare_already_checked(
-                diags,
-                param_id.string.clone(),
-                param_id.span,
-                Ok(entry),
-            )?;
+            scope.declare_already_checked(diags, param_id.string.clone(), param_id.span, Ok(entry))?;
         }
 
-        Ok((scope_params, param_values_vec))
+        Ok(param_values_vec)
     }
 }
 
-impl FunctionValue {
-    pub fn call<C: ExpressionContext>(
-        &self,
-        state: &mut CompileState,
+impl CompileItemContext<'_, '_> {
+    pub fn call_function<C: ExpressionContext>(
+        &mut self,
         ctx: &mut C,
+        function: &FunctionValue,
         args: Args<Option<Identifier>, Spanned<MaybeCompile<TypedIrExpression>>>,
     ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
-        let diags = state.diags;
+        let diags = self.refs.diags;
 
-        // map params
-        // TODO discard scope after use?
-        let span_scope_inner = self.params.span.join(self.body_span);
-        let (param_scope, param_values) =
-            state.match_args_to_params_and_typecheck(&self.params, &args, self.outer_scope.into(), span_scope_inner)?;
-        let param_scope = Scope::Inner(param_scope);
+        // map params into scope
+        let span_scope = function.params.span.join(function.body_span);
+        let scope_captured = self.refs.shared.file_scope(function.scope_captured)?;
+        let mut scope = Scope::new_child(span_scope, scope_captured);
+        self.match_args_to_params_and_typecheck(&mut scope, &function.params, &args)?;
+        let scope = &scope;
 
-        // TODO cache function calls?
-        // TODO we already do this for module elaborations, which are similar
-        let param_key = param_values.into_iter().map(|(_, v)| v).collect_vec();
-        let stack_entry = ElaborationStackEntry::FunctionRun(self.item, param_key);
-        state
-            .with_recursion(stack_entry, |state| {
-                // run the body
-                // TODO add execution limits?
-                match &self.body {
-                    FunctionBody::TypeAliasExpr(expr) => {
-                        let result = state
-                            .eval_expression_as_ty(param_scope, &VariableValues::new_no_vars(), expr)?
-                            .inner;
-                        let result = MaybeCompile::Compile(CompileValue::Type(result));
+        // run the body
+        let entry = StackEntry::FunctionRun(function.item);
+        self.recurse_mut(entry, |s| {
+            match &function.body {
+                FunctionBody::TypeAliasExpr(expr) => {
+                    let result = s
+                        .eval_expression_as_ty(scope, &VariableValues::new_no_vars(), expr)?
+                        .inner;
+                    let result = MaybeCompile::Compile(CompileValue::Type(result));
 
-                        let empty_block = ctx.new_ir_block();
-                        Ok((empty_block, result))
-                    }
-                    FunctionBody::FunctionBodyBlock { body, ret_ty } => {
-                        // evaluate return type
-                        let ret_ty = ret_ty
-                            .as_ref()
-                            .map(|ret_ty| {
-                                state.eval_expression_as_ty(param_scope, &VariableValues::new_no_vars(), ret_ty)
-                            })
-                            .transpose();
-
-                        // evaluate block
-                        let (ir_block, end) = state.elaborate_block(ctx, VariableValues::new(), param_scope, body)?;
-
-                        // check return type
-                        let ret_ty = ret_ty?;
-                        let ret_value = check_function_return_value(diags, body.span, &ret_ty, end)?;
-
-                        Ok((ir_block, ret_value))
-                    }
+                    let empty_block = ctx.new_ir_block();
+                    Ok((empty_block, result))
                 }
-            })
-            .flatten_err()
+                FunctionBody::FunctionBodyBlock { body, ret_ty } => {
+                    // evaluate return type
+                    let ret_ty = ret_ty
+                        .as_ref()
+                        .map(|ret_ty| s.eval_expression_as_ty(scope, &VariableValues::new_no_vars(), ret_ty))
+                        .transpose();
+
+                    // evaluate block
+                    let (ir_block, end) = s.elaborate_block(ctx, VariableValues::new(), scope, body)?;
+
+                    // check return type
+                    let ret_ty = ret_ty?;
+                    let ret_value = check_function_return_value(diags, body.span, &ret_ty, end)?;
+
+                    Ok((ir_block, ret_value))
+                }
+            }
+        })
     }
 }
 

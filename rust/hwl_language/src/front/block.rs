@@ -2,12 +2,12 @@ use crate::front::assignment::{
     AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues, VariableValuesInner,
 };
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileState, Variable, VariableInfo};
+use crate::front::compile::{CompileItemContext, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
-use crate::front::scope::{Scope, Visibility};
+use crate::front::scope::Scope;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
@@ -24,6 +24,7 @@ use num_traits::{CheckedSub, One};
 use std::cmp::max;
 
 // TODO move
+// TODO rename to HardwareValue
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TypedIrExpression<T = HardwareType, E = IrExpression> {
     pub ty: T,
@@ -154,24 +155,23 @@ impl BlockEnd<BlockEndStopping> {
     }
 }
 
-impl CompileState<'_> {
+impl CompileItemContext<'_, '_> {
     pub fn elaborate_block<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         mut vars: VariableValues,
-        scope_parent: Scope,
+        scope_parent: &Scope,
         block: &Block<BlockStatement>,
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let Block { span: _, statements } = block;
 
-        let scope_as_inner = self.scopes.new_child(scope_parent, block.span, Visibility::Private);
-        let scope = Scope::Inner(scope_as_inner);
+        let mut scope = Scope::new_child(block.span, scope_parent);
         let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
             match &stmt.inner {
-                BlockStatementKind::ConstDeclaration(decl) => self.const_eval_and_declare(scope_as_inner, decl),
+                BlockStatementKind::ConstDeclaration(decl) => self.const_eval_and_declare(&mut scope, decl),
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {
                         span: _,
@@ -185,14 +185,16 @@ impl CompileState<'_> {
                     // eval ty
                     let ty = ty
                         .as_ref()
-                        .map(|ty| self.eval_expression_as_ty(scope, &vars, ty))
+                        .map(|ty| self.eval_expression_as_ty(&scope, &vars, ty))
                         .transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Type, |ty| &ty.inner);
                         init.as_ref()
-                            .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, &vars, init_expected_ty, init))
+                            .map(|init| {
+                                self.eval_expression(ctx, &mut ctx_block, &scope, &vars, init_expected_ty, init)
+                            })
                             .transpose()
                     });
 
@@ -231,18 +233,18 @@ impl CompileState<'_> {
                         Ok(ScopedEntry::Named(NamedValue::Variable(variable)))
                     });
 
-                    self.scopes[scope_as_inner].maybe_declare(diags, id.as_ref(), entry, Visibility::Private);
+                    scope.maybe_declare(diags, id.as_ref(), entry);
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, scope, stmt)?;
+                    let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, &scope, stmt)?;
                     vars = new_vars;
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<MaybeCompile<TypedIrExpression>> =
-                        self.eval_expression(ctx, &mut ctx_block, scope, &vars, &Type::Type, expr)?;
+                        self.eval_expression(ctx, &mut ctx_block, &scope, &vars, &Type::Type, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, vars, scope, inner_block)?;
+                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, vars, &scope, inner_block)?;
 
                     let inner_block_spanned = Spanned {
                         span: inner_block.span,
@@ -266,7 +268,7 @@ impl CompileState<'_> {
                         ctx,
                         &mut ctx_block,
                         vars,
-                        scope,
+                        &scope,
                         Some((initial_if, else_ifs)),
                         final_else,
                     )?;
@@ -284,7 +286,7 @@ impl CompileState<'_> {
 
                     loop {
                         // eval cond
-                        let cond = self.eval_expression_as_compile(scope, &vars, cond, "while loop condition")?;
+                        let cond = self.eval_expression_as_compile(&scope, &vars, cond, "while loop condition")?;
 
                         let reason = TypeContainsReason::WhileCondition { span_keyword };
                         check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -300,7 +302,7 @@ impl CompileState<'_> {
                         }
 
                         // visit body
-                        let (body_ir, end) = self.elaborate_block(ctx, vars, scope, body)?;
+                        let (body_ir, end) = self.elaborate_block(ctx, vars, &scope, body)?;
                         let body_ir_spanned = Spanned {
                             span: body.span,
                             inner: body_ir,
@@ -331,7 +333,7 @@ impl CompileState<'_> {
                         span: stmt.span,
                         inner: stmt_for,
                     };
-                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, vars, scope, stmt_for)?;
+                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, vars, &scope, stmt_for)?;
                     ctx_block = block;
 
                     match end {
@@ -351,7 +353,7 @@ impl CompileState<'_> {
                     //  checking happens in the function call, and expanding at the call expression
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, &vars, &Type::Type, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, &scope, &vars, &Type::Type, value))
                         .transpose()?;
 
                     let end = BlockEnd::Stopping(BlockEndStopping::Return(BlockEndReturn { span_keyword, value }));
@@ -376,14 +378,14 @@ impl CompileState<'_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         vars: VariableValues,
-        scope: Scope,
+        scope: &Scope,
         ifs: Option<(
             &IfCondBlockPair<Box<Expression>, Block<BlockStatement>>,
             &[IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
         )>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
@@ -391,7 +393,7 @@ impl CompileState<'_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal(vars)),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, vars, scope, final_else)?;
+                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, vars, &scope, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
@@ -409,7 +411,7 @@ impl CompileState<'_> {
             ref cond,
             ref block,
         } = initial_if;
-        let cond = self.eval_expression_with_implications(ctx, ctx_block, scope, &vars, &Type::Bool, cond)?;
+        let cond = self.eval_expression_with_implications(ctx, ctx_block, &scope, &vars, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::Operator(span_if);
         check_type_contains_value(
@@ -431,7 +433,7 @@ impl CompileState<'_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, block_end) = self.elaborate_block(ctx, vars, scope, block)?;
+                    let (block_ir, block_end) = self.elaborate_block(ctx, vars, &scope, block)?;
                     let block_ir_spanned = Spanned {
                         span: block.span,
                         inner: block_ir,
@@ -478,7 +480,7 @@ impl CompileState<'_> {
                         // lower then
                         let (then_ir, then_end) =
                             ctx_mid.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
-                                self.elaborate_block(ctx_inner, vars.clone(), scope, block)
+                                self.elaborate_block(ctx_inner, vars.clone(), &scope, block)
                             })?;
 
                         // lower else
@@ -621,7 +623,7 @@ impl CompileState<'_> {
         then_value: &AssignedValue,
         else_value: &AssignedValue,
     ) -> Result<(Spanned<IrStatement>, Spanned<IrStatement>, AssignedValue), ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         // figure out the hardware type
         let then_ty = then_value.value.ty();
@@ -702,11 +704,11 @@ impl CompileState<'_> {
         ctx: &mut C,
         mut result_block: C::Block,
         vars: VariableValues,
-        scope: Scope,
+        scope: &Scope,
         stmt: Spanned<&ForStatement>,
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
         // TODO (deterministic!) timeout
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let ctx_block = &mut result_block;
 
         let ForStatement {
@@ -816,12 +818,12 @@ impl CompileState<'_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         mut vars: VariableValues,
-        scope_parent: Scope,
+        scope_parent: &Scope,
         stmt: Spanned<&ForStatement>,
         index_ty: Option<Spanned<Type>>,
         iter: impl Iterator<Item = MaybeCompile<TypedIrExpression>>,
     ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let ForStatement {
             index: index_id,
             index_ty: _,
@@ -830,17 +832,16 @@ impl CompileState<'_> {
         } = stmt.inner;
 
         // create inner scope with index variable
-        let scope_index = self.scopes.new_child(scope_parent, stmt.span, Visibility::Private);
+        let mut scope_index = Scope::new_child(stmt.span, scope_parent);
         let index_var = self.variables.push(VariableInfo {
             id: index_id.clone(),
             mutable: false,
             ty: None,
         });
-        self.scopes[scope_index].maybe_declare(
+        scope_index.maybe_declare(
             diags,
             index_id.as_ref(),
             Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
-            Visibility::Private,
         );
 
         // run the actual loop
@@ -872,7 +873,7 @@ impl CompileState<'_> {
             )?;
 
             // run body
-            let (body_block, body_end) = self.elaborate_block(ctx, vars, scope_index.into(), body)?;
+            let (body_block, body_end) = self.elaborate_block(ctx, vars, &scope_index, body)?;
 
             let body_block_spanned = Spanned {
                 span: body.span,

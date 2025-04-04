@@ -1,5 +1,5 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::CompileState;
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
@@ -9,7 +9,7 @@ use crate::syntax::pos::Span;
 use annotate_snippets::Level;
 use num_bigint::{BigInt, BigUint};
 
-impl CompileState<'_> {
+impl CompileItemContext<'_, '_> {
     pub fn check_valid_domain_crossing(
         &self,
         crossing_span: Span,
@@ -17,6 +17,8 @@ impl CompileState<'_> {
         source: Spanned<&ValueDomain>,
         required_reason: &str,
     ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         let valid = match (target.inner, source.inner) {
             (ValueDomain::Clock, ValueDomain::Clock) => Ok(()),
             (ValueDomain::Clock, _) => Err("non-clock to clock"),
@@ -60,7 +62,7 @@ impl CompileState<'_> {
                 .add_info(source.span, format!("source domain is {source_str}"))
                 .footer(Level::Info, required_reason)
                 .finish();
-            self.diags.report(diag)
+            diags.report(diag)
         })
     }
 }

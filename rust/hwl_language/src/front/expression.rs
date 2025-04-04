@@ -4,7 +4,7 @@ use crate::front::check::{
     check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
     check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileState, ElaborationStackEntry, Port};
+use crate::front::compile::{CompileItemContext, CompileRefs, Port, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
@@ -13,7 +13,7 @@ use crate::front::ir::{
     IrStatement, IrVariable, IrVariableInfo,
 };
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, SignalOrVariable, ValueDomain};
-use crate::front::scope::{Scope, Visibility};
+use crate::front::scope::Scope;
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
@@ -24,7 +24,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::Span;
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
-use crate::util::{Never, ResultDoubleExt};
+use crate::util::Never;
 use itertools::{enumerate, Either};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -56,9 +56,11 @@ pub enum EvaluatedId {
     Value(MaybeCompile<TypedIrExpression>),
 }
 
-impl CompileState<'_> {
-    pub fn eval_id(&mut self, scope: Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
-        let found = self.scopes[scope].find(&self.scopes, self.diags, id, Visibility::Private)?;
+impl CompileRefs<'_, '_> {
+    pub fn eval_id(&self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let found = scope.find(diags, id)?;
         let def_span = found.defining_span;
         let result = match found.value {
             &ScopedEntry::Named(value) => EvaluatedId::Named(value),
@@ -70,12 +72,14 @@ impl CompileState<'_> {
             inner: result,
         })
     }
+}
 
+impl CompileItemContext<'_, '_> {
     pub fn eval_expression<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expected_ty: &Type,
         expr: &Expression,
@@ -89,7 +93,7 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expected_ty: &Type,
         expr: &Expression,
@@ -110,12 +114,12 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expected_ty: &Type,
         expr: &Expression,
     ) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         let result_simple: MaybeCompile<TypedIrExpression> = match &expr.inner {
             ExpressionKind::Dummy => {
@@ -134,7 +138,7 @@ impl CompileState<'_> {
                     .inner)
             }
             ExpressionKind::Id(id) => {
-                match self.eval_id(scope, id)?.inner {
+                match self.refs.eval_id(scope, id)?.inner {
                     EvaluatedId::Value(value) => value,
                     EvaluatedId::Named(value) => match value {
                         // TODO report error when combinatorial block
@@ -161,7 +165,7 @@ impl CompileState<'_> {
                                     Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()))
                                 }
                                 PortDirection::Output => {
-                                    Err(self.diags.report_todo(expr.span, "read back from output port"))
+                                    Err(diags.report_todo(expr.span, "read back from output port"))
                                 }
                             };
                         }
@@ -571,7 +575,7 @@ impl CompileState<'_> {
             &ExpressionKind::BinaryOp(op, ref left, ref right) => {
                 let left = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, left);
                 let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
-                return eval_binary_expression(self.diags, expr.span, op, left?, right?);
+                return eval_binary_expression(diags, expr.span, op, left?, right?);
             }
             ExpressionKind::TernarySelect(_, _, _) => {
                 return Err(diags.report_todo(expr.span, "expr kind TernarySelect"))
@@ -603,10 +607,9 @@ impl CompileState<'_> {
                 let args = args?;
 
                 // actually do the call
-                let entry = ElaborationStackEntry::FunctionCall(expr.span, self.not_eq_stack());
-                let (result_block, result_value) = self
-                    .with_recursion(entry, |s| target.call(s, ctx, args))
-                    .flatten_err()?;
+                // TODO should we do the recursion marker here or inside of the call function?
+                let entry = StackEntry::FunctionCall(expr.span);
+                let (result_block, result_value) = self.recurse_mut(entry, |s| s.call_function(ctx, &target, args))?;
 
                 let result_block_spanned = Spanned {
                     span: expr.span,
@@ -626,11 +629,13 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         base: &Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
         let steps = indices
             .inner
@@ -641,18 +646,18 @@ impl CompileState<'_> {
         let base = base?;
         let steps = ArraySteps::new(steps?);
 
-        steps.apply_to_value(self.diags, base)
+        steps.apply_to_value(diags, base)
     }
 
     fn eval_expression_as_array_step<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         index: &Expression,
     ) -> Result<Spanned<ArrayStep>, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         // special case range with length, it can have a hardware start index
         let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
@@ -730,12 +735,12 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
 
         // evaluate args
         let args_eval = args
@@ -766,7 +771,7 @@ impl CompileState<'_> {
                         format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
                     }
                 };
-                self.shared.print_handler.println(&value_str);
+                self.refs.shared.print_handler.println(&value_str);
             };
 
             match (a0.as_str(), a1.as_str(), rest) {
@@ -823,11 +828,13 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_compile(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         let mut ctx = CompileTimeExpressionContext {
             span: expr.span,
             reason: reason.to_owned(),
@@ -842,7 +849,7 @@ impl CompileState<'_> {
                 span: expr.span,
                 inner: c,
             }),
-            MaybeCompile::Other(ir_expr) => Err(self.diags.report_simple(
+            MaybeCompile::Other(ir_expr) => Err(diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
                 format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
@@ -852,17 +859,19 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_ty(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<Type>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         // TODO unify this message with the one when a normal type-check fails
         match self.eval_expression_as_compile(scope, vars, expr, "type")?.inner {
             CompileValue::Type(ty) => Ok(Spanned {
                 span: expr.span,
                 inner: ty,
             }),
-            value => Err(self.diags.report_simple(
+            value => Err(diags.report_simple(
                 "expected type, got value",
                 expr.span,
                 format!("got value `{}`", value.to_diagnostic_string()),
@@ -872,14 +881,16 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_ty_hardware(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<HardwareType>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         let ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
         let ty_hw = ty.as_hardware_type().ok_or_else(|| {
-            self.diags.report_simple(
+            diags.report_simple(
                 format!("{} type must be representable in hardware", reason),
                 expr.span,
                 format!("got `{}`", ty.to_diagnostic_string()),
@@ -896,16 +907,16 @@ impl CompileState<'_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        scope: Scope,
+        scope: &Scope,
         vars: &VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
-        let diags = self.diags;
+        let diags = self.refs.diags;
         let build_err =
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got `{}`", actual));
 
         let result = match &expr.inner {
-            ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
+            ExpressionKind::Id(id) => match self.refs.eval_id(scope, id)?.inner {
                 EvaluatedId::Value(_) => return Err(build_err("value")),
                 EvaluatedId::Named(s) => match s {
                     NamedValue::Variable(v) => {
@@ -969,20 +980,19 @@ impl CompileState<'_> {
 
     pub fn eval_expression_as_domain_signal(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         expr: &Expression,
     ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
-        let build_err = |actual: &str| {
-            self.diags
-                .report_simple("expected domain signal", expr.span, format!("got `{}`", actual))
-        };
+        let diags = self.refs.diags;
+        let build_err =
+            |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual));
         self.try_eval_expression_as_domain_signal(scope, expr, build_err)
             .map_err(|e| e.into_inner())
     }
 
     pub fn try_eval_expression_as_domain_signal<E>(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         expr: &Expression,
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
@@ -1002,7 +1012,7 @@ impl CompileState<'_> {
                 Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let value = self.eval_id(scope, id).map_err(|e| Either::Right(e))?;
+                let value = self.refs.eval_id(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
                     EvaluatedId::Value(_) => Err(build_err("value")),
                     EvaluatedId::Named(s) => match s {
@@ -1025,7 +1035,7 @@ impl CompileState<'_> {
 
     pub fn eval_domain_sync(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         domain: &SyncDomain<Box<Expression>>,
     ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
         let clock = self.eval_expression_as_domain_signal(scope, &domain.clock);
@@ -1039,7 +1049,7 @@ impl CompileState<'_> {
 
     pub fn eval_domain(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         domain: &Spanned<DomainKind<Box<Expression>>>,
     ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
         let result = match &domain.inner {
@@ -1055,9 +1065,10 @@ impl CompileState<'_> {
 
     pub fn eval_port_domain(
         &mut self,
-        scope: Scope,
+        scope: &Scope,
         domain: &Spanned<DomainKind<Box<Expression>>>,
     ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
         let result = self.eval_domain(scope, domain)?;
 
         Ok(Spanned {
@@ -1067,12 +1078,10 @@ impl CompileState<'_> {
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_inner(|signal| {
                     signal.try_map_inner(|signal| match signal {
                         Signal::Port(port) => Ok(port),
-                        Signal::Wire(_) => {
-                            Err(self.diags.report_internal_error(domain.span, "expected port, got wire"))
+                        Signal::Wire(_) => Err(diags.report_internal_error(domain.span, "expected port, got wire")),
+                        Signal::Register(_) => {
+                            Err(diags.report_internal_error(domain.span, "expected port, got register"))
                         }
-                        Signal::Register(_) => Err(self
-                            .diags
-                            .report_internal_error(domain.span, "expected port, got register")),
                     })
                 })?),
             },

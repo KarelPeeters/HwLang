@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
-
+use once_map::OnceMap;
 use parking_lot::{Condvar, Mutex};
+use std::hash::Hash;
+use std::{collections::VecDeque, num::NonZeroUsize};
 
 pub struct ComputeOnce<T> {
     inner: std::sync::OnceLock<T>,
@@ -26,13 +27,30 @@ impl<T> ComputeOnce<T> {
     pub fn offer_to_compute(&self, f: impl FnOnce() -> T) -> () {
         // TODO better implementation that does not block if someone else is already computing
         //   (we might need a fully custom implementation of OnceLock)
+        // TODO RwLock probably works pretty well, benchmark for fun
         self.inner.get_or_init(f);
+    }
+}
+
+// TODO cycle detection with nice error messages (also needed to prevent deadlocks)
+// TODO implement with better concurrency primitives
+pub struct ComputeOnceMap<K, V> {
+    inner: OnceMap<K, Box<V>>,
+}
+
+impl<K: Hash + Eq, V> ComputeOnceMap<K, V> {
+    pub fn new() -> Self {
+        Self { inner: OnceMap::new() }
+    }
+
+    pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V {
+        self.inner.insert(k, |k| Box::new(f(k)))
     }
 }
 
 // TODO is there a way to avoid the single mutex bottleneck?
 pub struct SharedQueue<T> {
-    thread_count: usize,
+    thread_count: NonZeroUsize,
     mutex: Mutex<SharedQueueInner<T>>,
     cond: Condvar,
 }
@@ -44,8 +62,7 @@ struct SharedQueueInner<T> {
 }
 
 impl<T> SharedQueue<T> {
-    pub fn new(thread_count: usize) -> Self {
-        assert!(thread_count > 0);
+    pub fn new(thread_count: NonZeroUsize) -> Self {
         Self {
             thread_count,
             mutex: Mutex::new(SharedQueueInner {
@@ -92,7 +109,7 @@ impl<T> SharedQueue<T> {
             }
 
             inner.waiting_count += 1;
-            if inner.waiting_count == self.thread_count {
+            if inner.waiting_count == self.thread_count.get() {
                 inner.done = true;
                 self.cond.notify_all();
                 return None;

@@ -165,6 +165,8 @@ Block<S>: Block<S> = {
 ModuleStatement: ModuleStatement = Spanned<ModuleStatementKind>;
 BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
+// TODO add scope block, just empty {} that shields registers etc from the top module scope
+// TODO add module-level if, for
 ModuleStatementKind: ModuleStatementKind = {
     // declaration
     ConstDeclaration<()> =>
@@ -589,8 +591,7 @@ MaybeId: MaybeIdentifier = {
     <id:Id> => MaybeIdentifier::Identifier(id),
 }
 
-Vis: Visibility = {
-    // TODO pub or public?
+Vis: Visibility<Span> = {
     <start:@L> "pub" <end:@R> => Visibility::Public(loc.span(start, end)),
     => Visibility::Private,
 }
