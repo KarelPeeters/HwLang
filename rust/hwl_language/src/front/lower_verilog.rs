@@ -523,50 +523,50 @@ fn lower_module_statements(
 
                 if port_connections.is_empty() {
                     swriteln!(f, ");");
-                    return Ok(());
-                }
-                swriteln!(f);
+                } else {
+                    swriteln!(f);
 
-                let name_map = NameMap {
-                    ports: port_name_map,
-                    registers: reg_name_map,
-                    wires: wire_name_map,
-                    variables: &IndexMap::new(),
-                };
+                    let name_map = NameMap {
+                        ports: port_name_map,
+                        registers: reg_name_map,
+                        wires: wire_name_map,
+                        variables: &IndexMap::new(),
+                    };
 
-                for (port_index, connection) in enumerate(port_connections) {
-                    let port_name = inner_module.ports.get_index(port_index).unwrap().1;
-                    swrite!(f, "{I}{I}.{port_name}(");
+                    for (port_index, connection) in enumerate(port_connections) {
+                        let port_name = inner_module.ports.get_index(port_index).unwrap().1;
+                        swrite!(f, "{I}{I}.{port_name}(");
 
-                    match &connection.inner {
-                        IrPortConnection::Input(expr) => {
-                            lower_expression(diags, name_map, expr.span, &expr.inner, f)?;
-                        }
-                        &IrPortConnection::Output(signal) => {
-                            match signal {
-                                None => {
-                                    // write nothing, causing empty `()`
-                                }
-                                Some(IrWireOrPort::Wire(signal_wire)) => {
-                                    let wire_name = name_map.wires.get(&signal_wire).unwrap();
-                                    swrite!(f, "{wire_name}");
-                                }
-                                Some(IrWireOrPort::Port(signal_port)) => {
-                                    let port_name = name_map.ports.get(&signal_port).unwrap();
-                                    swrite!(f, "{port_name}");
+                        match &connection.inner {
+                            IrPortConnection::Input(expr) => {
+                                lower_expression(diags, name_map, expr.span, &expr.inner, f)?;
+                            }
+                            &IrPortConnection::Output(signal) => {
+                                match signal {
+                                    None => {
+                                        // write nothing, causing empty `()`
+                                    }
+                                    Some(IrWireOrPort::Wire(signal_wire)) => {
+                                        let wire_name = name_map.wires.get(&signal_wire).unwrap();
+                                        swrite!(f, "{wire_name}");
+                                    }
+                                    Some(IrWireOrPort::Port(signal_port)) => {
+                                        let port_name = name_map.ports.get(&signal_port).unwrap();
+                                        swrite!(f, "{port_name}");
+                                    }
                                 }
                             }
                         }
+
+                        if port_index == port_connections.len() - 1 {
+                            swriteln!(f, ")");
+                        } else {
+                            swriteln!(f, "),");
+                        }
                     }
 
-                    if port_index == port_connections.len() - 1 {
-                        swriteln!(f, ")");
-                    } else {
-                        swriteln!(f, "),");
-                    }
+                    swriteln!(f, "{I});");
                 }
-
-                swriteln!(f, "{I});");
             }
         }
     }
