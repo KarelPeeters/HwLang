@@ -227,7 +227,7 @@ impl CompileItemContext<'_, '_> {
 
         // run the body
         let entry = StackEntry::FunctionRun(function.item);
-        self.recurse_mut(entry, |s| {
+        self.recurse(entry, |s| {
             match &function.body {
                 FunctionBody::TypeAliasExpr(expr) => {
                     let result = s

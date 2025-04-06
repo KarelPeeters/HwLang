@@ -1,11 +1,12 @@
 use std::cmp::{max, min};
 use std::fmt::{Debug, Formatter};
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+// TODO make the order of these actually deterministic across platforms
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct FileId(pub usize);
 
 /// Minimal source code position.
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Pos {
     pub file: FileId,
     pub byte: usize,
@@ -24,7 +25,7 @@ pub struct PosFull {
 }
 
 // TODO make this more compact, sharing the file?
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Span {
     /// inclusive
     pub start: Pos,

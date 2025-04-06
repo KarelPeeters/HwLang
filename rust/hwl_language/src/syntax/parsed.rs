@@ -5,6 +5,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
+use std::fmt::{Debug, Formatter};
 use unwrap_match::unwrap_match;
 
 // TODO represent the set of existing items here already, so direct lookups become possible
@@ -47,10 +48,16 @@ impl ParsedDatabase {
 }
 
 // TODO general way to point back into the ast? should we just switch to actual references with lifetimes?
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefItem {
     file: FileId,
     file_item_index: usize,
+}
+
+impl Debug for AstRefItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AstRefItem([{}]#{})", self.file.0, self.file_item_index)
+    }
 }
 
 impl AstRefItem {

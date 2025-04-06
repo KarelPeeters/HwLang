@@ -14,16 +14,15 @@ use crate::syntax::pos::{FileId, Span};
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
-use crate::util::sync::{ComputeOnce, ComputeOnceMap, SharedQueue};
-use crate::util::ResultExt;
+use crate::util::sync::{ComputeOnceArena, ComputeOnceMap, SharedQueue};
+use crate::util::{ResultDoubleExt, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Itertools};
-use std::cell::RefCell;
+use itertools::{enumerate, zip_eq, Itertools};
+use rand::seq::SliceRandom;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-
 // TODO keep this file for the core compile loop and multithreading, move everything else out
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
@@ -57,16 +56,20 @@ pub fn compile(
         })
     };
 
-    // TODO randomize order to avoid all threads working on similar items and running into each other?
+    // TODO shuffle or not?
+    //   * which is actually faster? (for mutex contention)
+    //   * do we want to shuffle anyway to test that the compiler is deterministic?
     let work_queue = SharedQueue::new(thread_count);
-    work_queue.push_batch(all_items_except_imports().map(WorkItem::EvaluateItem));
+    {
+        let mut all_items_except_imports = all_items_except_imports().collect_vec();
+        all_items_except_imports.shuffle(&mut rand::thread_rng());
+        work_queue.push_batch(all_items_except_imports.into_iter().map(WorkItem::EvaluateItem));
+    }
 
     let shared = CompileShared {
         file_scopes,
         work_queue,
-        item_values: all_items_except_imports()
-            .map(|item| (item, ComputeOnce::new()))
-            .collect(),
+        item_values: ComputeOnceArena::new(all_items_except_imports()),
         elaborated_modules: ComputeOnceMap::new(),
         ir_modules: Mutex::new(Arena::default()),
         print_handler,
@@ -150,15 +153,17 @@ impl<'s> CompileRefs<'_, 's> {
         while let Some(work_item) = self.shared.work_queue.pop() {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
-                    let slot = self.shared.item_values.get(&item).unwrap();
-                    slot.offer_to_compute(|| {
-                        let mut ctx = CompileItemContext::new(self);
-                        ctx.eval_item_new(item)
+                    self.shared.item_values.offer_to_compute(item, || {
+                        let mut ctx = CompileItemContext::new(self, Some(item));
+                        let result = ctx.eval_item_new(item);
+                        result
                     });
                 }
                 WorkItem::ElaborateModule(header, ir_module) => {
+                    // do elaboration
                     let ir_module_info = self.elaborate_module_body_new(header);
 
+                    // store result
                     let slot = &mut self.shared.ir_modules.lock().unwrap()[ir_module];
                     assert!(slot.is_none());
                     *slot = Some(ir_module_info);
@@ -178,6 +183,7 @@ impl<'s> CompileRefs<'_, 's> {
         let params = self.elaborate_module_params_new(module, args)?;
         let key = params.cache_key();
 
+        // if necessary, elaborate header and queue body
         let elaborated = shared
             .elaborated_modules
             .get_or_compute(key, |_| {
@@ -204,15 +210,6 @@ impl<'s> CompileRefs<'_, 's> {
 
         elaborated
     }
-
-    pub fn eval_item(&self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
-        let slot = self.shared.item_values.get(&item).unwrap();
-        slot.get_or_compute(|| {
-            let mut ctx = CompileItemContext::new(*self);
-            ctx.eval_item_new(item)
-        })
-        .as_ref_ok()
-    }
 }
 
 /// globally shared, constant state
@@ -231,10 +228,8 @@ pub enum WorkItem {
 pub struct CompileShared<'p> {
     pub file_scopes: FileScopes,
 
-    // TOOD improve concurrenct and implement full cycle detection again
     pub work_queue: SharedQueue<WorkItem>,
-
-    pub item_values: IndexMap<AstRefItem, ComputeOnce<Result<CompileValue, ErrorGuaranteed>>>,
+    pub item_values: ComputeOnceArena<AstRefItem, Result<CompileValue, ErrorGuaranteed>, StackEntry>,
     pub elaborated_modules: ComputeOnceMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
@@ -269,63 +264,97 @@ pub struct CompileItemContext<'a, 's> {
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
 
-    pub stack: RefCell<Vec<StackEntry>>,
+    pub origin: Option<AstRefItem>,
+    pub stack: Vec<StackEntry>,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum StackEntry {
+    ItemUsage(Span),
+    ItemEvaluation(AstRefItem),
     FunctionCall(Span),
     FunctionRun(AstRefItem),
 }
 
+impl StackEntry {
+    pub fn into_span_message(self, parsed: &ParsedDatabase) -> (Span, &'static str) {
+        match self {
+            StackEntry::ItemUsage(span) => (span, "item used here"),
+            StackEntry::ItemEvaluation(entry_item) => {
+                let entry_span = parsed[entry_item].common_info().span_short;
+                (entry_span, "item declared here")
+            }
+            StackEntry::FunctionCall(entry_span) => (entry_span, "function call here"),
+            StackEntry::FunctionRun(entry_item) => {
+                let entry_span = parsed[entry_item].common_info().span_short;
+                (entry_span, "function declared here")
+            }
+        }
+    }
+}
+
 impl<'a, 's> CompileItemContext<'a, 's> {
-    pub fn new(refs: CompileRefs<'a, 's>) -> Self {
+    pub fn new(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
         CompileItemContext {
             refs,
             variables: Arena::default(),
             ports: Arena::default(),
             wires: Arena::default(),
             registers: Arena::default(),
-            stack: RefCell::new(vec![]),
+            origin,
+            stack: vec![],
         }
     }
 
-    // TODO add recursion limit (not here, in the central loop checker)
-    pub fn recurse<R>(&self, entry: StackEntry, f: impl FnOnce() -> R) -> R {
-        let len = {
-            let mut stack = self.stack.borrow_mut();
-            stack.push(entry);
-            stack.len()
-        };
-
-        let result = f();
-
-        {
-            let mut stack = self.stack.borrow_mut();
-            assert_eq!(stack.len(), len);
-            stack.pop().unwrap();
-        }
-
-        result
-    }
-
-    pub fn recurse_mut<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> R {
-        let len = {
-            let stack = self.stack.get_mut();
-            stack.push(entry);
-            stack.len()
-        };
+    pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.stack.push(entry);
+        let len = self.stack.len();
 
         let result = f(self);
 
-        {
-            let stack = self.stack.get_mut();
-            assert_eq!(stack.len(), len);
-            stack.pop().unwrap();
-        }
+        assert_eq!(self.stack.len(), len);
+        self.stack.pop().unwrap();
 
         result
     }
+
+    pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
+        self.recurse(StackEntry::ItemEvaluation(item), |s| {
+            let origin = s.origin.map(|origin| (origin, s.stack.clone()));
+            let f_compute = || {
+                let mut ctx = CompileItemContext::new(s.refs, Some(item));
+                ctx.eval_item_new(item)
+            };
+            let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(s.refs.fixed.parsed, stack));
+            s.refs
+                .shared
+                .item_values
+                .get_or_compute(origin, item, f_compute, f_cycle)
+                .map(ResultExt::as_ref_ok)
+                .flatten_err()
+        })
+    }
+}
+
+fn cycle_diagnostic(parsed: &ParsedDatabase, mut stack: Vec<&StackEntry>) -> Diagnostic {
+    // sort the stack to keep error messages deterministic
+    assert!(!stack.is_empty());
+    let min_index = stack
+        .iter()
+        .position_min_by_key(|entry| {
+            let (span, _) = entry.into_span_message(parsed);
+            span
+        })
+        .unwrap();
+    stack.rotate_left(min_index);
+
+    // create the diagnostic
+    let mut diag = Diagnostic::new("encountered cyclic dependency");
+    for (entry_index, &entry) in enumerate(stack) {
+        let (span, label) = entry.into_span_message(parsed);
+        diag = diag.add_error(span, format!("[{entry_index}] {label}"));
+    }
+    diag.finish()
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -553,7 +582,7 @@ fn find_top_module(
     shared: &CompileShared,
 ) -> Result<AstRefModule, ErrorGuaranteed> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
-    //   maybe we can even remove the concept entirely, by now we're elaboraing all items without generics already
+    //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
     let top_file = fixed.source[fixed.source.root_directory]
         .children
         .get("top")
@@ -619,7 +648,7 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-// TODO rename/expand to handle all external interation: IO, env vars, ...
+// TODO rename/expand to handle all external interactions: IO, env vars, ...
 pub trait PrintHandler {
     fn println(&self, s: &str);
 }

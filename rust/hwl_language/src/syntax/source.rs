@@ -90,6 +90,7 @@ impl SourceDatabase {
     /// Get the list of files, in a platform-independent sorted order.
     pub fn files(&self) -> Vec<FileId> {
         // TODO cache this sort and return a reference
+        // TODO instead of this, only create FileIds once in a deterministic order, once source collection is complete
         let mut files = self.files.keys().copied().collect_vec();
         files.sort_by_key(|&file| &self[self[file].directory].path);
         files

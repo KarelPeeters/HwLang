@@ -55,13 +55,13 @@ pub type InstancePorts = Arena<InstancePort, PortInfo<InstancePort>>;
 
 pub struct ElaboratedModuleParams {
     pub module: AstRefModule,
-    pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
+    pub params: Option<Vec<(Identifier, CompileValue)>>,
     pub scope_header: ScopeContent,
 }
 
 pub struct ElaboratedModuleHeader {
     pub module: AstRefModule,
-    pub params: Option<Vec<(ast::Identifier, CompileValue)>>,
+    pub params: Option<Vec<(Identifier, CompileValue)>>,
     pub scope_header: ScopeContent,
     pub ports: Arena<Port, PortInfo<Port>>,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
@@ -121,7 +121,7 @@ impl CompileRefs<'_, '_> {
         let param_values = match (params, args) {
             (None, None) => None,
             (Some(params), Some(args)) => {
-                let mut ctx = CompileItemContext::new(*self);
+                let mut ctx = CompileItemContext::new(*self, None);
                 let param_values = ctx.match_args_to_params_and_typecheck(&mut scope, params, &args)?;
                 Some(param_values)
             }
@@ -234,7 +234,7 @@ impl CompileRefs<'_, '_> {
         };
 
         let mut ports_ir = Arena::default();
-        let mut ctx = CompileItemContext::new(*self);
+        let mut ctx = CompileItemContext::new(*self, None);
 
         for port_item in &ports.inner {
             match port_item {
@@ -325,17 +325,11 @@ impl CompileRefs<'_, '_> {
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let mut scope_body = Scope::new_child(body.span, scope_header);
 
-        let mut ctx = CompileItemContext {
-            refs: *self,
-            variables: Default::default(),
-            ports,
-            wires: Default::default(),
-            registers: Default::default(),
-            stack: Default::default(),
-        };
+        let mut ctx_item = CompileItemContext::new(*self, None);
+        ctx_item.ports = ports;
 
         let mut ctx = BodyElaborationContext {
-            ctx: &mut ctx,
+            ctx: &mut ctx_item,
             ir_ports,
             ir_wires: Arena::default(),
             ir_registers: Arena::default(),
@@ -385,11 +379,11 @@ impl CompileRefs<'_, '_> {
                 let out_port_ir = ctx.ctx.ports[out_port].ir;
                 let reg_info = &ctx.ctx.registers[reg];
                 let reg_ir = reg_info.ir;
-                let ctxment =
+                let statement =
                     IrStatement::Assign(IrAssignmentTarget::port(out_port_ir), IrExpression::Register(reg_ir));
                 statements.push(Spanned {
                     span: reg_info.id.span(),
-                    inner: ctxment,
+                    inner: statement,
                 })
             }
 
@@ -641,7 +635,7 @@ impl BodyElaborationContext<'_, '_> {
 
         // eval and check port connections
         // TODO use function parameter matching for ports too?
-        //   we need at least reordering and proper error messagages
+        //   we need at least reordering and proper error messages
         if ports.len() != port_connections.inner.len() {
             let diag = Diagnostic::new("mismatched port connections for module instance")
                 .add_error(
@@ -882,7 +876,7 @@ impl BodyElaborationContext<'_, '_> {
                 match &connection_expr.inner {
                     ExpressionKind::Dummy => IrPortConnection::Output(None),
                     ExpressionKind::Id(id) => {
-                        let named = self.ctx.refs.eval_id(scope, id)?;
+                        let named = self.ctx.eval_id(scope, id)?;
 
                         let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
                             EvaluatedId::Named(NamedValue::Wire(wire)) => {

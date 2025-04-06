@@ -4,7 +4,7 @@ use crate::front::check::{
     check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
     check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, CompileRefs, Port, StackEntry};
+use crate::front::compile::{CompileItemContext, Port, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
@@ -56,15 +56,17 @@ pub enum EvaluatedId {
     Value(MaybeCompile<TypedIrExpression>),
 }
 
-impl CompileRefs<'_, '_> {
-    pub fn eval_id(&self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
-        let diags = self.diags;
+impl CompileItemContext<'_, '_> {
+    pub fn eval_id(&mut self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
 
         let found = scope.find(diags, id)?;
         let def_span = found.defining_span;
         let result = match found.value {
             &ScopedEntry::Named(value) => EvaluatedId::Named(value),
-            &ScopedEntry::Item(item) => EvaluatedId::Value(MaybeCompile::Compile(self.eval_item(item)?.clone())),
+            &ScopedEntry::Item(item) => self.recurse(StackEntry::ItemUsage(id.span), |s| {
+                Ok(EvaluatedId::Value(MaybeCompile::Compile(s.eval_item(item)?.clone())))
+            })?,
             ScopedEntry::Value(value) => EvaluatedId::Value(value.clone()),
         };
         Ok(Spanned {
@@ -72,9 +74,7 @@ impl CompileRefs<'_, '_> {
             inner: result,
         })
     }
-}
 
-impl CompileItemContext<'_, '_> {
     pub fn eval_expression<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -138,7 +138,7 @@ impl CompileItemContext<'_, '_> {
                     .inner)
             }
             ExpressionKind::Id(id) => {
-                match self.refs.eval_id(scope, id)?.inner {
+                match self.eval_id(scope, id)?.inner {
                     EvaluatedId::Value(value) => value,
                     EvaluatedId::Named(value) => match value {
                         // TODO report error when combinatorial block
@@ -609,7 +609,7 @@ impl CompileItemContext<'_, '_> {
                 // actually do the call
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
-                let (result_block, result_value) = self.recurse_mut(entry, |s| s.call_function(ctx, &target, args))?;
+                let (result_block, result_value) = self.recurse(entry, |s| s.call_function(ctx, &target, args))?;
 
                 let result_block_spanned = Spanned {
                     span: expr.span,
@@ -916,7 +916,7 @@ impl CompileItemContext<'_, '_> {
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got `{}`", actual));
 
         let result = match &expr.inner {
-            ExpressionKind::Id(id) => match self.refs.eval_id(scope, id)?.inner {
+            ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
                 EvaluatedId::Value(_) => return Err(build_err("value")),
                 EvaluatedId::Named(s) => match s {
                     NamedValue::Variable(v) => {
@@ -1012,7 +1012,7 @@ impl CompileItemContext<'_, '_> {
                 Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let value = self.refs.eval_id(scope, id).map_err(|e| Either::Right(e))?;
+                let value = self.eval_id(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
                     EvaluatedId::Value(_) => Err(build_err("value")),
                     EvaluatedId::Named(s) => match s {
