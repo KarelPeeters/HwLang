@@ -1,7 +1,8 @@
 [package]
 name = "hwl_python"
-edition.workspace = true
 version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "hwl"

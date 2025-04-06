@@ -2,9 +2,9 @@
 name = "hwl_language"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # TODO split binary into separate package, it has some extra deps (eg. num-cpus)
-
 [dependencies]
 annotate-snippets.workspace = true
 clap.workspace = true
