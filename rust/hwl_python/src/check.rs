@@ -13,7 +13,7 @@ pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(
     if diags.len() == 0 {
         Ok(())
     } else {
-        let diags = diags.clone_without_handler().finish();
+        let diags = diags.clone().finish();
         let settings = DiagnosticStringSettings::default();
         let msg = diags.into_iter().map(|d| d.to_string(source, settings)).join("\n");
         Err(DiagnosticException::new_err(msg))

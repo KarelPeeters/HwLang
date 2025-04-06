@@ -1,15 +1,16 @@
 use check::{check_diags, convert_diag_error, unwrap_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
+use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler};
+use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
-        compile::{CompileState, CompileStateLong, NoPrintHandler, PopulatedScopes, Port as RustPort},
+        compile::NoPrintHandler,
         context::CompileTimeExpressionContext,
         diagnostic::Diagnostics,
         function::FunctionValue,
         ir::IrModule,
         lower_verilog::lower,
         misc::ScopedEntry,
-        scope::Visibility,
         types::{IncRange as RustIncRange, Type as RustType},
         value::MaybeCompile,
     },
@@ -17,7 +18,10 @@ use hwl_language::{
         ast::Spanned,
         parsed::{AstRefModule, ParsedDatabase as RustParsedDatabase},
         pos::Span,
-        source::{SourceDatabase as RustSourceDatabase, SourceSetError, SourceSetOrIoError},
+        source::{
+            SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
+            SourceSetOrIoError,
+        },
     },
     util::{io::IoErrorWithPath, ResultExt},
 };
@@ -48,7 +52,7 @@ struct Parsed {
 #[pyclass]
 struct Compile {
     parsed: Py<Parsed>,
-    state: CompileStateLong,
+    state: CompileShared,
 }
 
 #[pyclass]
@@ -81,8 +85,6 @@ struct Module {
 struct ModuleInstance {
     compile: Py<Compile>,
     ir_module: IrModule,
-    #[allow(dead_code)]
-    ports: Vec<RustPort>,
     dummy_span: Span,
 }
 
@@ -128,24 +130,28 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 impl Source {
     #[new]
     fn new(root_dir: &str) -> PyResult<Self> {
-        let mut source = RustSourceDatabase::new();
-        source.add_tree(vec![], Path::new(root_dir)).map_err(|e| match e {
-            SourceSetOrIoError::SourceSet(source_set_error) => match source_set_error {
-                SourceSetError::EmptyPath => SourceSetException::new_err("empty path"),
-                SourceSetError::DuplicatePath(file_path) => {
-                    SourceSetException::new_err(format!("duplicate path `{file_path:?}`"))
+        let mut source_builder = RustSourceDatabaseBuilder::new();
+        source_builder
+            .add_tree(vec![], Path::new(root_dir))
+            .map_err(|e| match e {
+                SourceSetOrIoError::SourceSet(source_set_error) => match source_set_error {
+                    SourceSetError::EmptyPath => SourceSetException::new_err("empty path"),
+                    SourceSetError::DuplicatePath(file_path) => {
+                        SourceSetException::new_err(format!("duplicate path `{file_path:?}`"))
+                    }
+                    SourceSetError::NonUtf8Path(path_buf) => {
+                        SourceSetException::new_err(format!("non-UTF-8 path `{path_buf:?}`"))
+                    }
+                    SourceSetError::MissingFileName(path_buf) => {
+                        SourceSetException::new_err(format!("missing file name `{path_buf:?}`"))
+                    }
+                },
+                SourceSetOrIoError::Io(IoErrorWithPath { error, path }) => {
+                    SourceSetException::new_err(format!("io error `{error}` for path `{path:?}`"))
                 }
-                SourceSetError::NonUtf8Path(path_buf) => {
-                    SourceSetException::new_err(format!("non-UTF-8 path `{path_buf:?}`"))
-                }
-                SourceSetError::MissingFileName(path_buf) => {
-                    SourceSetException::new_err(format!("missing file name `{path_buf:?}`"))
-                }
-            },
-            SourceSetOrIoError::Io(IoErrorWithPath { error, path }) => {
-                SourceSetException::new_err(format!("io error `{error}` for path `{path:?}`"))
-            }
-        })?;
+            })?;
+
+        let source = source_builder.finish();
         Ok(Self { source })
     }
 
@@ -178,11 +184,14 @@ impl Parsed {
             let diags = Diagnostics::new();
             let parsed = slf.borrow(py);
             let source = parsed.source.borrow(py);
+            let fixed = CompileFixed {
+                source: &source.source,
+                parsed: &parsed.parsed,
+            };
 
-            let scopes = PopulatedScopes::new(&diags, &source.source, &parsed.parsed);
-            let state = CompileStateLong::new(scopes.scopes, scopes.file_scopes);
-
+            let state = CompileShared::new(fixed, &diags, NON_ZERO_USIZE_ONE);
             check_diags(&source.source, &diags)?;
+
             state
         };
 
@@ -196,7 +205,7 @@ impl Compile {
         let value = {
             // unwrap self
             let slf_ref = &mut *slf.borrow_mut(py);
-            let state = &mut slf_ref.state;
+            let state = &slf_ref.state;
 
             let parsed_ref = slf_ref.parsed.borrow(py);
             let parsed = &parsed_ref.parsed;
@@ -209,7 +218,7 @@ impl Compile {
             let steps: Vec<&str> = path.split('.').collect_vec();
             let (item_name, steps) = steps.split_last().unwrap();
 
-            let mut curr_dir = source.root_directory;
+            let mut curr_dir = source.root_directory();
             for (i_step, &step) in enumerate(steps) {
                 curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
                     ResolveException::new_err(format!(
@@ -226,11 +235,7 @@ impl Compile {
 
             // look up the item
             let diags = Diagnostics::new();
-            let found = unwrap_diag_error(
-                source,
-                &diags,
-                state.scopes[scope.scope_outer_declare].find_immediate_str(&diags, item_name, Visibility::Public),
-            )?;
+            let found = unwrap_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
             let item = match found.value {
                 &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
                 ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
@@ -243,10 +248,15 @@ impl Compile {
             };
 
             // evaluate the item
-            let mut print_handler = NoPrintHandler;
-            let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
+            let refs = CompileRefs {
+                fixed: CompileFixed { source, parsed },
+                shared: state,
+                diags: &diags,
+                print_handler: &StdoutPrintHandler,
+            };
+            let mut item_ctx = CompileItemContext::new(refs, None);
 
-            let value = state_short.eval_item(item);
+            let value = item_ctx.eval_item(item);
             let value = unwrap_diag_error(source, &diags, value)?;
             value.clone()
         };
@@ -303,15 +313,19 @@ impl Function {
             let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
 
             // call function
-            let mut print_handler = NoPrintHandler;
-            let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
-            check_diags(source, &diags)?;
+            let refs = CompileRefs {
+                fixed: CompileFixed { source, parsed },
+                shared: state,
+                diags: &diags,
+                print_handler: &StdoutPrintHandler,
+            };
+            let mut item_ctx = CompileItemContext::new(refs, None);
 
             let mut ctx = CompileTimeExpressionContext {
                 span: dummy_span,
                 reason: "external call".to_owned(),
             };
-            let returned = self.function_value.call(&mut state_short, &mut ctx, args);
+            let returned = item_ctx.call_function(&mut ctx, &self.function_value, args);
             let ((), returned) = unwrap_diag_error(source, &diags, returned)?;
 
             // unwrap compile
@@ -351,26 +365,33 @@ impl Module {
         // evaluate args
         let f_arg = |v| Spanned::new(dummy_span, v);
         let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
-        // TODO this is really hacky, maybe the Some/None disctintion should not exist for generics?
+        // TODO this is really hacky, maybe the Some/None distinction should not exist for generics?
         let args = if args.inner.len() == 0 && parsed[self.module].params.is_none() {
             None
         } else {
             Some(args)
         };
 
-        // instantiate module
+        // create context
         let diags = Diagnostics::new();
-        let mut print_handler = NoPrintHandler;
+        let refs = CompileRefs {
+            fixed: CompileFixed { source, parsed },
+            shared: state,
+            diags: &diags,
+            print_handler: &NoPrintHandler,
+        };
 
-        let mut state_short = CompileState::new(&diags, source, parsed, state, &mut print_handler);
-
-        let elab = state_short.elaborate_module(self.module, args);
+        // start module elaboration
+        let elab = refs.elaborate_module(self.module, args);
         let elab = unwrap_diag_error(source, &diags, elab)?;
+
+        // finish elaboration
+        refs.run_elaboration_loop();
+        check_diags(source, &diags)?;
 
         let module_instance = ModuleInstance {
             compile: self.compile.clone_ref(py),
             ir_module: elab.ir_module,
-            ports: elab.ports,
             dummy_span,
         };
         Ok(module_instance)
@@ -379,35 +400,39 @@ impl Module {
 
 #[pymethods]
 impl ModuleInstance {
-    fn to_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
+    fn generate_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
         // borrow self
         let compile = &mut *self.compile.borrow_mut(py);
         let parsed_red = compile.parsed.borrow(py);
         let parsed = &parsed_red.parsed;
         let source = &parsed_red.source.borrow(py).source;
 
-        // lower
-        let diags = Diagnostics::new();
-
         // take out the old compiler
         // TODO this is really weird, don't do this
-        let replacement_scopes = PopulatedScopes::new(&diags, source, &parsed);
-        let replacement_state = CompileStateLong::new(replacement_scopes.scopes, replacement_scopes.file_scopes);
-        let state = std::mem::replace(&mut compile.state, replacement_state);
+        let state = {
+            let fixed = CompileFixed { source, parsed };
+            let replacement_diags = Diagnostics::new();
+            let replacement_state = CompileShared::new(fixed, &replacement_diags, NON_ZERO_USIZE_ONE);
+            let state = std::mem::replace(&mut compile.state, replacement_state);
+            state
+        };
 
         // check that all modules are resolved
+        let diags = Diagnostics::new();
         let ir_modules = state.finish_ir_modules(&diags, self.dummy_span);
         let ir_modules = unwrap_diag_error(source, &diags, ir_modules)?;
 
         // actual lowering
         let lowered = lower(&diags, source, parsed, &ir_modules, self.ir_module);
-        let lowerd = unwrap_diag_error(source, &diags, lowered)?;
+        let lowered = unwrap_diag_error(source, &diags, lowered)?;
         Ok(ModuleVerilog {
-            module_name: lowerd.top_module_name,
-            source: lowerd.verilog_source,
+            module_name: lowered.top_module_name,
+            source: lowered.verilog_source,
         })
     }
 }
 
 #[pymethods]
-impl Simulator {}
+impl Simulator {
+    // TODO
+}

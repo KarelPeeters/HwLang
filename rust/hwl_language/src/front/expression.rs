@@ -771,7 +771,7 @@ impl CompileItemContext<'_, '_> {
                         format!("TypedIrExpression {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
                     }
                 };
-                self.refs.shared.print_handler.println(&value_str);
+                self.refs.print_handler.println(&value_str);
             };
 
             match (a0.as_str(), a1.as_str(), rest) {

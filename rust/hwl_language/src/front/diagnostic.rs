@@ -41,6 +41,7 @@ macro_rules! impl_from_error_guaranteed {
 }
 
 #[must_use]
+#[derive(Clone)]
 pub struct Diagnostics {
     diagnostics: RefCell<Vec<Diagnostic>>,
 }

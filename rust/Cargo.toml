@@ -3,7 +3,7 @@ members = [
     "hwl_language",
     "hwl_lsp_server",
     "hwl_wasm",
-    # "hwl_python",
+    "hwl_python",
 ]
 resolver = "2"
 

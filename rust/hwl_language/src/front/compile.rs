@@ -40,38 +40,7 @@ pub fn compile(
     thread_count: NonZeroUsize,
 ) -> Result<IrDatabase, ErrorGuaranteed> {
     let fixed = CompileFixed { source, parsed };
-    let file_scopes = populate_file_scopes(diags, fixed);
-
-    // TODO make also skip trivial items already, eg. functions and generic modules
-    let all_items_except_imports = || {
-        source.files().flat_map(|file| {
-            parsed[file].as_ref_ok().into_iter().flat_map(|file_ast| {
-                file_ast
-                    .items_with_ref()
-                    .filter(|(_, item)| !matches!(item, ast::Item::Import(_)))
-                    .map(|(item, _)| item)
-            })
-        })
-    };
-
-    // TODO shuffle or not?
-    //   * which is actually faster? (for mutex contention)
-    //   * do we want to shuffle anyway to test that the compiler is deterministic?
-    let work_queue = SharedQueue::new(thread_count);
-    {
-        let mut all_items_except_imports = all_items_except_imports().collect_vec();
-        all_items_except_imports.shuffle(&mut rand::thread_rng());
-        work_queue.push_batch(all_items_except_imports.into_iter().map(WorkItem::EvaluateItem));
-    }
-
-    let shared = CompileShared {
-        file_scopes,
-        work_queue,
-        item_values: ComputeOnceArena::new(all_items_except_imports()),
-        elaborated_modules: ComputeOnceMap::new(),
-        ir_modules: Mutex::new(Arena::default()),
-        print_handler,
-    };
+    let shared = CompileShared::new(fixed, diags, thread_count);
 
     // get the top module
     // TODO we don't really need to do this any more, all non-generic modules are elaborated anyway
@@ -80,6 +49,7 @@ pub fn compile(
             fixed,
             shared: &shared,
             diags,
+            print_handler,
         };
         find_top_module(diags, fixed, &shared).and_then(|top_item| {
             let &ElaboratedModule { ir_module, ports: _ } = refs.elaborate_module(top_item, None)?;
@@ -101,6 +71,7 @@ pub fn compile(
                         fixed,
                         shared: &shared,
                         diags: &thread_diags,
+                        print_handler,
                     };
                     thread_refs.run_elaboration_loop();
                     thread_diags
@@ -133,6 +104,7 @@ pub fn compile(
             fixed,
             shared: &shared,
             diags,
+            print_handler,
         };
         thread_refs.run_elaboration_loop();
     }
@@ -151,7 +123,7 @@ pub fn compile(
 }
 
 impl<'s> CompileRefs<'_, 's> {
-    fn run_elaboration_loop(self) {
+    pub fn run_elaboration_loop(self) {
         while let Some(work_item) = self.shared.work_queue.pop() {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
@@ -227,7 +199,7 @@ pub enum WorkItem {
 }
 
 /// long-term shared between threads
-pub struct CompileShared<'p> {
+pub struct CompileShared {
     pub file_scopes: FileScopes,
 
     pub work_queue: SharedQueue<WorkItem>,
@@ -236,10 +208,6 @@ pub struct CompileShared<'p> {
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     pub ir_modules: Mutex<Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
-
-    // TODO is there a reasonable way to get deterministic prints?
-    // TODO move this into refs, what is this doing here? Shared should be usable as a long-term value type, it can't have lifetime params
-    pub print_handler: &'p (dyn PrintHandler + Sync),
 }
 
 pub type FileScopes = IndexMap<FileId, Result<Scope<'static>, ErrorGuaranteed>>;
@@ -253,8 +221,10 @@ pub struct CompileSharedModules {
 pub struct CompileRefs<'a, 's> {
     // TODO maybe inline this
     pub fixed: CompileFixed<'a>,
-    pub shared: &'s CompileShared<'a>,
+    pub shared: &'s CompileShared,
     pub diags: &'a Diagnostics,
+    // TODO is there a reasonable way to get deterministic prints?
+    pub print_handler: &'a (dyn PrintHandler + Sync),
 }
 
 pub struct CompileItemContext<'a, 's> {
@@ -618,7 +588,42 @@ fn find_top_module(
     }
 }
 
-impl CompileShared<'_> {
+impl CompileShared {
+    pub fn new(fixed: CompileFixed, diags: &Diagnostics, thread_count: NonZeroUsize) -> Self {
+        let CompileFixed { source, parsed } = fixed;
+        let file_scopes = populate_file_scopes(diags, fixed);
+
+        // find non-import items
+        // TODO make also skip trivial items already, eg. functions and generic modules
+        let mut items = vec![];
+        for file in source.files() {
+            if let Ok(file_ast) = &parsed[file] {
+                for (item_ref, item) in file_ast.items_with_ref() {
+                    if !matches!(item, ast::Item::Import(_)) {
+                        items.push(item_ref);
+                    }
+                }
+            }
+        }
+        let item_values = ComputeOnceArena::new(items.iter().copied());
+
+        // populate work queue
+        // TODO shuffle or not?
+        //   * which is actually faster? (for mutex contention)
+        //   * do we want to shuffle anyway to test that the compiler is deterministic?
+        let work_queue = SharedQueue::new(thread_count);
+        items.shuffle(&mut rand::thread_rng());
+        work_queue.push_batch(items.into_iter().map(WorkItem::EvaluateItem));
+
+        CompileShared {
+            file_scopes,
+            work_queue,
+            item_values,
+            elaborated_modules: ComputeOnceMap::new(),
+            ir_modules: Mutex::new(Arena::default()),
+        }
+    }
+
     pub fn file_scope(&self, file: FileId) -> Result<&Scope<'static>, ErrorGuaranteed> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
