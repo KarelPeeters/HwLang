@@ -118,12 +118,16 @@ pub fn compile(
                 handles.push(h);
             }
 
-            // TODO sort diags
+            // merge diagnostics, sorting to keep them deterministic
+            // TODO some kind of topological sort "as if visited by single thread" might be nicer
+            let mut all_diags = vec![];
             for h in handles {
                 let thread_diags = h.join().unwrap();
-                for d in thread_diags.finish() {
-                    diags.report(d);
-                }
+                all_diags.extend(thread_diags.finish());
+            }
+            all_diags.sort_by_key(|d| d.main_annotation().map(|a| a.span));
+            for d in all_diags {
+                diags.report(d);
             }
         });
     } else {

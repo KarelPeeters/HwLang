@@ -7,7 +7,7 @@ use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
-use std::cmp::min;
+use std::cmp::{min, Ordering};
 
 // TODO give this a better name to clarify that this means that the compiler gave up on this
 //   and that the error has already been reported as a diagnostic.
@@ -174,6 +174,24 @@ impl Diagnostic {
             Diagnostic::new(format!("internal compiler error: '{}'", reason.into())).add_error(span, "caused here");
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
         diag.finish()
+    }
+    
+    pub fn main_annotation(&self) -> Option<&Annotation> {
+        // TODO make having at least a single annotation a type-system level requirement
+        let mut top_annotation: Option<&Annotation> = None;
+        for (_, annotations) in &self.snippets {
+            for annotation in annotations {
+                let is_better = match &top_annotation {
+                    None => true,
+                    // TODO better level comparison function
+                    Some(prev) => compare_level(annotation.level, prev.level).is_gt(),
+                };
+                if is_better {
+                    top_annotation = Some(annotation);
+                }
+            }
+        }
+        top_annotation
     }
 
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
@@ -366,4 +384,8 @@ pub trait DiagnosticAddable: Sized {
             self
         }
     }
+}
+
+pub fn compare_level(left: Level, right: Level) -> Ordering {
+    (left as u8).cmp(&(right as u8)).reverse()
 }

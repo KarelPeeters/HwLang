@@ -17,7 +17,6 @@ use indexmap::IndexMap;
 use lsp_types::{
     notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
 };
-use std::cmp::Ordering;
 use std::fmt::Write;
 use std::path::{Component, PathBuf};
 
@@ -120,31 +119,16 @@ fn diagnostic_to_lsp(
         snippets,
         footers,
         backtrace,
-    } = diagnostic;
+    } = &diagnostic;
 
     // don't show backtrace in LSP, it's not intended for end-users
     let _ = backtrace;
-
-    // find the file with the highest level annotation, that's probably the main one
-    let mut top_annotation: Option<&Annotation> = None;
-    for (_, annotations) in &snippets {
-        for annotation in annotations {
-            let is_better = match &top_annotation {
-                None => true,
-                // TODO better level comparison function
-                Some(prev) => compare_level(annotation.level, prev.level).is_gt(),
-            };
-            if is_better {
-                top_annotation = Some(annotation);
-            }
-        }
-    }
-    let top_annotation = top_annotation.unwrap();
+    let top_annotation = diagnostic.main_annotation().unwrap();
 
     // do the actual conversion
     // TODO check client capabilities
     let mut related_information = vec![];
-    for (_, annotations) in &snippets {
+    for (_, annotations) in snippets {
         for annotation in annotations {
             if annotation == top_annotation {
                 continue;
@@ -168,7 +152,7 @@ fn diagnostic_to_lsp(
     let top_uri = abs_path_to_uri(abs_path_map.get(&top_file).unwrap())?;
 
     let mut top_message = format!("{}\n{}", title, top_annotation.label);
-    for (footer_level, footer_message) in footers {
+    for &(footer_level, ref footer_message) in footers {
         write!(&mut top_message, "\n{}: {}", level_to_str(footer_level), footer_message).unwrap();
     }
 
@@ -194,10 +178,6 @@ fn diagnostic_to_lsp(
     // return
     // TODO maybe get the path name from the source map?
     Ok((top_uri, diag))
-}
-
-fn compare_level(left: Level, right: Level) -> Ordering {
-    (left as u8).cmp(&(right as u8)).reverse()
 }
 
 fn level_to_severity(level: Level) -> DiagnosticSeverity {
