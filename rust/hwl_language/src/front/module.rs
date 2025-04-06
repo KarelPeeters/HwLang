@@ -19,8 +19,8 @@ use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, Named
 use crate::syntax::ast::{self, ModuleStatement, ModuleStatementKind};
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
-    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection,
-    PortDirection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
+    ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, PortDirection,
+    RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
@@ -93,7 +93,8 @@ impl ElaboratedModuleParams {
 }
 
 pub struct ElaboratedModule {
-    pub ir_module: IrModule,
+    pub module_ast: AstRefModule,
+    pub module_ir: IrModule,
     pub ports: InstancePorts,
 }
 
@@ -408,6 +409,51 @@ impl CompileRefs<'_, '_> {
     }
 }
 
+impl<'s> CompileItemContext<'_, 's> {
+    pub fn elaborate_module_header(
+        &mut self,
+        scope: &Scope,
+        header: &ast::ModuleInstanceHeader,
+    ) -> Result<&'s ElaboratedModule, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let ast::ModuleInstanceHeader {
+            span: _,
+            span_keyword,
+            module,
+            generic_args,
+        } = header;
+
+        // eval module and generics
+        let no_vars = VariableValues::new_no_vars();
+        let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
+            self.eval_expression_as_compile(&scope, &no_vars, module, "module instance");
+        let generic_args = generic_args
+            .as_ref()
+            .map(|generic_args| {
+                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(&scope, &no_vars, a, "generic arg"))
+            })
+            .transpose();
+
+        // check that module is indeed a module
+        let module = module?;
+        let reason = TypeContainsReason::InstanceModule(*span_keyword);
+        check_type_contains_compile_value(diags, reason, &Type::Module, module.as_ref(), false)?;
+        let module_ast_ref = match module.inner {
+            CompileValue::Module(module_eval) => module_eval,
+            _ => {
+                return Err(
+                    diags.report_internal_error(module.span, "expected module, should have already been checked")
+                )
+            }
+        };
+
+        // elaborate module
+        // TODO split module header and body elaboration, so we can delay and parallelize body elaboration
+        let generic_args = generic_args?;
+        self.refs.elaborate_module(module_ast_ref, generic_args)
+    }
+}
+
 impl BodyElaborationContext<'_, '_> {
     fn pass_0_declarations(&mut self, scope_body: &mut Scope, body: &Block<ModuleStatement>) {
         let diags = self.ctx.refs.diags;
@@ -587,51 +633,24 @@ impl BodyElaborationContext<'_, '_> {
         &mut self,
         scope_body: &Scope,
         stmt_index: usize,
-        instance: &ModuleInstance,
+        instance: &ast::ModuleInstance,
     ) -> Result<IrModuleInstance, ErrorGuaranteed> {
+        let refs = self.ctx.refs;
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
-        let ModuleInstance {
-            span: _,
-            span_keyword,
+        let ast::ModuleInstance {
             name,
-            module,
-            generic_args,
+            header,
             port_connections,
         } = instance;
 
-        // eval module and generics
-        let no_vars = VariableValues::new_no_vars();
-        let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
-            ctx.eval_expression_as_compile(&scope_body, &no_vars, module, "module instance");
-        let generic_args = generic_args
-            .as_ref()
-            .map(|generic_args| {
-                generic_args
-                    .try_map_inner_all(|a| ctx.eval_expression_as_compile(&scope_body, &no_vars, a, "generic arg"))
-            })
-            .transpose();
-
-        // check that module is indeed a module
-        let module = module?;
-        let reason = TypeContainsReason::InstanceModule(*span_keyword);
-        check_type_contains_compile_value(diags, reason, &Type::Module, module.as_ref(), false)?;
-        let module_ast_ref = match module.inner {
-            CompileValue::Module(module_eval) => module_eval,
-            _ => {
-                return Err(
-                    diags.report_internal_error(module.span, "expected module, should have already been checked")
-                )
-            }
-        };
-        let module_ast = &ctx.refs.fixed.parsed[module_ast_ref];
-
-        // elaborate module
-        // TODO split module header and body elaboration, so we can delay and parallelize body elaboration
-        let generic_args = generic_args?;
-        let elaborated = ctx.refs.elaborate_module(module_ast_ref, generic_args)?;
-        let &ElaboratedModule { ir_module, ref ports } = elaborated;
+        let &ElaboratedModule {
+            module_ast,
+            module_ir,
+            ref ports,
+        } = ctx.elaborate_module_header(scope_body, header)?;
+        let module_ast = &refs.fixed.parsed[module_ast];
 
         // eval and check port connections
         // TODO use function parameter matching for ports too?
@@ -678,7 +697,7 @@ impl BodyElaborationContext<'_, '_> {
 
         Ok(IrModuleInstance {
             name: name.as_ref().map(|name| name.string.clone()),
-            module: ir_module,
+            module: module_ir,
             port_connections: ir_connections,
         })
     }

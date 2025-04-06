@@ -19,18 +19,17 @@ pub enum Visibility<S> {
 // TODO rename to ItemDef
 #[derive(Debug, Clone)]
 pub enum Item {
-    // TODO maybe imports should not be items, they don't actually define anything
+    // non-declaring items
     Import(ItemImport),
-    // Package(ItemDefPackage),
+    Instance(ModuleInstanceHeader),
+
+    // declaring items
     Const(ConstDeclaration<Visibility<Span>>),
     Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
     Function(ItemDefFunction),
-    // TODO rename to "block"?
     Module(ItemDefModule),
-    // TODO rename to "bus" and reserve interface for Rust trait/C++ concept/Java interface?
-    Interface(ItemDefInterface),
 }
 
 // TODO split this out from the items that actually define _new_ symbols?
@@ -126,19 +125,6 @@ pub struct ItemDefModule {
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub ports: Spanned<Vec<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
-}
-
-// TODO think about the syntax and meaning of this
-#[derive(Debug, Clone)]
-pub struct ItemDefInterface {
-    pub span: Span,
-    pub id: Identifier,
-    pub vis: Visibility<Span>,
-    // either None or non-empty
-    pub modes: Option<Vec<Identifier>>,
-    // TODO params?
-    // pub params: Params,
-    pub fields: Vec<InterfaceField>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,12 +382,17 @@ pub struct ClockedBlock {
 
 #[derive(Debug, Clone)]
 pub struct ModuleInstance {
+    pub name: Option<Identifier>,
+    pub header: ModuleInstanceHeader,
+    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleInstanceHeader {
     pub span: Span,
     pub span_keyword: Span,
-    pub name: Option<Identifier>,
     pub module: Box<Expression>,
     pub generic_args: Option<Args>,
-    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -807,6 +798,13 @@ impl Item {
                 },
                 None,
             ),
+            Item::Instance(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.span_keyword,
+                },
+                None,
+            ),
             Item::Const(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
@@ -858,16 +856,6 @@ impl Item {
                 }),
             ),
             Item::Module(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span,
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
-                }),
-            ),
-            Item::Interface(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
                     span_short: item.id.span,

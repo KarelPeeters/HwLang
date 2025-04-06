@@ -391,7 +391,7 @@ impl Module {
 
         let module_instance = ModuleInstance {
             compile: self.compile.clone_ref(py),
-            ir_module: elab.ir_module,
+            ir_module: elab.module_ir,
             dummy_span,
         };
         Ok(module_instance)

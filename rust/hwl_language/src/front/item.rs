@@ -19,6 +19,11 @@ impl CompileItemContext<'_, '_> {
                 let reason = "import items should have been resolved in a separate pass already";
                 Err(diags.report_internal_error(item_inner.span, reason))
             }
+            Item::Instance(instance) => {
+                // TODO this is a bit weird, we're not actually evaluating the item
+                self.elaborate_module_header(file_scope, instance)?;
+                Ok(CompileValue::UNIT)
+            }
             Item::Const(item_inner) => self.const_eval(file_scope.into(), item_inner),
             Item::Type(item_inner) => {
                 let ItemDefType {
@@ -93,7 +98,6 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Module(ast_ref))
             }
-            Item::Interface(item) => Err(diags.report_todo(item.span, "visit item kind Interface")),
         }
     }
 

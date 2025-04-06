@@ -52,8 +52,12 @@ pub fn compile(
             print_handler,
         };
         find_top_module(diags, fixed, &shared).and_then(|top_item| {
-            let &ElaboratedModule { ir_module, ports: _ } = refs.elaborate_module(top_item, None)?;
-            Ok((top_item, ir_module))
+            let &ElaboratedModule {
+                module_ast: _,
+                module_ir,
+                ports: _,
+            } = refs.elaborate_module(top_item, None)?;
+            Ok((top_item, module_ir))
         })
     };
 
@@ -148,13 +152,13 @@ impl<'s> CompileRefs<'_, 's> {
 
     pub fn elaborate_module(
         &self,
-        module: AstRefModule,
+        module_ast: AstRefModule,
         args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
     ) -> Result<&'s ElaboratedModule, ErrorGuaranteed> {
         let shared = self.shared;
 
         // elaborate params
-        let params = self.elaborate_module_params_new(module, args)?;
+        let params = self.elaborate_module_params_new(module_ast, args)?;
         let key = params.cache_key();
 
         // if necessary, elaborate header and queue body
@@ -178,7 +182,11 @@ impl<'s> CompileRefs<'_, 's> {
                     .work_queue
                     .push(WorkItem::ElaborateModule(header, ir_module));
 
-                Ok(ElaboratedModule { ir_module, ports })
+                Ok(ElaboratedModule {
+                    module_ast,
+                    module_ir: ir_module,
+                    ports,
+                })
             })
             .as_ref_ok();
 

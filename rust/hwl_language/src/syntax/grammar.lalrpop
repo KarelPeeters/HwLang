@@ -121,13 +121,24 @@ Item: Item = {
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<Parameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
         => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
 
-    <start:@L> <vis:Vis> "module" <id:Id>
-    <params:("generics" <Parameters<Parameter>>)?>
-    <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
-    "body" <body:Block<ModuleStatement>> <end:@R>
-    => {
+    <start:@L>
+        <vis:Vis> "module" <id:Id>
+        <params:("generics" <Parameters<Parameter>>)?>
+        <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
+        "body" <body:Block<ModuleStatement>>
+    <end:@R> => {
         let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
         Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) })
+    },
+    
+    <start:@L>
+        "instance" <instance_end:@R> <module:BoxExpr>
+        <generic_args:("generics" "(" <Args> ")")?> ";"
+    <end:@R> => {
+        let span = loc.span(start, end);
+        let span_keyword = loc.span(start, instance_end);
+        let instance = ModuleInstanceHeader { span, span_keyword, module, generic_args };
+        Item::Instance(instance)
     },
 
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
@@ -216,9 +227,14 @@ ModuleStatementKind: ModuleStatementKind = {
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
-            name, module, generic_args, port_connections,
-            span_keyword: loc.span(start, instance_end),
-            span: loc.span(start, end),
+            header: ModuleInstanceHeader {
+                span_keyword: loc.span(start, instance_end),
+                span: loc.span(start, end),
+                module,
+                generic_args,
+            },
+            name,
+            port_connections,
         };
         ModuleStatementKind::Instance(instance)
     },
