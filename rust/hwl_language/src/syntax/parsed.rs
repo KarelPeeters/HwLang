@@ -1,8 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, WireKind};
-use crate::syntax::pos::{FileId, Span};
-use crate::syntax::source::SourceDatabase;
+use crate::syntax::pos::Span;
+use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
+use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use std::fmt::{Debug, Formatter};
@@ -56,7 +57,12 @@ pub struct AstRefItem {
 
 impl Debug for AstRefItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AstRefItem([{}]#{})", self.file.0, self.file_item_index)
+        write!(
+            f,
+            "AstRefItem([{}]#{})",
+            self.file.inner().index(),
+            self.file_item_index
+        )
     }
 }
 

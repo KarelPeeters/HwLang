@@ -2,7 +2,7 @@ use annotate_snippets::Level;
 use itertools::enumerate;
 
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
-use crate::syntax::pos::{FileId, Span};
+use crate::syntax::pos::Span;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 use crate::util::iter::IterExt;
 use pos::Pos;
@@ -20,6 +20,7 @@ mod grammar_wrapper {
     lalrpop_mod!(pub grammar, "/syntax/grammar.rs");
 }
 
+use crate::syntax::source::FileId;
 use grammar_wrapper::grammar;
 
 pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, TokenError>;

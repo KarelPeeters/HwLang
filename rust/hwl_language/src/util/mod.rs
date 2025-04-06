@@ -22,6 +22,19 @@ impl Never {
     }
 }
 
+pub trait ResultNeverExt<T> {
+    fn remove_never(self) -> T;
+}
+
+impl<T> ResultNeverExt<T> for Result<T, Never> {
+    fn remove_never(self) -> T {
+        match self {
+            Ok(v) => v,
+            Err(e) => e.unreachable(),
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! throw {
     ($e:expr) => {

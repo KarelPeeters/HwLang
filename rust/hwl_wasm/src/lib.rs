@@ -3,9 +3,7 @@ use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::pos::FileId;
-use hwl_language::syntax::source::FilePath;
-use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::syntax::source::{FileId, FilePath, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use itertools::Itertools;
@@ -40,7 +38,7 @@ pub fn initial_source() -> String {
 // TODO include C++ as well, just for demo purposes
 #[wasm_bindgen]
 pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
-    let mut source = SourceDatabase::new();
+    let mut source = SourceDatabaseBuilder::new();
     source
         .add_file(
             FilePath(vec!["std".to_owned(), "types".to_owned()]),
@@ -65,6 +63,8 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     source
         .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src)
         .unwrap();
+
+    let source = source.finish();
 
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
@@ -114,7 +114,7 @@ pub fn codemirror_tokenize_to_tree(src: &str) -> Vec<u32> {
     let token_category_to_index = token_category_to_index();
     let top_node_index = codemirror_node_types().len();
 
-    for token in Tokenizer::new(FileId::SINGLE, src) {
+    for token in Tokenizer::new(FileId::dummy(), src) {
         match token {
             Ok(token) => {
                 if let Some(category_index) = token_category_to_index[token.ty.category().index()] {

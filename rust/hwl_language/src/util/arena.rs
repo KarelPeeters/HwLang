@@ -1,3 +1,4 @@
+use crate::util::{Never, ResultNeverExt};
 use indexmap::map::IndexMap;
 use itertools::Itertools;
 use std::fmt::Debug;
@@ -5,7 +6,6 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
-
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
 //   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
@@ -13,6 +13,21 @@ use std::ops::{Index, IndexMut};
 
 #[macro_export]
 macro_rules! new_index_type {
+    ($vis:vis $name:ident, Ord) => {
+        $crate::new_index_type!($vis $name);
+
+        impl Ord for $name {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.inner().index().cmp(&other.inner().index())
+            }
+        }
+
+        impl PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+    };
     ($vis:vis $name:ident) => {
         #[derive(Copy, Clone, Eq, PartialEq, Hash)]
         $vis struct $name($crate::util::arena::Idx);
@@ -37,9 +52,8 @@ macro_rules! new_index_type {
                 }
             }
         };
-    }
+    };
 }
-
 pub trait IndexType: Sized + Debug + Copy + Eq + Hash {
     fn new(idx: Idx) -> Self;
     fn inner(&self) -> Idx;
@@ -94,13 +108,32 @@ impl<K: IndexType, T> Arena<K, T> {
         self.into_iter()
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+    pub fn keys(&self) -> impl Iterator<Item = K> + Clone + '_ {
         self.into_iter().map(|(k, _)| k)
     }
 
-    pub fn try_map_values<U, E>(self, f: impl FnMut(T) -> Result<U, E>) -> Result<Arena<K, U>, E> {
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.values.iter()
+    }
+
+    pub fn map_values<U>(self, mut f: impl FnMut(K, T) -> U) -> Arena<K, U> {
+        self.try_map_values::<_, Never>(|k, v| Ok(f(k, v))).remove_never()
+    }
+
+    pub fn try_map_values<U, E>(self, mut f: impl FnMut(K, T) -> Result<U, E>) -> Result<Arena<K, U>, E> {
         Ok(Arena {
-            values: self.values.into_iter().map(f).try_collect()?,
+            values: self
+                .values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let k = K::new(Idx {
+                        index,
+                        check: self.check,
+                    });
+                    f(k, value)
+                })
+                .try_collect()?,
             check: self.check,
             ph: PhantomData,
         })
@@ -161,7 +194,7 @@ impl<K: IndexType, T: Debug> Debug for Arena<K, T> {
     }
 }
 
-pub struct ArenaIterator<'s, K, T> {
+pub struct ArenaIteratorRef<'s, K, T> {
     inner: std::iter::Enumerate<std::slice::Iter<'s, T>>,
     check: u64,
     ph: PhantomData<K>,
@@ -175,10 +208,10 @@ pub struct ArenaIteratorMut<'s, K, T> {
 
 impl<'s, K: IndexType, T> IntoIterator for &'s Arena<K, T> {
     type Item = (K, &'s T);
-    type IntoIter = ArenaIterator<'s, K, T>;
+    type IntoIter = ArenaIteratorRef<'s, K, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArenaIterator {
+        ArenaIteratorRef {
             inner: self.values.iter().enumerate(),
             check: self.check,
             ph: PhantomData,
@@ -199,19 +232,21 @@ impl<'s, K: IndexType, T> IntoIterator for &'s mut Arena<K, T> {
     }
 }
 
-impl<'s, K: IndexType, T: 's> Iterator for ArenaIterator<'s, K, T> {
+impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorRef<'s, K, T> {
     type Item = (K, &'s T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(index, value)| {
-            (
-                K::new(Idx {
-                    index,
-                    check: self.check,
-                }),
-                value,
-            )
-        })
+        self.inner.next().map(key_wrapper(self.check))
+    }
+}
+
+impl<K, T> Clone for ArenaIteratorRef<'_, K, T> {
+    fn clone(&self) -> Self {
+        ArenaIteratorRef {
+            inner: self.inner.clone(),
+            check: self.check,
+            ph: PhantomData,
+        }
     }
 }
 
@@ -219,16 +254,12 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorMut<'s, K, T> {
     type Item = (K, &'s mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(index, value)| {
-            (
-                K::new(Idx {
-                    index,
-                    check: self.check,
-                }),
-                value,
-            )
-        })
+        self.inner.next().map(key_wrapper(self.check))
     }
+}
+
+fn key_wrapper<K: IndexType, V>(check: u64) -> impl Fn((usize, V)) -> (K, V) {
+    move |(index, value)| (K::new(Idx { index, check }), value)
 }
 
 #[cfg(test)]

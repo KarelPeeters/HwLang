@@ -3,7 +3,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use strum::EnumIter;
 
-use crate::syntax::pos::{FileId, Pos, Span};
+use crate::syntax::pos::{Pos, Span};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Token<S> {
@@ -402,6 +402,7 @@ impl TokenCategory {
     }
 }
 
+use crate::syntax::source::FileId;
 use TokenCategory as TC;
 
 declare_tokens! {
@@ -564,13 +565,14 @@ impl TokenError {
 
 #[cfg(test)]
 mod test {
-    use crate::syntax::pos::{FileId, Pos, Span};
+    use crate::syntax::pos::{Pos, Span};
+    use crate::syntax::source::FileId;
     use crate::syntax::token::{tokenize, Token, TokenType, CUSTOM_TOKENS, FIXED_TOKENS};
     use std::collections::HashSet;
 
     #[test]
     fn basic_tokenize() {
-        let file = FileId::SINGLE;
+        let file = FileId::dummy();
 
         assert_eq!(Ok(vec![]), tokenize(file, ""));
         assert_eq!(
@@ -588,7 +590,8 @@ mod test {
 
     #[test]
     fn comment() {
-        let file = FileId::SINGLE;
+        let file = FileId::dummy();
+
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment("/**/"),
@@ -628,7 +631,7 @@ mod test {
         let mut any_error = false;
 
         for info in FIXED_TOKENS {
-            let file = FileId::SINGLE;
+            let file = FileId::dummy();
 
             let result = tokenize(file, info.literal);
             let span = Span::new(

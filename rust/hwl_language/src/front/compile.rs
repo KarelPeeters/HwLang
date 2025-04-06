@@ -10,8 +10,8 @@ use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{self, Visibility};
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
-use crate::syntax::pos::{FileId, Span};
-use crate::syntax::source::SourceDatabase;
+use crate::syntax::pos::Span;
+use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::sync::{ComputeOnceArena, ComputeOnceMap, SharedQueue};
@@ -40,13 +40,11 @@ pub fn compile(
     thread_count: NonZeroUsize,
 ) -> Result<IrDatabase, ErrorGuaranteed> {
     let fixed = CompileFixed { source, parsed };
-
-    let files = source.files();
-    let file_scopes = populate_file_scopes(diags, fixed, &files);
+    let file_scopes = populate_file_scopes(diags, fixed);
 
     // TODO make also skip trivial items already, eg. functions and generic modules
     let all_items_except_imports = || {
-        files.iter().flat_map(|&file: &FileId| {
+        source.files().flat_map(|file| {
             parsed[file].as_ref_ok().into_iter().flat_map(|file_ast| {
                 file_ast
                     .items_with_ref()
@@ -445,12 +443,12 @@ impl RegisterInfo {
     }
 }
 
-fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, files: &[FileId]) -> FileScopes {
+fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
     let CompileFixed { source, parsed } = fixed;
 
     // pass 0: add all items to their own file scope
     let mut file_scopes: FileScopes = IndexMap::new();
-    for &file in files {
+    for file in source.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
             let mut scope = Scope::new_root(ast.span);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
@@ -467,7 +465,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, files: &[FileI
     // pass 1: collect import items from source scopes for each target file
     let mut file_imported_items: Vec<Vec<(MaybeIdentifier<&Identifier>, Result<ScopedEntry, ErrorGuaranteed>)>> =
         vec![];
-    for &target_file in files {
+    for target_file in source.files() {
         let mut curr_imported_items = vec![];
 
         if let Ok(target_file_ast) = &parsed[target_file] {
@@ -526,7 +524,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, files: &[FileI
     }
 
     // pass 3: add imported items to the target file scope
-    for (&target_file, items) in zip_eq(files, file_imported_items) {
+    for (target_file, items) in zip_eq(source.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
                 scope.maybe_declare(diags, target_id, value);
@@ -545,7 +543,7 @@ fn resolve_import_path(
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
-    let mut curr_dir = source.root_directory;
+    let mut curr_dir = source.root_directory();
 
     // get the span without the trailing separator
     let parents_span = if path.inner.is_empty() {
@@ -587,7 +585,7 @@ fn find_top_module(
 ) -> Result<AstRefModule, ErrorGuaranteed> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
-    let top_file = fixed.source[fixed.source.root_directory]
+    let top_file = fixed.source[fixed.source.root_directory()]
         .children
         .get("top")
         .and_then(|&top_dir| fixed.source[top_dir].file)
@@ -627,7 +625,7 @@ impl CompileShared<'_> {
 
     pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
         let ir_modules = self.ir_modules.into_inner().unwrap();
-        ir_modules.try_map_values(|v| match v {
+        ir_modules.try_map_values(|_, v| match v {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
             None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),

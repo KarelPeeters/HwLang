@@ -9,8 +9,9 @@ use hwl_language::front::compile::{compile, NoPrintHandler};
 use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::pos::FileId;
-use hwl_language::syntax::source::{FilePath, SourceDatabase, SourceSetError};
+use hwl_language::syntax::source::{
+    BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder, SourceSetError,
+};
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
@@ -75,8 +76,8 @@ impl ServerState {
         let vfs = self.vfs.inner()?;
         let vfs_root = vfs.root().clone();
 
-        let mut source = SourceDatabase::new();
-        let mut abs_path_map: IndexMap<FileId, PathBuf> = IndexMap::new();
+        let mut source_builder = SourceDatabaseBuilder::new();
+        let mut abs_path_map: IndexMap<BuilderFileId, PathBuf> = IndexMap::new();
 
         for (path, content) in vfs.iter() {
             let mut steps = vec![];
@@ -99,11 +100,19 @@ impl ServerState {
                 .to_owned();
 
             let text = content.get_text(path)?;
-            let file_id =
-                try_inner!(source.add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned()));
+            let file_id = try_inner!(source_builder.add_file(
+                FilePath(steps),
+                path.to_str().unwrap().to_owned(),
+                text.to_owned()
+            ));
             abs_path_map.insert(file_id, vfs_root.join(path));
         }
 
+        let (source, _, mapping_file) = source_builder.finish_with_mapping();
+        let abs_path_map = abs_path_map
+            .into_iter()
+            .map(|(file_id, path)| (*mapping_file.get(&file_id).unwrap(), path))
+            .collect();
         Ok(Ok((source, abs_path_map)))
     }
 }

@@ -175,7 +175,7 @@ impl Diagnostic {
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
         diag.finish()
     }
-    
+
     pub fn main_annotation(&self) -> Option<&Annotation> {
         // TODO make having at least a single annotation a type-system level requirement
         let mut top_annotation: Option<&Annotation> = None;

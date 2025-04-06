@@ -12,7 +12,8 @@ use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::{FileId, Span};
+use crate::syntax::pos::Span;
+use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
 use indexmap::map::Entry;
 use indexmap::IndexMap;

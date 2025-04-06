@@ -1,9 +1,7 @@
+use crate::syntax::source::FileId;
+use crate::util::arena::IndexType;
 use std::cmp::{max, min};
 use std::fmt::{Debug, Formatter};
-
-// TODO make the order of these actually deterministic across platforms
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct FileId(pub usize);
 
 /// Minimal source code position.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -39,11 +37,6 @@ pub struct SpanFull {
     pub start: PosFull,
     /// exclusive
     pub end: PosFull,
-}
-
-impl FileId {
-    pub const SINGLE: FileId = FileId(0);
-    pub const DUMMY: FileId = FileId(usize::MAX);
 }
 
 impl Span {
@@ -140,7 +133,7 @@ impl SpanFull {
 // Short debug implementations, these can appear a lot in AST debug outputs.
 impl Debug for Pos {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("Pos([{}]:{})", self.file.0, self.byte))
+        f.write_fmt(format_args!("Pos([{}]:{})", self.file.inner().index(), self.byte))
     }
 }
 
@@ -148,7 +141,7 @@ impl Debug for PosFull {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "PosFull([{}]:{}:{})",
-            self.file.0,
+            self.file.inner().index(),
             self.line_0 + 1,
             self.col_0 + 1
         ))
@@ -160,7 +153,9 @@ impl Debug for Span {
         assert_eq!(self.start.file, self.end.file);
         f.write_fmt(format_args!(
             "Span([{}]:{}..{})",
-            self.start.file.0, self.start.byte, self.end.byte
+            self.start.file.inner().index(),
+            self.start.byte,
+            self.end.byte
         ))
     }
 }

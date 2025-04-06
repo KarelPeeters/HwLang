@@ -5,13 +5,13 @@ use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::syntax::source::SourceDatabaseBuilder;
 use hwl_language::syntax::token::Tokenizer;
+use hwl_language::util::arena::IndexType;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::rc::Rc;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -50,27 +50,26 @@ fn main_inner() -> ExitCode {
     } = Args::parse();
     let thread_count = thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE));
 
-    // collect source
     let start_all = Instant::now();
-    let start_source = Instant::now();
 
-    let mut source = SourceDatabase::new();
-    match source.add_tree(vec![], &root) {
+    // collect source
+    let start_source = Instant::now();
+    let mut source_builder = SourceDatabaseBuilder::new();
+    match source_builder.add_tree(vec![], &root) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("building source database failed: {e:?}");
             return ExitCode::FAILURE;
         }
     }
-
-    let source = Rc::new(source);
+    let source = source_builder.finish();
     let time_source = start_source.elapsed();
 
     // print source info
     if print_files {
         eprintln!("Collected sources:");
         for file in source.files() {
-            eprintln!("  [{}]: {:?}", file.0, &source[file].path_raw);
+            eprintln!("  [{}]: {:?}", file.inner().index(), &source[file].path_raw);
         }
     }
 

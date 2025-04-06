@@ -1,14 +1,15 @@
 use std::path::Path;
 
+use hwl_language::syntax::source::FileId;
 use hwl_language::{
-    syntax::{parse_file_content, pos::FileId},
+    syntax::parse_file_content,
     util::io::{recurse_for_each_file, IoErrorWithPath},
 };
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
 
-    let result = parse_file_content(FileId::SINGLE, &src);
+    let result = parse_file_content(FileId::dummy(), &src);
 
     match result {
         Ok(package) => {

@@ -2,7 +2,8 @@ use crate::engine::encode::encode_span_to_lsp;
 use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestResult, ServerState};
-use hwl_language::syntax::pos::{FileId, LineOffsets, Span};
+use hwl_language::syntax::pos::{LineOffsets, Span};
+use hwl_language::syntax::source::FileId;
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::SemanticTokensFullRequest;
@@ -28,7 +29,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         let mut semantic_tokens = vec![];
         let mut prev_start_simple = lsp_types::Position { line: 0, character: 0 };
 
-        for token in Tokenizer::new(FileId::SINGLE, source) {
+        for token in Tokenizer::new(FileId::dummy(), source) {
             let token = match token {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?

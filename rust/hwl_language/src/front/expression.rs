@@ -24,7 +24,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::Span;
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
-use crate::util::Never;
+use crate::util::{Never, ResultNeverExt};
 use itertools::{enumerate, Either};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -1099,17 +1099,14 @@ fn pair_compile_int(
     ),
     (Spanned<BigInt>, Spanned<BigInt>),
 > {
-    let result = pair_compile_general(left, right, |x| {
+    pair_compile_general(left, right, |x| {
         Result::<_, Never>::Ok(TypedIrExpression {
             ty: ClosedIncRange::single(x.inner.clone()),
             domain: ValueDomain::CompileTime,
             expr: IrExpression::Int(x.inner),
         })
-    });
-    match result {
-        Ok(result) => result,
-        Err(never) => never.unreachable(),
-    }
+    })
+    .remove_never()
 }
 
 fn pair_compile_general<T, C, E>(
