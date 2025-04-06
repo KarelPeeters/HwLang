@@ -435,55 +435,56 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, files: &[FileI
     let mut file_imported_items: Vec<Vec<(MaybeIdentifier<&Identifier>, Result<ScopedEntry, ErrorGuaranteed>)>> =
         vec![];
     for &target_file in files {
-        let file_ast = parsed[target_file].as_ref_ok().unwrap();
         let mut curr_imported_items = vec![];
 
-        for item in &file_ast.items {
-            if let ast::Item::Import(item) = item {
-                let ast::ItemImport {
-                    span: _,
-                    parents,
-                    entry,
-                } = item;
+        if let Ok(target_file_ast) = &parsed[target_file] {
+            for item in &target_file_ast.items {
+                if let ast::Item::Import(item) = item {
+                    let ast::ItemImport {
+                        span: _,
+                        parents,
+                        entry,
+                    } = item;
 
-                let source_scope = resolve_import_path(diags, source, parents)
-                    .and_then(|source_file| file_scopes.get(&source_file).unwrap().as_ref_ok());
+                    let source_scope = resolve_import_path(diags, source, parents)
+                        .and_then(|source_file| file_scopes.get(&source_file).unwrap().as_ref_ok());
 
-                let entries = match &entry.inner {
-                    ast::ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
-                    ast::ImportFinalKind::Multi(entries) => entries,
-                };
+                    let entries = match &entry.inner {
+                        ast::ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
+                        ast::ImportFinalKind::Multi(entries) => entries,
+                    };
 
-                for entry in entries {
-                    let ast::ImportEntry { span: _, id, as_ } = entry;
-                    let source_value = source_scope
-                        .and_then(|source_scope| source_scope.find(diags, id))
-                        .map(|found| found.value.clone());
+                    for entry in entries {
+                        let ast::ImportEntry { span: _, id, as_ } = entry;
+                        let source_value = source_scope
+                            .and_then(|source_scope| source_scope.find(diags, id))
+                            .map(|found| found.value.clone());
 
-                    // check visibility, but still proceed as if the import succeeded
-                    if let Ok(ScopedEntry::Item(source_item)) = source_value {
-                        let decl_info = parsed[source_item].declaration_info().unwrap();
-                        match decl_info.vis {
-                            Visibility::Public(_) => {}
-                            Visibility::Private => {
-                                let err = Diagnostic::new(format!("cannot access identifier `{}`", id.string))
-                                    .add_info(decl_info.id.span(), "identifier declared here")
-                                    .add_error(id.span, "not accessible here")
-                                    .footer(
-                                        Level::Info,
-                                        "private items cannot be accessed outside of the declaring file",
-                                    )
-                                    .finish();
-                                diags.report(err);
+                        // check visibility, but still proceed as if the import succeeded
+                        if let Ok(ScopedEntry::Item(source_item)) = source_value {
+                            let decl_info = parsed[source_item].declaration_info().unwrap();
+                            match decl_info.vis {
+                                Visibility::Public(_) => {}
+                                Visibility::Private => {
+                                    let err = Diagnostic::new(format!("cannot access identifier `{}`", id.string))
+                                        .add_info(decl_info.id.span(), "identifier declared here")
+                                        .add_error(id.span, "not accessible here")
+                                        .footer(
+                                            Level::Info,
+                                            "private items cannot be accessed outside of the declaring file",
+                                        )
+                                        .finish();
+                                    diags.report(err);
+                                }
                             }
                         }
-                    }
 
-                    let target_id: MaybeIdentifier<&Identifier> = match as_ {
-                        Some(as_) => as_.as_ref(),
-                        None => MaybeIdentifier::Identifier(id),
-                    };
-                    curr_imported_items.push((target_id, source_value));
+                        let target_id: MaybeIdentifier<&Identifier> = match as_ {
+                            Some(as_) => as_.as_ref(),
+                            None => MaybeIdentifier::Identifier(id),
+                        };
+                        curr_imported_items.push((target_id, source_value));
+                    }
                 }
             }
         }
