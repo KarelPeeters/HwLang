@@ -3,6 +3,7 @@ name = "hwl_language"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+default-run = "hwl_language"
 
 # TODO split binary into separate package, it has some extra deps (eg. num-cpus)
 [dependencies]
