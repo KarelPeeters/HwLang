@@ -169,9 +169,12 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 // TODO add scope block, just empty {} that shields registers etc from the top module scope
 // TODO add module-level if, for
 ModuleStatementKind: ModuleStatementKind = {
+    // control flow
+    Block<ModuleStatement> => ModuleStatementKind::Block(<>),
+    IfStatement<ModuleStatement> => ModuleStatementKind::If(<>),
+    ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration> => ModuleStatementKind::CommonDeclaration(<>),
-
     <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
@@ -253,23 +256,10 @@ BlockStatementKind: BlockStatementKind = {
     // block
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
     // control flow
-    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<BlockStatement>> <end_if:@R>
-    <else_ifs:ElseIfPair*>
-    <final_else:("else" <Block<BlockStatement>>)?> => {
-        BlockStatementKind::If(IfStatement {
-            initial_if: IfCondBlockPair {
-                span: loc.span(start, end_if),
-                span_if: span_if,
-                cond: cond,
-                block: then_block
-            },
-            else_ifs,
-            final_else
-        })
-    },
-    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")"
-    <body:Block<BlockStatement>>
-        => BlockStatementKind::For(ForStatement { index, index_ty, iter, body }),
+    IfStatement<BlockStatement>
+        => BlockStatementKind::If(<>),
+    ForStatement<BlockStatement>
+        => BlockStatementKind::For(<>),
     <span_keyword:Span<"while">> "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { span_keyword, cond, body }),
     // control flow terminators
@@ -279,9 +269,31 @@ BlockStatementKind: BlockStatementKind = {
     <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
 }
 
-ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
-    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
+IfStatement<S>: IfStatement<S> = {
+    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<S>> <end_if:@R>
+    <else_ifs:ElseIfPair<S>*>
+    <final_else:("else" <Block<S>>)?> => {
+        IfStatement {
+            initial_if: IfCondBlockPair {
+                span: loc.span(start, end_if),
+                span_if: span_if,
+                cond: cond,
+                block: then_block
+            },
+            else_ifs,
+            final_else
+        }
+    },
+}
+
+ElseIfPair<S>: IfCondBlockPair<S> = {
+    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<S>> <end:@R>
         => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
+}
+
+ForStatement<S>: ForStatement<S> = {
+    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<S>>
+        => ForStatement { index, index_ty, iter, body },
 }
 
 CommonDeclaration: CommonDeclaration = {

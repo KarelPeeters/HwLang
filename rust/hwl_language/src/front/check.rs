@@ -88,12 +88,9 @@ pub enum TypeContainsReason {
         span_keyword: Span,
         span_return_ty: Span,
     },
-    ForIndexType {
-        span_ty: Span,
-    },
-    WhileCondition {
-        span_keyword: Span,
-    },
+    ForIndexType(Span),
+    IfCondition(Span),
+    WhileCondition(Span),
     ArrayIndex {
         span_index: Span,
     },
@@ -143,14 +140,16 @@ impl TypeContainsReason {
             } => diag
                 .add_info(span_keyword, format!("return requires type `{}`", target_ty_str))
                 .add_info(span_return_ty, format!("return type `{}` set here", target_ty_str)),
-            TypeContainsReason::ForIndexType { span_ty } => diag.add_info(
+            TypeContainsReason::ForIndexType(span_ty) => diag.add_info(
                 span_ty,
                 format!("for loop iteration variable type `{}` set here", target_ty_str),
             ),
-            TypeContainsReason::WhileCondition { span_keyword } => diag.add_info(
-                span_keyword,
-                format!("while condition requires type `{}`", target_ty_str),
-            ),
+            TypeContainsReason::IfCondition(span) => {
+                diag.add_info(span, format!("if condition requires type `{}`", target_ty_str))
+            }
+            TypeContainsReason::WhileCondition(span) => {
+                diag.add_info(span, format!("while condition requires type `{}`", target_ty_str))
+            }
             TypeContainsReason::ArrayIndex { span_index } => {
                 diag.add_info(span_index, format!("array index requires type `{}`", target_ty_str))
             }
@@ -355,5 +354,18 @@ pub fn check_type_is_bool(
             }),
             _ => Err(diags.report_internal_error(value.span, "expected bool type, should have already been checked")),
         },
+    }
+}
+
+pub fn check_type_is_bool_compile(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> Result<bool, ErrorGuaranteed> {
+    check_type_contains_compile_value(diags, reason, &Type::Bool, value.as_ref(), false)?;
+
+    match value.inner {
+        CompileValue::Bool(value_inner) => Ok(value_inner),
+        _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
     }
 }

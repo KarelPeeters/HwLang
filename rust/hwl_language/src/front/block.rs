@@ -12,8 +12,8 @@ use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement,
-    Spanned, SyncDomain, VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement, Spanned,
+    SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -289,7 +289,7 @@ impl CompileItemContext<'_, '_> {
                         // eval cond
                         let cond = self.eval_expression_as_compile(&scope, &vars, cond, "while loop condition")?;
 
-                        let reason = TypeContainsReason::WhileCondition { span_keyword };
+                        let reason = TypeContainsReason::WhileCondition(span_keyword);
                         check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
                         let cond = match &cond.inner {
                             &CompileValue::Bool(b) => b,
@@ -380,10 +380,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         vars: VariableValues,
         scope: &Scope,
-        ifs: Option<(
-            &IfCondBlockPair<Box<Expression>, Block<BlockStatement>>,
-            &[IfCondBlockPair<Box<Expression>, Block<BlockStatement>>],
-        )>,
+        ifs: Option<(&IfCondBlockPair<BlockStatement>, &[IfCondBlockPair<BlockStatement>])>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -414,7 +411,7 @@ impl CompileItemContext<'_, '_> {
         } = initial_if;
         let cond = self.eval_expression_with_implications(ctx, ctx_block, &scope, &vars, &Type::Bool, cond)?;
 
-        let reason = TypeContainsReason::Operator(span_if);
+        let reason = TypeContainsReason::IfCondition(span_if);
         check_type_contains_value(
             diags,
             reason,
@@ -706,7 +703,7 @@ impl CompileItemContext<'_, '_> {
         mut result_block: C::Block,
         vars: VariableValues,
         scope: &Scope,
-        stmt: Spanned<&ForStatement>,
+        stmt: Spanned<&ForStatement<BlockStatement>>,
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
         let ctx_block = &mut result_block;
 
@@ -737,7 +734,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         mut vars: VariableValues,
         scope_parent: &Scope,
-        stmt: Spanned<&ForStatement>,
+        stmt: Spanned<&ForStatement<BlockStatement>>,
         index_ty: Option<Spanned<Type>>,
         iter: ForIterator,
     ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
@@ -773,7 +770,7 @@ impl CompileItemContext<'_, '_> {
                     span: stmt.inner.iter.span,
                     inner: &index_value,
                 };
-                let reason = TypeContainsReason::ForIndexType { span_ty: index_ty.span };
+                let reason = TypeContainsReason::ForIndexType(index_ty.span);
                 check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
             }
 

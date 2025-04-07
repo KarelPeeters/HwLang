@@ -1,10 +1,11 @@
 use crate::front::assignment::VariableValues;
 use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
-    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
+    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, check_type_is_bool_compile,
+    TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo};
-use crate::front::context::{ExpressionContext, IrBuilderExpressionContext};
+use crate::front::context::{CompileTimeExpressionContext, ExpressionContext, IrBuilderExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::EvaluatedId;
 use crate::front::ir::{
@@ -16,7 +17,7 @@ use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signa
 use crate::front::scope::{Scope, ScopeContent};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
-use crate::syntax::ast::{self, ModuleStatement, ModuleStatementKind};
+use crate::syntax::ast::{self, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind};
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
     ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, PortDirection,
@@ -324,7 +325,7 @@ impl CompileRefs<'_, '_> {
         scope_header: &Scope,
         body: &Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
-        let mut scope_body = Scope::new_child(body.span, scope_header);
+        let drivers = Drivers::new(&ports);
 
         let mut ctx_item = CompileItemContext::new(*self, None);
         ctx_item.ports = ports;
@@ -334,7 +335,7 @@ impl CompileRefs<'_, '_> {
             ir_ports,
             ir_wires: Arena::default(),
             ir_registers: Arena::default(),
-            drivers: Drivers::default(),
+            drivers,
 
             register_initial_values: IndexMap::new(),
             out_port_register_connections: IndexMap::new(),
@@ -343,26 +344,9 @@ impl CompileRefs<'_, '_> {
         };
 
         // process declarations
-        // TODO fully implement graph-ness,
-        //   in the current implementation eg. types and initializes still can't refer to future declarations
-        ctx.pass_0_declarations(&mut scope_body, body);
+        ctx.elaborate_block(scope_header, body);
 
-        // create driver entries for remaining (= non-reg) output ports
-        for (port, port_info) in &ctx.ctx.ports {
-            match port_info.direction.inner {
-                PortDirection::Input => {
-                    // do nothing
-                }
-                PortDirection::Output => {
-                    ctx.drivers.output_port_drivers.entry(port).or_default();
-                }
-            }
-        }
-
-        // process processes
-        ctx.pass_1_processes(&scope_body, body);
-
-        // stop if any errors have happened so far, we don't want redundant errors about drivers
+        // stop if any errors have happened so far, we don't want spurious errors about drivers
         for p in &ctx.processes {
             p.as_ref_ok()?;
         }
@@ -455,28 +439,44 @@ impl<'s> CompileItemContext<'_, 's> {
 }
 
 impl BodyElaborationContext<'_, '_> {
-    fn pass_0_declarations(&mut self, scope_body: &mut Scope, body: &Block<ModuleStatement>) {
+    fn elaborate_block(&mut self, scope: &Scope, block: &Block<ModuleStatement>) {
+        // TODO fully implement graph-ness,
+        //   in the current implementation eg. types and initializes still can't refer to future declarations
+        let mut scope_inner = Scope::new_child(block.span, scope);
+        self.pass_0_declarations(&mut scope_inner, block);
+        self.pass_1_processes(&scope_inner, block);
+    }
+
+    fn pass_0_declarations(&mut self, scope: &mut Scope, body: &Block<ModuleStatement>) {
         let diags = self.ctx.refs.diags;
 
         let Block { span: _, statements } = body;
         for stmt in statements {
             match &stmt.inner {
+                // non declarations, skip
+                ModuleStatementKind::CombinatorialBlock(_) => {}
+                ModuleStatementKind::ClockedBlock(_) => {}
+                ModuleStatementKind::Instance(_) => {}
+                // these will get their own two-phase process during the second pass
+                ModuleStatementKind::If(_) => {}
+                ModuleStatementKind::For(_) => {}
+                ModuleStatementKind::Block(_) => {}
                 // declarations
                 ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.ctx.eval_and_declare_declaration(scope_body, None, decl)
+                    self.ctx.eval_and_declare_declaration(scope, None, decl)
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let reg = self.elaborate_module_declaration_reg(scope_body, decl);
+                    let reg = self.elaborate_module_declaration_reg(scope, decl);
                     let entry = reg.map(|reg_init| {
                         self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                         self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                         ScopedEntry::Named(NamedValue::Register(reg_init.reg))
                     });
 
-                    scope_body.maybe_declare(diags, decl.id.as_ref(), entry);
+                    scope.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(&scope_body, decl));
+                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(&scope, decl));
                     let process = process.transpose();
 
                     if let Ok(wire) = wire {
@@ -492,21 +492,22 @@ impl BodyElaborationContext<'_, '_> {
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
-                    scope_body.maybe_declare(diags, decl.id.as_ref(), entry);
+                    scope.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(&scope_body, decl) {
+                    match self.elaborate_module_declaration_reg_out_port(&scope, decl) {
                         Ok((port, reg_init)) => {
-                            let mut port_drivers = IndexMap::new();
+                            let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
+                            assert!(port_drivers.is_empty());
                             port_drivers.insert_first(Driver::OutputPortConnectionToReg, decl.span);
-                            self.drivers.output_port_drivers.insert_first(port, port_drivers);
+
                             self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
                             self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
                             self.out_port_register_connections.insert_first(port, reg_init.reg);
 
                             let entry = Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg)));
-                            scope_body.declare(diags, &decl.id, entry);
+                            scope.declare(diags, &decl.id, entry);
                         }
                         Err(e) => {
                             // don't do anything, as if the marker is not there
@@ -514,20 +515,30 @@ impl BodyElaborationContext<'_, '_> {
                         }
                     }
                 }
-                // non declarations, skip
-                ModuleStatementKind::CombinatorialBlock(_) => {}
-                ModuleStatementKind::ClockedBlock(_) => {}
-                ModuleStatementKind::Instance(_) => {}
             }
         }
     }
 
-    fn pass_1_processes(&mut self, scope_body: &Scope, body: &Block<ModuleStatement>) {
+    fn pass_1_processes(&mut self, scope: &Scope, body: &Block<ModuleStatement>) {
         let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
 
         for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
+                // control flow
+                ModuleStatementKind::Block(block) => {
+                    self.elaborate_block(scope, block);
+                }
+                ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, if_stmt) {
+                    Ok(()) => {}
+                    Err(e) => self.processes.push(Err(e)),
+                },
+                ModuleStatementKind::For(for_stmt) => {
+                    match self.elaborate_for(scope, Spanned::new(stmt.span, for_stmt)) {
+                        Ok(()) => {}
+                        Err(e) => self.processes.push(Err(e)),
+                    }
+                }
                 // declarations, already handled
                 ModuleStatementKind::CommonDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
@@ -548,9 +559,7 @@ impl BodyElaborationContext<'_, '_> {
                     };
 
                     let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                    let ir_block = self
-                        .ctx
-                        .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
+                    let ir_block = self.ctx.elaborate_block(&mut ctx, VariableValues::new(), scope, block);
 
                     let ir_block = ir_block.and_then(|(ir_block, end)| {
                         let ir_variables = ctx.finish();
@@ -574,7 +583,7 @@ impl BodyElaborationContext<'_, '_> {
 
                     let domain = domain
                         .as_ref()
-                        .map_inner(|d| self.ctx.eval_domain_sync(scope_body, d))
+                        .map_inner(|d| self.ctx.eval_domain_sync(scope, d))
                         .transpose();
 
                     let ir_process = domain.and_then(|domain| {
@@ -594,9 +603,7 @@ impl BodyElaborationContext<'_, '_> {
                         };
 
                         let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                        let ir_block = self
-                            .ctx
-                            .elaborate_block(&mut ctx, VariableValues::new(), scope_body, block);
+                        let ir_block = self.ctx.elaborate_block(&mut ctx, VariableValues::new(), scope, block);
 
                         ir_block.and_then(|(ir_block, end)| {
                             let ir_variables = ctx.finish();
@@ -622,16 +629,118 @@ impl BodyElaborationContext<'_, '_> {
                         .insert_first(stmt_index, process_index);
                 }
                 ModuleStatementKind::Instance(instance) => {
-                    let instance_ir = self.elaborate_instance(scope_body, stmt_index, instance);
+                    let instance_ir = self.elaborate_instance(scope, stmt_index, instance);
                     self.processes.push(instance_ir.map(IrModuleChild::ModuleInstance));
                 }
             }
         }
     }
 
+    fn elaborate_if(&mut self, scope: &Scope, if_stmt: &IfStatement<ModuleStatement>) -> Result<(), ErrorGuaranteed> {
+        let IfStatement {
+            initial_if,
+            else_ifs,
+            final_else,
+        } = if_stmt;
+
+        if self.elaborate_if_pair(scope, initial_if)? {
+            return Ok(());
+        }
+        for else_if in else_ifs {
+            if self.elaborate_if_pair(scope, else_if)? {
+                return Ok(());
+            }
+        }
+        if let Some(final_else) = final_else {
+            self.elaborate_block(scope, final_else);
+        }
+
+        Ok(())
+    }
+
+    fn elaborate_if_pair(
+        &mut self,
+        scope: &Scope,
+        pair: &IfCondBlockPair<ModuleStatement>,
+    ) -> Result<bool, ErrorGuaranteed> {
+        let diags = self.ctx.refs.diags;
+        let IfCondBlockPair {
+            span: _,
+            span_if,
+            cond,
+            block,
+        } = pair;
+
+        let no_vars = VariableValues::NO_VARS;
+        let cond = self
+            .ctx
+            .eval_expression_as_compile(scope, &no_vars, cond, "module-level if condition")?;
+        let reason = TypeContainsReason::IfCondition(*span_if);
+        let cond = check_type_is_bool_compile(diags, reason, cond)?;
+
+        if cond {
+            self.elaborate_block(scope, block)
+        }
+
+        Ok(cond)
+    }
+
+    fn elaborate_for(
+        &mut self,
+        scope: &Scope,
+        for_stmt: Spanned<&ForStatement<ModuleStatement>>,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.ctx.refs.diags;
+        let ForStatement {
+            index,
+            index_ty,
+            iter,
+            body,
+        } = for_stmt.inner;
+        let iter_span = iter.span;
+
+        let no_vars = VariableValues::NO_VARS;
+        let index_ty = index_ty
+            .as_ref()
+            .map(|index_ty| self.ctx.eval_expression_as_ty(scope, &no_vars, index_ty));
+
+        let mut ctx = CompileTimeExpressionContext {
+            span: for_stmt.span,
+            reason: "module-level for statement".to_string(),
+        };
+        let iter = self
+            .ctx
+            .eval_expression_as_for_iterator(&mut ctx, &mut (), &no_vars, scope, iter);
+
+        let index_ty = index_ty.transpose()?;
+        let iter = iter?;
+
+        // TODO allow break?
+        for index_value in iter {
+            if let Some(index_ty) = &index_ty {
+                let index_value_spanned = Spanned::new(iter_span, &index_value);
+                check_type_contains_value(
+                    diags,
+                    TypeContainsReason::ForIndexType(index_ty.span),
+                    &index_ty.inner,
+                    index_value_spanned,
+                    false,
+                    false,
+                )?;
+            }
+
+            let mut scope_inner = Scope::new_child(index.span().join(body.span), scope);
+            scope_inner.maybe_declare(diags, index.as_ref(), Ok(ScopedEntry::Value(index_value)));
+
+            self.elaborate_block(&scope_inner, body);
+        }
+
+        Ok(())
+    }
+
     fn elaborate_instance(
         &mut self,
-        scope_body: &Scope,
+        scope: &Scope,
         stmt_index: usize,
         instance: &ast::ModuleInstance,
     ) -> Result<IrModuleInstance, ErrorGuaranteed> {
@@ -649,7 +758,7 @@ impl BodyElaborationContext<'_, '_> {
             module_ast,
             module_ir,
             ref ports,
-        } = ctx.elaborate_module_header(scope_body, header)?;
+        } = ctx.elaborate_module_header(scope, header)?;
         let module_ast = &refs.fixed.parsed[module_ast];
 
         // eval and check port connections
@@ -675,14 +784,7 @@ impl BodyElaborationContext<'_, '_> {
         let mut ir_connections = vec![];
 
         for (port, connection) in zip_eq(ports.keys(), &port_connections.inner) {
-            match self.elaborate_instance_port_connection(
-                &scope_body,
-                stmt_index,
-                &ports,
-                &port_signals,
-                port,
-                connection,
-            ) {
+            match self.elaborate_instance_port_connection(&scope, stmt_index, &ports, &port_signals, port, connection) {
                 Ok((signal, connection)) => {
                     port_signals.insert_first(port, signal);
                     ir_connections.push(connection);
@@ -766,7 +868,7 @@ impl BodyElaborationContext<'_, '_> {
                                         .add_info(port_domain_span, "port used in a domain here")
                                         .finish();
                                     throw!(diags.report(diag))
-                                },
+                                }
                                 Some(&ConnectionSignal::Signal(signal)) => Ok(signal),
                             }?;
                             Ok(Polarized {
@@ -971,100 +1073,45 @@ impl BodyElaborationContext<'_, '_> {
     fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
         // check exactly one valid driver for each signal
         // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
-
         let Drivers {
             output_port_drivers,
             reg_drivers,
             wire_drivers,
-        } = std::mem::take(&mut self.drivers);
+        } = &self.drivers;
         let mut any_err = Ok(());
 
         // wire-like signals, just check
-        for (&port, drivers) in &output_port_drivers {
+        for (&port, drivers) in output_port_drivers {
             any_err = any_err.and(self.check_drivers_for_port_or_wire("port", self.ctx.ports[port].id.span, drivers));
         }
-        for (&wire, drivers) in &wire_drivers {
+        for (&wire, drivers) in wire_drivers {
             any_err = any_err.and(self.check_drivers_for_port_or_wire("wire", self.ctx.wires[wire].id.span(), drivers));
         }
 
         // registers: check and collect resets
-        for (&reg, drivers) in &reg_drivers {
+        for (&reg, drivers) in reg_drivers {
             let decl_span = self.ctx.registers[reg].id.span();
 
             any_err = any_err.and(self.check_drivers_for_reg(decl_span, drivers));
 
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
-            match self.check_exactly_one_driver("register", self.ctx.registers[reg].id.span(), drivers) {
-                Err(e) => any_err = Err(e),
-                Ok(driver) => any_err = any_err.and(self.pull_register_init_into_process(reg, driver)),
-            }
+            let maybe_err = match self.check_exactly_one_driver("register", self.ctx.registers[reg].id.span(), drivers)
+            {
+                Err(e) => Err(e),
+                Ok(driver) => pull_register_init_into_process(
+                    self.ctx,
+                    &self.clocked_block_statement_index_to_process_index,
+                    &mut self.processes,
+                    &self.register_initial_values,
+                    reg,
+                    driver,
+                ),
+            };
+            any_err = any_err.and(maybe_err);
         }
-
-        // put drivers back
-        assert_eq!(self.drivers, Drivers::default());
-        self.drivers = Drivers {
-            output_port_drivers,
-            reg_drivers,
-            wire_drivers,
-        };
 
         any_err
-    }
-
-    fn pull_register_init_into_process(&mut self, reg: Register, driver: Driver) -> Result<(), ErrorGuaranteed> {
-        let diags = self.ctx.refs.diags;
-        let reg_info = &self.ctx.registers[reg];
-
-        if let Driver::ClockedBlock(stmt_index) = driver {
-            if let Some(&process_index) = self.clocked_block_statement_index_to_process_index.get(&stmt_index) {
-                if let IrModuleChild::ClockedProcess(process) = &mut self.processes[process_index].as_ref_mut_ok()? {
-                    if let Some(init) = self.register_initial_values.get(&reg) {
-                        let init = init.as_ref_ok()?;
-
-                        // TODO fix duplication with CompileValue::to_ir_expression
-                        // TODO move this to where the register is initially visited
-                        let init_ir = match init.inner.as_hardware_value(&reg_info.ty.inner) {
-                            HardwareValueResult::Success(v) => Some(v),
-                            HardwareValueResult::Undefined => None,
-                            HardwareValueResult::PartiallyUndefined => {
-                                return Err(diags.report_todo(init.span, "partially undefined register reset value"))
-                            }
-                            HardwareValueResult::Unrepresentable => throw!(diags.report_internal_error(
-                                init.span,
-                                format!(
-                                    "value `{}` has hardware type but is itself not representable",
-                                    init.inner.to_diagnostic_string()
-                                ),
-                            )),
-                            HardwareValueResult::InvalidType => throw!(diags.report_internal_error(
-                                init.span,
-                                format!(
-                                    "value `{}` with type `{}` cannot be represented as hardware type `{}`",
-                                    init.inner.to_diagnostic_string(),
-                                    init.inner.ty().to_diagnostic_string(),
-                                    reg_info.ty.inner.to_diagnostic_string()
-                                ),
-                            )),
-                        };
-
-                        if let Some(init_ir) = init_ir {
-                            let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg_info.ir), init_ir);
-                            process.on_reset.statements.push(Spanned {
-                                span: init.span,
-                                inner: stmt,
-                            });
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        Err(diags.report_internal_error(
-            reg_info.id.span(),
-            "failure while pulling reset value into clocked process",
-        ))
     }
 
     fn check_drivers_for_port_or_wire(
@@ -1468,7 +1515,7 @@ impl Driver {
     }
 }
 
-#[derive(Default, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct Drivers {
     // For each signal, for each driver, the first span.
     // This span will be used in error messages in case there are multiple drivers for the same signal.
@@ -1478,6 +1525,26 @@ struct Drivers {
 }
 
 impl Drivers {
+    pub fn new(ports: &Arena<Port, PortInfo<Port>>) -> Self {
+        let mut drivers = Drivers {
+            output_port_drivers: Default::default(),
+            reg_drivers: Default::default(),
+            wire_drivers: Default::default(),
+        };
+
+        // pre-populate output port entries
+        for (port, port_info) in ports {
+            match port_info.direction.inner {
+                PortDirection::Input => {}
+                PortDirection::Output => {
+                    drivers.output_port_drivers.entry(port).or_default();
+                }
+            }
+        }
+
+        drivers
+    }
+
     pub fn report_assignment(
         &mut self,
         diags: &Diagnostics,
@@ -1515,4 +1582,66 @@ fn report_assignment_internal_error<'a>(
     move |target: Spanned<Signal>| {
         Err(diags.report_internal_error(target.span, format!("driving signal within {place}")))
     }
+}
+
+fn pull_register_init_into_process(
+    ctx: &CompileItemContext,
+    clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
+    processes: &mut Vec<Result<IrModuleChild, ErrorGuaranteed>>,
+    register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
+    reg: Register,
+    driver: Driver,
+) -> Result<(), ErrorGuaranteed> {
+    let diags = ctx.refs.diags;
+    let reg_info = &ctx.registers[reg];
+
+    if let Driver::ClockedBlock(stmt_index) = driver {
+        if let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index) {
+            if let IrModuleChild::ClockedProcess(process) = &mut processes[process_index].as_ref_mut_ok()? {
+                if let Some(init) = register_initial_values.get(&reg) {
+                    let init = init.as_ref_ok()?;
+
+                    // TODO fix duplication with CompileValue::to_ir_expression
+                    // TODO move this to where the register is initially visited
+                    let init_ir = match init.inner.as_hardware_value(&reg_info.ty.inner) {
+                        HardwareValueResult::Success(v) => Some(v),
+                        HardwareValueResult::Undefined => None,
+                        HardwareValueResult::PartiallyUndefined => {
+                            return Err(diags.report_todo(init.span, "partially undefined register reset value"))
+                        }
+                        HardwareValueResult::Unrepresentable => throw!(diags.report_internal_error(
+                            init.span,
+                            format!(
+                                "value `{}` has hardware type but is itself not representable",
+                                init.inner.to_diagnostic_string()
+                            ),
+                        )),
+                        HardwareValueResult::InvalidType => throw!(diags.report_internal_error(
+                            init.span,
+                            format!(
+                                "value `{}` with type `{}` cannot be represented as hardware type `{}`",
+                                init.inner.to_diagnostic_string(),
+                                init.inner.ty().to_diagnostic_string(),
+                                reg_info.ty.inner.to_diagnostic_string()
+                            ),
+                        )),
+                    };
+
+                    if let Some(init_ir) = init_ir {
+                        let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg_info.ir), init_ir);
+                        process.on_reset.statements.push(Spanned {
+                            span: init.span,
+                            inner: stmt,
+                        });
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Err(diags.report_internal_error(
+        reg_info.id.span(),
+        "failure while pulling reset value into clocked process",
+    ))
 }

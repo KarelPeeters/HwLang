@@ -233,19 +233,20 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
+    // control flow
+    Block(Block<ModuleStatement>),
+    If(IfStatement<ModuleStatement>),
+    For(ForStatement<ModuleStatement>),
     // declarations
     CommonDeclaration(CommonDeclaration),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
-
     // marker
     RegOutPortMarker(RegOutPortMarker),
-
     // blocks
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
-    // TODO control flow (if, for), probably not while/break/continue
 }
 
 #[derive(Debug, Clone)]
@@ -261,9 +262,9 @@ pub enum BlockStatementKind {
 
     // control flow
     Block(Block<BlockStatement>),
-    If(IfStatement<Box<Expression>, Block<BlockStatement>, Option<Block<BlockStatement>>>),
+    If(IfStatement<BlockStatement>),
+    For(ForStatement<BlockStatement>),
     While(WhileStatement),
-    For(ForStatement),
 
     // control flow terminators
     Return(ReturnStatement),
@@ -272,18 +273,18 @@ pub enum BlockStatementKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct IfStatement<C, B, E> {
-    pub initial_if: IfCondBlockPair<C, B>,
-    pub else_ifs: Vec<IfCondBlockPair<C, B>>,
-    pub final_else: E,
+pub struct IfStatement<S> {
+    pub initial_if: IfCondBlockPair<S>,
+    pub else_ifs: Vec<IfCondBlockPair<S>>,
+    pub final_else: Option<Block<S>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct IfCondBlockPair<C, B> {
+pub struct IfCondBlockPair<S> {
     pub span: Span,
     pub span_if: Span,
-    pub cond: C,
-    pub block: B,
+    pub cond: Box<Expression>,
+    pub block: Block<S>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,11 +295,11 @@ pub struct WhileStatement {
 }
 
 #[derive(Debug, Clone)]
-pub struct ForStatement {
+pub struct ForStatement<S> {
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,
-    pub body: Block<BlockStatement>,
+    pub body: Block<S>,
 }
 
 #[derive(Debug, Clone)]

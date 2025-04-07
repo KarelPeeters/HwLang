@@ -64,6 +64,9 @@ impl AssignmentTarget {
 }
 
 // TODO move this into context, together with the ir block being written and the scope
+// TODO this should not be clone, that's really expensive. Instead, work with shadowing overlays, simular to scopes.
+//   all this vars cloning is probably the slow part of compilation right now
+//   (actually, why do we still have this and scopes? can't we merge these?)
 #[derive(Debug, Clone)]
 pub struct VariableValues {
     pub inner: Option<VariableValuesInner>,
