@@ -1,0 +1,204 @@
+import std.types.[bool, int_range, int, natural, uint, uint_bits];
+import std.math.[clog2];
+import std.convert.[uint_to_bits, uint_from_bits];
+import std.util.[typeof, print, print_compile];
+
+// TODO implement structs
+// TODO allow fields to depend on previous fields (only for compile-time structs ofc)
+// struct Convcode(length: natural) {
+//     generator_0: [length]bool,
+//     generator_1: [length]bool,
+// }
+
+pub module convcode_encoder generics (
+    length: natural,
+    generator_0: [length]bool,
+    generator_1: [length]bool,
+) ports (
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        input_data: in bool,
+        input_valid: in bool,
+
+        output_data_0: out bool,
+        output_data_1: out bool,
+        output_valid: out bool
+    }
+) body {
+    reg delay_line: sync(clk, rst) [length - 1]bool = [false] * (length - 1);
+    reg out output_data_0 = false;
+    reg out output_data_1 = false;
+    reg out output_valid = false;
+
+    clocked(clk, rst) {
+        if (input_valid) {
+            // update delay line
+            // TODO better error message if this var is missing a type hint
+            // TODO don't require type hints for things with clear types, eg. bools
+            // TODO don't require type hints for vals, they can't change value later anyway
+            val delay_line_extra: [length]bool = [*delay_line, input_data];
+            delay_line = delay_line_extra[1..];
+
+            // do convolution
+            output_data_0 = false;
+            output_data_1 = false;
+            for (i in 0..length) {
+                output_data_0 ^= delay_line_extra[i] & generator_0[length - 1 - i];
+                output_data_1 ^= delay_line_extra[i] & generator_1[length - 1 - i];
+            }
+        }
+
+        output_valid = input_valid;
+    }
+}
+
+pub module convcode_decoder generics (
+    length: natural,
+    generator_0: [length]bool,
+    generator_1: [length]bool,
+    analog_bits: natural,
+    depth: natural,
+) ports (
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        input_data_0: in uint_bits(analog_bits),
+        input_data_1: in uint_bits(analog_bits),
+        input_valid: in bool,
+
+        output_data: out bool,
+        output_valid: out bool,
+    }
+) body {
+    const num_states = 2**length;
+    const prob_bits = clog2(length) + analog_bits + 2;
+
+    type t_half_probs = [num_states/2]uint_bits(prob_bits);
+    type t_probs = [num_states]uint_bits(prob_bits);
+    type t_half_paths = [num_states/2, depth]bool;
+    type t_paths = [num_states, depth]bool;
+
+    const half_paths_reset = [[false] * depth] * (num_states/2);
+
+    reg half_probs: sync(clk, rst) t_half_probs = [0] * (num_states/2);
+    reg half_paths: sync(clk, rst) t_half_paths = half_paths_reset;
+    reg out output_data = false;
+    reg out output_valid = false;
+
+    clocked(clk, rst) {
+        if (input_valid) {
+            // calculate output
+            var out_probs_max: t_half_probs = half_probs;
+            var outputs_max: [num_states/2]bool = [false] * (num_states/2);
+            for (i in 0..num_states/2) {
+                outputs_max[i] = half_paths[i, 0];
+            }
+            for (j_rev in 0..(length - 1)) {
+                val j = length - 2 - j_rev;
+                for (i in 0..2**j) {
+                    // TODO this condition is probably wrong
+                    val delta = out_probs_max[2*i + 0] - out_probs_max[2*i + 1];
+                    if (delta < 2**prob_bits - 1) {
+                        out_probs_max[i] = out_probs_max[2*i + 0];
+                        outputs_max[i] = outputs_max[2*i + 0];
+                    } else {
+                        out_probs_max[i] = out_probs_max[2*i + 1];
+                        outputs_max[i] = outputs_max[2*i + 1];
+                    }
+                }
+            }
+            output_data = outputs_max[0];
+
+            // calculate new probabilities and paths
+            // TODO infer type for this array automatically
+            val book_probs: [4]uint_bits(prob_bits) = [
+                uint_not(analog_bits, input_data_0) + uint_not(analog_bits, input_data_1),
+                input_data_0 + uint_not(analog_bits, input_data_1),
+                uint_not(analog_bits, input_data_0) + input_data_1,
+                input_data_0 + input_data_1,
+            ];
+            var probs_new: t_probs = [*half_probs, *half_probs];
+            var paths_new: t_paths = [*half_paths, *half_paths];
+            for (i in 0..num_states) {
+                probs_new[i] = (probs_new[i] + book_probs[uint_from_bits(2, codebook[i])]) % 2**prob_bits;
+            }
+
+            // update probabilities and paths
+            // TODO array comprehensions
+            var half_probs_0: t_half_probs = [0] * (num_states/2);
+            var half_probs_1: t_half_probs = [0] * (num_states/2);
+            var half_paths_0: t_half_paths = half_paths_reset;
+            var half_paths_1: t_half_paths = half_paths_reset;
+            for (i in 0..num_states/2) {
+                half_probs_0[i] = probs_new[2*i + 0];
+                half_probs_1[i] = probs_new[2*i + 1];
+
+                half_paths_0[i] = [*paths_new[2*i+0, 1..], false];
+                half_paths_1[i] = [*paths_new[2*i+1, 1..], true];
+            }
+
+            // select best probabilities and paths
+            for (i in 0..num_states/2) {
+                val delta = half_probs_0[i] - half_probs_1[i];
+                // TODO this condition is probably wrong
+                if (delta < 2**prob_bits - 1) {
+                    half_probs[i] = half_probs_0[i];
+                    half_paths[i] = half_paths_0[i];
+                } else {
+                    half_probs[i] = half_probs_1[i];
+                    half_paths[i] = half_paths_1[i];
+                }
+            }
+        }
+
+        output_valid = input_valid;
+    }
+
+    // TODO implement block-as-expression, eventually extend to control flow too
+    fn f_codebook() -> [2 ** length, 2]bool {
+        const num_states = 2 ** length;
+        var codebook = [undef] * num_states;
+
+        for (i in 0..num_states) {
+            val code = uint_to_bits(length, i);
+            var output = [false, false];
+            for (j in 0..length) {
+                output[0] ^= code[j] & generator_0[length - 1 - j];
+                output[1] ^= code[j] & generator_1[length - 1 - j];
+            }
+            codebook[i] = output;
+        }
+
+        return codebook;
+    }
+    const codebook: [num_states, 2]bool = f_codebook();
+}
+
+// TODO this is a weird construct, what does this even mean in context?
+// TODO should we allow arithmetic on bool arrays?
+fn uint_not(n: uint, v: uint_bits(n)) -> uint_bits(n) {
+    val bits = uint_to_bits(n, v);
+    var not_bits: [n]bool = [false] * n;
+    for (i in 0..n) {
+        not_bits[i] = !bits[i];
+    }
+    return uint_from_bits(n, not_bits);
+}
+
+// TODO file-level block scopes, keeping variables local to this block
+const example_length = 7;
+const example_generator_0 = [true, true, true, false, false, false, true];
+const example_generator_1 = [true, false, true, true, false, true, true];
+const example_analog_bits = 8;
+const example_depth = 32;
+
+instance convcode_encoder generics(
+    length=example_length, generator_0=example_generator_0, generator_1=example_generator_1
+);
+instance convcode_decoder generics(
+    length=example_length, generator_0=example_generator_0, generator_1=example_generator_1,
+    analog_bits=example_analog_bits, depth=example_depth
+);

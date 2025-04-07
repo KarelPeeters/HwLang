@@ -1,0 +1,41 @@
+import std.types.[uint, uint_bits, bool];
+
+// TODO this should be an intrinsic, this is a placeholder technically correct implementation
+// TODO check the type of "left", currently it keeps unnecessarily expanding
+pub fn uint_to_bits(bits: uint, value: uint_bits(bits)) -> [bits]bool {
+    var left = value;
+    var result: [bits]bool = [false] * bits;
+
+    for (i in 0..bits) {
+        val j = bits - i - 1;
+        val curr = 2**j;
+
+        if (left >= curr) {
+            result[i] = true;
+            left -= curr;
+        }
+    }
+
+    return result;
+}
+
+// TODO this should be an intrinsic
+pub fn uint_from_bits(bits: uint, value: [bits]bool) -> uint_bits(bits) {
+    var result = 0;
+    for (i in 0..bits) {
+        if (value[i]) {
+            result += 2**i;
+        }
+    }
+    return result;
+}
+
+pub fn bool_to_int(x: bool) -> int_range(0..=1) {
+    var result;
+    if (x) {
+        result = 1;
+    } else {
+        result = 0;
+    }
+    return result;
+}

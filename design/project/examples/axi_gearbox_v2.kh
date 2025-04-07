@@ -4,6 +4,8 @@ import std.types.[
     int_bits, uint_bits, any,
 ];
 import std.util.[typeof, print, print_compile];
+import std.math.[gcd, min, max, clog2];
+import std.convert.[uint_to_bits, uint_from_bits];
 
 pub module axi_gearbox_v2 generics(
     input_width: natural,
@@ -15,12 +17,12 @@ pub module axi_gearbox_v2 generics(
 
     sync(clk, rst) {
         // input side
-        input_data: in bool[input_width],
+        input_data: in [input_width]bool,
         input_valid: in bool,
         input_ready: out bool,
 
         // output side
-        output_data: out bool[output_width],
+        output_data: out [output_width]bool,
         output_valid: out bool,
         output_ready: in bool,
     }
@@ -30,7 +32,7 @@ pub module axi_gearbox_v2 generics(
     // TODO off by one, bug in original?
     const shift_bits = clog2((buffer_size - input_width) / step + 1) + 1;
 
-    reg buffer: sync(clk, rst) bool[buffer_size] = undef;
+    reg buffer: sync(clk, rst) [buffer_size]bool = undef;
     reg level: sync(clk, rst) int_range(0..(buffer_size / step)) = 0;
 
     comb {
@@ -47,8 +49,8 @@ pub module axi_gearbox_v2 generics(
             const data_width = input_width + step * (2**shift_bits - 1);
             const mask_width = input_width / step + (2**shift_bits - 1);
 
-            var data: bool[data_width] = [false] * data_width;
-            var mask: bool[mask_width] = [false] * mask_width;
+            var data: [data_width]bool = [false] * data_width;
+            var mask: [mask_width]bool = [false] * mask_width;
 
             data[..input_width] = input_data;
             mask[..input_width / step] = [true] * (input_width / step);
@@ -89,56 +91,4 @@ pub module axi_gearbox_v2 generics(
             level = level - output_width / step;
         }
     }
-}
-
-fn min(a: int, b: int) -> int {
-    var result;
-    if (a < b) {
-        result = a;
-    } else {
-        result = b;
-    }
-    return result;
-}
-
-fn gcd(a: natural, b: natural) -> natural {
-    var va = a;
-    var vb = b;
-    while (true) {
-        va = va % vb;
-        if (va == 0) {
-            return vb;
-        }
-        vb = vb % va;
-        if (vb == 0) {
-            return va;
-        }
-    }
-}
-
-fn clog2(a: natural) -> natural {
-    for (pow in 0..) {
-        if (2 ** pow >= a) {
-            return pow;
-        }
-    }
-}
-
-// TODO this should be an intrinsic, this is a placeholder technically correct implementation
-// TODO check the type of "left", currently it keeps unnecessarily expanding
-fn uint_to_bits(bits: uint, value: uint_bits(bits)) -> bool[bits] {
-    var left = value;
-    var result: bool[bits] = [false] * bits;
-
-    for (i in 0..bits) {
-        val j = bits - i - 1;
-        val curr = 2**j;
-
-        if (left >= curr) {
-            result[i] = true;
-            left -= curr;
-        }
-    }
-
-    return result;
 }

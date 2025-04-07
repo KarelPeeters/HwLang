@@ -1,4 +1,4 @@
-import std.types.[int, int_range];
+import std.types.[bool, int_range, int, uint, natural, uint_bits];
 
 pub fn min(x: int, y: int) -> int {
     if (x < y) {
@@ -25,4 +25,12 @@ pub fn gcd(a: int_range(1..), b: int_range(1..)) -> int_range(1..) {
         a = t;
     }
     return a;
+}
+
+pub fn clog2(n: uint) -> uint {
+    for (i in 0..) {
+        if (2**i >= n) {
+            return i;
+        }
+    }
 }
