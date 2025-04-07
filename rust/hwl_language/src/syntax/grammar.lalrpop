@@ -308,7 +308,7 @@ CommonDeclaration: CommonDeclaration = {
     // TODO allow specifying "const" before function params to make error messages nicer
     <start:@L>
         "fn" <id:MaybeId> <params:Parameters<Parameter>>
-        <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?>
+        <ret_ty:("->" <Spanned<ExprLevelArrayNoStruct>>)?>
         <body:Block<BlockStatement>>
     <end:@R>
         => CommonDeclaration::Function(FunctionDeclaration { id, params, ret_ty, body, span: loc.span(start, end) }),
@@ -501,32 +501,35 @@ ExprLevelUnary: ExpressionKind = {
 
 ExprLevelPower: ExpressionKind = {
     // assoc none
-    <left:Spanned<ExprLevelCall>> <op:Span<"**">> <right:Spanned<ExprLevelCall>> =>
+    <left:Spanned<ExprLevelArray>> <op:Span<"**">> <right:Spanned<ExprLevelArray>> =>
         build_binary_op(op, BinaryOp::Pow, left, right),
-    ExprLevelCall,
+    ExprLevelArray,
 }
 
-ExprLevelCall = ExprLevelCallGeneric<ExprLevelStructInit>;
-ExprLevelCallNoStruct = ExprLevelCallGeneric<ExprLevelAtomic>;
+// TODO real implementation again, only matters once we have struct literals and if we decide to use {} for them
+ExprLevelArrayNoStruct = ExprLevelArray;
 
-ExprLevelCallGeneric<AtomicInner>: ExpressionKind = {
-    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" =>
-        ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
-        ExpressionKind::Call(target, args),
-    // intentionally ban sequential array indices, the inner/outer order would be too confusing for types
-    // TODO investigate exactly how C or maybe Java handles this
-    <target:BoxSpanned<ExprLevelCallGenericNoArray<AtomicInner>>> <indices:Spanned<("[" <Separated<Expr, ",">> "]")>> =>
-        ExpressionKind::ArrayIndex(target, indices),
-    ExprLevelDotIndex<AtomicInner>,
+ExprLevelArray: ExpressionKind = {
+    // array type
+    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal >>
+        => ExpressionKind::ArrayType(args, target),
+    // array index
+    <target:BoxSpanned<ExprLevelCallReal >> "[" <args:Spanned<Separated<Expr, ",">>> "]"
+        => ExpressionKind::ArrayIndex(target, args),
+
+    // array literal
+    "[" <Separated<ArrayLiteralElement, ",">> "]" => ExpressionKind::ArrayLiteral(<>),
+    // tuple literal
+    "(" <SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(<>),
+
+    ExprLevelCallReal,
 }
 
-ExprLevelCallGenericNoArray<AtomicInner>: ExpressionKind = {
-    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" =>
-        ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelCallGeneric<AtomicInner>>> "(" <args:Args> ")" =>
-        ExpressionKind::Call(target, args),
-    ExprLevelDotIndex<AtomicInner>,
+ExprLevelCallReal: ExpressionKind = {
+    // call
+    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" => ExpressionKind::Builtin(args),
+    <target:BoxSpanned<ExprLevelAtomic>> "(" <args:Args> ")" => ExpressionKind::Call(target, args),
+    ExprLevelDotIndex,
 }
 
 Args: Args = {
@@ -539,21 +542,13 @@ Arg: Arg = {
         Arg { name, value, span: loc.span(start, end) },
 }
 
-ExprLevelDotIndex<AtomicInner>: ExpressionKind = {
+ExprLevelDotIndex: ExpressionKind = {
     // assoc left
-    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Id>
+    <target: BoxSpanned<ExprLevelDotIndex>> "." <index: Id>
         => ExpressionKind::DotIdIndex(target, index),
-    <target: BoxSpanned<ExprLevelDotIndex<AtomicInner>>> "." <index: Spanned<TokenIntLiteralDecimal>>
+    <target: BoxSpanned<ExprLevelDotIndex>> "." <index: Spanned<TokenIntLiteralDecimal>>
         => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
-    ExprLevelStructureInit<AtomicInner>,
-}
-
-ExprLevelStructureInit<AtomicInner>: ExpressionKind = {
-    // tuple literal
-    "(" <values:SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(values),
-    // array literal
-    "[" <elements:Separated<Spanned<ArrayLiteralElement>, ",">> "]" => ExpressionKind::ArrayLiteral(elements),
-    AtomicInner,
+    ExprLevelAtomic,
 }
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {

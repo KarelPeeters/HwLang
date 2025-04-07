@@ -1,9 +1,8 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::check::{check_type_is_uint_compile, TypeContainsReason};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrExpression, IrTargetStep};
 use crate::front::misc::ValueDomain;
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
@@ -188,27 +187,6 @@ impl ArraySteps<ArrayStep> {
         for step in steps {
             let next_inner = match (&step.inner, curr.inner) {
                 (MaybeCompile::Compile(step_inner), MaybeCompile::Compile(curr_inner)) => match curr_inner {
-                    CompileValue::Type(inner) => {
-                        // create new array type
-                        // TODO it's a bit awkward that indexing and array type def shares the same syntax
-                        let reason = TypeContainsReason::ArrayLen { span_len: step.span };
-                        match step_inner {
-                            ArrayStepCompile::ArrayIndex(len) => {
-                                let len_as_value = Spanned::new(step.span, CompileValue::Int(len.clone()));
-                                let len = check_type_is_uint_compile(diags, reason, len_as_value)?;
-                                MaybeCompile::Compile(CompileValue::Type(Type::Array(Box::new(inner), len)))
-                            }
-                            ArrayStepCompile::ArraySlice { start, len } => {
-                                let slice_as_range = IncRange {
-                                    start_inc: Some(start.clone()),
-                                    end_inc: len.as_ref().map(|len| start + BigInt::from(len.clone())),
-                                };
-                                let slice_as_value = Spanned::new(step.span, CompileValue::IntRange(slice_as_range));
-                                check_type_is_uint_compile(diags, reason, slice_as_value)?;
-                                unreachable!()
-                            }
-                        }
-                    }
                     CompileValue::Array(curr_inner) => {
                         // index into array
                         let value_len = Spanned::new(curr.span, curr_inner.len());
@@ -471,8 +449,8 @@ pub fn check_range_index(
     array_len: Spanned<&BigUint>,
 ) -> Result<(), ErrorGuaranteed> {
     if index.inner.start_inc.is_negative() || index.inner.end_inc >= &BigInt::from(array_len.inner.clone()) {
-        let index_str = if index.inner.as_single().is_some() {
-            format!("`{}`", index.inner)
+        let index_str = if let Some(index) = index.inner.as_single() {
+            format!("`{index}`")
         } else {
             format!("with range `{}`", index.inner)
         };

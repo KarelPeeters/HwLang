@@ -54,6 +54,10 @@ wasm-bindgen = "0.2.84"
 [profile.release]
 debug = 2
 
+#[profile.dev.build-override]
+# Enable optimization for larlpop build
+#opt-level = 3
+
 [workspace.lints.clippy]
 # Things that are not yet implemented should report diagnostics, not crash the compiler.
 todo = "warn"

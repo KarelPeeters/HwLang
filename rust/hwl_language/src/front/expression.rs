@@ -230,6 +230,7 @@ impl CompileItemContext<'_, '_> {
 
             ExpressionKind::ArrayLiteral(values) => {
                 // intentionally ignore the length, the caller can pass "0" when they have no opinion on it
+                // TODO if we stop ignoring the length at some point, then we can infer lengths in eg. `[false] * _`
                 let expected_ty_inner = match expected_ty {
                     Type::Array(inner, _len) => &**inner,
                     _ => &Type::Any,
@@ -239,18 +240,17 @@ impl CompileItemContext<'_, '_> {
                 let values = values
                     .iter()
                     .map(|v| {
-                        let expected_ty_curr = match &v.inner {
+                        let expected_ty_curr = match v {
                             ArrayLiteralElement::Single(_) => expected_ty_inner,
                             ArrayLiteralElement::Spread(_, _) => {
                                 &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::zero())
                             }
                         };
 
-                        v.inner
-                            .map_inner(|value_inner| {
-                                self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
-                            })
-                            .transpose()
+                        v.map_inner(|value_inner| {
+                            self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
+                        })
+                        .transpose()
                     })
                     .try_collect_all_vec()?;
 
@@ -582,6 +582,34 @@ impl CompileItemContext<'_, '_> {
             }
             ExpressionKind::ArrayIndex(base, indices) => {
                 self.eval_array_index_expression(ctx, ctx_block, scope, vars, base, indices)?
+            }
+            ExpressionKind::ArrayType(lens, base) => {
+                let lens = lens
+                    .inner
+                    .iter()
+                    .map(|len| {
+                        let len = match len {
+                            ArrayLiteralElement::Single(len) => len,
+                            ArrayLiteralElement::Spread(_, _) => {
+                                return Err(diags.report_todo(len.span(), "spread in array type lengths"))
+                            }
+                        };
+                        let len = self.eval_expression_as_compile(scope, vars, len, "array type length")?;
+                        let reason = TypeContainsReason::ArrayLen { span_len: len.span };
+                        check_type_is_uint_compile(diags, reason, len)
+                    })
+                    .try_collect_all_vec();
+                let base = self.eval_expression_as_ty(scope, vars, base);
+
+                let lengths = lens?;
+                let base = base?;
+
+                // apply lengths inside-out
+                let result = lengths
+                    .into_iter()
+                    .rev()
+                    .fold(base.inner, |acc, len| Type::Array(Box::new(acc), len));
+                MaybeCompile::Compile(CompileValue::Type(result))
             }
             ExpressionKind::DotIdIndex(_, _) => return Err(diags.report_todo(expr.span, "expr kind DotIdIndex")),
             ExpressionKind::DotIntIndex(_, _) => return Err(diags.report_todo(expr.span, "expr kind DotIntIndex")),
@@ -1251,6 +1279,8 @@ pub fn eval_binary_expression(
             }
         }
         BinaryOp::Mul => {
+            // TODO do we want to keep using multiplication as the "array repeat" syntax?
+            //   if so, maybe allow tuples on the right side for multidimensional repeating
             let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value));
             match left.inner.value.ty() {
                 Type::Array(left_ty_inner, left_len) => {

@@ -422,7 +422,7 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayLiteral(Vec<Spanned<ArrayLiteralElement<Expression>>>),
+    ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
     RangeLiteral(RangeLiteral),
@@ -433,6 +433,7 @@ pub enum ExpressionKind {
     TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
+    ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Box<Expression>),
     ArrayIndex(Box<Expression>, Spanned<Vec<Expression>>),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<String>),
