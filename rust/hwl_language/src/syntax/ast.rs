@@ -126,7 +126,7 @@ pub struct InterfaceField {
     pub ty: Expression,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Parameter {
     pub span: Span,
     pub id: Identifier,
@@ -404,7 +404,7 @@ pub struct PortConnection {
 
 pub type Expression = Spanned<ExpressionKind>;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
@@ -426,6 +426,7 @@ pub enum ExpressionKind {
     TupleLiteral(Vec<Expression>),
     StructLiteral(StructLiteral),
     RangeLiteral(RangeLiteral),
+    ArrayComprehension(ArrayComprehension),
 
     // Operations
     UnaryOp(Spanned<UnaryOp>, Box<Expression>),
@@ -443,13 +444,13 @@ pub enum ExpressionKind {
     Builtin(Spanned<Vec<Expression>>),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
     pub inner: Vec<Arg<N, T>>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub span: Span,
     pub name: N,
@@ -496,7 +497,7 @@ impl<N, T> Args<N, T> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum ArrayLiteralElement<V> {
     Single(V),
     Spread(Span, V),
@@ -536,20 +537,27 @@ impl<T, E> ArrayLiteralElement<Result<T, E>> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
+pub struct ArrayComprehension {
+    pub body: Box<ArrayLiteralElement<Expression>>,
+    pub index: MaybeIdentifier,
+    pub iter: Box<Expression>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StructLiteral {
     pub struct_ty: Box<Expression>,
     pub fields: Vec<StructLiteralField>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct StructLiteralField {
     pub span: Span,
     pub id: Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum RangeLiteral {
     ExclusiveEnd {
         op_span: Span,
@@ -578,7 +586,7 @@ pub struct SyncExpression {
 // TODO wildcard symbol: `_`, `?`, `*`, `#`?
 //     `*` is a bad idea
 // (don't allow any of the fancy stuff stuff for decimal ofc)
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum IntLiteral {
     // 0b[01_]+
     Binary(String),
@@ -596,7 +604,7 @@ pub enum MaybeIdentifier<I = Identifier> {
 
 // TODO this is also just a spanned string
 // TODO intern identifiers
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Identifier {
     pub span: Span,
     pub string: String,
@@ -614,7 +622,7 @@ pub fn build_binary_op(op_span: Span, op: BinaryOp, left: Expression, right: Exp
     )
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -643,7 +651,7 @@ pub enum BinaryOp {
     In,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum UnaryOp {
     Neg,
     Not,

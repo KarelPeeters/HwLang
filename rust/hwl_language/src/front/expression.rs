@@ -18,10 +18,11 @@ use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArrayS
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral, MaybeIdentifier,
-    PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
+    ArrayComprehension, ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral,
+    MaybeIdentifier, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
+use crate::throw;
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
@@ -227,222 +228,11 @@ impl CompileItemContext<'_, '_> {
             &ExpressionKind::BoolLiteral(literal) => MaybeCompile::Compile(CompileValue::Bool(literal)),
             // TODO f-string formatting
             ExpressionKind::StringLiteral(literal) => MaybeCompile::Compile(CompileValue::String(literal.clone())),
-
             ExpressionKind::ArrayLiteral(values) => {
-                // intentionally ignore the length, the caller can pass "0" when they have no opinion on it
-                // TODO if we stop ignoring the length at some point, then we can infer lengths in eg. `[false] * _`
-                let expected_ty_inner = match expected_ty {
-                    Type::Array(inner, _len) => &**inner,
-                    _ => &Type::Any,
-                };
-
-                // evaluate
-                let values = values
-                    .iter()
-                    .map(|v| {
-                        let expected_ty_curr = match v {
-                            ArrayLiteralElement::Single(_) => expected_ty_inner,
-                            ArrayLiteralElement::Spread(_, _) => {
-                                &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::zero())
-                            }
-                        };
-
-                        v.map_inner(|value_inner| {
-                            self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
-                        })
-                        .transpose()
-                    })
-                    .try_collect_all_vec()?;
-
-                // combine into compile or non-compile value
-                let first_non_compile_span = values
-                    .iter()
-                    .find(|v| !matches!(v.value().inner, MaybeCompile::Compile(_)))
-                    .map(|v| v.span());
-                if let Some(first_non_compile_span) = first_non_compile_span {
-                    // at least one non-compile, turn everything into IR
-                    let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
-                        // TODO clarify that inferred type comes from outside, not the expression itself
-                        let message = format!(
-                            "hardware array literal has inferred inner type `{}` which is not representable in hardware",
-                            expected_ty_inner.to_diagnostic_string()
-                        );
-                        let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
-                            .add_error(expr.span, message)
-                            .add_info(first_non_compile_span, "necessary because this array element is not a compile-time value, which forces the entire array to be hardware")
-                            .finish();
-                        diags.report(diag)
-                    })?;
-
-                    let mut result_domain = ValueDomain::CompileTime;
-                    let mut result_exprs = vec![];
-                    let mut result_len = BigUint::zero();
-
-                    for elem in values {
-                        let (elem_ir, domain, elem_len) = match elem {
-                            ArrayLiteralElement::Single(elem_inner) => {
-                                let value_ir =
-                                    elem_inner
-                                        .inner
-                                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
-
-                                check_type_contains_value(
-                                    diags,
-                                    TypeContainsReason::Operator(expr.span),
-                                    expected_ty_inner,
-                                    Spanned {
-                                        span: elem_inner.span,
-                                        inner: &MaybeCompile::Other(value_ir.clone()),
-                                    },
-                                    true,
-                                    true,
-                                )?;
-
-                                (
-                                    IrArrayLiteralElement::Single(value_ir.expr),
-                                    value_ir.domain,
-                                    BigUint::one(),
-                                )
-                            }
-                            ArrayLiteralElement::Spread(_, elem_inner) => {
-                                let value_ir =
-                                    elem_inner
-                                        .inner
-                                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
-
-                                let len = match value_ir.ty() {
-                                    Type::Array(_, len) => len,
-                                    _ => BigUint::zero(),
-                                };
-                                check_type_contains_value(
-                                    diags,
-                                    TypeContainsReason::Operator(expr.span),
-                                    &Type::Array(Box::new(expected_ty_inner.clone()), len.clone()),
-                                    Spanned {
-                                        span: elem_inner.span,
-                                        inner: &MaybeCompile::Other(value_ir.clone()),
-                                    },
-                                    true,
-                                    true,
-                                )?;
-
-                                (IrArrayLiteralElement::Spread(value_ir.expr), value_ir.domain, len)
-                            }
-                        };
-
-                        result_domain = result_domain.join(&domain);
-                        result_exprs.push(elem_ir);
-                        result_len += elem_len;
-                    }
-
-                    let result_expr =
-                        IrExpression::ArrayLiteral(expected_ty_inner_hw.to_ir(), result_len.clone(), result_exprs);
-                    MaybeCompile::Other(TypedIrExpression {
-                        ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
-                        domain: result_domain,
-                        expr: result_expr,
-                    })
-                } else {
-                    // all compile, create compile value
-                    let mut result = vec![];
-                    for elem in values {
-                        match elem {
-                            ArrayLiteralElement::Single(elem_inner) => {
-                                let elem_inner = unwrap_match!(elem_inner.inner, MaybeCompile::Compile(v) => v);
-                                result.push(elem_inner);
-                            }
-                            ArrayLiteralElement::Spread(span_spread, elem_inner) => {
-                                let elem_inner = unwrap_match!(elem_inner.inner, MaybeCompile::Compile(v) => v);
-                                let elem_inner_array = match elem_inner {
-                                    CompileValue::Array(elem_inner) => elem_inner,
-                                    _ => {
-                                        return Err(diags.report_todo(
-                                            span_spread,
-                                            "compile-time spread only works for fully known arrays for now",
-                                        ))
-                                    }
-                                };
-                                result.extend(elem_inner_array)
-                            }
-                        }
-                    }
-                    MaybeCompile::Compile(CompileValue::Array(result))
-                }
+                self.eval_array_literal(ctx, ctx_block, scope, vars, expected_ty, expr.span, values)?
             }
             ExpressionKind::TupleLiteral(values) => {
-                let expected_tys_inner = match expected_ty {
-                    Type::Tuple(tys) if tys.len() == values.len() => Some(tys),
-                    _ => None,
-                };
-
-                // evaluate
-                let values = values
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
-                        self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_i, v)
-                    })
-                    .try_collect_all_vec()?;
-
-                // combine into compile or non-compile value
-                let first_non_compile = values
-                    .iter()
-                    .find(|v| !matches!(v.inner, MaybeCompile::Compile(_)))
-                    .map(|v| v.span);
-                if let Some(first_non_compile) = first_non_compile {
-                    // at least one non-compile, turn everything into IR
-                    let mut result_ty = vec![];
-                    let mut result_domain = ValueDomain::CompileTime;
-                    let mut result_expr = vec![];
-
-                    for (i, value) in enumerate(values) {
-                        let expected_ty_inner = if let Some(expected_tys_inner) = expected_tys_inner {
-                            expected_tys_inner[i].clone()
-                        } else {
-                            value.inner.ty()
-                        };
-                        let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
-                            let message = format!(
-                                "tuple element has inferred type `{}` which is not representable in hardware",
-                                expected_ty_inner.to_diagnostic_string()
-                            );
-                            let diag = Diagnostic::new("hardware tuple elements need to be representable in hardware")
-                                .add_error(value.span, message)
-                                .add_info(first_non_compile, "necessary because this other tuple element is not a compile-time value, which forces the entire tuple to be hardware")
-                                .finish();
-                            diags.report(diag)
-                        })?;
-
-                        let value_ir = value.inner.as_ir_expression(diags, value.span, &expected_ty_inner_hw)?;
-                        result_ty.push(value_ir.ty);
-                        result_domain = result_domain.join(&value_ir.domain);
-                        result_expr.push(value_ir.expr);
-                    }
-
-                    MaybeCompile::Other(TypedIrExpression {
-                        ty: HardwareType::Tuple(result_ty),
-                        domain: result_domain,
-                        expr: IrExpression::TupleLiteral(result_expr),
-                    })
-                } else if values
-                    .iter()
-                    .all(|v| matches!(v.inner, MaybeCompile::Compile(CompileValue::Type(_))))
-                {
-                    // all type
-                    let tys = values
-                        .into_iter()
-                        .map(|v| unwrap_match!(v.inner, MaybeCompile::Compile(CompileValue::Type(v)) => v))
-                        .collect();
-                    MaybeCompile::Compile(CompileValue::Type(Type::Tuple(tys)))
-                } else {
-                    // all compile
-                    let values = values
-                        .into_iter()
-                        .map(|v| unwrap_match!(v.inner, MaybeCompile::Compile(v) => v))
-                        .collect();
-                    MaybeCompile::Compile(CompileValue::Tuple(values))
-                }
+                self.eval_tuple_literal(ctx, ctx_block, scope, vars, expected_ty, values)?
             }
             ExpressionKind::StructLiteral(_) => return Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
@@ -508,6 +298,35 @@ impl CompileItemContext<'_, '_> {
                     }
                 }
             }
+            ExpressionKind::ArrayComprehension(array_comprehension) => {
+                let ArrayComprehension { body, index, iter } = array_comprehension;
+                let expected_ty_inner = match expected_ty {
+                    Type::Array(inner, _) => inner,
+                    _ => &Type::Any,
+                };
+
+                let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, vars, scope, iter)?;
+
+                let mut values = vec![];
+                for index_value in iter {
+                    let scope_span = body.span().join(index.span());
+                    let mut scope_body = Scope::new_child(scope_span, scope);
+
+                    // TODO variable or just constant value?
+                    let index_entry = ScopedEntry::Value(index_value);
+                    scope_body.maybe_declare(diags, index.as_ref(), Ok(index_entry));
+
+                    let value = body
+                        .map_inner(|body_expr| {
+                            self.eval_expression(ctx, ctx_block, &scope_body, vars, expected_ty_inner, body_expr)
+                        })
+                        .transpose()?;
+                    values.push(value);
+                }
+
+                array_literal_combine_values(diags, expr.span, expected_ty_inner, values)?
+            }
+
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
@@ -651,6 +470,133 @@ impl CompileItemContext<'_, '_> {
         };
 
         Ok(ExpressionWithImplications::simple(result_simple))
+    }
+
+    fn eval_array_literal<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut <C as ExpressionContext>::Block,
+        scope: &Scope,
+        vars: &VariableValues,
+        expected_ty: &Type,
+        expr_span: Span,
+        values: &[ArrayLiteralElement<Expression>],
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        // intentionally ignore the length, the caller can pass "0" when they have no opinion on it
+        // TODO if we stop ignoring the length at some point, then we can infer lengths in eg. `[false] * _`
+        let expected_ty_inner = match expected_ty {
+            Type::Array(inner, _len) => &**inner,
+            _ => &Type::Any,
+        };
+
+        // evaluate
+        let values = values
+            .into_iter()
+            .map(|v| {
+                let expected_ty_curr = match v {
+                    ArrayLiteralElement::Single(_) => expected_ty_inner,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::zero())
+                    }
+                };
+
+                v.map_inner(|value_inner| {
+                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
+                })
+                .transpose()
+            })
+            .try_collect_all_vec()?;
+
+        // combine into compile or non-compile value
+        array_literal_combine_values(diags, expr_span, expected_ty_inner, values)
+    }
+
+    fn eval_tuple_literal<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut <C as ExpressionContext>::Block,
+        scope: &Scope,
+        vars: &VariableValues,
+        expected_ty: &Type,
+        values: &Vec<Expression>,
+    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let expected_tys_inner = match expected_ty {
+            Type::Tuple(tys) if tys.len() == values.len() => Some(tys),
+            _ => None,
+        };
+
+        // evaluate
+        let values = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
+                self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_i, v)
+            })
+            .try_collect_all_vec()?;
+
+        // combine into compile or non-compile value
+        let first_non_compile = values
+            .iter()
+            .find(|v| !matches!(v.inner, MaybeCompile::Compile(_)))
+            .map(|v| v.span);
+        Ok(if let Some(first_non_compile) = first_non_compile {
+            // at least one non-compile, turn everything into IR
+            let mut result_ty = vec![];
+            let mut result_domain = ValueDomain::CompileTime;
+            let mut result_expr = vec![];
+
+            for (i, value) in enumerate(values) {
+                let expected_ty_inner = if let Some(expected_tys_inner) = expected_tys_inner {
+                    expected_tys_inner[i].clone()
+                } else {
+                    value.inner.ty()
+                };
+                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+                    let message = format!(
+                        "tuple element has inferred type `{}` which is not representable in hardware",
+                        expected_ty_inner.to_diagnostic_string()
+                    );
+                    let diag = Diagnostic::new("hardware tuple elements need to be representable in hardware")
+                        .add_error(value.span, message)
+                        .add_info(first_non_compile, "necessary because this other tuple element is not a compile-time value, which forces the entire tuple to be hardware")
+                        .finish();
+                    diags.report(diag)
+                })?;
+
+                let value_ir = value.inner.as_ir_expression(diags, value.span, &expected_ty_inner_hw)?;
+                result_ty.push(value_ir.ty);
+                result_domain = result_domain.join(&value_ir.domain);
+                result_expr.push(value_ir.expr);
+            }
+
+            MaybeCompile::Other(TypedIrExpression {
+                ty: HardwareType::Tuple(result_ty),
+                domain: result_domain,
+                expr: IrExpression::TupleLiteral(result_expr),
+            })
+        } else if values
+            .iter()
+            .all(|v| matches!(v.inner, MaybeCompile::Compile(CompileValue::Type(_))))
+        {
+            // all type
+            let tys = values
+                .into_iter()
+                .map(|v| unwrap_match!(v.inner, MaybeCompile::Compile(CompileValue::Type(v)) => v))
+                .collect();
+            MaybeCompile::Compile(CompileValue::Type(Type::Tuple(tys)))
+        } else {
+            // all compile
+            let values = values
+                .into_iter()
+                .map(|v| unwrap_match!(v.inner, MaybeCompile::Compile(v) => v))
+                .collect();
+            MaybeCompile::Compile(CompileValue::Tuple(values))
+        })
     }
 
     fn eval_array_index_expression<C: ExpressionContext>(
@@ -1114,6 +1060,128 @@ impl CompileItemContext<'_, '_> {
                 })?),
             },
         })
+    }
+
+    pub fn eval_expression_as_for_iterator<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        vars: &VariableValues,
+        scope: &Scope,
+        iter: &Expression,
+    ) -> Result<ForIterator, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let iter = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, iter)?;
+        let iter_span = iter.span;
+
+        let result = match iter.inner {
+            MaybeCompile::Compile(CompileValue::IntRange(iter)) => {
+                let IncRange { start_inc, end_inc } = iter;
+                let start_inc = match start_inc {
+                    Some(start_inc) => start_inc,
+                    None => {
+                        return Err(diags.report_simple(
+                            "for loop iterator range must have start value",
+                            iter_span,
+                            format!(
+                                "got range `{}`",
+                                IncRange {
+                                    start_inc: None,
+                                    end_inc
+                                }
+                            ),
+                        ))
+                    }
+                };
+
+                ForIterator::Int {
+                    next: start_inc,
+                    end_inc,
+                }
+            }
+            MaybeCompile::Compile(CompileValue::Array(iter)) => ForIterator::CompileArray(iter.into_iter()),
+            MaybeCompile::Other(TypedIrExpression {
+                ty: HardwareType::Array(ty_inner, len),
+                domain,
+                expr: array_expr,
+            }) => {
+                let base = TypedIrExpression {
+                    ty: (*ty_inner, len),
+                    domain,
+                    expr: array_expr,
+                };
+                ForIterator::HardwareArray {
+                    next: BigUint::ZERO,
+                    base,
+                }
+            }
+            _ => {
+                throw!(diags.report_simple(
+                    "invalid for loop iterator type, must be range or array",
+                    iter.span,
+                    format!("iterator has type `{}`", iter.inner.ty().to_diagnostic_string())
+                ))
+            }
+        };
+
+        Ok(result)
+    }
+}
+
+pub enum ForIterator {
+    Int {
+        next: BigInt,
+        end_inc: Option<BigInt>,
+    },
+    CompileArray(std::vec::IntoIter<CompileValue>),
+    HardwareArray {
+        next: BigUint,
+        base: TypedIrExpression<(HardwareType, BigUint)>,
+    },
+}
+
+impl Iterator for ForIterator {
+    type Item = MaybeCompile<TypedIrExpression>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ForIterator::Int { next, end_inc } => {
+                if let Some(end_inc) = end_inc {
+                    if next > end_inc {
+                        return None;
+                    }
+                }
+
+                let curr = MaybeCompile::Compile(CompileValue::Int(next.clone()));
+                *next += 1u8;
+                Some(curr)
+            }
+            ForIterator::CompileArray(iter) => iter.next().map(MaybeCompile::Compile),
+            ForIterator::HardwareArray { next, base } => {
+                let TypedIrExpression {
+                    ty: (ty_inner, ty_len),
+                    domain,
+                    expr: base_expr,
+                } = &*base;
+
+                if &*next >= ty_len {
+                    return None;
+                }
+                let index_expr = IrExpression::Int(BigInt::from(next.clone()));
+                *next += 1u8;
+
+                let element_expr = IrExpression::ArrayIndex {
+                    base: Box::new(base_expr.clone()),
+                    index: Box::new(index_expr),
+                };
+                Some(MaybeCompile::Other(TypedIrExpression {
+                    ty: (*ty_inner).clone(),
+                    domain: domain.clone(),
+                    expr: element_expr,
+                }))
+            }
+        }
     }
 }
 
@@ -1827,5 +1895,123 @@ fn apply_implications<C: ExpressionContext>(
         value: MaybeCompile::Other(value_expr),
         value_versioned: Some(versioned),
         implications: Implications::default(),
+    }
+}
+
+fn array_literal_combine_values(
+    diags: &Diagnostics,
+    expr_span: Span,
+    expected_ty_inner: &Type,
+    values: Vec<ArrayLiteralElement<Spanned<MaybeCompile<TypedIrExpression>>>>,
+) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+    let first_non_compile_span = values
+        .iter()
+        .find(|v| !matches!(v.value().inner, MaybeCompile::Compile(_)))
+        .map(|v| v.span());
+    if let Some(first_non_compile_span) = first_non_compile_span {
+        // at least one non-compile, turn everything into IR
+        let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+            // TODO clarify that inferred type comes from outside, not the expression itself
+            let message = format!(
+                "hardware array literal has inferred inner type `{}` which is not representable in hardware",
+                expected_ty_inner.to_diagnostic_string()
+            );
+            let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
+                .add_error(expr_span, message)
+                .add_info(first_non_compile_span, "necessary because this array element is not a compile-time value, which forces the entire array to be hardware")
+                .finish();
+            diags.report(diag)
+        })?;
+
+        let mut result_domain = ValueDomain::CompileTime;
+        let mut result_exprs = vec![];
+        let mut result_len = BigUint::zero();
+
+        for elem in values {
+            let (elem_ir, domain, elem_len) = match elem {
+                ArrayLiteralElement::Single(elem_inner) => {
+                    let value_ir = elem_inner
+                        .inner
+                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
+
+                    check_type_contains_value(
+                        diags,
+                        TypeContainsReason::Operator(expr_span),
+                        expected_ty_inner,
+                        Spanned {
+                            span: elem_inner.span,
+                            inner: &MaybeCompile::Other(value_ir.clone()),
+                        },
+                        true,
+                        true,
+                    )?;
+
+                    (
+                        IrArrayLiteralElement::Single(value_ir.expr),
+                        value_ir.domain,
+                        BigUint::one(),
+                    )
+                }
+                ArrayLiteralElement::Spread(_, elem_inner) => {
+                    let value_ir = elem_inner
+                        .inner
+                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
+
+                    let len = match value_ir.ty() {
+                        Type::Array(_, len) => len,
+                        _ => BigUint::zero(),
+                    };
+                    check_type_contains_value(
+                        diags,
+                        TypeContainsReason::Operator(expr_span),
+                        &Type::Array(Box::new(expected_ty_inner.clone()), len.clone()),
+                        Spanned {
+                            span: elem_inner.span,
+                            inner: &MaybeCompile::Other(value_ir.clone()),
+                        },
+                        true,
+                        true,
+                    )?;
+
+                    (IrArrayLiteralElement::Spread(value_ir.expr), value_ir.domain, len)
+                }
+            };
+
+            result_domain = result_domain.join(&domain);
+            result_exprs.push(elem_ir);
+            result_len += elem_len;
+        }
+
+        let result_expr = IrExpression::ArrayLiteral(expected_ty_inner_hw.to_ir(), result_len.clone(), result_exprs);
+        Ok(MaybeCompile::Other(TypedIrExpression {
+            ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
+            domain: result_domain,
+            expr: result_expr,
+        }))
+    } else {
+        // all compile, create compile value
+        let mut result = vec![];
+        for elem in values {
+            match elem {
+                ArrayLiteralElement::Single(elem_inner) => {
+                    let elem_inner = unwrap_match!(elem_inner.inner, MaybeCompile::Compile(v) => v);
+                    result.push(elem_inner);
+                }
+                ArrayLiteralElement::Spread(span_spread, elem_inner) => {
+                    let elem_inner = unwrap_match!(elem_inner.inner, MaybeCompile::Compile(v) => v);
+                    let elem_inner_array = match elem_inner {
+                        CompileValue::Array(elem_inner) => elem_inner,
+                        _ => {
+                            return Err(diags.report_todo(
+                                span_spread,
+                                "compile-time spread only works for fully known arrays for now",
+                            ))
+                        }
+                    };
+                    result.extend(elem_inner_array)
+                }
+            }
+        }
+        Ok(MaybeCompile::Compile(CompileValue::Array(result)))
     }
 }

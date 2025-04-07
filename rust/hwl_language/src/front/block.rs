@@ -5,10 +5,11 @@ use crate::front::check::{check_type_contains_compile_value, check_type_contains
 use crate::front::compile::{CompileItemContext, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::expression::ForIterator;
 use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::Scope;
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, Expression, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement,
@@ -19,8 +20,6 @@ use crate::throw;
 use crate::util::data::IndexMapExt;
 use crate::util::{result_pair, ResultExt};
 use indexmap::IndexMap;
-use num_bigint::{BigInt, BigUint};
-use num_traits::{CheckedSub, One};
 use std::cmp::max;
 
 // TODO move
@@ -709,8 +708,6 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         stmt: Spanned<&ForStatement>,
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
-        // TODO (deterministic!) timeout
-        let diags = self.refs.diags;
         let ctx_block = &mut result_block;
 
         let ForStatement {
@@ -720,98 +717,17 @@ impl CompileItemContext<'_, '_> {
             body: _,
         } = stmt.inner;
 
-        let iter = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, iter);
         let index_ty = index_ty
             .as_ref()
             .map(|index_ty| self.eval_expression_as_ty(scope, &vars, index_ty))
             .transpose();
+        let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, &vars, scope, iter);
 
-        let iter = iter?;
         let index_ty = index_ty?;
+        let iter = iter?;
 
-        let iter_span = iter.span;
-
-        let end = match iter.inner {
-            MaybeCompile::Compile(CompileValue::IntRange(iter)) => {
-                let IncRange { start_inc, end_inc } = iter;
-                let start_inc = match start_inc {
-                    Some(start_inc) => start_inc,
-                    None => {
-                        return Err(diags.report_simple(
-                            "for loop iterator range must have start value",
-                            iter_span,
-                            format!(
-                                "got range `{}`",
-                                IncRange {
-                                    start_inc: None,
-                                    end_inc
-                                }
-                            ),
-                        ))
-                    }
-                };
-
-                let iter = {
-                    let mut next = start_inc;
-                    std::iter::from_fn(move || {
-                        if let Some(end_inc) = &end_inc {
-                            if &next > end_inc {
-                                return None;
-                            }
-                        }
-                        let curr = MaybeCompile::Compile(CompileValue::Int(next.clone()));
-                        next += 1;
-                        Some(curr)
-                    })
-                };
-
-                self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
-            }
-            MaybeCompile::Compile(CompileValue::Array(iter)) => {
-                let iter = iter.into_iter().map(MaybeCompile::Compile);
-                self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
-            }
-            MaybeCompile::Other(TypedIrExpression {
-                ty: HardwareType::Array(ty_inner, len),
-                domain,
-                expr: array_expr,
-            }) => {
-                // TODO simplify this once empty ranges are representable
-                match len.checked_sub(&BigUint::one()) {
-                    None => {
-                        // empty loop, do nothing
-                        BlockEnd::Normal(vars)
-                    }
-                    Some(end_inc) => {
-                        let range = ClosedIncRange {
-                            start_inc: BigUint::ZERO,
-                            end_inc,
-                        };
-                        let iter = range.iter().map(|v| {
-                            let index_expr = IrExpression::Int(BigInt::from(v));
-                            let element_expr = IrExpression::ArrayIndex {
-                                base: Box::new(array_expr.clone()),
-                                index: Box::new(index_expr),
-                            };
-                            MaybeCompile::Other(TypedIrExpression {
-                                ty: (*ty_inner).clone(),
-                                domain: domain.clone(),
-                                expr: element_expr,
-                            })
-                        });
-                        self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?
-                    }
-                }
-            }
-            _ => {
-                throw!(diags.report_simple(
-                    "invalid for loop iterator type, must be range or array",
-                    iter.span,
-                    format!("iterator has type `{}`", iter.inner.ty().to_diagnostic_string())
-                ))
-            }
-        };
-
+        // TODO (deterministic!) timeout?
+        let end = self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?;
         Ok((result_block, end))
     }
 
@@ -823,7 +739,7 @@ impl CompileItemContext<'_, '_> {
         scope_parent: &Scope,
         stmt: Spanned<&ForStatement>,
         index_ty: Option<Spanned<Type>>,
-        iter: impl Iterator<Item = MaybeCompile<TypedIrExpression>>,
+        iter: ForIterator,
     ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let ForStatement {
@@ -834,10 +750,12 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
 
         // create inner scope with index variable
+        // TODO variable or just constant value?
         let mut scope_index = Scope::new_child(stmt.span, scope_parent);
         let index_var = self.variables.push(VariableInfo {
             id: index_id.clone(),
             mutable: false,
+            // TODO should this contain the type if set?
             ty: None,
         });
         scope_index.maybe_declare(

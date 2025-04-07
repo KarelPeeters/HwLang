@@ -511,16 +511,22 @@ ExprLevelArrayNoStruct = ExprLevelArray;
 
 ExprLevelArray: ExpressionKind = {
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal >>
+    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal>>
         => ExpressionKind::ArrayType(args, target),
     // array index
     <target:BoxSpanned<ExprLevelCallReal >> "[" <args:Spanned<Separated<Expr, ",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
-    "[" <Separated<ArrayLiteralElement, ",">> "]" => ExpressionKind::ArrayLiteral(<>),
+    "[" <Separated<ArrayLiteralElement, ",">> "]"
+        => ExpressionKind::ArrayLiteral(<>),
     // tuple literal
-    "(" <SeparatedAtLeastOneSep<Expr, ",">> ")" => ExpressionKind::TupleLiteral(<>),
+    "(" <SeparatedAtLeastOneSep<Expr, ",">> ")"
+        => ExpressionKind::TupleLiteral(<>),
+
+    // array comprehension
+    "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> "in" <iter:Box<ExprLevelNoIn>> "]"
+        => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, iter }),
 
     ExprLevelCallReal,
 }
