@@ -113,14 +113,8 @@ Item: Item = {
     <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
         => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
 
-    TypeDeclaration<Vis> => Item::Type(<>),
-    ConstDeclaration<Vis> => Item::Const(<>),
-
-    // TODO also allow these in module bodies
-    <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<Parameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
-        => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
-    <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<Parameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
-        => Item::Enum(ItemDefEnum { vis, id, params, variants, span: loc.span(start, end) }),
+    <vis:Vis> <decl:CommonDeclaration>
+        => Item::CommonDeclaration(ItemDeclaration { vis, decl }),
 
     <start:@L>
         <vis:Vis> "module" <id:Id>
@@ -141,11 +135,6 @@ Item: Item = {
         let instance = ModuleInstanceHeader { span, span_keyword, module, generic_args };
         Item::Instance(instance)
     },
-
-    // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
-    // TODO allow specifying "const" before function params to make error messages nicer
-    <start:@L> <vis:Vis> "fn" <id:Id> <params:Parameters<Parameter>> <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?> <body:Block<BlockStatement>> <end:@R>
-        => Item::Function(ItemDefFunction { vis, id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
 ImportFinalKind: ImportFinalKind = {
@@ -181,8 +170,7 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 // TODO add module-level if, for
 ModuleStatementKind: ModuleStatementKind = {
     // declaration
-    TypeDeclaration<()> => ModuleStatementKind::TypeDeclaration(<>),
-    ConstDeclaration<()> => ModuleStatementKind::ConstDeclaration(<>),
+    <CommonDeclaration> => ModuleStatementKind::CommonDeclaration(<>),
 
     <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
@@ -250,8 +238,7 @@ PortConnection: PortConnection = {
 
 BlockStatementKind: BlockStatementKind = {
     // declaration
-    <TypeDeclaration<()>> => BlockStatementKind::TypeDeclaration(<>),
-    <ConstDeclaration<()>> => BlockStatementKind::ConstDeclaration(<>),
+    <CommonDeclaration> => BlockStatementKind::CommonDeclaration(<>),
     <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
     // assignment
     <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
@@ -297,17 +284,34 @@ ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
         => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
 }
 
-TypeDeclaration<V>: TypeDeclaration<V> = {
-    <start:@L> <vis:V> "type" <id:MaybeId> <params:Parameters<Parameter>?> "=" <body:BoxExpr> ";" <end:@R> => {
-        TypeDeclaration { vis, id, params, body, span: loc.span(start, end) }
-    },
-}
+CommonDeclaration: CommonDeclaration = {
+    <start:@L> "type" <id:MaybeId> <params:Parameters<Parameter>?> "=" <body:BoxExpr> ";" <end:@R>
+        => CommonDeclaration::Type(TypeDeclaration { id, params, body, span: loc.span(start, end) }),
 
+    <start:@L> "const" <id:MaybeId> <ty:(":" <BoxExpr>)?> "=" <value:BoxExpr> ";" <end:@R>
+        => CommonDeclaration::Const(ConstDeclaration { id, ty, value, span: loc.span(start, end) }),
 
-ConstDeclaration<V>: ConstDeclaration<V> = {
-    <start:@L> <vis:V> "const" <id:MaybeId> <ty:(":" <BoxExpr>)?> "=" <value:BoxExpr> ";" <end:@R> => {
-        ConstDeclaration { vis, id, ty, value, span: loc.span(start, end) }
-    },
+    <start:@L>
+        "struct" <id:MaybeId> <params:Parameters<Parameter>?>
+        "{" <fields: Separated<StructField, ",">> "}"
+    <end:@R>
+        => CommonDeclaration::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end) }),
+    <start:@L>
+        "enum" <id:MaybeId> <params:Parameters<Parameter>?>
+        "{" <variants: Separated<EnumVariant, ",">> "}"
+    <end:@R>
+        => CommonDeclaration::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
+
+    // TODO add struct, enum
+
+    // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
+    // TODO allow specifying "const" before function params to make error messages nicer
+    <start:@L>
+        "fn" <id:MaybeId> <params:Parameters<Parameter>>
+        <ret_ty:("->" <Spanned<ExprLevelCallNoStruct>>)?>
+        <body:Block<BlockStatement>>
+    <end:@R>
+        => CommonDeclaration::Function(FunctionDeclaration { id, params, ret_ty, body, span: loc.span(start, end) }),
 }
 
 VariableDeclaration: VariableDeclaration = {

@@ -1,5 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, Visibility, WireKind};
+use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, WireKind};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
@@ -100,9 +100,6 @@ macro_rules! impl_ast_ref_alias {
 }
 
 impl_ast_ref_alias!(AstRefModule, ast::Item::Module, ast::ItemDefModule);
-impl_ast_ref_alias!(AstRefDefType, ast::Item::Type, ast::TypeDeclaration<Visibility<Span>>);
-impl_ast_ref_alias!(AstRefDefStruct, ast::Item::Struct, ast::ItemDefStruct);
-impl_ast_ref_alias!(AstRefDefEnum, ast::Item::Enum, ast::ItemDefEnum);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {

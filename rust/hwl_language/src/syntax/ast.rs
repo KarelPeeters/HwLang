@@ -22,14 +22,26 @@ pub enum Item {
     // non-declaring items
     Import(ItemImport),
     Instance(ModuleInstanceHeader),
-
-    // declaring items
-    Type(TypeDeclaration<Visibility<Span>>),
-    Const(ConstDeclaration<Visibility<Span>>),
-    Struct(ItemDefStruct),
-    Enum(ItemDefEnum),
-    Function(ItemDefFunction),
+    // common declarations that are allowed anywhere
+    CommonDeclaration(ItemDeclaration),
+    // declarations that are only allowed top-level
+    // TODO maybe we should also just allow module declarations anywhere?
     Module(ItemDefModule),
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemDeclaration {
+    pub vis: Visibility<Span>,
+    pub decl: CommonDeclaration,
+}
+
+#[derive(Debug, Clone)]
+pub enum CommonDeclaration {
+    Type(TypeDeclaration),
+    Const(ConstDeclaration),
+    Struct(StructDeclaration),
+    Enum(EnumDeclaration),
+    Function(FunctionDeclaration),
 }
 
 // TODO split this out from the items that actually define _new_ symbols?
@@ -53,20 +65,11 @@ pub struct ImportEntry {
     pub as_: Option<MaybeIdentifier>,
 }
 
-// TODO remove
-#[derive(Debug, Clone)]
-pub struct ItemDefPackage {
-    pub span: Span,
-    pub name: MaybeIdentifier,
-    pub content: FileContent,
-}
-
 // TODO allow "if" in a bunch of places? eg. struct fields
 #[derive(Debug, Clone)]
-pub struct ItemDefStruct {
+pub struct StructDeclaration {
     pub span: Span,
-    pub vis: Visibility<Span>,
-    pub id: Identifier,
+    pub id: MaybeIdentifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub fields: Vec<StructField>,
 }
@@ -80,10 +83,9 @@ pub struct StructField {
 
 // TODO proper sum type
 #[derive(Debug, Clone)]
-pub struct ItemDefEnum {
+pub struct EnumDeclaration {
     pub span: Span,
-    pub vis: Visibility<Span>,
-    pub id: Identifier,
+    pub id: MaybeIdentifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub variants: Vec<EnumVariant>,
 }
@@ -96,14 +98,12 @@ pub struct EnumVariant {
 }
 
 #[derive(Debug, Clone)]
-pub struct ItemDefFunction {
+pub struct FunctionDeclaration {
     pub span: Span,
-    pub vis: Visibility<Span>,
-    pub id: Identifier,
+    pub id: MaybeIdentifier,
     /// All function parameters are "generic", which means they can be types.
     /// It doesn't make sense to force a distinction similar to modules.
     pub params: Spanned<Vec<Parameter>>,
-    // TODO should the return type by "generic" too, ie. should functions be allowed to return types?
     pub ret_ty: Option<Expression>,
     pub body: Block<BlockStatement>,
 }
@@ -234,9 +234,7 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
     // declarations
-    TypeDeclaration(TypeDeclaration<()>),
-    ConstDeclaration(ConstDeclaration<()>),
-
+    CommonDeclaration(CommonDeclaration),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
 
@@ -248,16 +246,17 @@ pub enum ModuleStatementKind {
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
     // TODO control flow (if, for), probably not while/break/continue
-    // TODO allow function/type/module(?) definitions in blocks
 }
 
 #[derive(Debug, Clone)]
 pub enum BlockStatementKind {
-    TypeDeclaration(TypeDeclaration<()>),
-    ConstDeclaration(ConstDeclaration<()>),
-
+    // declarations
+    CommonDeclaration(CommonDeclaration),
     VariableDeclaration(VariableDeclaration),
+
+    // basic statements
     Assignment(Assignment),
+    // TODO remove expressions, maybe with exception for function calls?
     Expression(Box<Expression>),
 
     // control flow
@@ -265,11 +264,11 @@ pub enum BlockStatementKind {
     If(IfStatement<Box<Expression>, Block<BlockStatement>, Option<Block<BlockStatement>>>),
     While(WhileStatement),
     For(ForStatement),
+
     // control flow terminators
     Return(ReturnStatement),
     Break(Span),
     Continue(Span),
-    // TODO allow function/type definitions in blocks
 }
 
 #[derive(Debug, Clone)]
@@ -335,18 +334,16 @@ pub struct WireDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeDeclaration<V> {
+pub struct TypeDeclaration {
     pub span: Span,
-    pub vis: V,
     pub id: MaybeIdentifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub body: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ConstDeclaration<V> {
+pub struct ConstDeclaration {
     pub span: Span,
-    pub vis: V,
     pub id: MaybeIdentifier,
     pub ty: Option<Box<Expression>>,
     pub value: Box<Expression>,
@@ -809,56 +806,19 @@ impl Item {
                 },
                 None,
             ),
-            Item::Const(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span(),
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: item.id.as_ref(),
-                }),
-            ),
-            Item::Type(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span(),
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: item.id.as_ref(),
-                }),
-            ),
-            Item::Struct(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span,
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
-                }),
-            ),
-            Item::Enum(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span,
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
-                }),
-            ),
-            Item::Function(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span,
-                },
-                Some(ItemDeclarationInfo {
-                    vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
-                }),
-            ),
+            Item::CommonDeclaration(item) => {
+                let (span, id) = item.decl.info();
+                (
+                    ItemCommonInfo {
+                        span_full: span,
+                        span_short: id.span(),
+                    },
+                    Some(ItemDeclarationInfo {
+                        vis: item.vis,
+                        id: id.as_ref(),
+                    }),
+                )
+            }
             Item::Module(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
@@ -869,6 +829,18 @@ impl Item {
                     id: MaybeIdentifier::Identifier(&item.id),
                 }),
             ),
+        }
+    }
+}
+
+impl CommonDeclaration {
+    pub fn info(&self) -> (Span, &MaybeIdentifier) {
+        match self {
+            CommonDeclaration::Type(decl) => (decl.span, &decl.id),
+            CommonDeclaration::Const(decl) => (decl.span, &decl.id),
+            CommonDeclaration::Struct(decl) => (decl.span, &decl.id),
+            CommonDeclaration::Enum(decl) => (decl.span, &decl.id),
+            CommonDeclaration::Function(decl) => (decl.span, &decl.id),
         }
     }
 }

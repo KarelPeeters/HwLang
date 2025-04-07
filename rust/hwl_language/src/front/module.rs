@@ -462,10 +462,7 @@ impl BodyElaborationContext<'_, '_> {
         for stmt in statements {
             match &stmt.inner {
                 // declarations
-                ModuleStatementKind::TypeDeclaration(decl) => self.ctx.ty_eval_and_declare(scope_body, decl),
-                ModuleStatementKind::ConstDeclaration(decl) => {
-                    self.ctx.const_eval_and_declare(scope_body, decl);
-                }
+                ModuleStatementKind::CommonDeclaration(decl) => self.ctx.eval_and_declare_declaration(scope_body, decl),
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.elaborate_module_declaration_reg(scope_body, decl);
                     let entry = reg.map(|reg_init| {
@@ -530,8 +527,7 @@ impl BodyElaborationContext<'_, '_> {
         for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // declarations, already handled
-                ModuleStatementKind::TypeDeclaration(_) => {}
-                ModuleStatementKind::ConstDeclaration(_) => {}
+                ModuleStatementKind::CommonDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
                 ModuleStatementKind::WireDeclaration(_) => {}
                 ModuleStatementKind::RegOutPortMarker(_) => {}
