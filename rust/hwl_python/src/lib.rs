@@ -306,7 +306,7 @@ impl Function {
             let parsed_ref = compile_ref.parsed.borrow(py);
             let parsed = &parsed_ref.parsed;
             let source = &parsed_ref.source.borrow(py).source;
-            let dummy_span = parsed[self.function_value.item].common_info().span_short;
+            let dummy_span = self.function_value.decl_span;
 
             // convert args
             let f_arg = |v| Spanned::new(dummy_span, MaybeCompile::Compile(v));
