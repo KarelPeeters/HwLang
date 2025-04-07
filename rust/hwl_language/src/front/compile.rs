@@ -253,7 +253,7 @@ pub enum StackEntry {
     ItemUsage(Span),
     ItemEvaluation(AstRefItem),
     FunctionCall(Span),
-    FunctionRun(AstRefItem),
+    FunctionRun(Span),
 }
 
 impl StackEntry {
@@ -265,10 +265,7 @@ impl StackEntry {
                 (entry_span, "item declared here")
             }
             StackEntry::FunctionCall(entry_span) => (entry_span, "function call here"),
-            StackEntry::FunctionRun(entry_item) => {
-                let entry_span = parsed[entry_item].common_info().span_short;
-                (entry_span, "function declared here")
-            }
+            StackEntry::FunctionRun(entry_span) => (entry_span, "function declared here"),
         }
     }
 }

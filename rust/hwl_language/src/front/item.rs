@@ -6,8 +6,9 @@ use crate::front::function::{FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::Scope;
 use crate::front::value::{CompileValue, MaybeCompile};
-use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, ItemDefType};
+use crate::syntax::ast::{Args, ConstDeclaration, Item, ItemDefFunction, TypeDeclaration};
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
+use crate::syntax::source::FileId;
 
 impl CompileItemContext<'_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
@@ -24,40 +25,15 @@ impl CompileItemContext<'_, '_> {
                 self.elaborate_module_header(file_scope, instance)?;
                 Ok(CompileValue::UNIT)
             }
-            Item::Const(item_inner) => self.const_eval(file_scope.into(), item_inner),
-            Item::Type(item_inner) => {
-                let ItemDefType {
-                    span: _,
-                    vis: _,
-                    id: _,
-                    params,
-                    inner,
-                } = item_inner;
-                match params {
-                    None => {
-                        let vars = VariableValues::new_no_vars();
-                        let ty = self.eval_expression_as_ty(file_scope.into(), &vars, inner)?;
-                        Ok(CompileValue::Type(ty.inner))
-                    }
-                    Some(params) => {
-                        let func = FunctionValue {
-                            scope_captured: item.file(),
-                            item,
-                            params: params.clone(),
-                            body_span: inner.span,
-                            body: FunctionBody::TypeAliasExpr(inner.clone()),
-                        };
-                        Ok(CompileValue::Function(func))
-                    }
-                }
-            }
+            Item::Const(item_inner) => self.const_eval(file_scope, item_inner),
+            Item::Type(item_inner) => self.ty_eval(Some(item.file()), file_scope, item_inner),
             Item::Struct(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Struct")),
             Item::Enum(item_inner) => Err(diags.report_todo(item_inner.span, "visit item kind Enum")),
             Item::Function(item_inner) => {
                 let ItemDefFunction {
                     span: _,
                     vis: _,
-                    id: _,
+                    id,
                     params,
                     ret_ty,
                     body,
@@ -65,8 +41,8 @@ impl CompileItemContext<'_, '_> {
 
                 // TODO top-level item functions are also trivial items, we didn't really need to construct any of this yet
                 let function = FunctionValue {
+                    decl_span: id.span,
                     scope_captured: item.file(),
-                    item,
                     params: params.clone(),
                     body_span: body.span,
                     body: FunctionBody::FunctionBodyBlock {
@@ -99,6 +75,53 @@ impl CompileItemContext<'_, '_> {
                 Ok(CompileValue::Module(ast_ref))
             }
         }
+    }
+
+    // TODO create combined infrastructure for all these declarations that are allowed
+    //   at all levels (file, module, function, block, ...)
+    pub fn ty_eval<V>(
+        &mut self,
+        file_scope: Option<FileId>,
+        scope: &Scope,
+        decl: &TypeDeclaration<V>,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let TypeDeclaration {
+            span: _,
+            vis: _,
+            id,
+            params,
+            body,
+        } = decl;
+
+        match params {
+            None => {
+                let vars = VariableValues::new_no_vars();
+                let ty = self.eval_expression_as_ty(scope, &vars, body)?;
+                Ok(CompileValue::Type(ty.inner))
+            }
+            Some(params) => match file_scope {
+                None => Err(diags.report_todo(id.span(), "parametrized type that captures non-file scope")),
+                Some(file_scope) => {
+                    let func = FunctionValue {
+                        decl_span: id.span(),
+                        scope_captured: file_scope,
+                        params: params.clone(),
+                        body_span: body.span,
+                        body: FunctionBody::TypeAliasExpr(body.clone()),
+                    };
+                    Ok(CompileValue::Function(func))
+                }
+            },
+        }
+    }
+
+    pub fn ty_eval_and_declare<V>(&mut self, scope: &mut Scope, decl: &TypeDeclaration<V>) {
+        let diags = self.refs.diags;
+        let entry = self
+            .ty_eval(None, scope, decl)
+            .map(|v| ScopedEntry::Value(MaybeCompile::Compile(v)));
+        scope.maybe_declare(diags, decl.id.as_ref(), entry);
     }
 
     pub fn const_eval<V>(

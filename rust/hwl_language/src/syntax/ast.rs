@@ -24,8 +24,8 @@ pub enum Item {
     Instance(ModuleInstanceHeader),
 
     // declaring items
+    Type(TypeDeclaration<Visibility<Span>>),
     Const(ConstDeclaration<Visibility<Span>>),
-    Type(ItemDefType),
     Struct(ItemDefStruct),
     Enum(ItemDefEnum),
     Function(ItemDefFunction),
@@ -59,15 +59,6 @@ pub struct ItemDefPackage {
     pub span: Span,
     pub name: MaybeIdentifier,
     pub content: FileContent,
-}
-
-#[derive(Debug, Clone)]
-pub struct ItemDefType {
-    pub span: Span,
-    pub vis: Visibility<Span>,
-    pub id: Identifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
-    pub inner: Box<Expression>,
 }
 
 // TODO allow "if" in a bunch of places? eg. struct fields
@@ -243,7 +234,9 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
     // declarations
+    TypeDeclaration(TypeDeclaration<()>),
     ConstDeclaration(ConstDeclaration<()>),
+
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
 
@@ -260,7 +253,9 @@ pub enum ModuleStatementKind {
 
 #[derive(Debug, Clone)]
 pub enum BlockStatementKind {
+    TypeDeclaration(TypeDeclaration<()>),
     ConstDeclaration(ConstDeclaration<()>),
+
     VariableDeclaration(VariableDeclaration),
     Assignment(Assignment),
     Expression(Box<Expression>),
@@ -337,6 +332,15 @@ pub struct WireDeclaration {
     // TODO make optional and infer
     pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
     pub value: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeDeclaration<V> {
+    pub span: Span,
+    pub vis: V,
+    pub id: MaybeIdentifier,
+    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub body: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -818,11 +822,11 @@ impl Item {
             Item::Type(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
-                    span_short: item.id.span,
+                    span_short: item.id.span(),
                 },
                 Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
+                    id: item.id.as_ref(),
                 }),
             ),
             Item::Struct(item) => (

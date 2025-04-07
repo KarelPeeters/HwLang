@@ -462,6 +462,7 @@ impl BodyElaborationContext<'_, '_> {
         for stmt in statements {
             match &stmt.inner {
                 // declarations
+                ModuleStatementKind::TypeDeclaration(decl) => self.ctx.ty_eval_and_declare(scope_body, decl),
                 ModuleStatementKind::ConstDeclaration(decl) => {
                     self.ctx.const_eval_and_declare(scope_body, decl);
                 }
@@ -529,6 +530,7 @@ impl BodyElaborationContext<'_, '_> {
         for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // declarations, already handled
+                ModuleStatementKind::TypeDeclaration(_) => {}
                 ModuleStatementKind::ConstDeclaration(_) => {}
                 ModuleStatementKind::RegDeclaration(_) => {}
                 ModuleStatementKind::WireDeclaration(_) => {}

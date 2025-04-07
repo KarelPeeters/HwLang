@@ -11,7 +11,6 @@ use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
 };
-use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
@@ -23,7 +22,7 @@ use std::hash::Hash;
 pub struct FunctionValue {
     // TODO only this value is used for eq/hash, is that okay?
     //   this will certainly need to be expanded once lambdas are supported
-    pub item: AstRefItem,
+    pub decl_span: Span,
 
     // TODO allow capturing here, implying non-file scopes
     //   for capturing: take a copy of all parent scopes,
@@ -38,17 +37,9 @@ pub struct FunctionValue {
     pub body: FunctionBody,
 }
 
-impl Eq for FunctionValue {}
-
-impl PartialEq for FunctionValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.item == other.item
-    }
-}
-
-impl Hash for FunctionValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.item.hash(state);
+impl FunctionValue {
+    pub fn equality_key(&self) -> impl Eq + Hash {
+        (self.decl_span, self.scope_captured)
     }
 }
 
@@ -227,7 +218,7 @@ impl CompileItemContext<'_, '_> {
         let scope = &scope;
 
         // run the body
-        let entry = StackEntry::FunctionRun(function.item);
+        let entry = StackEntry::FunctionRun(function.decl_span);
         self.recurse(entry, |s| {
             match &function.body {
                 FunctionBody::TypeAliasExpr(expr) => {
@@ -328,5 +319,19 @@ fn check_function_return_value(
                 }
             }
         }
+    }
+}
+
+impl Eq for FunctionValue {}
+
+impl PartialEq for FunctionValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.equality_key() == other.equality_key()
+    }
+}
+
+impl Hash for FunctionValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.equality_key().hash(state);
     }
 }

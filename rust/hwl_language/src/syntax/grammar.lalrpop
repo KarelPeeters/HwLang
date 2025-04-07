@@ -112,10 +112,11 @@ pub FileContent: FileContent = {
 Item: Item = {
     <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
         => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
-    ConstDeclaration<Vis> =>
-        Item::Const(<>),
-    <start:@L> <vis:Vis> "type" <id:Id> <params:Parameters<Parameter>?> "=" <inner:BoxExpr> ";" <end:@R>
-        => Item::Type(ItemDefType { vis, id, inner, params, span: loc.span(start, end) }),
+
+    TypeDeclaration<Vis> => Item::Type(<>),
+    ConstDeclaration<Vis> => Item::Const(<>),
+
+    // TODO also allow these in module bodies
     <start:@L> <vis:Vis> "struct" <id:Id> <params:Parameters<Parameter>?> "{" <fields: Separated<StructField, ",">> "}" <end:@R>
         => Item::Struct(ItemDefStruct { vis, id, params, fields, span: loc.span(start, end) }),
     <start:@L> <vis:Vis> "enum" <id:Id> <params:Parameters<Parameter>?> "{" <variants: Separated<EnumVariant, ",">> "}" <end:@R>
@@ -130,7 +131,7 @@ Item: Item = {
         let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
         Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) })
     },
-    
+
     <start:@L>
         "instance" <instance_end:@R> <module:BoxExpr>
         <generic_args:("generics" "(" <Args> ")")?> ";"
@@ -180,8 +181,9 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 // TODO add module-level if, for
 ModuleStatementKind: ModuleStatementKind = {
     // declaration
-    ConstDeclaration<()> =>
-        ModuleStatementKind::ConstDeclaration(<>),
+    TypeDeclaration<()> => ModuleStatementKind::TypeDeclaration(<>),
+    ConstDeclaration<()> => ModuleStatementKind::ConstDeclaration(<>),
+
     <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
@@ -248,10 +250,9 @@ PortConnection: PortConnection = {
 
 BlockStatementKind: BlockStatementKind = {
     // declaration
-    <ConstDeclaration<()>> =>
-        BlockStatementKind::ConstDeclaration(<>),
-    <VariableDeclaration> =>
-        BlockStatementKind::VariableDeclaration(<>),
+    <TypeDeclaration<()>> => BlockStatementKind::TypeDeclaration(<>),
+    <ConstDeclaration<()>> => BlockStatementKind::ConstDeclaration(<>),
+    <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
     // assignment
     <start:@L> <target:BoxExpr> <op:AssignOp> <value:BoxExpr> ";" <end:@R> => {
         let assignment = Assignment { op, target, value, span: loc.span(start, end) };
@@ -295,6 +296,13 @@ ElseIfPair: IfCondBlockPair<Box<Expression>, Block<BlockStatement>> = {
     <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R>
         => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
 }
+
+TypeDeclaration<V>: TypeDeclaration<V> = {
+    <start:@L> <vis:V> "type" <id:MaybeId> <params:Parameters<Parameter>?> "=" <body:BoxExpr> ";" <end:@R> => {
+        TypeDeclaration { vis, id, params, body, span: loc.span(start, end) }
+    },
+}
+
 
 ConstDeclaration<V>: ConstDeclaration<V> = {
     <start:@L> <vis:V> "const" <id:MaybeId> <ty:(":" <BoxExpr>)?> "=" <value:BoxExpr> ";" <end:@R> => {
