@@ -576,7 +576,7 @@ fn find_top_module(
             ast::Item::Module(module) => match &module.params {
                 None => Ok(AstRefModule::new_unchecked(item)),
                 Some(_) => {
-                    Err(diags.report_simple("`top` cannot have generic parameters", module.id.span, "defined here"))
+                    Err(diags.report_simple("`top` cannot have generic parameters", module.id.span(), "defined here"))
                 }
             },
             _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),

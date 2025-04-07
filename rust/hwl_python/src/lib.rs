@@ -360,7 +360,7 @@ impl Module {
         let parsed_ref = compile_ref.parsed.borrow(py);
         let parsed = &parsed_ref.parsed;
         let source = &parsed_ref.source.borrow(py).source;
-        let dummy_span = parsed[self.module].id.span;
+        let dummy_span = parsed[self.module].id.span();
 
         // evaluate args
         let f_arg = |v| Spanned::new(dummy_span, v);

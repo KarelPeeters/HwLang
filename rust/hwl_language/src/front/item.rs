@@ -42,7 +42,7 @@ impl CompileItemContext<'_, '_> {
                     Some(params) => {
                         if params.inner.is_empty() {
                             let args = Args {
-                                span: module.id.span,
+                                span: module.id.span(),
                                 inner: vec![],
                             };
                             let _ = self.refs.elaborate_module(ast_ref, Some(args));

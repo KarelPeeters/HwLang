@@ -117,7 +117,7 @@ Item: Item = {
         => Item::CommonDeclaration(ItemDeclaration { vis, decl }),
 
     <start:@L>
-        <vis:Vis> "module" <id:Id>
+        <vis:Vis> "module" <id:MaybeId>
         <params:("generics" <Parameters<Parameter>>)?>
         <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>

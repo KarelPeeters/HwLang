@@ -112,7 +112,7 @@ pub struct FunctionDeclaration {
 pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility<Span>,
-    pub id: Identifier,
+    pub id: MaybeIdentifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
     pub ports: Spanned<Vec<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
@@ -832,11 +832,11 @@ impl Item {
             Item::Module(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
-                    span_short: item.id.span,
+                    span_short: item.id.span(),
                 },
                 Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
+                    id: item.id.as_ref(),
                 }),
             ),
         }

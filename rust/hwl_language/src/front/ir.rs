@@ -70,7 +70,7 @@ pub struct IrModuleInfo {
 
     pub children: Vec<IrModuleChild>,
 
-    pub debug_info_id: Identifier,
+    pub debug_info_id: MaybeIdentifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
 }
 

@@ -122,6 +122,7 @@ impl LoweredNameScope {
         self.make_unique_str(diags, id.span(), id.string())
     }
 
+    #[allow(dead_code)]
     pub fn make_unique_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
         self.make_unique_str(diags, id.span, &id.string)
     }
@@ -209,15 +210,15 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
         wires,
         children: processes,
     } = module_info;
-    let module_name = ctx.top_name_scope.make_unique_id(diags, debug_info_id)?;
+    let module_name = ctx.top_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
     let mut f = String::new();
 
-    swriteln!(f, "// module {}", debug_info_id.string);
+    swriteln!(f, "// module {}", debug_info_id.string());
     swriteln!(
         f,
         "//   defined in \"{}\"",
-        ctx.source[debug_info_id.span.start.file].path_raw
+        ctx.source[debug_info_id.span().start.file].path_raw
     );
 
     if let Some(generic_args) = debug_info_generic_args {

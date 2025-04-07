@@ -318,7 +318,7 @@ impl CompileRefs<'_, '_> {
 
     fn elaborate_module_body_impl(
         &self,
-        def_id: &Identifier,
+        def_id: &MaybeIdentifier,
         params: Option<Vec<(Identifier, CompileValue)>>,
         ports: Arena<Port, PortInfo<Port>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
