@@ -202,10 +202,13 @@ pub fn check_type_contains_compile_value(
     } else {
         let mut diag = Diagnostic::new("value does not fit in type");
         diag = reason.add_diag_info(diag, target_ty);
+        // TODO abbreviate source value if it gets too long
+        let value_str = value.inner.to_diagnostic_string();
+        let value_ty_str = value.inner.ty().to_diagnostic_string();
         let diag = diag
             .add_error(
                 value.span,
-                format!("source value `{}` does not fit", value.inner.to_diagnostic_string()),
+                format!("source value `{value_str}` with type `{value_ty_str}` does not fit"),
             )
             .finish();
         Err(diags.report(diag))
