@@ -92,10 +92,7 @@ pub module convcode_decoder generics (
         if (input_valid) {
             // calculate output
             var out_probs_max: t_half_probs = half_probs;
-            var outputs_max: [num_states/2]bool = [false] * (num_states/2);
-            for (i in 0..num_states/2) {
-                outputs_max[i] = half_paths[i, 0];
-            }
+            var outputs_max: [num_states/2]bool = [half_paths[i, 0] for i in 0..num_states/2];
             for (j_rev in 0..(length - 1)) {
                 val j = length - 2 - j_rev;
                 for (i in 0..2**j) {
@@ -123,22 +120,15 @@ pub module convcode_decoder generics (
             var probs_new: t_probs = [*half_probs, *half_probs];
             var paths_new: t_paths = [*half_paths, *half_paths];
             for (i in 0..num_states) {
+                // TODO the modulo here is awkward
                 probs_new[i] = (probs_new[i] + book_probs[uint_from_bits(2, codebook[i])]) % 2**prob_bits;
             }
 
             // update probabilities and paths
-            // TODO array comprehensions
-            var half_probs_0: t_half_probs = [0] * (num_states/2);
-            var half_probs_1: t_half_probs = [0] * (num_states/2);
-            var half_paths_0: t_half_paths = half_paths_reset;
-            var half_paths_1: t_half_paths = half_paths_reset;
-            for (i in 0..num_states/2) {
-                half_probs_0[i] = probs_new[2*i + 0];
-                half_probs_1[i] = probs_new[2*i + 1];
-
-                half_paths_0[i] = [*paths_new[2*i+0, 1..], false];
-                half_paths_1[i] = [*paths_new[2*i+1, 1..], true];
-            }
+            val half_probs_0: t_half_probs = [probs_new[2*i+0] for i in 0..num_states/2];
+            val half_probs_1: t_half_probs = [probs_new[2*i+1] for i in 0..num_states/2];
+            val half_paths_0: t_half_paths = [[*paths_new[2*i+0, 1..], false] for i in 0..num_states/2];
+            val half_paths_1: t_half_paths = [[*paths_new[2*i+1, 1..], true] for i in 0..num_states/2];
 
             // select best probabilities and paths
             for (i in 0..num_states/2) {
