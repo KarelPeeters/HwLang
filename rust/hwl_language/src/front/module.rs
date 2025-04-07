@@ -260,7 +260,7 @@ impl CompileRefs<'_, '_> {
                             }),
                         ),
                         WireKind::Normal { domain, ty } => {
-                            let no_vars = VariableValues::new_no_vars();
+                            let no_vars = VariableValues::NO_VARS;
                             (
                                 ctx.eval_port_domain(scope_header, domain)
                                     .map(|d| d.map_inner(PortDomain::Kind)),
@@ -294,7 +294,7 @@ impl CompileRefs<'_, '_> {
                         } = port;
 
                         // eval ty
-                        let no_vars = VariableValues::new_no_vars();
+                        let no_vars = VariableValues::NO_VARS;
                         let ty = ctx.eval_expression_as_ty_hardware(&scope_header, &no_vars, ty, "port");
 
                         // build entry
@@ -424,7 +424,7 @@ impl<'s> CompileItemContext<'_, 's> {
         } = header;
 
         // eval module and generics
-        let no_vars = VariableValues::new_no_vars();
+        let no_vars = VariableValues::NO_VARS;
         let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
             self.eval_expression_as_compile(&scope, &no_vars, module, "module instance");
         let generic_args = generic_args
@@ -462,7 +462,9 @@ impl BodyElaborationContext<'_, '_> {
         for stmt in statements {
             match &stmt.inner {
                 // declarations
-                ModuleStatementKind::CommonDeclaration(decl) => self.ctx.eval_and_declare_declaration(scope_body, decl),
+                ModuleStatementKind::CommonDeclaration(decl) => {
+                    self.ctx.eval_and_declare_declaration(scope_body, None, decl)
+                }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.elaborate_module_declaration_reg(scope_body, decl);
                     let entry = reg.map(|reg_init| {
@@ -807,7 +809,7 @@ impl BodyElaborationContext<'_, '_> {
                 let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
                 let mut ctx_block = ctx.new_ir_block();
 
-                let no_vars = VariableValues::new_no_vars();
+                let no_vars = VariableValues::NO_VARS;
                 let connection_value = self.ctx.eval_expression(
                     &mut ctx,
                     &mut ctx_block,
@@ -1171,7 +1173,7 @@ impl BodyElaborationContext<'_, '_> {
         } = decl;
 
         // evaluate
-        let no_vars = VariableValues::new_no_vars();
+        let no_vars = VariableValues::NO_VARS;
         let (domain, ty) = match &domain_ty.inner {
             WireKind::Clock => (
                 Ok(Spanned {
@@ -1294,7 +1296,7 @@ impl BodyElaborationContext<'_, '_> {
         } = decl;
 
         // evaluate
-        let no_vars = VariableValues::new_no_vars();
+        let no_vars = VariableValues::NO_VARS;
         let sync = sync
             .as_ref()
             .map_inner(|sync| ctx.eval_domain_sync(&scope_body, sync))
@@ -1353,7 +1355,7 @@ impl BodyElaborationContext<'_, '_> {
         });
 
         // evaluate init
-        let no_vars = VariableValues::new_no_vars();
+        let no_vars = VariableValues::NO_VARS;
         let init = ctx.eval_expression_as_compile(&scope_body, &no_vars, init, "register reset value");
 
         let port = port?;

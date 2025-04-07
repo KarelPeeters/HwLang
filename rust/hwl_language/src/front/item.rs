@@ -2,15 +2,14 @@ use crate::front::assignment::VariableValues;
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::ErrorGuaranteed;
-use crate::front::function::{FunctionBody, FunctionValue};
+use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::Scope;
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{
-    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, TypeDeclaration,
+    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
-use crate::syntax::source::FileId;
 
 impl CompileItemContext<'_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
@@ -29,7 +28,7 @@ impl CompileItemContext<'_, '_> {
             }
             Item::CommonDeclaration(decl) => {
                 let ItemDeclaration { vis: _, decl } = decl;
-                self.eval_declaration(Some(item.file()), file_scope, &decl)
+                self.eval_declaration(file_scope, None, &decl)
             }
             Item::Module(module) => {
                 let ast_ref = AstRefModule::new_unchecked(item);
@@ -58,8 +57,8 @@ impl CompileItemContext<'_, '_> {
 
     pub fn eval_declaration(
         &mut self,
-        file_scope: Option<FileId>,
         scope: &Scope,
+        vars: Option<&VariableValues>,
         decl: &CommonDeclaration,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -75,28 +74,27 @@ impl CompileItemContext<'_, '_> {
 
                 match params {
                     None => {
-                        let vars = VariableValues::new_no_vars();
+                        let vars = VariableValues::NO_VARS;
                         let ty = self.eval_expression_as_ty(scope, &vars, body)?;
                         Ok(CompileValue::Type(ty.inner))
                     }
-                    Some(params) => match file_scope {
-                        None => Err(diags.report_todo(id.span(), "parametrized type capturing non-file scope")),
-                        Some(file_scope) => {
-                            let func = FunctionValue {
-                                decl_span: id.span(),
-                                scope_captured: file_scope,
-                                params: params.clone(),
-                                body_span: body.span,
-                                body: FunctionBody::TypeAliasExpr(body.clone()),
-                            };
-                            Ok(CompileValue::Function(func))
-                        }
-                    },
+                    Some(params) => {
+                        let func = FunctionValue {
+                            decl_span: id.span(),
+                            scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
+                            params: params.clone(),
+                            body: Spanned {
+                                span: body.span,
+                                inner: FunctionBody::TypeAliasExpr(body.clone()),
+                            },
+                        };
+                        Ok(CompileValue::Function(func))
+                    }
                 }
             }
             CommonDeclaration::Const(decl) => {
                 let ConstDeclaration { span: _, id, ty, value } = decl;
-                let vars = VariableValues::new_no_vars();
+                let vars = VariableValues::NO_VARS;
 
                 let ty = ty
                     .as_ref()
@@ -129,30 +127,33 @@ impl CompileItemContext<'_, '_> {
                     body,
                 } = decl;
 
-                match file_scope {
-                    None => Err(diags.report_todo(id.span(), "function capturing non-file scope")),
-                    Some(file_scope) => {
-                        let function = FunctionValue {
-                            decl_span: id.span(),
-                            scope_captured: file_scope,
-                            params: params.clone(),
-                            body_span: body.span,
-                            body: FunctionBody::FunctionBodyBlock {
-                                body: body.clone(),
-                                ret_ty: ret_ty.as_ref().map(|ret_ty| Box::new(ret_ty.clone())),
-                            },
-                        };
-                        Ok(CompileValue::Function(function))
-                    }
-                }
+                let body_inner = FunctionBody::FunctionBodyBlock {
+                    body: body.clone(),
+                    ret_ty: ret_ty.as_ref().map(|ret_ty| Box::new(ret_ty.clone())),
+                };
+                let function = FunctionValue {
+                    decl_span: id.span(),
+                    scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
+                    params: params.clone(),
+                    body: Spanned {
+                        span: body.span,
+                        inner: body_inner,
+                    },
+                };
+                Ok(CompileValue::Function(function))
             }
         }
     }
 
-    pub fn eval_and_declare_declaration(&mut self, scope: &mut Scope, decl: &CommonDeclaration) {
+    pub fn eval_and_declare_declaration(
+        &mut self,
+        scope: &mut Scope,
+        vars: Option<&VariableValues>,
+        decl: &CommonDeclaration,
+    ) {
         let diags = self.refs.diags;
         let entry = self
-            .eval_declaration(None, scope, decl)
+            .eval_declaration(scope, vars, decl)
             .map(|v| ScopedEntry::Value(MaybeCompile::Compile(v)));
         let (_, id) = decl.info();
         scope.maybe_declare(diags, id.as_ref(), entry);

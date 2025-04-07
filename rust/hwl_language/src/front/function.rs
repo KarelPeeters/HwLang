@@ -1,45 +1,41 @@
-use crate::front::assignment::VariableValues;
+use crate::front::assignment::{MaybeAssignedValue, VariableValues};
 use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, StackEntry};
+use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ScopedEntry;
-use crate::front::scope::Scope;
+use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::types::Type;
-use crate::front::value::{CompileValue, MaybeCompile};
+use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
 };
+use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
-use indexmap::map::Entry;
+use crate::util::ResultExt;
+use indexmap::map::Entry as IndexMapEntry;
 use indexmap::IndexMap;
+use std::collections::hash_map::Entry as HashMapEntry;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 #[derive(Debug, Clone)]
 pub struct FunctionValue {
-    // TODO only this value is used for eq/hash, is that okay?
-    //   this will certainly need to be expanded once lambdas are supported
+    // only used for uniqueness
     pub decl_span: Span,
+    pub scope_captured: CapturedScope,
 
-    // TODO allow capturing here, implying non-file scopes
-    //   for capturing: take a copy of all parent scopes,
-    //   only copying compile-time values and putting error traps in place of signals
-    pub scope_captured: FileId,
-
-    // TODO avoid ast cloning
-    // TODO Eq+Hash are a bit weird for types containing ast nodes
     pub params: Spanned<Vec<AstParameter>>,
-
-    pub body_span: Span,
-    pub body: FunctionBody,
+    pub body: Spanned<FunctionBody>,
 }
 
 impl FunctionValue {
-    pub fn equality_key(&self) -> impl Eq + Hash {
-        (self.decl_span, self.scope_captured)
+    pub fn equality_key(&self) -> impl Eq + Hash + '_ {
+        // TODO get this to implement hash
+        (self.decl_span, &self.scope_captured)
     }
 }
 
@@ -47,14 +43,37 @@ impl FunctionValue {
 pub enum FunctionBody {
     TypeAliasExpr(Box<Expression>),
     FunctionBodyBlock {
+        // TODO avoid ast clones?
         body: Block<BlockStatement>,
         ret_ty: Option<Box<Expression>>,
-    }, // Enum(/*TODO*/),
-       // Struct(/*TODO*/),
+    },
+    // TODO Enum, Struct
+    // TODO should generic modules are be implemented here?
+}
+
+// TODO avoid repeated hashing of this potentially large type
+/// The parent scope is kept separate to avoid a hard dependency on all items that are in scope,
+///   now capturing functions still allow graph-based item evaluation.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct CapturedScope {
+    parent_file: FileId,
+    child_values: BTreeMap<String, Result<Spanned<CapturedValue>, ErrorGuaranteed>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum CapturedValue {
+    Item(AstRefItem),
+    Value(CompileValue),
+    FailedCapture(FailedCaptureReason),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum FailedCaptureReason {
+    NotCompile,
+    NotFullyInitialized,
 }
 
 impl CompileItemContext<'_, '_> {
-    // TODO remove return type, callers can just look at the scope if they want a hashkey or debug info
     pub fn match_args_to_params_and_typecheck<I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
         &mut self,
         scope: &mut Scope,
@@ -73,14 +92,14 @@ impl CompileItemContext<'_, '_> {
         let mut e = Ok(());
         for param in &params.inner {
             match param_ids.entry(&param.id.string) {
-                Entry::Occupied(entry) => {
+                IndexMapEntry::Occupied(entry) => {
                     let diag = Diagnostic::new("parameter declared twice")
                         .add_info(entry.get().span, "first declared here")
                         .add_error(param.span, "redeclared here".to_string())
                         .finish();
                     e = Err(diags.report(diag));
                 }
-                Entry::Vacant(entry) => {
+                IndexMapEntry::Vacant(entry) => {
                     entry.insert(&param.id);
                 }
             }
@@ -170,7 +189,7 @@ impl CompileItemContext<'_, '_> {
         }
 
         let mut param_values_vec = vec![];
-        let no_vars = VariableValues::new_no_vars();
+        let no_vars = VariableValues::NO_VARS;
 
         for param_info in &params.inner {
             let param_id = &param_info.id;
@@ -193,8 +212,11 @@ impl CompileItemContext<'_, '_> {
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
             // declare param in scope
-            let entry = ScopedEntry::Value(arg_value_maybe.inner);
-            scope.declare_already_checked(diags, param_id.string.clone(), param_id.span, Ok(entry))?;
+            let entry = DeclaredValueSingle::Value {
+                span: param_id.span,
+                value: ScopedEntry::Value(arg_value_maybe.inner),
+            };
+            scope.declare_already_checked(param_id.string.clone(), entry);
         }
 
         Ok(param_values_vec)
@@ -210,21 +232,21 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
         let diags = self.refs.diags;
 
+        // recreate captured scope
+        let span_scope = function.params.span.join(function.body.span);
+        let scope_captured = function.scope_captured.to_scope(self.refs, span_scope)?;
+
         // map params into scope
-        let span_scope = function.params.span.join(function.body_span);
-        let scope_captured = self.refs.shared.file_scope(function.scope_captured)?;
-        let mut scope = Scope::new_child(span_scope, scope_captured);
+        let mut scope = Scope::new_child(span_scope, &scope_captured);
         self.match_args_to_params_and_typecheck(&mut scope, &function.params, &args)?;
         let scope = &scope;
 
         // run the body
         let entry = StackEntry::FunctionRun(function.decl_span);
         self.recurse(entry, |s| {
-            match &function.body {
+            match &function.body.inner {
                 FunctionBody::TypeAliasExpr(expr) => {
-                    let result = s
-                        .eval_expression_as_ty(scope, &VariableValues::new_no_vars(), expr)?
-                        .inner;
+                    let result = s.eval_expression_as_ty(scope, &VariableValues::NO_VARS, expr)?.inner;
                     let result = MaybeCompile::Compile(CompileValue::Type(result));
 
                     let empty_block = ctx.new_ir_block();
@@ -234,7 +256,7 @@ impl CompileItemContext<'_, '_> {
                     // evaluate return type
                     let ret_ty = ret_ty
                         .as_ref()
-                        .map(|ret_ty| s.eval_expression_as_ty(scope, &VariableValues::new_no_vars(), ret_ty))
+                        .map(|ret_ty| s.eval_expression_as_ty(scope, &VariableValues::NO_VARS, ret_ty))
                         .transpose();
 
                     // evaluate block
@@ -319,6 +341,128 @@ fn check_function_return_value(
                 }
             }
         }
+    }
+}
+
+impl CapturedScope {
+    pub fn from_scope(
+        diags: &Diagnostics,
+        scope: &Scope,
+        vars: Option<&VariableValues>,
+    ) -> Result<CapturedScope, ErrorGuaranteed> {
+        // TODO should we build this incrementally, or build a normal hashmap once and then sort it at the end?
+        let mut child_values = HashMap::new();
+
+        let mut curr = scope;
+        let parent_file = loop {
+            match curr.parent() {
+                ScopeParent::Some(parent) => {
+                    // this is a non-root scope, capture it
+                    for (id, value) in curr.immediate_entries() {
+                        let child_values_entry = match child_values.entry(id.to_owned()) {
+                            HashMapEntry::Occupied(_) => {
+                                // shadowed by child scope
+                                continue;
+                            }
+                            HashMapEntry::Vacant(child_values_entry) => child_values_entry,
+                        };
+
+                        let captured = match value {
+                            DeclaredValueSingle::Value { span, value } => {
+                                let captured = match value {
+                                    &ScopedEntry::Item(value) => Ok(CapturedValue::Item(value)),
+                                    ScopedEntry::Named(named) => match named {
+                                        &NamedValue::Variable(var) => {
+                                            let vars = vars.unwrap_or(&VariableValues::NO_VARS);
+
+                                            // TODO these spans are probably wrong
+                                            match vars.get_maybe(diags, span, var)? {
+                                                MaybeAssignedValue::Assigned(assigned) => match &assigned.value {
+                                                    MaybeCompile::Compile(value) => {
+                                                        Ok(CapturedValue::Value(value.clone()))
+                                                    }
+                                                    MaybeCompile::Other(_) => Ok(CapturedValue::FailedCapture(
+                                                        FailedCaptureReason::NotCompile,
+                                                    )),
+                                                },
+                                                MaybeAssignedValue::NotYetAssigned
+                                                | MaybeAssignedValue::PartiallyAssigned
+                                                | MaybeAssignedValue::FailedIfMerge(_) => {
+                                                    Ok(CapturedValue::FailedCapture(
+                                                        FailedCaptureReason::NotFullyInitialized,
+                                                    ))
+                                                }
+                                            }
+                                        }
+                                        NamedValue::Port(_) | NamedValue::Wire(_) | NamedValue::Register(_) => {
+                                            Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
+                                        }
+                                    },
+                                    ScopedEntry::Value(MaybeCompile::Compile(value)) => {
+                                        Ok(CapturedValue::Value(value.clone()))
+                                    }
+                                    ScopedEntry::Value(MaybeCompile::Other(_)) => {
+                                        Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
+                                    }
+                                };
+                                captured.map(|c| Spanned::new(span, c))
+                            }
+                            DeclaredValueSingle::FailedCapture(span, reason) => {
+                                Ok(Spanned::new(span, CapturedValue::FailedCapture(reason)))
+                            }
+                            DeclaredValueSingle::Error(e) => Err(e),
+                        };
+
+                        child_values_entry.insert(captured);
+                    }
+
+                    curr = parent;
+                }
+                ScopeParent::None(file) => {
+                    // this is the top file scope, no need to capture this
+                    break file;
+                }
+            }
+        };
+
+        Ok(CapturedScope {
+            parent_file,
+            child_values: child_values.into_iter().collect(),
+        })
+    }
+
+    pub fn to_scope<'s>(&self, refs: CompileRefs<'_, 's>, scope_span: Span) -> Result<Scope<'s>, ErrorGuaranteed> {
+        let CapturedScope {
+            parent_file,
+            child_values,
+        } = self;
+
+        let parent_file = refs.shared.file_scopes.get(parent_file).unwrap().as_ref_ok()?;
+        let mut scope = Scope::new_child(scope_span, parent_file);
+
+        // TODO we need a span, even for errors
+        for (id, value) in child_values {
+            let declared = match value {
+                Ok(value) => {
+                    let span = value.span;
+                    match &value.inner {
+                        &CapturedValue::Item(item) => DeclaredValueSingle::Value {
+                            span,
+                            value: ScopedEntry::Item(item),
+                        },
+                        CapturedValue::Value(value) => DeclaredValueSingle::Value {
+                            span,
+                            value: ScopedEntry::Value(MaybeCompile::Compile(value.clone())),
+                        },
+                        &CapturedValue::FailedCapture(reason) => DeclaredValueSingle::FailedCapture(span, reason),
+                    }
+                }
+                &Err(e) => DeclaredValueSingle::Error(e),
+            };
+            scope.declare_already_checked(id.clone(), declared);
+        }
+
+        Ok(scope)
     }
 }
 

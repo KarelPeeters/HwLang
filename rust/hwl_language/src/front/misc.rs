@@ -12,7 +12,8 @@ pub enum ScopedEntry {
     /// Indirection though an item, the item should be evaluated.
     Item(AstRefItem),
     /// A named value: port, register, wire, variable.
-    /// These are not fully evaluated immediately, they might be used symbolically as assignment targets or in domain expressions.
+    /// These are not fully evaluated immediately, they might be used symbolically
+    ///   as assignment targets or in domain expressions.
     Named(NamedValue),
     /// A simple value: constants or parameters.
     Value(MaybeCompile<TypedIrExpression>),

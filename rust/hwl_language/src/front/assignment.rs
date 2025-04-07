@@ -88,6 +88,8 @@ pub struct ValueVersioned {
 pub struct ValueVersion(u64);
 
 impl VariableValues {
+    pub const NO_VARS: Self = Self { inner: None };
+
     pub fn new() -> Self {
         Self {
             inner: Some(VariableValuesInner {
@@ -97,21 +99,8 @@ impl VariableValues {
         }
     }
 
-    pub fn new_no_vars() -> Self {
-        Self { inner: None }
-    }
-
     pub fn get(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> Result<&AssignedValue, ErrorGuaranteed> {
-        let map = &self
-            .inner
-            .as_ref()
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?
-            .map;
-        let value = map
-            .get(&var)
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
-
-        match value {
+        match self.get_maybe(diags, span_use, var)? {
             MaybeAssignedValue::Assigned(value) => Ok(value),
             MaybeAssignedValue::NotYetAssigned => Err(diags.report_simple(
                 "variable has not yet been assigned a value",
@@ -135,6 +124,23 @@ impl VariableValues {
                 Err(diags.report(diag))
             }
         }
+    }
+
+    pub fn get_maybe(
+        &self,
+        diags: &Diagnostics,
+        span_use: Span,
+        var: Variable,
+    ) -> Result<&MaybeAssignedValue, ErrorGuaranteed> {
+        let map = &self
+            .inner
+            .as_ref()
+            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?
+            .map;
+        let maybe = map
+            .get(&var)
+            .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
+        Ok(maybe)
     }
 
     pub fn set(

@@ -1,18 +1,29 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::function::FailedCaptureReason;
 use crate::front::misc::ScopedEntry;
 use crate::syntax::ast;
 use crate::syntax::ast::Identifier;
 use crate::syntax::pos::Span;
+use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
 use std::fmt::Debug;
 
+// TODO use string interning to avoid a bunch of string equality checks and hashing
 #[derive(Debug)]
 pub struct Scope<'p> {
     span: Span,
-    parent: Option<&'p Scope<'p>>,
+    parent: ScopeParent<'p>,
     content: ScopeContent,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ScopeParent<'p> {
+    /// Parent
+    Some(&'p Scope<'p>),
+    /// No parent, this is a file scope.
+    None(FileId),
 }
 
 #[derive(Debug)]
@@ -22,8 +33,10 @@ pub struct ScopeContent {
     parent_check: Option<u64>,
 }
 
+// TODO simplify all of this: we might only only need to report errors on the first re-declaration,
+//   which means we can remove that branch entirely
 #[derive(Debug)]
-pub enum DeclaredValue {
+enum DeclaredValue {
     Once {
         value: Result<ScopedEntry, ErrorGuaranteed>,
         span: Span,
@@ -32,6 +45,15 @@ pub enum DeclaredValue {
         spans: Vec<Span>,
         err: ErrorGuaranteed,
     },
+    FailedCapture(Span, FailedCaptureReason),
+    Error(ErrorGuaranteed),
+}
+
+#[derive(Debug)]
+pub enum DeclaredValueSingle<S = ScopedEntry> {
+    Value { span: Span, value: S },
+    FailedCapture(Span, FailedCaptureReason),
+    Error(ErrorGuaranteed),
 }
 
 #[derive(Debug)]
@@ -41,10 +63,10 @@ pub struct ScopeFound<'s> {
 }
 
 impl<'p> Scope<'p> {
-    pub fn new_root(span: Span) -> Self {
+    pub fn new_root(span: Span, file: FileId) -> Self {
         Scope {
             span,
-            parent: None,
+            parent: ScopeParent::None(file),
             content: ScopeContent {
                 check: rand::random(),
                 values: IndexMap::new(),
@@ -56,7 +78,7 @@ impl<'p> Scope<'p> {
     pub fn new_child(span: Span, parent: &'p Scope<'p>) -> Self {
         Scope {
             span,
-            parent: Some(parent),
+            parent: ScopeParent::Some(parent),
             content: ScopeContent {
                 check: rand::random(),
                 values: IndexMap::new(),
@@ -69,13 +91,32 @@ impl<'p> Scope<'p> {
         assert_eq!(Some(parent.content.check), values.parent_check);
         Scope {
             span,
-            parent: Some(parent),
+            parent: ScopeParent::Some(parent),
             content: values,
         }
     }
 
+    pub fn parent(&self) -> ScopeParent<'p> {
+        self.parent
+    }
+
     pub fn into_content(self) -> ScopeContent {
         self.content
+    }
+
+    pub fn immediate_entries(&self) -> impl Iterator<Item = (&str, DeclaredValueSingle<&ScopedEntry>)> {
+        self.content.values.iter().map(|(k, v)| {
+            let v = match v {
+                &DeclaredValue::Once { ref value, span } => match value {
+                    Ok(value) => DeclaredValueSingle::Value { span, value },
+                    &Err(e) => DeclaredValueSingle::Error(e),
+                },
+                &DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
+                &DeclaredValue::FailedCapture(span, reason) => DeclaredValueSingle::FailedCapture(span, reason),
+                &DeclaredValue::Error(err) => DeclaredValueSingle::Error(err),
+            };
+            (k.as_str(), v)
+        })
     }
 
     /// Declare a value in this scope.
@@ -91,6 +132,11 @@ impl<'p> Scope<'p> {
             let mut spans = match declared {
                 DeclaredValue::Once { value: _, span } => vec![*span],
                 DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
+                DeclaredValue::Error(_) => return,
+                DeclaredValue::FailedCapture(_, _) => {
+                    diags.report_internal_error(id.span, "declaring in scope that already has failed capture value");
+                    return;
+                }
             };
 
             // report error
@@ -112,20 +158,16 @@ impl<'p> Scope<'p> {
         }
     }
 
-    pub fn declare_already_checked(
-        &mut self,
-        diags: &Diagnostics,
-        id: String,
-        span: Span,
-        value: Result<ScopedEntry, ErrorGuaranteed>,
-    ) -> Result<(), ErrorGuaranteed> {
+    pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
         match self.content.values.entry(id.clone()) {
-            Entry::Occupied(_) => {
-                Err(diags.report_internal_error(span, format!("identifier `{}` already declared", id)))
-            }
+            Entry::Occupied(_) => panic!("identifier `{}` already declared in scope {:?}", id, self.span),
             Entry::Vacant(entry) => {
-                entry.insert(DeclaredValue::Once { value, span });
-                Ok(())
+                let declared = match value {
+                    DeclaredValueSingle::Value { value, span } => DeclaredValue::Once { value: Ok(value), span },
+                    DeclaredValueSingle::FailedCapture(span, reason) => DeclaredValue::FailedCapture(span, reason),
+                    DeclaredValueSingle::Error(err) => DeclaredValue::Error(err),
+                };
+                entry.insert(declared);
             }
         }
     }
@@ -166,6 +208,19 @@ impl<'p> Scope<'p> {
             let (value, value_span) = match *declared {
                 DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
                 DeclaredValue::Multiple { spans: _, err } => return Err(err),
+                DeclaredValue::Error(err) => return Err(err),
+                DeclaredValue::FailedCapture(span, reason) => {
+                    let reason_str = match reason {
+                        FailedCaptureReason::NotCompile => "contained a non-compile-time value",
+                        FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
+                    };
+                    let err = diags.report_simple(
+                        format!("failed to capture value because it {}", reason_str),
+                        span,
+                        "value set here",
+                    );
+                    return Err(err);
+                }
             };
 
             return Ok(ScopeFound {
@@ -175,7 +230,7 @@ impl<'p> Scope<'p> {
         }
 
         if check_parents {
-            if let Some(parent) = self.parent {
+            if let ScopeParent::Some(parent) = self.parent {
                 return parent.find_impl(diags, id, id_span, initial_scope_span, check_parents);
             }
         }

@@ -425,7 +425,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     let mut file_scopes: FileScopes = IndexMap::new();
     for file in source.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
-            let mut scope = Scope::new_root(ast.span);
+            let mut scope = Scope::new_root(ast.span, file);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(declaration_info) = ast_item.declaration_info() {
                     scope.maybe_declare(diags, declaration_info.id, Ok(ScopedEntry::Item(ast_item_ref)));

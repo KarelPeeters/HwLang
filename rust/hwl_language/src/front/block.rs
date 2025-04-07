@@ -171,7 +171,9 @@ impl CompileItemContext<'_, '_> {
 
         for stmt in statements {
             match &stmt.inner {
-                BlockStatementKind::CommonDeclaration(decl) => self.eval_and_declare_declaration(&mut scope, decl),
+                BlockStatementKind::CommonDeclaration(decl) => {
+                    self.eval_and_declare_declaration(&mut scope, Some(&vars), decl)
+                }
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {
                         span: _,
