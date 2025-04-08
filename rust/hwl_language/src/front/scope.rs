@@ -204,22 +204,28 @@ impl<'p> Scope<'p> {
         check_parents: bool,
     ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
         if let Some(declared) = self.content.values.get(id) {
-            // check declared exactly once
             let (value, value_span) = match *declared {
                 DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
                 DeclaredValue::Multiple { spans: _, err } => return Err(err),
                 DeclaredValue::Error(err) => return Err(err),
                 DeclaredValue::FailedCapture(span, reason) => {
                     let reason_str = match reason {
-                        FailedCaptureReason::NotCompile => "contained a non-compile-time value",
+                        FailedCaptureReason::NotCompile => "contains a non-compile-time value",
                         FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
                     };
-                    let err = diags.report_simple(
-                        format!("failed to capture value because it {}", reason_str),
-                        span,
-                        "value set here",
-                    );
-                    return Err(err);
+
+                    let id_span = id_span.ok_or_else(|| {
+                        diags.report_internal_error(
+                            initial_scope_span,
+                            "tried to resolve span-less id in captured context",
+                        )
+                    })?;
+
+                    let diag = Diagnostic::new(format!("failed to capture identifier because {reason_str}"))
+                        .add_error(id_span, "used here")
+                        .add_info(span, "value declared here")
+                        .finish();
+                    return Err(diags.report(diag));
                 }
             };
 
