@@ -136,7 +136,7 @@ impl BlockEnd<BlockEndStopping> {
         }
     }
 
-    pub fn unwrap_normal_in_process(self, diags: &Diagnostics) -> Result<VariableValues, ErrorGuaranteed> {
+    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> Result<VariableValues, ErrorGuaranteed> {
         match self {
             BlockEnd::Normal(vars) => Ok(vars),
             BlockEnd::Stopping(end) => match end {
@@ -158,20 +158,30 @@ impl CompileItemContext<'_, '_> {
     pub fn elaborate_block<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        mut vars: VariableValues,
+        vars: VariableValues,
         scope_parent: &Scope,
         block: &Block<BlockStatement>,
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
-        let diags = self.refs.diags;
-        let Block { span: _, statements } = block;
+        let &Block { span, ref statements } = block;
 
-        let mut scope = Scope::new_child(block.span, scope_parent);
+        let mut scope = Scope::new_child(span, scope_parent);
+        self.elaborate_block_statements(ctx, vars, &mut scope, statements)
+    }
+
+    pub fn elaborate_block_statements<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        mut vars: VariableValues,
+        scope: &mut Scope,
+        statements: &[BlockStatement],
+    ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
+        let diags = self.refs.diags;
         let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
             match &stmt.inner {
                 BlockStatementKind::CommonDeclaration(decl) => {
-                    self.eval_and_declare_declaration(&mut scope, Some(&vars), decl)
+                    self.eval_and_declare_declaration(scope, Some(&vars), decl)
                 }
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {

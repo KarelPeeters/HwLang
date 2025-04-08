@@ -519,14 +519,15 @@ ExprLevelPower: ExpressionKind = {
 }
 
 // TODO real implementation again, only matters once we have struct literals and if we decide to use {} for them
-ExprLevelArrayNoStruct = ExprLevelArray;
+ExprLevelArray = ExprLevelArrayImpl<"yes">;
+ExprLevelArrayNoStruct = ExprLevelArrayImpl<"no">;
 
-ExprLevelArray: ExpressionKind = {
+ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal>>
+    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal<allow_struct>>>
         => ExpressionKind::ArrayType(args, target),
     // array index
-    <target:BoxSpanned<ExprLevelCallReal >> "[" <args:Spanned<Separated<Expr, ",">>> "]"
+    <target:BoxSpanned<ExprLevelCallReal<allow_struct>>> "[" <args:Spanned<Separated<Expr, ",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
@@ -540,14 +541,14 @@ ExprLevelArray: ExpressionKind = {
     "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> "in" <iter:Box<ExprLevelNoIn>> "]"
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, iter }),
 
-    ExprLevelCallReal,
+    ExprLevelCallReal<allow_struct>,
 }
 
-ExprLevelCallReal: ExpressionKind = {
+ExprLevelCallReal<allow_struct>: ExpressionKind = {
     // call
     "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" => ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelAtomic>> "(" <args:Args> ")" => ExpressionKind::Call(target, args),
-    ExprLevelDotIndex,
+    <target:BoxSpanned<ExprLevelAtomic<allow_struct>>> "(" <args:Args> ")" => ExpressionKind::Call(target, args),
+    ExprLevelDotIndex<allow_struct>,
 }
 
 Args: Args = {
@@ -560,13 +561,13 @@ Arg: Arg = {
         Arg { name, value, span: loc.span(start, end) },
 }
 
-ExprLevelDotIndex: ExpressionKind = {
+ExprLevelDotIndex<allow_struct>: ExpressionKind = {
     // assoc left
-    <target: BoxSpanned<ExprLevelDotIndex>> "." <index: Id>
+    <target: BoxSpanned<ExprLevelDotIndex<allow_struct>>> "." <index: Id>
         => ExpressionKind::DotIdIndex(target, index),
-    <target: BoxSpanned<ExprLevelDotIndex>> "." <index: Spanned<TokenIntLiteralDecimal>>
+    <target: BoxSpanned<ExprLevelDotIndex<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
         => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
-    ExprLevelAtomic,
+    ExprLevelAtomic<allow_struct>,
 }
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
@@ -575,22 +576,26 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     <value:Expr> => ArrayLiteralElement::Single(value),
 }
 
-ExprLevelStructInit: ExpressionKind = {
+ExprLevelStructInit<allow_struct>: ExpressionKind = {
     //  struct
     // TODO allow struct type params?
     // <struct_ty:Id> "{" "}" => {},
 //    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => {},
 //        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
-    ExprLevelAtomic,
+    ExprLevelAtomic<allow_struct>,
 }
 
 StructLiteralField: StructLiteralField = {
     <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: loc.span(start, end) },
 }
 
-ExprLevelAtomic: ExpressionKind = {
+ExprLevelAtomic<allow_struct>: ExpressionKind = {
     // parentheses
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
+    // TODO actual block expression
+    "{" <statements:BlockStatement*> <expression:BoxExpr> "}" if allow_struct == "yes"
+        => ExpressionKind::Block(BlockExpression { statements, expression }),
+
     // TODO allow paths as expressions
     // id
     <id:Id> => ExpressionKind::Id(id),

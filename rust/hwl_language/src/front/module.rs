@@ -563,7 +563,7 @@ impl BodyElaborationContext<'_, '_> {
 
                     let ir_block = ir_block.and_then(|(ir_block, end)| {
                         let ir_variables = ctx.finish();
-                        let _: VariableValues = end.unwrap_normal_in_process(diags)?;
+                        let _: VariableValues = end.unwrap_outside_function_and_loop(diags)?;
                         let process = IrCombinatorialProcess {
                             locals: ir_variables,
                             block: ir_block,
@@ -607,7 +607,7 @@ impl BodyElaborationContext<'_, '_> {
 
                         ir_block.and_then(|(ir_block, end)| {
                             let ir_variables = ctx.finish();
-                            let _: VariableValues = end.unwrap_normal_in_process(diags)?;
+                            let _: VariableValues = end.unwrap_outside_function_and_loop(diags)?;
 
                             let process = IrClockedProcess {
                                 domain: Spanned {

@@ -228,6 +228,12 @@ pub struct Block<S> {
     pub statements: Vec<S>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BlockExpression {
+    pub statements: Vec<BlockStatement>,
+    pub expression: Box<Expression>,
+}
+
 pub type ModuleStatement = Spanned<ModuleStatementKind>;
 pub type BlockStatement = Spanned<BlockStatementKind>;
 
@@ -415,6 +421,7 @@ pub enum ExpressionKind {
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Box<Expression>),
+    Block(BlockExpression),
     Id(Identifier),
 
     // Literals

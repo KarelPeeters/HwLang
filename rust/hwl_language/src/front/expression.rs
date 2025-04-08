@@ -18,8 +18,8 @@ use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArrayS
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::syntax::ast::{
-    ArrayComprehension, ArrayLiteralElement, BinaryOp, DomainKind, Expression, ExpressionKind, Identifier, IntLiteral,
-    MaybeIdentifier, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
+    ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression, ExpressionKind,
+    Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -137,6 +137,18 @@ impl CompileItemContext<'_, '_> {
                 return Ok(self
                     .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, inner)?
                     .inner)
+            }
+            ExpressionKind::Block(block_expr) => {
+                let BlockExpression { statements, expression } = block_expr;
+
+                let vars = VariableValues::new();
+                let mut scope_inner = Scope::new_child(expr.span, scope);
+
+                let (mut ctx_block, end) = self.elaborate_block_statements(ctx, vars, &mut scope_inner, statements)?;
+                let vars = end.unwrap_outside_function_and_loop(diags)?;
+
+                self.eval_expression(ctx, &mut ctx_block, &scope_inner, &vars, expected_ty, expression)?
+                    .inner
             }
             ExpressionKind::Id(id) => {
                 match self.eval_id(scope, id)?.inner {
