@@ -36,7 +36,19 @@ impl ServerState {
             self.log("source database built, compiling");
             let diags = Diagnostics::new();
             let parsed = ParsedDatabase::new(&diags, &source);
-            let compiled = compile(&diags, &source, &parsed, &mut NoPrintHandler, NON_ZERO_USIZE_ONE);
+
+            // TODO propagate prints to log and timeout
+            // TODO enable multithreading
+            // TODO optionally also check C++ generation
+            // TODO compile all items in the open files first, then later the rest for increased interactivity
+            let compiled = compile(
+                &diags,
+                &source,
+                &parsed,
+                &mut NoPrintHandler,
+                &|| false,
+                NON_ZERO_USIZE_ONE,
+            );
             let _ = compiled.and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
             self.log("compilation finished");
 

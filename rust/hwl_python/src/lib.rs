@@ -4,7 +4,6 @@ use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
-        compile::NoPrintHandler,
         context::CompileTimeExpressionContext,
         diagnostic::Diagnostics,
         function::FunctionValue,
@@ -253,6 +252,7 @@ impl Compile {
                 shared: state,
                 diags: &diags,
                 print_handler: &StdoutPrintHandler,
+                should_stop: &|| false,
             };
             let mut item_ctx = CompileItemContext::new(refs, None);
 
@@ -318,6 +318,7 @@ impl Function {
                 shared: state,
                 diags: &diags,
                 print_handler: &StdoutPrintHandler,
+                should_stop: &|| false,
             };
             let mut item_ctx = CompileItemContext::new(refs, None);
 
@@ -378,7 +379,8 @@ impl Module {
             fixed: CompileFixed { source, parsed },
             shared: state,
             diags: &diags,
-            print_handler: &NoPrintHandler,
+            print_handler: &StdoutPrintHandler,
+            should_stop: &|| false,
         };
 
         // start module elaboration

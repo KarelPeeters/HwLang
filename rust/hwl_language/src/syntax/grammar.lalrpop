@@ -292,8 +292,8 @@ ElseIfPair<S>: IfCondBlockPair<S> = {
 }
 
 ForStatement<S>: ForStatement<S> = {
-    "for" "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<S>>
-        => ForStatement { index, index_ty, iter, body },
+    <span_keyword:Span<"for">> "(" <index:MaybeId> <index_ty: (":" <Box<ExprLevelNoIn>>)?> "in" <iter:Box<ExprLevelNoIn>> ")" <body:Block<S>>
+        => ForStatement { span_keyword, index, index_ty, iter, body },
 }
 
 CommonDeclaration: CommonDeclaration = {

@@ -302,6 +302,7 @@ pub struct WhileStatement {
 
 #[derive(Debug, Clone)]
 pub struct ForStatement<S> {
+    pub span_keyword: Span,
     pub index: MaybeIdentifier,
     pub index_ty: Option<Box<Expression>>,
     pub iter: Box<Expression>,

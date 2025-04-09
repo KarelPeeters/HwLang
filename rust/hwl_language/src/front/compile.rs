@@ -37,6 +37,7 @@ pub fn compile(
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     print_handler: &mut (dyn PrintHandler + Sync),
+    should_stop: &(dyn Fn() -> bool + Sync),
     thread_count: NonZeroUsize,
 ) -> Result<IrDatabase, ErrorGuaranteed> {
     let fixed = CompileFixed { source, parsed };
@@ -50,6 +51,7 @@ pub fn compile(
             shared: &shared,
             diags,
             print_handler,
+            should_stop,
         };
         find_top_module(diags, fixed, &shared).and_then(|top_item| {
             let &ElaboratedModule {
@@ -76,6 +78,7 @@ pub fn compile(
                         shared: &shared,
                         diags: &thread_diags,
                         print_handler,
+                        should_stop,
                     };
                     thread_refs.run_elaboration_loop();
                     thread_diags
@@ -109,6 +112,7 @@ pub fn compile(
             shared: &shared,
             diags,
             print_handler,
+            should_stop,
         };
         thread_refs.run_elaboration_loop();
     }
@@ -127,6 +131,16 @@ pub fn compile(
 }
 
 impl<'s> CompileRefs<'_, 's> {
+    pub fn check_should_stop(&self, span: Span) -> Result<(), ErrorGuaranteed> {
+        if (self.should_stop)() {
+            Err(self
+                .diags
+                .report_simple("compilation interrupted", span, "while elaborating here"))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn run_elaboration_loop(self) {
         while let Some(work_item) = self.shared.work_queue.pop() {
             match work_item {
@@ -233,6 +247,7 @@ pub struct CompileRefs<'a, 's> {
     pub diags: &'a Diagnostics,
     // TODO is there a reasonable way to get deterministic prints?
     pub print_handler: &'a (dyn PrintHandler + Sync),
+    pub should_stop: &'a dyn Fn() -> bool,
 }
 
 pub struct CompileItemContext<'a, 's> {

@@ -296,6 +296,8 @@ impl CompileItemContext<'_, '_> {
                     } = stmt_while;
 
                     loop {
+                        self.refs.check_should_stop(span_keyword)?;
+
                         // eval cond
                         let cond = self.eval_expression_as_compile(&scope, &vars, cond, "while loop condition")?;
 
@@ -718,6 +720,7 @@ impl CompileItemContext<'_, '_> {
         let ctx_block = &mut result_block;
 
         let ForStatement {
+            span_keyword: _,
             index: _,
             index_ty,
             iter,
@@ -749,11 +752,12 @@ impl CompileItemContext<'_, '_> {
         iter: ForIterator,
     ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let ForStatement {
-            index: index_id,
+        let &ForStatement {
+            span_keyword,
+            index: ref index_id,
             index_ty: _,
             iter: _,
-            body,
+            ref body,
         } = stmt.inner;
 
         // create inner scope with index variable
@@ -773,6 +777,8 @@ impl CompileItemContext<'_, '_> {
 
         // run the actual loop
         for index_value in iter {
+            self.refs.check_should_stop(span_keyword)?;
+
             // typecheck index
             // TODO we can also this this once at the start instead, but that's slightly less flexible
             if let Some(index_ty) = &index_ty {

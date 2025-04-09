@@ -16,7 +16,10 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let file_scope = self.refs.shared.file_scope(item.file())?;
 
-        match &self.refs.fixed.parsed[item] {
+        let item_ast = &self.refs.fixed.parsed[item];
+        self.refs.check_should_stop(item_ast.common_info().span_short)?;
+
+        match item_ast {
             Item::Import(item_inner) => {
                 let reason = "import items should have been resolved in a separate pass already";
                 Err(diags.report_internal_error(item_inner.span, reason))

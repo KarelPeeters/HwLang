@@ -181,15 +181,17 @@ impl CompileRefs<'_, '_> {
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
-            id: ref def_id,
+            ref id,
             params: _,
             ports: _,
             ref body,
         } = &self.fixed.parsed[module];
 
+        self.check_should_stop(id.span())?;
+
         let scope_file = self.shared.file_scope(module.file())?;
         let scope = Scope::restore_child_from_content(def_span, scope_file, scope);
-        self.elaborate_module_body_impl(def_id, params.clone(), ports, ports_ir, &scope, body)
+        self.elaborate_module_body_impl(id, params.clone(), ports, ports_ir, &scope, body)
     }
 
     fn elaborate_module_ports_impl(
@@ -691,11 +693,12 @@ impl BodyElaborationContext<'_, '_> {
         for_stmt: Spanned<&ForStatement<ModuleStatement>>,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
-        let ForStatement {
-            index,
-            index_ty,
-            iter,
-            body,
+        let &ForStatement {
+            span_keyword,
+            ref index,
+            ref index_ty,
+            ref iter,
+            ref body,
         } = for_stmt.inner;
         let iter_span = iter.span;
 
@@ -717,6 +720,8 @@ impl BodyElaborationContext<'_, '_> {
 
         // TODO allow break?
         for index_value in iter {
+            self.ctx.refs.check_should_stop(span_keyword)?;
+
             if let Some(index_ty) = &index_ty {
                 let index_value_spanned = Spanned::new(iter_span, &index_value);
                 check_type_contains_value(

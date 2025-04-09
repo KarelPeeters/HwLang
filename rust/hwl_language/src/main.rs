@@ -83,7 +83,14 @@ fn main_inner() -> ExitCode {
     let time_parse = start_parse.elapsed();
 
     let start_compile = Instant::now();
-    let compiled = compile(&diags, &source, &parsed, &mut StdoutPrintHandler, thread_count);
+    let compiled = compile(
+        &diags,
+        &source,
+        &parsed,
+        &mut StdoutPrintHandler,
+        &|| false,
+        thread_count,
+    );
     let time_compile = start_compile.elapsed();
 
     // TODO parallelize lowering?

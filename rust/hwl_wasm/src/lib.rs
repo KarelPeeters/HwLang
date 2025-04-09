@@ -7,6 +7,7 @@ use hwl_language::syntax::source::{FileId, FilePath, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use itertools::Itertools;
+use std::time::Duration;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -30,12 +31,13 @@ const SRC_STD_TYPES: &str = include_str!("../../../design/project/std/types.kh")
 const SRC_STD_MATH: &str = include_str!("../../../design/project/std/math.kh");
 const SRC_STD_UTIL: &str = include_str!("../../../design/project/std/util.kh");
 
+const TIMEOUT: Duration = Duration::from_millis(500);
+
 #[wasm_bindgen]
 pub fn initial_source() -> String {
     SRC_TOP.to_owned()
 }
 
-// TODO include C++ as well, just for demo purposes
 #[wasm_bindgen]
 pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
     let mut source = SourceDatabaseBuilder::new();
@@ -68,8 +70,19 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
 
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
+
     let mut print_handler = CollectPrintHandler::new();
-    let compiled = compile(&diags, &source, &parsed, &mut print_handler, NON_ZERO_USIZE_ONE);
+    let start = wasm_timer::Instant::now();
+    let should_stop = || start.elapsed() >= TIMEOUT;
+    let compiled = compile(
+        &diags,
+        &source,
+        &parsed,
+        &mut print_handler,
+        &should_stop,
+        NON_ZERO_USIZE_ONE,
+    );
+
     let lowered = compiled
         .as_ref_ok()
         .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
