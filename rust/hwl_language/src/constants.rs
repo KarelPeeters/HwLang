@@ -6,3 +6,7 @@ pub const LSP_SERVER_NAME: &str = "HWLang-LSP";
 // TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
 //   it might also not matter, maybe every platform pre-commits stack space by now
 pub const THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
+
+// TODO make this configurable?
+pub const MAX_STACK_ENTRIES: usize = 1024;
+pub const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 16;

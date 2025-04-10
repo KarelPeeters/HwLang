@@ -26,7 +26,7 @@ use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
-use crate::util::{Never, ResultNeverExt};
+use crate::util::{Never, ResultDoubleExt, ResultNeverExt};
 use itertools::{enumerate, Either};
 use std::cmp::{max, min};
 use std::ops::Sub;
@@ -63,9 +63,11 @@ impl CompileItemContext<'_, '_> {
         let def_span = found.defining_span;
         let result = match found.value {
             &ScopedEntry::Named(value) => EvaluatedId::Named(value),
-            &ScopedEntry::Item(item) => self.recurse(StackEntry::ItemUsage(id.span), |s| {
-                Ok(EvaluatedId::Value(MaybeCompile::Compile(s.eval_item(item)?.clone())))
-            })?,
+            &ScopedEntry::Item(item) => self
+                .recurse(StackEntry::ItemUsage(id.span), |s| {
+                    Ok(EvaluatedId::Value(MaybeCompile::Compile(s.eval_item(item)?.clone())))
+                })
+                .flatten_err()?,
             ScopedEntry::Value(value) => EvaluatedId::Value(value.clone()),
         };
         Ok(Spanned {
@@ -466,7 +468,9 @@ impl CompileItemContext<'_, '_> {
                 // actually do the call
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
-                let (result_block, result_value) = self.recurse(entry, |s| s.call_function(ctx, &target, args))?;
+                let (result_block, result_value) = self
+                    .recurse(entry, |s| s.call_function(ctx, &target, args))
+                    .flatten_err()?;
 
                 let result_block_spanned = Spanned {
                     span: expr.span,

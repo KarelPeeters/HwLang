@@ -15,7 +15,7 @@ use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
-use crate::util::ResultExt;
+use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::map::Entry as IndexMapEntry;
 use indexmap::IndexMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -270,6 +270,7 @@ impl CompileItemContext<'_, '_> {
                 }
             }
         })
+        .flatten_err()
     }
 }
 

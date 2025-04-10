@@ -1,6 +1,6 @@
-use crate::constants::THREAD_STACK_SIZE;
+use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::block::TypedIrExpression;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister, IrWire};
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
@@ -298,7 +298,14 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         }
     }
 
-    pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> R {
+    pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> Result<R, ErrorGuaranteed> {
+        if self.stack.len() > MAX_STACK_ENTRIES {
+            return Err(self
+                .refs
+                .diags
+                .report(stack_overflow_diagnostic(self.refs.fixed.parsed, &self.stack)));
+        }
+
         self.stack.push(entry);
         let len = self.stack.len();
 
@@ -307,7 +314,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         assert_eq!(self.stack.len(), len);
         self.stack.pop().unwrap();
 
-        result
+        Ok(result)
     }
 
     pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
@@ -325,6 +332,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
                 .map(ResultExt::as_ref_ok)
                 .flatten_err()
         })
+        .flatten_err()
     }
 }
 
@@ -346,6 +354,37 @@ fn cycle_diagnostic(parsed: &ParsedDatabase, mut stack: Vec<&StackEntry>) -> Dia
         let (span, label) = entry.into_span_message(parsed);
         diag = diag.add_error(span, format!("[{entry_index}] {label}"));
     }
+    diag.finish()
+}
+
+fn stack_overflow_diagnostic(parsed: &ParsedDatabase, stack: &Vec<StackEntry>) -> Diagnostic {
+    let mut diag = Diagnostic::new(format!("encountered stack overflow, stack depth {}", stack.len()));
+
+    let add_entry = |diag: DiagnosticBuilder, index: usize, entry: &StackEntry| {
+        let (span, label) = entry.into_span_message(parsed);
+        diag.add_error(span, format!("[{index}] {label}"))
+    };
+
+    if stack.len() <= 2 * STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
+        for (entry_index, entry) in enumerate(stack) {
+            diag = add_entry(diag, entry_index, entry);
+        }
+    } else {
+        for entry_index in 0..STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
+            diag = add_entry(diag, entry_index, &stack[entry_index]);
+        }
+        for entry_index in (stack.len() - STACK_OVERFLOW_ERROR_ENTRIES_SHOWN)..stack.len() {
+            diag = add_entry(diag, entry_index, &stack[entry_index]);
+        }
+        diag = diag.footer(
+            Level::Info,
+            format!(
+                "skipped showing {} stack entries in the middle",
+                stack.len() - STACK_OVERFLOW_ERROR_ENTRIES_SHOWN
+            ),
+        )
+    }
+
     diag.finish()
 }
 
