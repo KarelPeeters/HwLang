@@ -350,7 +350,7 @@ impl CapturedScope {
     pub fn from_scope(
         diags: &Diagnostics,
         scope: &Scope,
-        vars: Option<&VariableValues>,
+        vars: &VariableValues,
     ) -> Result<CapturedScope, ErrorGuaranteed> {
         // TODO should we build this incrementally, or build a normal hashmap once and then sort it at the end?
         let mut child_values = HashMap::new();
@@ -375,8 +375,6 @@ impl CapturedScope {
                                     &ScopedEntry::Item(value) => Ok(CapturedValue::Item(value)),
                                     ScopedEntry::Named(named) => match named {
                                         &NamedValue::Variable(var) => {
-                                            let vars = vars.unwrap_or(&VariableValues::NO_VARS);
-
                                             // TODO these spans are probably wrong
                                             match vars.get_maybe(diags, span, var)? {
                                                 MaybeAssignedValue::Assigned(assigned) => match &assigned.value {

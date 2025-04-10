@@ -65,6 +65,7 @@ impl CompileItemContext<'_, '_> {
         decl: &CommonDeclaration,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let vars = vars.unwrap_or(&VariableValues::NO_VARS);
 
         match decl {
             CommonDeclaration::Type(decl) => {
@@ -77,7 +78,6 @@ impl CompileItemContext<'_, '_> {
 
                 match params {
                     None => {
-                        let vars = VariableValues::NO_VARS;
                         let ty = self.eval_expression_as_ty(scope, &vars, body)?;
                         Ok(CompileValue::Type(ty.inner))
                     }
@@ -97,7 +97,6 @@ impl CompileItemContext<'_, '_> {
             }
             CommonDeclaration::Const(decl) => {
                 let ConstDeclaration { span: _, id, ty, value } = decl;
-                let vars = VariableValues::NO_VARS;
 
                 let ty = ty
                     .as_ref()
