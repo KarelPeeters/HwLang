@@ -54,6 +54,7 @@ impl Diagnostics {
     }
 
     // TODO go through and try to avoid early-exits as much as possible
+    // TODO limit the number of diagnostics reported, eg. stop after 1k
     pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
         self.diagnostics.borrow_mut().push(diag);
         ErrorGuaranteed(())

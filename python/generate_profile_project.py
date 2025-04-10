@@ -18,16 +18,16 @@ module passthrough_{i} generics(w: int) ports(
     rst: in async bool,
     sync(clk, rst) {{
         select: in bool,
-        data_a: in bool[w],
-        data_b: in bool[w],
-        data_out: out bool[w],
+        data_a: in [w]bool,
+        data_b: in [w]bool,
+        data_out: out [w]bool,
     }}
 ) body {{"""
         if i == 0:
             result += f"""
     reg out data_out = undef;
     clocked(clk, rst) {{
-        data_out = select_{i}(bool[w], select, data_a, data_b);
+        data_out = select_{i}([w]bool, select, data_a, data_b);
     }}
 """
         else:
@@ -57,9 +57,9 @@ pub module top ports(
     clk: in clock,
     rst: in async bool,
     sync(clk, rst) {{
-        data_a: in bool[4],
-        data_b: in bool[4],
-        data_out: out bool[4],
+        data_a: in [4]bool,
+        data_b: in [4]bool,
+        data_out: out [4]bool,
     }}
 ) body {{
     wire select: sync(clk, rst) bool = true;
