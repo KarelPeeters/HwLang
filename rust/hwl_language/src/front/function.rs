@@ -231,6 +231,7 @@ impl CompileItemContext<'_, '_> {
         args: Args<Option<Identifier>, Spanned<MaybeCompile<TypedIrExpression>>>,
     ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
         let diags = self.refs.diags;
+        self.refs.check_should_stop(function.decl_span)?;
 
         // recreate captured scope
         let span_scope = function.params.span.join(function.body.span);

@@ -132,6 +132,8 @@ pub fn compile(
 
 impl<'s> CompileRefs<'_, 's> {
     pub fn check_should_stop(&self, span: Span) -> Result<(), ErrorGuaranteed> {
+        // TODO report only one error, now all threads report the same error
+        //   put an Option<ErrorGuaranteed> somewhere in a mutex?
         if (self.should_stop)() {
             Err(self
                 .diags
