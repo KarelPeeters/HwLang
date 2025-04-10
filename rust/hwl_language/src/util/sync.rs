@@ -2,22 +2,24 @@ use crate::util::Never;
 use indexmap::IndexMap;
 use once_map::OnceMap;
 use parking_lot::{Condvar, Mutex, MutexGuard};
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{collections::VecDeque, num::NonZeroUsize};
 
 pub struct ComputeOnceArena<K, V, S> {
-    inner: Mutex<ComputeOnceArenaInner<K, V, S>>,
-}
-
-struct ComputeOnceArenaInner<K, V, S> {
+    mutex: Mutex<()>,
     map: IndexMap<K, ItemInfo<K, V, S>>,
 }
 
+unsafe impl<K: Send + Sync, V: Send + Sync, S: Send + Sync> Sync for ComputeOnceArena<K, V, S> {}
+
 #[derive(Debug)]
 struct ItemInfo<K, V, S> {
-    done_var: Condvar,
-    state: ItemState<K, V, S>,
+    atomic: AtomicU8,
+    var: Condvar,
+    state: UnsafeCell<ItemState<K, V, S>>,
 }
 
 #[derive(Debug)]
@@ -53,23 +55,38 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
             .into_iter()
             .map(|k| {
                 let info = ItemInfo {
-                    done_var: Condvar::new(),
-                    state: ItemState::Unvisited,
+                    atomic: AtomicU8::new(0),
+                    var: Condvar::new(),
+                    state: UnsafeCell::new(ItemState::Unvisited),
                 };
                 (k, info)
             })
             .collect();
         ComputeOnceArena {
-            inner: Mutex::new(ComputeOnceArenaInner { map }),
+            map,
+            mutex: Mutex::new(()),
         }
     }
 
     /// Offer to compute an item, without caring or waiting for the result if someone else is already computing it.
     pub fn offer_to_compute(&self, item: K, f_compute: impl FnOnce() -> V) {
-        let guard = self.inner.lock();
-        let item_map_index = guard.map.get_index_of(&item).unwrap();
+        let item_map_index = self.map.get_index_of(&item).unwrap();
+        let map_entry = &self.map[item_map_index];
 
-        match guard.map[item_map_index].state {
+        // fast path: someone else is already computing this item or it has already been computed
+        if map_entry.atomic.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+        // immediate tell future get_or_compute calls someone is guaranteed to be working on this
+        let _ = map_entry
+            .atomic
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
+
+        let guard = self.mutex.lock();
+        let state = map_entry.state.get();
+        let state = unsafe { &*state };
+
+        match state {
             ItemState::Unvisited => {
                 match self.impl_unvisited::<Never>(None, item, f_compute, |_| unreachable!(), guard, item_map_index) {
                     Ok(_) => {}
@@ -91,47 +108,69 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         f_compute: impl FnOnce() -> V,
         f_cycle: impl FnOnce(Vec<&S>) -> E,
     ) -> Result<&V, E> {
-        // TODO add fast path for common "done" case that avoids taking this single global lock
-        let mut guard = self.inner.lock();
-        let item_map_index = guard.map.get_index_of(&item).unwrap();
+        let item_map_index = self.map.get_index_of(&item).unwrap();
+        let entry = &self.map[item_map_index];
+        let state_ptr = entry.state.get();
 
-        match &guard.map[item_map_index].state {
-            ItemState::Unvisited => self.impl_unvisited(origin, item, f_compute, f_cycle, guard, item_map_index),
-            ItemState::Progress(_) => {
-                // check for cycles
-                if let Some((origin_item, origin_path)) = origin {
-                    check_cycle(&guard.map, item, origin_item, &origin_path).map_err(f_cycle)?;
-
-                    // set dependency of origin item to current item
-                    match &mut guard.map.get_mut(&origin_item).unwrap().state {
-                        ItemState::Progress(prev_dependency) => {
-                            *prev_dependency = Some(Dependency {
-                                next: item,
-                                path: origin_path,
-                            })
-                        }
-                        ItemState::Unvisited | ItemState::Done(_) => unreachable!(),
-                    }
-                }
-
-                // wait until done
-                let done_var = unsafe { extend_lifetime(self, &guard.map[item_map_index].done_var) };
-                loop {
-                    done_var.wait(&mut guard);
-                    match &guard.map[item_map_index].state {
-                        ItemState::Unvisited => unreachable!(),
-                        ItemState::Progress(_) => continue,
-                        ItemState::Done(result) => {
-                            let result = unsafe { extend_lifetime(self, result) };
-                            break Ok(result);
-                        }
-                    }
+        // fast path: already computed
+        if entry.atomic.load(Ordering::Acquire) == 2 {
+            match unsafe { &*state_ptr } {
+                ItemState::Unvisited | ItemState::Progress(_) => unreachable!(),
+                ItemState::Done(result) => {
+                    return Ok(result);
                 }
             }
-            ItemState::Done(result) => {
-                // simple return
-                let result = unsafe { extend_lifetime(self, result) };
-                Ok(result)
+        }
+        // immediately tell future get_or_compute calls someone is guaranteed to be working on this
+        let _ = entry
+            .atomic
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
+
+        let mut guard = self.mutex.lock();
+
+        // handle simple cases
+        {
+            let state = unsafe { &*state_ptr };
+            match state {
+                ItemState::Progress(_) => {}
+                ItemState::Unvisited => {
+                    return self.impl_unvisited(origin, item, f_compute, f_cycle, guard, item_map_index);
+                }
+                ItemState::Done(result) => {
+                    return Ok(result);
+                }
+            }
+            // state reference ends here
+        }
+
+        // handle "already in progress" case
+        // check for cycles
+        if let Some((origin_item, origin_path)) = origin {
+            check_cycle(&guard, &self.map, item, origin_item, &origin_path).map_err(f_cycle)?;
+
+            // set dependency of origin item to current item
+            let state = unsafe { &mut *state_ptr };
+            match state {
+                ItemState::Progress(prev_dependency) => {
+                    *prev_dependency = Some(Dependency {
+                        next: item,
+                        path: origin_path,
+                    })
+                }
+                ItemState::Unvisited | ItemState::Done(_) => unreachable!(),
+            }
+        }
+
+        // wait until done
+        let done_var = &entry.var;
+        loop {
+            done_var.wait(&mut guard);
+            match unsafe { &*state_ptr } {
+                ItemState::Unvisited => unreachable!(),
+                ItemState::Progress(_) => continue,
+                ItemState::Done(result) => {
+                    break Ok(result);
+                }
             }
         }
     }
@@ -142,7 +181,7 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         item: K,
         f_compute: impl FnOnce() -> V,
         f_cycle: impl FnOnce(Vec<&S>) -> E,
-        mut guard: MutexGuard<ComputeOnceArenaInner<K, V, S>>,
+        guard: MutexGuard<()>,
         item_map_index: usize,
     ) -> Result<&V, E> {
         if let Some((prev_item, path)) = origin {
@@ -152,39 +191,44 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
             }
 
             // set dependency of origin item to current item
-            match &mut guard.map.get_mut(&prev_item).unwrap().state {
+            let prev_stat_ptr = self.map.get(&prev_item).unwrap().state.get();
+            match unsafe { &mut *prev_stat_ptr } {
                 ItemState::Progress(prev_dependency) => *prev_dependency = Some(Dependency { next: item, path }),
                 ItemState::Unvisited | ItemState::Done(_) => unreachable!(),
             }
         }
 
-        // TODO avoid duplicate map lookup, we already did this to initially figure out we are unvisited
         // set current state to in progress and release the lock, so other computations can happen in parallel
-        guard.map[item_map_index].state = ItemState::Progress(None);
+        let map_entry = &self.map[item_map_index];
+        *unsafe { &mut *map_entry.state.get() } = ItemState::Progress(None);
+        map_entry.atomic.store(1, Ordering::Relaxed);
         drop(guard);
 
         // do the computation
         let result = f_compute();
 
         // reacquire the lock and mark as done, notifying any waiters
-        let mut guard = self.inner.lock();
-        let slot = &mut guard.map[item_map_index];
-        assert!(matches!(&slot.state, ItemState::Progress(_)));
-        slot.state = ItemState::Done(result);
-        slot.done_var.notify_all();
+        let guard = self.mutex.lock();
+        {
+            let state = unsafe { &mut *map_entry.state.get() };
+            assert!(matches!(*state, ItemState::Progress(_)));
+            *state = ItemState::Done(result);
+            map_entry.atomic.store(2, Ordering::Release);
+            drop(guard);
+        }
+        map_entry.var.notify_all();
 
         // get a reference to the result we just stored, to return to the caller
-        match &slot.state {
+        let state = unsafe { &*map_entry.state.get() };
+        match state {
             ItemState::Unvisited | ItemState::Progress(_) => unreachable!(),
-            ItemState::Done(result) => {
-                let result = unsafe { extend_lifetime(self, result) };
-                Ok(result)
-            }
+            ItemState::Done(result) => Ok(result),
         }
     }
 }
 
 fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S>(
+    _: &MutexGuard<()>,
     map: &'a IndexMap<K, ItemInfo<K, V, S>>,
     start: K,
     origin_item: K,
@@ -200,7 +244,8 @@ fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S>(
 
     let mut curr = start;
     loop {
-        curr = match &map.get(&curr).unwrap().state {
+        let state = &map.get(&curr).unwrap().state;
+        curr = match unsafe { &*state.get() } {
             ItemState::Unvisited => unreachable!(),
             ItemState::Done(_) | ItemState::Progress(None) => break,
             ItemState::Progress(Some(dependency)) => {
@@ -219,11 +264,6 @@ fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S>(
     }
 
     Ok(())
-}
-
-unsafe fn extend_lifetime<'a, 'b, A, B>(lifetime: &'a A, value: &'b B) -> &'a B {
-    let _ = lifetime;
-    std::mem::transmute::<&'b B, &'a B>(value)
 }
 
 pub struct ComputeOnceMap<K, V> {
