@@ -1,7 +1,7 @@
 use crate::front::assignment::ValueVersioned;
 use crate::front::types::ClosedIncRange;
+use crate::util::big_int::BigInt;
 use itertools::Itertools;
-use num_bigint::BigInt;
 
 #[derive(Debug, Default)]
 pub struct Implications {

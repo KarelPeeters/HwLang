@@ -10,11 +10,10 @@ use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::Indent;
 use crate::{swrite, swriteln};
 use itertools::enumerate;
-use num_bigint::{BigInt, BigUint};
-use num_traits::Zero;
 use std::fmt::{Display, Formatter};
 use unwrap_match::unwrap_match;
 
@@ -416,7 +415,7 @@ impl CodegenBlockContext<'_> {
 
                 swriteln!(self.f, "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",);
 
-                let mut offset = BigUint::zero();
+                let mut offset = BigUint::ZERO;
                 for element in elements {
                     match element {
                         IrArrayLiteralElement::Single(value) => {

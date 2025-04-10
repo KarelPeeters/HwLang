@@ -25,7 +25,6 @@ use hwl_language::{
     util::{io::IoErrorWithPath, ResultExt},
 };
 use itertools::{enumerate, Itertools};
-use num_bigint::BigInt;
 use pyo3::{
     create_exception,
     exceptions::PyException,
@@ -63,9 +62,9 @@ struct Type(RustType);
 #[pyclass]
 struct IncRange {
     #[pyo3(get)]
-    start_inc: Option<BigInt>,
+    start_inc: Option<num_bigint::BigInt>,
     #[pyo3(get)]
-    end_inc: Option<BigInt>,
+    end_inc: Option<num_bigint::BigInt>,
 }
 
 #[pyclass]
@@ -275,7 +274,7 @@ impl Type {
 #[pymethods]
 impl IncRange {
     #[new]
-    fn new(start_inc: Option<BigInt>, end_inc: Option<BigInt>) -> Self {
+    fn new(start_inc: Option<num_bigint::BigInt>, end_inc: Option<num_bigint::BigInt>) -> Self {
         Self { start_inc, end_inc }
     }
 

@@ -4,6 +4,7 @@ use std::{
 };
 
 pub mod arena;
+pub mod big_int;
 pub mod data;
 pub mod int;
 pub mod io;

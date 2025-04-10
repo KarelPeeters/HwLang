@@ -12,6 +12,7 @@ use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
+use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
 use crate::util::{Indent, ResultExt};
@@ -19,7 +20,6 @@ use crate::{swrite, swriteln, throw};
 use indexmap::IndexMap;
 use itertools::enumerate;
 use lazy_static::lazy_static;
-use num_bigint::{BigInt, BigUint};
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -939,18 +939,18 @@ fn lower_int_str(x: &BigInt) -> String {
     // TODO zero-width literals are probably not allowed in verilog
     // TODO double-check integer bit-width promotion rules
     let sign = match x.sign() {
-        num_bigint::Sign::Plus | num_bigint::Sign::NoSign => "",
-        num_bigint::Sign::Minus => "-",
+        Sign::Positive | Sign::Zero => "",
+        Sign::Negative => "-",
     };
     let repr = IntRepresentation::for_single(x);
-    format!("{}{}'d{}", sign, repr.width, x.magnitude())
+    format!("{}{}'d{}", sign, repr.width, x.abs())
 }
 
 fn lower_uint_str(x: &BigUint) -> String {
     // TODO zero-width literals are probably not allowed in verilog
     // TODO double-check integer bit-width promotion rules
     // TODO avoid clone
-    let repr = IntRepresentation::for_single(&BigInt::from(x.clone()));
+    let repr = IntRepresentation::for_single(&x.into());
     format!("{}'d{}", repr.width, x)
 }
 

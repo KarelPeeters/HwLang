@@ -23,13 +23,11 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
 use itertools::{enumerate, Either};
-use num_bigint::{BigInt, BigUint};
-use num_integer::Integer;
-use num_traits::{Num, One, Pow, Signed, ToPrimitive, Zero};
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
@@ -510,7 +508,7 @@ impl CompileItemContext<'_, '_> {
                 let expected_ty_curr = match v {
                     ArrayLiteralElement::Single(_) => expected_ty_inner,
                     ArrayLiteralElement::Spread(_, _) => {
-                        &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::zero())
+                        &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::ZERO)
                     }
                 };
 
@@ -680,7 +678,7 @@ impl CompileItemContext<'_, '_> {
                         match &range.end_inc {
                             None => ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, len: None }),
                             Some(end_inc) => {
-                                let slice_len = (end_inc - &start + 1u32).to_biguint().ok_or_else(|| {
+                                let slice_len = BigUint::try_from(end_inc - &start + 1).map_err(|_| {
                                     diags.report_internal_error(
                                         index.span,
                                         format!("slice range end cannot be below start, got range `{range}`"),
@@ -1166,7 +1164,7 @@ impl Iterator for ForIterator {
                 }
 
                 let curr = MaybeCompile::Compile(CompileValue::Int(next.clone()));
-                *next += 1u8;
+                *next += 1;
                 Some(curr)
             }
             ForIterator::CompileArray(iter) => iter.next().map(MaybeCompile::Compile),
@@ -1379,10 +1377,10 @@ pub fn eval_binary_expression(
                         diags.report_simple(
                             "array repetition right hand side cannot be negative",
                             right.span,
-                            format!("got value `{}`", right_inner.into_original()),
+                            format!("got value `{}`", right_inner),
                         )
                     })?;
-                    let right_inner = right_inner.to_usize().ok_or_else(|| {
+                    let right_inner = usize::try_from(right_inner).map_err(|right_inner| {
                         diags.report_simple(
                             "array repetition right hand side too large",
                             right.span,
@@ -1477,11 +1475,11 @@ pub fn eval_binary_expression(
                     .finish();
                 return Err(diags.report(diag));
             }
-            let right_positive = right.inner.range().start_inc.is_positive();
+            let right_positive = right.inner.range().start_inc > &BigInt::ZERO;
 
             match pair_compile_int(left, right) {
                 MaybeCompile::Compile((left, right)) => {
-                    let result = left.inner.div_floor(&right.inner);
+                    let result = left.inner.div_floor(&right.inner).unwrap();
                     MaybeCompile::Compile(CompileValue::Int(result))
                 }
                 MaybeCompile::Other((left, right)) => {
@@ -1491,13 +1489,13 @@ pub fn eval_binary_expression(
                     let b_max = &right.inner.ty.end_inc;
                     let range = if right_positive {
                         ClosedIncRange {
-                            start_inc: min(a_min.div_floor(b_max), a_min.div_floor(b_min)),
-                            end_inc: max(a_max.div_floor(b_max), a_max.div_floor(b_min)),
+                            start_inc: min(a_min.div_floor(b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
+                            end_inc: max(a_max.div_floor(b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
                         }
                     } else {
                         ClosedIncRange {
-                            start_inc: min(a_max.div_floor(b_max), a_max.div_floor(b_min)),
-                            end_inc: max(a_min.div_floor(b_max), a_min.div_floor(b_min)),
+                            start_inc: min(a_max.div_floor(b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
+                            end_inc: max(a_min.div_floor(b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
                         }
                     };
 
@@ -1527,11 +1525,11 @@ pub fn eval_binary_expression(
                     .finish();
                 return Err(diags.report(diag));
             }
-            let right_positive = right.inner.range().start_inc.is_positive();
+            let right_positive = right.inner.range().start_inc > &BigInt::ZERO;
 
             match pair_compile_int(left, right) {
                 MaybeCompile::Compile((left, right)) => {
-                    let result = left.inner.mod_floor(&right.inner);
+                    let result = left.inner.mod_floor(&right.inner).unwrap();
                     MaybeCompile::Compile(CompileValue::Int(result))
                 }
                 MaybeCompile::Other((left, right)) => {
@@ -1609,7 +1607,7 @@ pub fn eval_binary_expression(
                     // If base is negative, even/odd powers can cause extremes.
                     // To guard this, try the next highest exponent too if it exists.
                     if exp_end_inc > BigUint::ZERO {
-                        let end_exp_sub_one = exp_end_inc.sub(&BigUint::one());
+                        let end_exp_sub_one = BigUint::try_from(exp_end_inc.sub(&BigUint::ONE)).unwrap();
                         result_min = min(result_min, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
                         result_max = max(result_max, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
                     }
@@ -1937,7 +1935,7 @@ fn array_literal_combine_values(
 
         let mut result_domain = ValueDomain::CompileTime;
         let mut result_exprs = vec![];
-        let mut result_len = BigUint::zero();
+        let mut result_len = BigUint::ZERO;
 
         for elem in values {
             let (elem_ir, domain, elem_len) = match elem {
@@ -1961,7 +1959,7 @@ fn array_literal_combine_values(
                     (
                         IrArrayLiteralElement::Single(value_ir.expr),
                         value_ir.domain,
-                        BigUint::one(),
+                        BigUint::ONE,
                     )
                 }
                 ArrayLiteralElement::Spread(_, elem_inner) => {
@@ -1971,7 +1969,7 @@ fn array_literal_combine_values(
 
                     let len = match value_ir.ty() {
                         Type::Array(_, len) => len,
-                        _ => BigUint::zero(),
+                        _ => BigUint::ZERO,
                     };
                     check_type_contains_value(
                         diags,

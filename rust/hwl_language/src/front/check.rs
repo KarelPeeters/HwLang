@@ -6,8 +6,8 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
-use num_bigint::{BigInt, BigUint};
 
 impl CompileItemContext<'_, '_> {
     pub fn check_valid_domain_crossing(
@@ -323,7 +323,7 @@ pub fn check_type_is_uint_compile(
     check_type_contains_compile_value(diags, reason, &Type::Int(range), value.as_ref(), false)?;
 
     match value.inner {
-        CompileValue::Int(value_inner) => Ok(value_inner.to_biguint().unwrap()),
+        CompileValue::Int(value_inner) => Ok(BigUint::try_from(value_inner).unwrap()),
         _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
     }
 }

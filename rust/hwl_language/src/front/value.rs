@@ -7,9 +7,8 @@ use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
+use crate::util::big_int::{BigInt, BigUint};
 use itertools::enumerate;
-use num_bigint::{BigInt, BigUint};
-use num_traits::ToPrimitive;
 use std::convert::identity;
 
 // TODO rename
@@ -172,7 +171,7 @@ impl CompileValue {
                 _ => HardwareValueResult::InvalidType,
             },
             CompileValue::Array(values) => match ty {
-                HardwareType::Array(inner_ty, len) if len.to_usize() == Some(values.len()) => map_array(
+                HardwareType::Array(inner_ty, len) if len == &BigUint::from(values.len()) => map_array(
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,

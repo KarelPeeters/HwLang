@@ -6,9 +6,8 @@ use crate::front::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::util::arena::Arena;
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
-use num_bigint::{BigInt, BigUint};
-use num_traits::One;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
@@ -354,7 +353,7 @@ impl IrType {
 
     pub fn bit_width(&self) -> BigUint {
         match self {
-            IrType::Bool => BigUint::one(),
+            IrType::Bool => BigUint::ONE,
             IrType::Int(range) => IntRepresentation::for_range(range).width,
             IrType::Tuple(inner) => inner.iter().map(IrType::bit_width).sum(),
             IrType::Array(inner, len) => inner.bit_width() * len,

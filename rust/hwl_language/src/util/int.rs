@@ -1,6 +1,5 @@
 use crate::front::types::ClosedIncRange;
-use num_bigint::{BigInt, BigUint};
-use num_traits::Signed as _;
+use crate::util::big_int::{BigInt, BigUint};
 use std::cmp::max;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -35,11 +34,11 @@ impl IntRepresentation {
         //    this is a bit tricky for signed, and also only a partial optimization
         //    (we could minimize bits even for non-single-value ranges too)
 
-        let (signed, bits) = if start.is_negative() {
+        let (signed, bits) = if start < &BigInt::ZERO {
             // signed
             // prevent max value underflow
-            let max_value = if end.is_negative() { &BigInt::ZERO } else { end };
-            let max_bits = max(1 + (start + 1u32).bits(), 1 + max_value.bits());
+            let max_value = if end < &BigInt::ZERO { &BigInt::ZERO } else { end };
+            let max_bits = max(1 + (start + 1u8).bits(), 1 + max_value.bits());
 
             (Signed::Signed, max_bits)
         } else {
@@ -57,8 +56,8 @@ impl IntRepresentation {
 #[cfg(test)]
 mod test {
     use crate::front::types::ClosedIncRange;
+    use crate::util::big_int::BigInt;
     use crate::util::int::{IntRepresentation, Signed};
-    use num_bigint::BigInt;
     use std::ops::Range;
 
     #[track_caller]

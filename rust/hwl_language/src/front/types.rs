@@ -1,7 +1,7 @@
 use crate::front::ir::IrType;
 use crate::swrite;
+use crate::util::big_int::{BigInt, BigUint};
 use itertools::{zip_eq, Itertools};
-use num_bigint::{BigInt, BigUint};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
 use std::ops::{AddAssign, RangeBounds};

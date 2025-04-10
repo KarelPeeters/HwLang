@@ -6,9 +6,8 @@ use crate::front::ir::{
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
+use crate::util::big_int::BigUint;
 use itertools::zip_eq;
-use num_bigint::BigUint;
-use num_traits::Zero;
 use std::borrow::Cow;
 use unwrap_match::unwrap_match;
 
@@ -190,7 +189,7 @@ impl IrExpression {
         match self {
             IrExpression::TupleLiteral(_) => {}
             IrExpression::ArrayLiteral(inner_ty, len, values) => {
-                let mut actual_len = BigUint::zero();
+                let mut actual_len = BigUint::ZERO;
                 for value in values {
                     match value {
                         IrArrayLiteralElement::Single(value) => {

@@ -6,9 +6,8 @@ use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
+use crate::util::big_int::{BigInt, BigUint};
 use itertools::Itertools;
-use num_bigint::{BigInt, BigUint};
-use num_traits::{Signed, ToPrimitive};
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
@@ -448,7 +447,7 @@ pub fn check_range_index(
     index: Spanned<ClosedIncRange<&BigInt>>,
     array_len: Spanned<&BigUint>,
 ) -> Result<(), ErrorGuaranteed> {
-    if index.inner.start_inc.is_negative() || index.inner.end_inc >= &BigInt::from(array_len.inner.clone()) {
+    if index.inner.start_inc < &BigInt::ZERO || index.inner.end_inc >= &BigInt::from(array_len.inner.clone()) {
         let index_str = if let Some(index) = index.inner.as_single() {
             format!("`{index}`")
         } else {
@@ -477,7 +476,7 @@ pub fn check_range_index_compile(
         index.map_inner(ClosedIncRange::single),
         array_len.map_inner(BigUint::from).as_ref(),
     )?;
-    Ok(index.inner.to_usize().unwrap())
+    Ok(usize::try_from(index.inner).unwrap())
 }
 
 pub fn check_range_slice(
@@ -507,7 +506,8 @@ pub fn check_range_slice(
     };
 
     // check start
-    if slice_start.inner.start_inc.is_negative() || slice_start.inner.end_inc > &BigInt::from(array_len.inner.clone()) {
+    if slice_start.inner.start_inc < &BigInt::ZERO || slice_start.inner.end_inc > &BigInt::from(array_len.inner.clone())
+    {
         let diag = Diagnostic::new("array slice start out of bounds")
             .add_error(
                 slice_start.span,
@@ -541,8 +541,8 @@ pub fn check_range_slice(
 
         Ok(slice_len.inner.clone())
     } else {
-        let slice_start = slice_start.inner.as_single().unwrap();
-        Ok(array_len.inner - slice_start.to_biguint().unwrap())
+        let slice_start = BigUint::try_from(*slice_start.inner.as_single().unwrap()).unwrap();
+        Ok(BigUint::try_from(array_len.inner - slice_start).unwrap())
     }
 }
 
@@ -563,9 +563,9 @@ pub fn check_range_slice_compile(
         slice_len,
         array_len.map_inner(BigUint::from).as_ref(),
     )?;
-    let start = slice_start.inner.to_usize().unwrap();
+    let start = usize::try_from(slice_start.inner).unwrap();
     let len = slice_len
-        .map(|len| len.inner.to_usize().unwrap())
+        .map(|len| usize::try_from(len.inner).unwrap())
         .unwrap_or(array_len.inner - start);
     Ok(SliceInfo { start, len })
 }

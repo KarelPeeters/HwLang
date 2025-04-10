@@ -1,4 +1,5 @@
 use crate::{Compile, Function, IncRange, Module, Type, Undefined};
+use hwl_language::util::big_int::BigInt;
 use hwl_language::{
     front::{types::IncRange as RustIncRange, value::CompileValue},
     syntax::{
@@ -7,7 +8,6 @@ use hwl_language::{
     },
 };
 use itertools::Itertools;
-use num_bigint::BigInt;
 use pyo3::{
     exceptions::PyException,
     prelude::*,
@@ -20,7 +20,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: CompileValue)
         CompileValue::Undefined => Undefined.into_py_any(py),
         CompileValue::Type(x) => Type(x).into_py_any(py),
         CompileValue::Bool(x) => x.into_py_any(py),
-        CompileValue::Int(x) => x.into_py_any(py),
+        CompileValue::Int(x) => x.into_num_bigint().into_py_any(py),
         CompileValue::String(x) => x.into_py_any(py),
         CompileValue::Tuple(x) => {
             let items: Vec<_> = x
@@ -39,8 +39,8 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: CompileValue)
         CompileValue::IntRange(x) => {
             let RustIncRange { start_inc, end_inc } = x;
             IncRange {
-                start_inc: start_inc.clone(),
-                end_inc: end_inc.clone(),
+                start_inc: start_inc.map(BigInt::into_num_bigint).clone(),
+                end_inc: end_inc.map(BigInt::into_num_bigint).clone(),
             }
             .into_py_any(py)
         }
@@ -74,8 +74,8 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
     if let Ok(value) = value.extract::<bool>() {
         return Ok(CompileValue::Bool(value));
     }
-    if let Ok(value) = value.extract::<BigInt>() {
-        return Ok(CompileValue::Int(value));
+    if let Ok(value) = value.extract::<num_bigint::BigInt>() {
+        return Ok(CompileValue::Int(BigInt::from_num_bigint(value)));
     }
     if let Ok(value) = value.extract::<String>() {
         return Ok(CompileValue::String(value));
@@ -91,8 +91,8 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
     if let Ok(value) = value.extract::<PyRef<IncRange>>() {
         let IncRange { start_inc, end_inc } = &*value;
         return Ok(CompileValue::IntRange(RustIncRange {
-            start_inc: start_inc.clone(),
-            end_inc: end_inc.clone(),
+            start_inc: start_inc.clone().map(BigInt::from_num_bigint),
+            end_inc: end_inc.clone().map(BigInt::from_num_bigint),
         }));
     }
     if let Ok(module) = value.extract::<PyRef<Module>>() {
