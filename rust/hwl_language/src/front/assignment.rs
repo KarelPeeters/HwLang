@@ -12,7 +12,7 @@ use crate::front::scope::Scope;
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::MaybeCompile;
-use crate::syntax::ast::{Assignment, BinaryOp, Spanned};
+use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 use indexmap::IndexMap;
 
@@ -188,6 +188,31 @@ impl VariableValues {
     }
 }
 
+// TODO move to better place?
+pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
+    diags: &Diagnostics,
+    ctx: &mut C,
+    ctx_block: &mut C::Block,
+    debug_info_id: MaybeIdentifier,
+    expr: TypedIrExpression,
+) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
+    let span = debug_info_id.span();
+    let var_ir_info = IrVariableInfo {
+        ty: expr.ty.to_ir(),
+        debug_info_id,
+    };
+    let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;
+
+    let stmt_store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), expr.expr);
+    ctx.push_ir_statement(diags, ctx_block, Spanned::new(span, stmt_store))?;
+
+    Ok(TypedIrExpression {
+        ty: expr.ty,
+        domain: expr.domain,
+        expr: var_ir,
+    })
+}
+
 impl CompileItemContext<'_, '_> {
     pub fn elaborate_assignment<C: ExpressionContext>(
         &mut self,
@@ -197,6 +222,8 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         stmt: &Assignment,
     ) -> Result<VariableValues, ErrorGuaranteed> {
+        println!("elaborate_assignment to {:?}", stmt.target);
+
         let diags = self.refs.diags;
         let Assignment {
             span: _,
@@ -256,6 +283,8 @@ impl CompileItemContext<'_, '_> {
                 return Ok(vars);
             }
         };
+
+        println!("target signal: {target_base_signal:?}");
 
         // handle hardware signal assignment
         // TODO report exact range/sub-access that is being assigned
@@ -352,6 +381,8 @@ impl CompileItemContext<'_, '_> {
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<(), ErrorGuaranteed> {
+        println!("elaborate_variable_assignment");
+
         let diags = self.refs.diags;
         let AssignmentTarget {
             base: target_base,
@@ -400,6 +431,21 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, reason, &ty.inner, value_eval.as_ref(), true, false)?;
             }
 
+            // store hardware expression in IR variable, to avoid generating duplicate code if we end up using it multiple times
+            let value_stored = match value_eval.inner {
+                MaybeCompile::Compile(value_inner) => MaybeCompile::Compile(value_inner),
+                MaybeCompile::Other(value_inner) => MaybeCompile::Other(
+                    store_ir_expression_in_new_variable(
+                        diags,
+                        ctx,
+                        ctx_block,
+                        self.variables[var].id.clone(),
+                        value_inner,
+                    )?
+                    .to_general_expression(),
+                ),
+            };
+
             // set variable
             vars.set(
                 diags,
@@ -409,7 +455,7 @@ impl CompileItemContext<'_, '_> {
                     event: AssignmentEvent {
                         assigned_value_span: value_eval.span,
                     },
-                    value: value_eval.inner,
+                    value: value_stored,
                 }),
             )?;
             return Ok(());
@@ -444,7 +490,11 @@ impl CompileItemContext<'_, '_> {
             };
 
             // create a corresponding ir variable
-            let (target_base_ty, target_base_domain, var_ir) = self.convert_variable_to_ir_variable(
+            let TypedIrExpression {
+                ty: target_base_ty,
+                domain: target_base_domain,
+                expr: target_base_ir_var,
+            } = self.convert_variable_to_new_ir_variable(
                 ctx,
                 ctx_block,
                 target.span,
@@ -465,7 +515,7 @@ impl CompileItemContext<'_, '_> {
             // do the current assignment
             let value_ir = value.inner.as_ir_expression(diags, value.span, &target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
-                base: IrAssignmentTargetBase::Variable(var_ir),
+                base: IrAssignmentTargetBase::Variable(target_base_ir_var),
                 steps: target_steps_ir,
             };
             let stmt_store = IrStatement::Assign(target_ir, value_ir.expr);
@@ -482,7 +532,7 @@ impl CompileItemContext<'_, '_> {
                 value: MaybeCompile::Other(TypedIrExpression {
                     ty: target_base_ty.inner,
                     domain: combined_domain,
-                    expr: IrExpression::Variable(var_ir),
+                    expr: IrExpression::Variable(target_base_ir_var),
                 }),
             };
             vars.set(diags, stmt_span, var, MaybeAssignedValue::Assigned(assigned))?;
@@ -551,15 +601,15 @@ impl CompileItemContext<'_, '_> {
         Ok(())
     }
 
-    fn convert_variable_to_ir_variable<C: ExpressionContext>(
+    fn convert_variable_to_new_ir_variable<C: ExpressionContext>(
         &self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
         target_span: Span,
         target_base_span: Span,
         var: Variable,
-        target_base_eval: &MaybeCompile<TypedIrExpression>,
-    ) -> Result<(Spanned<HardwareType>, ValueDomain, IrVariable), ErrorGuaranteed> {
+        target_base_eval: &MaybeCompile<TypedIrExpression<HardwareType>>,
+    ) -> Result<TypedIrExpression<Spanned<HardwareType>, IrVariable>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         // pick a type and convert the current base value to hardware
@@ -586,23 +636,21 @@ impl CompileItemContext<'_, '_> {
                 .finish();
             diags.report(diag)
         })?;
-        let target_base_ty_hw = Spanned::new(target_base_ty.span, target_base_ty_hw);
 
-        let target_base_ir_expr =
-            target_base_eval.as_ir_expression(diags, target_base_span, &target_base_ty_hw.inner)?;
+        let target_base_ir_expr = target_base_eval.as_ir_expression(diags, target_base_span, &target_base_ty_hw)?;
+        let result = store_ir_expression_in_new_variable(
+            diags,
+            ctx,
+            ctx_block,
+            self.variables[var].id.clone(),
+            target_base_ir_expr,
+        )?;
 
-        // create ir variable and replace the variable with it
-        let var_ir_info = IrVariableInfo {
-            ty: target_base_ty_hw.inner.to_ir(),
-            debug_info_id: self.variables[var].id.clone(),
-        };
-        let var_ir = ctx.new_ir_variable(diags, target_base_span, var_ir_info)?;
-
-        // store previous value into ir variable
-        let stmt_init = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), target_base_ir_expr.expr);
-        ctx.push_ir_statement(diags, ctx_block, Spanned::new(target_span, stmt_init))?;
-
-        Ok((target_base_ty_hw, target_base_ir_expr.domain, var_ir))
+        Ok(TypedIrExpression {
+            ty: Spanned::new(target_base_ty.span, result.ty),
+            domain: result.domain,
+            expr: result.expr,
+        })
     }
 
     fn check_assignment_domains(

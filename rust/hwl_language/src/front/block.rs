@@ -1,5 +1,6 @@
 use crate::front::assignment::{
-    AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues, VariableValuesInner,
+    store_ir_expression_in_new_variable, AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues,
+    VariableValuesInner,
 };
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, Variable, VariableInfo};
@@ -31,7 +32,7 @@ pub struct TypedIrExpression<T = HardwareType, E = IrExpression> {
     pub expr: E,
 }
 
-impl Typed for TypedIrExpression {
+impl<E> Typed for TypedIrExpression<HardwareType, E> {
     fn ty(&self) -> Type {
         self.ty.as_type()
     }
@@ -230,14 +231,25 @@ impl CompileItemContext<'_, '_> {
                         let variable = self.variables.push(info);
 
                         // store value
+                        // TODO setting it to NotYetAssigned is weird,
+                        //   that should have happened immediately when declaring the variable
                         let assigned = match init {
                             None => MaybeAssignedValue::NotYetAssigned,
-                            Some(init) => MaybeAssignedValue::Assigned(AssignedValue {
-                                event: AssignmentEvent {
-                                    assigned_value_span: init.span,
-                                },
-                                value: init.inner,
-                            }),
+                            Some(init) => {
+                                let init_var = match init.inner {
+                                    MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
+                                    MaybeCompile::Other(v) => MaybeCompile::Other(
+                                        store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), v)?
+                                            .to_general_expression(),
+                                    ),
+                                };
+                                MaybeAssignedValue::Assigned(AssignedValue {
+                                    event: AssignmentEvent {
+                                        assigned_value_span: init.span,
+                                    },
+                                    value: init_var,
+                                })
+                            }
                         };
                         vars.set(diags, id.span(), variable, assigned)?;
 
