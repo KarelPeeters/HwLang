@@ -1,6 +1,6 @@
 use clap::Parser;
 use hwl_language::constants::THREAD_STACK_SIZE;
-use hwl_language::front::compile::{compile, StdoutPrintHandler};
+use hwl_language::front::compile::{compile, ElaborationSet, StdoutPrintHandler};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
@@ -28,6 +28,8 @@ struct Args {
     profile: bool,
     #[arg(long)]
     print_files: bool,
+    #[arg(long)]
+    only_top: bool,
 }
 
 fn main() -> ExitCode {
@@ -47,8 +49,14 @@ fn main_inner() -> ExitCode {
         thread_count,
         profile,
         print_files,
+        only_top,
     } = Args::parse();
     let thread_count = thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE));
+    let elaboration_set = if only_top {
+        ElaborationSet::TopOnly
+    } else {
+        ElaborationSet::AsMuchAsPossible
+    };
 
     let start_all = Instant::now();
 
@@ -87,6 +95,7 @@ fn main_inner() -> ExitCode {
         &diags,
         &source,
         &parsed,
+        elaboration_set,
         &mut StdoutPrintHandler,
         &|| false,
         thread_count,

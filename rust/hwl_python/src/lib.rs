@@ -187,7 +187,7 @@ impl Parsed {
                 parsed: &parsed.parsed,
             };
 
-            let state = CompileShared::new(fixed, &diags, NON_ZERO_USIZE_ONE);
+            let state = CompileShared::new(fixed, &diags, false, NON_ZERO_USIZE_ONE);
             check_diags(&source.source, &diags)?;
 
             state
@@ -413,7 +413,7 @@ impl ModuleInstance {
         let state = {
             let fixed = CompileFixed { source, parsed };
             let replacement_diags = Diagnostics::new();
-            let replacement_state = CompileShared::new(fixed, &replacement_diags, NON_ZERO_USIZE_ONE);
+            let replacement_state = CompileShared::new(fixed, &replacement_diags, false, NON_ZERO_USIZE_ONE);
             let state = std::mem::replace(&mut compile.state, replacement_state);
             state
         };

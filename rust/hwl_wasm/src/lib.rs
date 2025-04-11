@@ -1,4 +1,4 @@
-use hwl_language::front::compile::{compile, CollectPrintHandler};
+use hwl_language::front::compile::{compile, CollectPrintHandler, ElaborationSet};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
@@ -78,6 +78,7 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         &diags,
         &source,
         &parsed,
+        ElaborationSet::AsMuchAsPossible,
         &mut print_handler,
         &should_stop,
         NON_ZERO_USIZE_ONE,

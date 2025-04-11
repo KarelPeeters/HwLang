@@ -36,12 +36,18 @@ pub fn compile(
     diags: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
+    elaboration_set: ElaborationSet,
     print_handler: &mut (dyn PrintHandler + Sync),
     should_stop: &(dyn Fn() -> bool + Sync),
     thread_count: NonZeroUsize,
 ) -> Result<IrDatabase, ErrorGuaranteed> {
     let fixed = CompileFixed { source, parsed };
-    let shared = CompileShared::new(fixed, diags, thread_count);
+
+    let queue_all_items = match elaboration_set {
+        ElaborationSet::TopOnly => false,
+        ElaborationSet::AsMuchAsPossible => true,
+    };
+    let shared = CompileShared::new(fixed, diags, queue_all_items, thread_count);
 
     // get the top module
     // TODO we don't really need to do this any more, all non-generic modules are elaborated anyway
@@ -128,6 +134,12 @@ pub fn compile(
     };
     db.validate(diags)?;
     Ok(db)
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ElaborationSet {
+    TopOnly,
+    AsMuchAsPossible,
 }
 
 impl<'s> CompileRefs<'_, 's> {
@@ -650,7 +662,7 @@ fn find_top_module(
 }
 
 impl CompileShared {
-    pub fn new(fixed: CompileFixed, diags: &Diagnostics, thread_count: NonZeroUsize) -> Self {
+    pub fn new(fixed: CompileFixed, diags: &Diagnostics, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
         let CompileFixed { source, parsed } = fixed;
         let file_scopes = populate_file_scopes(diags, fixed);
 
@@ -673,8 +685,10 @@ impl CompileShared {
         //   * which is actually faster? (for mutex contention)
         //   * do we want to shuffle anyway to test that the compiler is deterministic?
         let work_queue = SharedQueue::new(thread_count);
-        items.shuffle(&mut rand::thread_rng());
-        work_queue.push_batch(items.into_iter().map(WorkItem::EvaluateItem));
+        if queue_all_items {
+            items.shuffle(&mut rand::thread_rng());
+            work_queue.push_batch(items.into_iter().map(WorkItem::EvaluateItem));
+        }
 
         CompileShared {
             file_scopes,
