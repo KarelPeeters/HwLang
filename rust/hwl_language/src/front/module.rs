@@ -1,4 +1,3 @@
-use crate::front::assignment::VariableValues;
 use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, check_type_is_bool_compile,
@@ -17,6 +16,7 @@ use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signa
 use crate::front::scope::{Scope, ScopeContent};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::front::variables::VariableValues;
 use crate::syntax::ast::{self, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind};
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
@@ -49,6 +49,8 @@ struct BodyElaborationContext<'a, 's> {
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
     processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
 }
+
+type SignalsInScope = Vec<Spanned<Signal>>;
 
 // TODO rename, this should really be "module ports, viewed from the outside"
 new_index_type!(pub InstancePort);
@@ -211,7 +213,7 @@ impl CompileRefs<'_, '_> {
                              ty: Spanned<HardwareType>| {
             let ir_port = ports_ir.push(IrPortInfo {
                 direction: direction.inner,
-                ty: ty.inner.to_ir(),
+                ty: ty.inner.as_ir(),
                 debug_info_id: id.clone(),
                 debug_info_ty: ty.inner.clone(),
                 debug_info_domain: domain.inner.to_diagnostic_string(&ctx),
@@ -263,11 +265,11 @@ impl CompileRefs<'_, '_> {
                             }),
                         ),
                         WireKind::Normal { domain, ty } => {
-                            let no_vars = VariableValues::NO_VARS;
+                            let mut vars = VariableValues::new_root(&ctx.variables);
                             (
                                 ctx.eval_port_domain(scope_header, domain)
                                     .map(|d| d.map_inner(PortDomain::Kind)),
-                                ctx.eval_expression_as_ty_hardware(scope_header, &no_vars, ty, "port"),
+                                ctx.eval_expression_as_ty_hardware(scope_header, &mut vars, ty, "port"),
                             )
                         }
                     };
@@ -297,8 +299,8 @@ impl CompileRefs<'_, '_> {
                         } = port;
 
                         // eval ty
-                        let no_vars = VariableValues::NO_VARS;
-                        let ty = ctx.eval_expression_as_ty_hardware(&scope_header, &no_vars, ty, "port");
+                        let mut vars = VariableValues::new_root(&ctx.variables);
+                        let ty = ctx.eval_expression_as_ty_hardware(&scope_header, &mut vars, ty, "port");
 
                         // build entry
                         let entry = result_pair(domain.as_ref_ok(), ty).map(|(&domain, ty)| {
@@ -329,6 +331,11 @@ impl CompileRefs<'_, '_> {
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let drivers = Drivers::new(&ports);
 
+        let mut signals_in_scope: SignalsInScope = vec![];
+        for (port, port_info) in &ports {
+            signals_in_scope.push(Spanned::new(port_info.id.span, Signal::Port(port)));
+        }
+
         let mut ctx_item = CompileItemContext::new(*self, None);
         ctx_item.ports = ports;
 
@@ -346,7 +353,7 @@ impl CompileRefs<'_, '_> {
         };
 
         // process declarations
-        ctx.elaborate_block(scope_header, body);
+        ctx.elaborate_block(scope_header, &mut signals_in_scope, body);
 
         // stop if any errors have happened so far, we don't want spurious errors about drivers
         for p in &ctx.processes {
@@ -410,13 +417,13 @@ impl<'s> CompileItemContext<'_, 's> {
         } = header;
 
         // eval module and generics
-        let no_vars = VariableValues::NO_VARS;
+        let mut vars = VariableValues::new_root(&self.variables);
         let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
-            self.eval_expression_as_compile(&scope, &no_vars, module, "module instance");
+            self.eval_expression_as_compile(&scope, &mut vars, module, "module instance");
         let generic_args = generic_args
             .as_ref()
             .map(|generic_args| {
-                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(&scope, &no_vars, a, "generic arg"))
+                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(&scope, &mut vars, a, "generic arg"))
             })
             .transpose();
 
@@ -441,15 +448,21 @@ impl<'s> CompileItemContext<'_, 's> {
 }
 
 impl BodyElaborationContext<'_, '_> {
-    fn elaborate_block(&mut self, scope: &Scope, block: &Block<ModuleStatement>) {
+    fn elaborate_block(&mut self, scope: &Scope, signals: &mut SignalsInScope, block: &Block<ModuleStatement>) {
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future declarations
         let mut scope_inner = Scope::new_child(block.span, scope);
-        self.pass_0_declarations(&mut scope_inner, block);
-        self.pass_1_processes(&scope_inner, block);
+
+        let signals_len_before = signals.len();
+        self.pass_0_declarations(&mut scope_inner, signals, block);
+        let signals_len_after = signals.len();
+
+        self.pass_1_processes(&scope_inner, signals, block);
+        assert_eq!(signals_len_after, signals.len());
+        signals.truncate(signals_len_before);
     }
 
-    fn pass_0_declarations(&mut self, scope: &mut Scope, body: &Block<ModuleStatement>) {
+    fn pass_0_declarations(&mut self, scope: &mut Scope, signals: &mut SignalsInScope, body: &Block<ModuleStatement>) {
         let diags = self.ctx.refs.diags;
 
         let Block { span: _, statements } = body;
@@ -465,14 +478,17 @@ impl BodyElaborationContext<'_, '_> {
                 ModuleStatementKind::Block(_) => {}
                 // declarations
                 ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.ctx.eval_and_declare_declaration(scope, None, decl)
+                    let mut vars = VariableValues::new_root(&self.ctx.variables);
+                    self.ctx.eval_and_declare_declaration(scope, &mut vars, decl)
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let reg = self.elaborate_module_declaration_reg(scope, decl);
                     let entry = reg.map(|reg_init| {
-                        self.register_initial_values.insert_first(reg_init.reg, reg_init.init);
-                        self.drivers.reg_drivers.insert_first(reg_init.reg, IndexMap::new());
-                        ScopedEntry::Named(NamedValue::Register(reg_init.reg))
+                        let RegisterInit { reg, init } = reg_init;
+                        self.register_initial_values.insert_first(reg, init);
+                        self.drivers.reg_drivers.insert_first(reg, IndexMap::new());
+                        signals.push(Spanned::new(decl.id.span(), Signal::Register(reg)));
+                        ScopedEntry::Named(NamedValue::Register(reg))
                     });
 
                     scope.maybe_declare(diags, decl.id.as_ref(), entry);
@@ -495,6 +511,9 @@ impl BodyElaborationContext<'_, '_> {
 
                     let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
                     scope.maybe_declare(diags, decl.id.as_ref(), entry);
+                    if let Ok(wire) = wire {
+                        signals.push(Spanned::new(decl.id.span(), Signal::Wire(wire)));
+                    }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     // declare register that shadows the outer port, which is exactly what we want
@@ -510,6 +529,7 @@ impl BodyElaborationContext<'_, '_> {
 
                             let entry = Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg)));
                             scope.declare(diags, &decl.id, entry);
+                            signals.push(Spanned::new(decl.id.span, Signal::Register(reg_init.reg)));
                         }
                         Err(e) => {
                             // don't do anything, as if the marker is not there
@@ -521,7 +541,7 @@ impl BodyElaborationContext<'_, '_> {
         }
     }
 
-    fn pass_1_processes(&mut self, scope: &Scope, body: &Block<ModuleStatement>) {
+    fn pass_1_processes(&mut self, scope: &Scope, signals: &mut SignalsInScope, body: &Block<ModuleStatement>) {
         let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
 
@@ -529,14 +549,15 @@ impl BodyElaborationContext<'_, '_> {
             match &stmt.inner {
                 // control flow
                 ModuleStatementKind::Block(block) => {
-                    self.elaborate_block(scope, block);
+                    self.elaborate_block(scope, signals, block);
                 }
-                ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, if_stmt) {
+                ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, signals, if_stmt) {
                     Ok(()) => {}
                     Err(e) => self.processes.push(Err(e)),
                 },
                 ModuleStatementKind::For(for_stmt) => {
-                    match self.elaborate_for(scope, Spanned::new(stmt.span, for_stmt)) {
+                    let for_stmt = Spanned::new(stmt.span, for_stmt);
+                    match self.elaborate_for(scope, signals, for_stmt) {
                         Ok(()) => {}
                         Err(e) => self.processes.push(Err(e)),
                     }
@@ -555,17 +576,19 @@ impl BodyElaborationContext<'_, '_> {
                     } = block;
 
                     let block_domain = BlockDomain::Combinatorial;
+
+                    let mut vars = self.new_vars_for_process(signals);
                     let mut report_assignment = |target: Spanned<Signal>| {
                         self.drivers
                             .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
                     };
-
                     let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                    let ir_block = self.ctx.elaborate_block(&mut ctx, VariableValues::new(), scope, block);
+
+                    let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars, block);
 
                     let ir_block = ir_block.and_then(|(ir_block, end)| {
                         let ir_variables = ctx.finish();
-                        let _: VariableValues = end.unwrap_outside_function_and_loop(diags)?;
+                        end.unwrap_outside_function_and_loop(diags)?;
                         let process = IrCombinatorialProcess {
                             locals: ir_variables,
                             block: ir_block,
@@ -599,17 +622,19 @@ impl BodyElaborationContext<'_, '_> {
                             inner: domain.inner,
                         };
                         let block_domain = BlockDomain::Clocked(block_domain);
+
+                        let mut vars = self.new_vars_for_process(signals);
                         let mut report_assignment = |target: Spanned<Signal>| {
                             self.drivers
                                 .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
                         };
-
                         let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
-                        let ir_block = self.ctx.elaborate_block(&mut ctx, VariableValues::new(), scope, block);
+
+                        let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars, block);
 
                         ir_block.and_then(|(ir_block, end)| {
                             let ir_variables = ctx.finish();
-                            let _: VariableValues = end.unwrap_outside_function_and_loop(diags)?;
+                            end.unwrap_outside_function_and_loop(diags)?;
 
                             let process = IrClockedProcess {
                                 domain: Spanned {
@@ -638,23 +663,38 @@ impl BodyElaborationContext<'_, '_> {
         }
     }
 
-    fn elaborate_if(&mut self, scope: &Scope, if_stmt: &IfStatement<ModuleStatement>) -> Result<(), ErrorGuaranteed> {
+    fn new_vars_for_process(&self, signals_in_scope: &[Spanned<Signal>]) -> VariableValues<'static> {
+        let mut vars = VariableValues::new_root(&self.ctx.variables);
+        for &signal in signals_in_scope {
+            // we're creating a new instance of variables here, and we know none of these signals are duplicate,
+            //   so we can unwrap
+            vars.signal_new(self.ctx.refs.diags, signal).unwrap();
+        }
+        vars
+    }
+
+    fn elaborate_if(
+        &mut self,
+        scope: &Scope,
+        signals: &mut SignalsInScope,
+        if_stmt: &IfStatement<ModuleStatement>,
+    ) -> Result<(), ErrorGuaranteed> {
         let IfStatement {
             initial_if,
             else_ifs,
             final_else,
         } = if_stmt;
 
-        if self.elaborate_if_pair(scope, initial_if)? {
+        if self.elaborate_if_pair(scope, signals, initial_if)? {
             return Ok(());
         }
         for else_if in else_ifs {
-            if self.elaborate_if_pair(scope, else_if)? {
+            if self.elaborate_if_pair(scope, signals, else_if)? {
                 return Ok(());
             }
         }
         if let Some(final_else) = final_else {
-            self.elaborate_block(scope, final_else);
+            self.elaborate_block(scope, signals, final_else);
         }
 
         Ok(())
@@ -663,6 +703,7 @@ impl BodyElaborationContext<'_, '_> {
     fn elaborate_if_pair(
         &mut self,
         scope: &Scope,
+        signals: &mut SignalsInScope,
         pair: &IfCondBlockPair<ModuleStatement>,
     ) -> Result<bool, ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
@@ -673,15 +714,15 @@ impl BodyElaborationContext<'_, '_> {
             block,
         } = pair;
 
-        let no_vars = VariableValues::NO_VARS;
+        let mut vars = VariableValues::new_root(&self.ctx.variables);
         let cond = self
             .ctx
-            .eval_expression_as_compile(scope, &no_vars, cond, "module-level if condition")?;
+            .eval_expression_as_compile(scope, &mut vars, cond, "module-level if condition")?;
         let reason = TypeContainsReason::IfCondition(*span_if);
         let cond = check_type_is_bool_compile(diags, reason, cond)?;
 
         if cond {
-            self.elaborate_block(scope, block)
+            self.elaborate_block(scope, signals, block)
         }
 
         Ok(cond)
@@ -690,6 +731,7 @@ impl BodyElaborationContext<'_, '_> {
     fn elaborate_for(
         &mut self,
         scope: &Scope,
+        signals: &mut SignalsInScope,
         for_stmt: Spanned<&ForStatement<ModuleStatement>>,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
@@ -702,10 +744,10 @@ impl BodyElaborationContext<'_, '_> {
         } = for_stmt.inner;
         let iter_span = iter.span;
 
-        let no_vars = VariableValues::NO_VARS;
+        let mut vars = VariableValues::new_root(&self.ctx.variables);
         let index_ty = index_ty
             .as_ref()
-            .map(|index_ty| self.ctx.eval_expression_as_ty(scope, &no_vars, index_ty));
+            .map(|index_ty| self.ctx.eval_expression_as_ty(scope, &mut vars, index_ty));
 
         let mut ctx = CompileTimeExpressionContext {
             span: for_stmt.span,
@@ -713,7 +755,7 @@ impl BodyElaborationContext<'_, '_> {
         };
         let iter = self
             .ctx
-            .eval_expression_as_for_iterator(&mut ctx, &mut (), &no_vars, scope, iter);
+            .eval_expression_as_for_iterator(&mut ctx, &mut (), scope, &mut vars, iter);
 
         let index_ty = index_ty.transpose()?;
         let iter = iter?;
@@ -737,7 +779,7 @@ impl BodyElaborationContext<'_, '_> {
             let mut scope_inner = Scope::new_child(index.span().join(body.span), scope);
             scope_inner.maybe_declare(diags, index.as_ref(), Ok(ScopedEntry::Value(index_value)));
 
-            self.elaborate_block(&scope_inner, body);
+            self.elaborate_block(&scope_inner, signals, body);
         }
 
         Ok(())
@@ -916,12 +958,12 @@ impl BodyElaborationContext<'_, '_> {
                 let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
                 let mut ctx_block = ctx.new_ir_block();
 
-                let no_vars = VariableValues::NO_VARS;
+                let mut vars = VariableValues::new_root(&self.ctx.variables);
                 let connection_value = self.ctx.eval_expression(
                     &mut ctx,
                     &mut ctx_block,
                     scope,
-                    &no_vars,
+                    &mut vars,
                     &port_ty.inner,
                     connection_expr,
                 )?;
@@ -960,7 +1002,7 @@ impl BodyElaborationContext<'_, '_> {
                 let connection_value_ir =
                     if !ctx_block.statements.is_empty() || connection_value_ir_raw.inner.contains_variable() {
                         let extra_ir_wire = self.ir_wires.push(IrWireInfo {
-                            ty: port_ty_hw.inner.to_ir(),
+                            ty: port_ty_hw.inner.as_ir(),
                             debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
                             debug_info_ty: port_ty_hw.inner.clone(),
                             debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
@@ -1225,7 +1267,6 @@ impl BodyElaborationContext<'_, '_> {
         } = decl;
 
         // evaluate
-        let no_vars = VariableValues::NO_VARS;
         let (domain, ty) = match &domain_ty.inner {
             WireKind::Clock => (
                 Ok(Spanned {
@@ -1238,10 +1279,11 @@ impl BodyElaborationContext<'_, '_> {
                 }),
             ),
             WireKind::Normal { domain, ty } => {
+                let mut vars = VariableValues::new_root(&ctx.variables);
                 let domain = ctx
                     .eval_domain(&scope_body, domain)
                     .map(|d| d.map_inner(ValueDomain::from_domain_kind));
-                let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &no_vars, ty, "wire");
+                let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &mut vars, ty, "wire");
                 (domain, ty)
             }
         };
@@ -1250,11 +1292,21 @@ impl BodyElaborationContext<'_, '_> {
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut ctx_expr = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
         let mut ctx_block = ctx_expr.new_ir_block();
+        let mut vars = VariableValues::new_root(&ctx.variables);
 
         let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
         let value: Result<Option<Spanned<MaybeCompile<TypedIrExpression>>>, ErrorGuaranteed> = value
             .as_ref()
-            .map(|value| ctx.eval_expression(&mut ctx_expr, &mut ctx_block, scope_body, &no_vars, &expected_ty, value))
+            .map(|value| {
+                ctx.eval_expression(
+                    &mut ctx_expr,
+                    &mut ctx_block,
+                    scope_body,
+                    &mut vars,
+                    &expected_ty,
+                    value,
+                )
+            })
             .transpose();
 
         let domain = domain?;
@@ -1294,7 +1346,7 @@ impl BodyElaborationContext<'_, '_> {
 
         // build wire
         let ir_wire = self.ir_wires.push(IrWireInfo {
-            ty: ty.inner.to_ir(),
+            ty: ty.inner.as_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain: domain.inner.to_diagnostic_string(ctx),
@@ -1348,13 +1400,13 @@ impl BodyElaborationContext<'_, '_> {
         } = decl;
 
         // evaluate
-        let no_vars = VariableValues::NO_VARS;
         let sync = sync
             .as_ref()
             .map_inner(|sync| ctx.eval_domain_sync(&scope_body, sync))
             .transpose();
-        let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &no_vars, ty, "register");
-        let init = ctx.eval_expression_as_compile(&scope_body, &no_vars, init.as_ref(), "register reset value");
+        let mut vars = VariableValues::new_root(&ctx.variables);
+        let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &mut vars, ty, "register");
+        let init = ctx.eval_expression_as_compile(&scope_body, &mut vars, init.as_ref(), "register reset value");
 
         let sync = sync?;
         let ty = ty?;
@@ -1371,7 +1423,7 @@ impl BodyElaborationContext<'_, '_> {
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            ty: ty.inner.to_ir(),
+            ty: ty.inner.as_ir(),
             debug_info_id: id.clone(),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain: sync.inner.to_diagnostic_string(ctx),
@@ -1407,8 +1459,8 @@ impl BodyElaborationContext<'_, '_> {
         });
 
         // evaluate init
-        let no_vars = VariableValues::NO_VARS;
-        let init = ctx.eval_expression_as_compile(&scope_body, &no_vars, init, "register reset value");
+        let mut vars = VariableValues::new_root(&ctx.variables);
+        let init = ctx.eval_expression_as_compile(&scope_body, &mut vars, init, "register reset value");
 
         let port = port?;
         let port_info = &ctx.ports[port];
@@ -1458,7 +1510,7 @@ impl BodyElaborationContext<'_, '_> {
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            ty: port_info.ty.inner.to_ir(),
+            ty: port_info.ty.inner.as_ir(),
             debug_info_id: MaybeIdentifier::Identifier(id.clone()),
             debug_info_ty: port_info.ty.inner.clone(),
             debug_info_domain: domain.to_diagnostic_string(ctx),

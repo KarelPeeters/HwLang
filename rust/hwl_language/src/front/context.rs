@@ -1,9 +1,9 @@
-use crate::front::assignment::{ValueVersioned, VariableValues};
 use crate::front::block::BlockDomain;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::Implication;
 use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
 use crate::front::misc::{Signal, ValueDomain};
+use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -253,8 +253,11 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         // TODO remove this callback indirection,
         //   there's only one user that cares about it (module) and they just want a recording
         let err1 = (self.report_assignment)(target);
-        let err2 = vars.report_signal_assignment(diags, target);
-        err1.and(err2)
+        let err2 = vars.signal_report_write(diags, target);
+
+        err1?;
+        err2?;
+        Ok(())
     }
 
     fn block_domain(&self) -> &BlockDomain {

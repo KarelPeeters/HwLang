@@ -1,4 +1,4 @@
-use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase, ValueVersioned, VariableValues};
+use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::block::TypedIrExpression;
 use crate::front::check::{
     check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
@@ -17,6 +17,7 @@ use crate::front::scope::Scope;
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::syntax::ast::{
     ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression, ExpressionKind,
     Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
@@ -81,7 +82,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
     ) -> Result<Spanned<MaybeCompile<TypedIrExpression>>, ErrorGuaranteed> {
@@ -95,7 +96,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
     ) -> Result<Spanned<ExpressionWithImplications>, ErrorGuaranteed> {
@@ -116,7 +117,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
     ) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
@@ -141,13 +142,12 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::Block(block_expr) => {
                 let BlockExpression { statements, expression } = block_expr;
 
-                let vars = VariableValues::new();
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
-                let (mut ctx_block, end) = self.elaborate_block_statements(ctx, vars, &mut scope_inner, statements)?;
-                let vars = end.unwrap_outside_function_and_loop(diags)?;
+                let (mut ctx_block, end) = self.elaborate_block_statements(ctx, &mut scope_inner, vars, statements)?;
+                end.unwrap_outside_function_and_loop(diags)?;
 
-                self.eval_expression(ctx, &mut ctx_block, &scope_inner, &vars, expected_ty, expression)?
+                self.eval_expression(ctx, &mut ctx_block, &scope_inner, vars, expected_ty, expression)?
                     .inner
             }
             ExpressionKind::Id(id) => {
@@ -157,24 +157,23 @@ impl CompileItemContext<'_, '_> {
                         // TODO report error when combinatorial block
                         //   reads something it has not written yet but will later write to
                         // TODO more generally, report combinatorial cycles
-                        NamedValue::Variable(var) => {
-                            let value = vars.get(diags, expr.span, var)?.value.clone();
-
-                            match value {
-                                MaybeCompile::Compile(value) => MaybeCompile::Compile(value),
-                                MaybeCompile::Other(value) => {
-                                    let versioned = vars.value_versioned(SignalOrVariable::Variable(var));
-                                    return Ok(apply_implications(ctx, versioned, value));
-                                }
+                        NamedValue::Variable(var) => match &vars.var_get(diags, expr.span, var)?.value_and_version {
+                            MaybeCompile::Compile(value) => MaybeCompile::Compile(value.clone()),
+                            &MaybeCompile::Other((ref value, version)) => {
+                                let versioned = ValueVersioned {
+                                    value: SignalOrVariable::Variable(var),
+                                    version,
+                                };
+                                return Ok(apply_implications(ctx, Some(versioned), value.clone()));
                             }
-                        }
+                        },
                         NamedValue::Port(port) => {
                             ctx.check_ir_context(diags, expr.span, "port")?;
 
                             let port_info = &self.ports[port];
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
-                                    let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Port(port)));
+                                    let versioned = vars.signal_versioned(Signal::Port(port));
                                     Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()))
                                 }
                                 PortDirection::Output => {
@@ -196,7 +195,7 @@ impl CompileItemContext<'_, '_> {
                             )?;
                             let value_expr_raw = value_stored.to_general_expression();
 
-                            let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Wire(wire)));
+                            let versioned = vars.signal_versioned(Signal::Wire(wire));
                             return Ok(apply_implications(ctx, versioned, value_expr_raw));
                         }
                         NamedValue::Register(reg) => {
@@ -213,7 +212,7 @@ impl CompileItemContext<'_, '_> {
                             )?;
                             let value_expr_raw = value_stored.to_general_expression();
 
-                            let versioned = vars.value_versioned(SignalOrVariable::Signal(Signal::Register(reg)));
+                            let versioned = vars.signal_versioned(Signal::Register(reg));
                             return Ok(apply_implications(ctx, versioned, value_expr_raw));
                         }
                     },
@@ -317,7 +316,7 @@ impl CompileItemContext<'_, '_> {
                     _ => &Type::Any,
                 };
 
-                let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, vars, scope, iter)?;
+                let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter)?;
 
                 let mut values = vec![];
                 for index_value in iter {
@@ -491,7 +490,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut <C as ExpressionContext>::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expected_ty: &Type,
         expr_span: Span,
         values: &[ArrayLiteralElement<Expression>],
@@ -532,7 +531,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut <C as ExpressionContext>::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expected_ty: &Type,
         values: &Vec<Expression>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
@@ -618,7 +617,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         base: &Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
@@ -642,7 +641,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         index: &Expression,
     ) -> Result<Spanned<ArrayStep>, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -724,7 +723,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
@@ -817,7 +816,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_expression_as_compile(
         &mut self,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
@@ -848,7 +847,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_expression_as_ty(
         &mut self,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<Type>, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -870,7 +869,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_expression_as_ty_hardware(
         &mut self,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<HardwareType>, ErrorGuaranteed> {
@@ -896,7 +895,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &VariableValues,
+        vars: &mut VariableValues,
         expr: &Expression,
     ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -1080,13 +1079,13 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        vars: &VariableValues,
         scope: &Scope,
+        vars: &mut VariableValues,
         iter: &Expression,
     ) -> Result<ForIterator, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let iter = self.eval_expression(ctx, ctx_block, scope, &vars, &Type::Any, iter)?;
+        let iter = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, iter)?;
         let iter_span = iter.span;
 
         let result = match iter.inner {
@@ -1277,7 +1276,7 @@ fn store_ir_expression_in_dedicated_variable<C: ExpressionContext>(
     value: TypedIrExpression,
 ) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
     let ir_variable_info = IrVariableInfo {
-        ty: value.ty.to_ir(),
+        ty: value.ty.as_ir(),
         debug_info_id: id.clone(),
     };
     let ir_variable = ctx.new_ir_variable(diags, span_expr, ir_variable_info)?;
@@ -1418,7 +1417,7 @@ pub fn eval_binary_expression(
                             MaybeCompile::Other(TypedIrExpression {
                                 ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), result_len.clone()),
                                 domain: value.domain,
-                                expr: IrExpression::ArrayLiteral(left_ty_inner_hw.to_ir(), result_len, elements),
+                                expr: IrExpression::ArrayLiteral(left_ty_inner_hw.as_ir(), result_len, elements),
                             })
                         }
                     }
@@ -1996,7 +1995,7 @@ fn array_literal_combine_values(
             result_len += elem_len;
         }
 
-        let result_expr = IrExpression::ArrayLiteral(expected_ty_inner_hw.to_ir(), result_len.clone(), result_exprs);
+        let result_expr = IrExpression::ArrayLiteral(expected_ty_inner_hw.as_ir(), result_len.clone(), result_exprs);
         Ok(MaybeCompile::Other(TypedIrExpression {
             ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
             domain: result_domain,

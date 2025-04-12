@@ -1,27 +1,22 @@
-use crate::front::assignment::{
-    store_ir_expression_in_new_variable, AssignedValue, AssignmentEvent, MaybeAssignedValue, VariableValues,
-    VariableValuesInner,
-};
+use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, Variable, VariableInfo};
+use crate::front::compile::{CompileItemContext, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::ForIterator;
-use crate::front::ir::{IrAssignmentTarget, IrExpression, IrIfStatement, IrStatement, IrVariable, IrVariableInfo};
+use crate::front::ir::{IrExpression, IrIfStatement, IrStatement, IrVariable};
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::variables::{merge_variable_branches, VariableValues};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement, Spanned,
     SyncDomain, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
-use crate::util::data::IndexMapExt;
 use crate::util::{result_pair, ResultExt};
-use indexmap::IndexMap;
-use std::cmp::max;
 
 // TODO move
 // TODO rename to HardwareValue
@@ -76,15 +71,15 @@ pub enum BlockDomain {
 
 #[derive(Debug)]
 pub enum BlockEnd<S = BlockEndStopping> {
-    Normal(VariableValues),
+    Normal,
     Stopping(S),
 }
 
 #[derive(Debug)]
 pub enum BlockEndStopping {
-    Return(BlockEndReturn),
-    Break(Span, VariableValues),
-    Continue(Span, VariableValues),
+    FunctionReturn(BlockEndReturn),
+    LoopBreak(Span),
+    LoopContinue(Span),
 }
 
 #[derive(Debug)]
@@ -94,18 +89,14 @@ pub struct BlockEndReturn {
 }
 
 impl BlockEnd<BlockEndStopping> {
-    pub fn unwrap_normal_todo_in_if(
-        self,
-        diags: &Diagnostics,
-        span_cond: Span,
-    ) -> Result<VariableValues, ErrorGuaranteed> {
+    pub fn unwrap_normal_todo_in_if(self, diags: &Diagnostics, span_cond: Span) -> Result<(), ErrorGuaranteed> {
         match self {
-            BlockEnd::Normal(vars) => Ok(vars),
+            BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => {
                 let (span, kind) = match end {
-                    BlockEndStopping::Return(ret) => (ret.span_keyword, "return"),
-                    BlockEndStopping::Break(span, _vars) => (span, "break"),
-                    BlockEndStopping::Continue(span, _vars) => (span, "continue"),
+                    BlockEndStopping::FunctionReturn(ret) => (ret.span_keyword, "return"),
+                    BlockEndStopping::LoopBreak(span) => (span, "break"),
+                    BlockEndStopping::LoopContinue(span) => (span, "continue"),
                 };
 
                 let diag = Diagnostic::new_todo(span, format!("{} in if statement with runtime condition", kind))
@@ -121,33 +112,33 @@ impl BlockEnd<BlockEndStopping> {
         diags: &Diagnostics,
     ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
         match self {
-            BlockEnd::Normal(vars) => Ok(BlockEnd::Normal(vars)),
+            BlockEnd::Normal => Ok(BlockEnd::Normal),
             BlockEnd::Stopping(end) => match end {
-                BlockEndStopping::Return(ret) => Ok(BlockEnd::Stopping(BlockEndReturn {
+                BlockEndStopping::FunctionReturn(ret) => Ok(BlockEnd::Stopping(BlockEndReturn {
                     span_keyword: ret.span_keyword,
                     value: ret.value,
                 })),
-                BlockEndStopping::Break(span, _vars) => {
+                BlockEndStopping::LoopBreak(span) => {
                     Err(diags.report_simple("break outside loop", span, "break statement here"))
                 }
-                BlockEndStopping::Continue(span, _vars) => {
+                BlockEndStopping::LoopContinue(span) => {
                     Err(diags.report_simple("continue outside loop", span, "continue statement here"))
                 }
             },
         }
     }
 
-    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> Result<VariableValues, ErrorGuaranteed> {
+    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> Result<(), ErrorGuaranteed> {
         match self {
-            BlockEnd::Normal(vars) => Ok(vars),
+            BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => match end {
-                BlockEndStopping::Return(ret) => {
+                BlockEndStopping::FunctionReturn(ret) => {
                     Err(diags.report_simple("return outside function", ret.span_keyword, "return statement here"))
                 }
-                BlockEndStopping::Break(span, _vars) => {
+                BlockEndStopping::LoopBreak(span) => {
                     Err(diags.report_simple("break outside loop", span, "break statement here"))
                 }
-                BlockEndStopping::Continue(span, _vars) => {
+                BlockEndStopping::LoopContinue(span) => {
                     Err(diags.report_simple("continue outside loop", span, "continue statement here"))
                 }
             },
@@ -159,21 +150,21 @@ impl CompileItemContext<'_, '_> {
     pub fn elaborate_block<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        vars: VariableValues,
         scope_parent: &Scope,
+        vars: &mut VariableValues,
         block: &Block<BlockStatement>,
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let &Block { span, ref statements } = block;
 
         let mut scope = Scope::new_child(span, scope_parent);
-        self.elaborate_block_statements(ctx, vars, &mut scope, statements)
+        self.elaborate_block_statements(ctx, &mut scope, vars, statements)
     }
 
     pub fn elaborate_block_statements<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        mut vars: VariableValues,
         scope: &mut Scope,
+        vars: &mut VariableValues,
         statements: &[BlockStatement],
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -181,9 +172,7 @@ impl CompileItemContext<'_, '_> {
 
         for stmt in statements {
             match &stmt.inner {
-                BlockStatementKind::CommonDeclaration(decl) => {
-                    self.eval_and_declare_declaration(scope, Some(&vars), decl)
-                }
+                BlockStatementKind::CommonDeclaration(decl) => self.eval_and_declare_declaration(scope, vars, decl),
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {
                         span: _,
@@ -197,16 +186,14 @@ impl CompileItemContext<'_, '_> {
                     // eval ty
                     let ty = ty
                         .as_ref()
-                        .map(|ty| self.eval_expression_as_ty(&scope, &vars, ty))
+                        .map(|ty| self.eval_expression_as_ty(&scope, vars, ty))
                         .transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Type, |ty| &ty.inner);
                         init.as_ref()
-                            .map(|init| {
-                                self.eval_expression(ctx, &mut ctx_block, &scope, &vars, init_expected_ty, init)
-                            })
+                            .map(|init| self.eval_expression(ctx, &mut ctx_block, &scope, vars, init_expected_ty, init))
                             .transpose()
                     });
 
@@ -229,29 +216,16 @@ impl CompileItemContext<'_, '_> {
                             ty,
                         };
                         let variable = self.variables.push(info);
+                        vars.var_new(diags, Spanned::new(id.span(), variable))?;
 
-                        // store value
-                        // TODO setting it to NotYetAssigned is weird,
-                        //   that should have happened immediately when declaring the variable
-                        let assigned = match init {
-                            None => MaybeAssignedValue::NotYetAssigned,
-                            Some(init) => {
-                                let init_var = match init.inner {
-                                    MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
-                                    MaybeCompile::Other(v) => MaybeCompile::Other(
-                                        store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), v)?
-                                            .to_general_expression(),
-                                    ),
-                                };
-                                MaybeAssignedValue::Assigned(AssignedValue {
-                                    event: AssignmentEvent {
-                                        assigned_value_span: init.span,
-                                    },
-                                    value: init_var,
-                                })
-                            }
-                        };
-                        vars.set(diags, id.span(), variable, assigned)?;
+                        // store initial value if there is one
+                        if let Some(init) = init {
+                            let init = init.inner.try_map_other(|init| {
+                                store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), init)
+                                    .map(TypedIrExpression::to_general_expression)
+                            })?;
+                            vars.var_set(diags, variable, decl.span, init)?;
+                        }
 
                         Ok(ScopedEntry::Named(NamedValue::Variable(variable)))
                     });
@@ -259,15 +233,14 @@ impl CompileItemContext<'_, '_> {
                     scope.maybe_declare(diags, id.as_ref(), entry);
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    let new_vars = self.elaborate_assignment(ctx, &mut ctx_block, vars, &scope, stmt)?;
-                    vars = new_vars;
+                    self.elaborate_assignment(ctx, &mut ctx_block, &scope, vars, stmt)?;
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<MaybeCompile<TypedIrExpression>> =
-                        self.eval_expression(ctx, &mut ctx_block, &scope, &vars, &Type::Type, expr)?;
+                        self.eval_expression(ctx, &mut ctx_block, &scope, vars, &Type::Type, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, vars, &scope, inner_block)?;
+                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, &scope, vars, inner_block)?;
 
                     let inner_block_spanned = Spanned {
                         span: inner_block.span,
@@ -276,7 +249,7 @@ impl CompileItemContext<'_, '_> {
                     ctx.push_ir_statement_block(&mut ctx_block, inner_block_spanned);
 
                     match block_end {
-                        BlockEnd::Normal(new_vars) => vars = new_vars,
+                        BlockEnd::Normal => {}
                         BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
                     }
                 }
@@ -290,13 +263,13 @@ impl CompileItemContext<'_, '_> {
                     let block_end = self.elaborate_if_statement(
                         ctx,
                         &mut ctx_block,
-                        vars,
                         &scope,
+                        vars,
                         Some((initial_if, else_ifs)),
                         final_else,
                     )?;
                     match block_end {
-                        BlockEnd::Normal(new_vars) => vars = new_vars,
+                        BlockEnd::Normal => {}
                         BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
                     }
                 }
@@ -311,7 +284,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs.check_should_stop(span_keyword)?;
 
                         // eval cond
-                        let cond = self.eval_expression_as_compile(&scope, &vars, cond, "while loop condition")?;
+                        let cond = self.eval_expression_as_compile(&scope, vars, cond, "while loop condition")?;
 
                         let reason = TypeContainsReason::WhileCondition(span_keyword);
                         check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -327,7 +300,7 @@ impl CompileItemContext<'_, '_> {
                         }
 
                         // visit body
-                        let (body_ir, end) = self.elaborate_block(ctx, vars, &scope, body)?;
+                        let (body_ir, end) = self.elaborate_block(ctx, &scope, vars, body)?;
                         let body_ir_spanned = Spanned {
                             span: body.span,
                             inner: body_ir,
@@ -336,19 +309,13 @@ impl CompileItemContext<'_, '_> {
 
                         // handle end
                         match end {
-                            BlockEnd::Normal(new_vars) => vars = new_vars,
+                            BlockEnd::Normal => {}
                             BlockEnd::Stopping(end) => match end {
-                                BlockEndStopping::Return(ret) => {
-                                    return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::Return(ret))));
+                                BlockEndStopping::FunctionReturn(ret) => {
+                                    return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret))));
                                 }
-                                BlockEndStopping::Break(_, new_vars) => {
-                                    vars = new_vars;
-                                    break;
-                                }
-                                BlockEndStopping::Continue(_, new_vars) => {
-                                    vars = new_vars;
-                                    continue;
-                                }
+                                BlockEndStopping::LoopBreak(_span) => break,
+                                BlockEndStopping::LoopContinue(_span) => continue,
                             },
                         }
                     }
@@ -358,13 +325,13 @@ impl CompileItemContext<'_, '_> {
                         span: stmt.span,
                         inner: stmt_for,
                     };
-                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, vars, &scope, stmt_for)?;
+                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, &scope, vars, stmt_for)?;
                     ctx_block = block;
 
                     match end {
-                        BlockEnd::Normal(new_vars) => vars = new_vars,
+                        BlockEnd::Normal => {}
                         BlockEnd::Stopping(ret) => {
-                            return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::Return(ret))))
+                            return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret))))
                         }
                     }
                 }
@@ -378,32 +345,33 @@ impl CompileItemContext<'_, '_> {
                     //  checking happens in the function call, and expanding at the call expression
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, &scope, &vars, &Type::Type, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, &scope, vars, &Type::Type, value))
                         .transpose()?;
 
-                    let end = BlockEnd::Stopping(BlockEndStopping::Return(BlockEndReturn { span_keyword, value }));
+                    let end =
+                        BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }));
                     return Ok((ctx_block, end));
                 }
                 &BlockStatementKind::Break(span) => {
-                    let end = BlockEnd::Stopping(BlockEndStopping::Break(span, vars));
+                    let end = BlockEnd::Stopping(BlockEndStopping::LoopBreak(span));
                     return Ok((ctx_block, end));
                 }
                 &BlockStatementKind::Continue(span) => {
-                    let end = BlockEnd::Stopping(BlockEndStopping::Continue(span, vars));
+                    let end = BlockEnd::Stopping(BlockEndStopping::LoopContinue(span));
                     return Ok((ctx_block, end));
                 }
             };
         }
 
-        Ok((ctx_block, BlockEnd::Normal(vars)))
+        Ok((ctx_block, BlockEnd::Normal))
     }
 
     fn elaborate_if_statement<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        vars: VariableValues,
         scope: &Scope,
+        vars: &mut VariableValues,
         ifs: Option<(&IfCondBlockPair<BlockStatement>, &[IfCondBlockPair<BlockStatement>])>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
@@ -413,9 +381,9 @@ impl CompileItemContext<'_, '_> {
             Some(p) => p,
             None => {
                 return match final_else {
-                    None => Ok(BlockEnd::Normal(vars)),
+                    None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, vars, &scope, final_else)?;
+                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, &scope, vars, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
@@ -433,7 +401,7 @@ impl CompileItemContext<'_, '_> {
             ref cond,
             ref block,
         } = initial_if;
-        let cond = self.eval_expression_with_implications(ctx, ctx_block, &scope, &vars, &Type::Bool, cond)?;
+        let cond = self.eval_expression_with_implications(ctx, ctx_block, &scope, vars, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
         check_type_contains_value(
@@ -455,7 +423,7 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, block_end) = self.elaborate_block(ctx, vars, &scope, block)?;
+                    let (block_ir, block_end) = self.elaborate_block(ctx, &scope, vars, block)?;
                     let block_ir_spanned = Spanned {
                         span: block.span,
                         inner: block_ir,
@@ -463,7 +431,7 @@ impl CompileItemContext<'_, '_> {
                     ctx.push_ir_statement_block(ctx_block, block_ir_spanned);
                     Ok(block_end)
                 } else {
-                    self.elaborate_if_statement(ctx, ctx_block, vars, scope, remaining_ifs.split_first(), final_else)
+                    self.elaborate_if_statement(ctx, ctx_block, scope, vars, remaining_ifs.split_first(), final_else)
                 }
             }
             // evaluate the if at runtime, generating IR
@@ -496,121 +464,51 @@ impl CompileItemContext<'_, '_> {
                     span: cond.span,
                     inner: cond_eval.domain,
                 };
-                let mut else_ir = ctx.new_ir_block();
-                let (mut then_ir, then_end, mut else_ir, else_end) =
-                    ctx.with_condition_domain(diags, cond_domain, |ctx_mid| {
+
+                let (mut then_ir, then_vars, then_end, mut else_ir, else_vars, else_end) =
+                    ctx.with_condition_domain(diags, cond_domain, |ctx| {
                         // lower then
+                        let mut then_vars = VariableValues::new_child(vars);
                         let (then_ir, then_end) =
-                            ctx_mid.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
-                                self.elaborate_block(ctx_inner, vars.clone(), &scope, block)
+                            ctx.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
+                                self.elaborate_block(ctx_inner, &scope, &mut then_vars, block)
                             })?;
 
                         // lower else
-                        let else_end =
-                            ctx_mid.with_implications(diags, cond.inner.implications.if_false, |ctx_inner| {
-                                self.elaborate_if_statement(
-                                    ctx_inner,
-                                    &mut else_ir,
-                                    vars,
-                                    scope,
-                                    remaining_ifs.split_first(),
-                                    final_else,
-                                )
-                            })?;
+                        let mut else_ir = ctx.new_ir_block();
+                        let mut else_vars = VariableValues::new_child(vars);
+                        let else_end = ctx.with_implications(diags, cond.inner.implications.if_false, |ctx_inner| {
+                            self.elaborate_if_statement(
+                                ctx_inner,
+                                &mut else_ir,
+                                scope,
+                                &mut else_vars,
+                                remaining_ifs.split_first(),
+                                final_else,
+                            )
+                        })?;
 
-                        Ok((then_ir, then_end, else_ir, else_end))
+                        Ok((then_ir, then_vars, then_end, else_ir, else_vars, else_end))
                     })?;
 
-                // TODO merged values should get their implications applied so their types can automatically constrain
-                let then_vars = then_end.unwrap_normal_todo_in_if(diags, cond.span);
-                let else_vars = else_end.unwrap_normal_todo_in_if(diags, cond.span);
-                let then_vars = then_vars?;
-                let else_vars = else_vars?;
+                let then_end_err = then_end.unwrap_normal_todo_in_if(diags, cond.span);
+                let else_end_err = else_end.unwrap_normal_todo_in_if(diags, cond.span);
+                then_end_err?;
+                else_end_err?;
 
-                // TODO is unwrapping the maps fine here? can we encore that in the type system through C/ctx?
-                // TODO re-use one of the maps to avoid an extra allocation
-                let VariableValues { inner: then_inner } = then_vars;
-                let VariableValues { inner: else_inner } = else_vars;
-                let VariableValuesInner {
-                    versions: then_signal_versions,
-                    map: then_map,
-                } = then_inner.unwrap();
-                let VariableValuesInner {
-                    versions: else_signal_versions,
-                    map: else_map,
-                } = else_inner.unwrap();
+                merge_variable_branches(
+                    diags,
+                    ctx,
+                    &self.variables,
+                    vars,
+                    span_if,
+                    &mut then_ir,
+                    then_vars.into_content(),
+                    &mut else_ir,
+                    else_vars.into_content(),
+                )?;
 
-                let mut combined_versions = IndexMap::new();
-                for &signal in itertools::chain(then_signal_versions.keys(), else_signal_versions.keys()) {
-                    if combined_versions.contains_key(&signal) {
-                        // already visited
-                        continue;
-                    }
-
-                    let combined_version = match (then_signal_versions.get(&signal), else_signal_versions.get(&signal))
-                    {
-                        (Some(&then_version), Some(&else_version)) => {
-                            if then_version == else_version {
-                                then_version
-                            } else {
-                                max(then_version, else_version) + 1
-                            }
-                        }
-                        (Some(&then_version), None) => then_version,
-                        (None, Some(&else_version)) => else_version,
-                        (None, None) => unreachable!(),
-                    };
-                    combined_versions.insert_first(signal, combined_version);
-                }
-
-                let mut combined_map = IndexMap::new();
-                for &var in itertools::chain(then_map.keys(), else_map.keys()) {
-                    if combined_map.contains_key(&var) {
-                        // already visited
-                        continue;
-                    }
-
-                    // if only one of the branches contains the variable, it was locally declared in that branch
-                    //   and should now be out of scope
-                    let (then_info, else_info) = match (then_map.get(&var), else_map.get(&var)) {
-                        (None, _) | (_, None) => continue,
-                        (Some(then_info), Some(else_info)) => (then_info, else_info),
-                    };
-
-                    let combined_info = match (then_info, else_info) {
-                        // any error
-                        (&MaybeAssignedValue::FailedIfMerge(span), _)
-                        | (_, &MaybeAssignedValue::FailedIfMerge(span)) => MaybeAssignedValue::FailedIfMerge(span),
-                        // both the same state
-                        (MaybeAssignedValue::Assigned(then_value), MaybeAssignedValue::Assigned(else_value)) => {
-                            // TODO maybe it's better to just check whether either has been re-assigned,
-                            //   then we don't need to rely on equality
-                            if then_value == else_value {
-                                MaybeAssignedValue::Assigned(then_value.clone())
-                            } else {
-                                let (assign_then, assign_else, result) =
-                                    self.merge_variable_assigned_values(ctx, span_if, var, then_value, else_value)?;
-                                ctx.push_ir_statement(diags, &mut then_ir, assign_then)?;
-                                ctx.push_ir_statement(diags, &mut else_ir, assign_else)?;
-                                MaybeAssignedValue::Assigned(result)
-                            }
-                        }
-                        (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
-                            MaybeAssignedValue::NotYetAssigned
-                        }
-                        // mix of assigned and not assigned
-                        (
-                            MaybeAssignedValue::Assigned(_)
-                            | MaybeAssignedValue::PartiallyAssigned
-                            | MaybeAssignedValue::NotYetAssigned,
-                            MaybeAssignedValue::Assigned(_)
-                            | MaybeAssignedValue::PartiallyAssigned
-                            | MaybeAssignedValue::NotYetAssigned,
-                        ) => MaybeAssignedValue::PartiallyAssigned,
-                    };
-                    combined_map.insert_first(var, combined_info);
-                }
-
+                // actually record the if statement
                 let ir_if = IrStatement::If(IrIfStatement {
                     condition: cond_eval.expr,
                     then_block: ctx.unwrap_ir_block(diags, span_if, then_ir)?,
@@ -626,107 +524,17 @@ impl CompileItemContext<'_, '_> {
                     },
                 )?;
 
-                let combined_vars = VariableValues {
-                    inner: Some(VariableValuesInner {
-                        versions: combined_versions,
-                        map: combined_map,
-                    }),
-                };
-                Ok(BlockEnd::Normal(combined_vars))
+                Ok(BlockEnd::Normal)
             }
         }
-    }
-
-    fn merge_variable_assigned_values<C: ExpressionContext>(
-        &self,
-        ctx: &mut C,
-        span_if: Span,
-        var: Variable,
-        then_value: &AssignedValue,
-        else_value: &AssignedValue,
-    ) -> Result<(Spanned<IrStatement>, Spanned<IrStatement>, AssignedValue), ErrorGuaranteed> {
-        let diags = self.refs.diags;
-
-        // figure out the hardware type
-        let then_ty = then_value.value.ty();
-        let else_ty = else_value.value.ty();
-        let ty = then_ty.union(&else_ty, false);
-        let var_info = &self.variables[var];
-
-        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
-            let diag = Diagnostic::new(
-                "merging `if` assignments is only possible for variables with types that are representable in hardware",
-            )
-            .add_error(
-                span_if,
-                format!("merge necessary here, combined type `{}`", ty.to_diagnostic_string()),
-            )
-            .add_info(var_info.id.span(), "for variable declared here")
-            .add_info(
-                then_value.event.assigned_value_span,
-                format!(
-                    "`if` value with type `{}` assigned here",
-                    then_ty.to_diagnostic_string()
-                ),
-            )
-            .add_info(
-                else_value.event.assigned_value_span,
-                format!(
-                    "`else` value with type `{}` assigned here",
-                    else_ty.to_diagnostic_string()
-                ),
-            )
-            .finish();
-            diags.report(diag)
-        })?;
-
-        // create ir variable
-        let var_ir_info = IrVariableInfo {
-            ty: ty_hw.to_ir(),
-            debug_info_id: var_info.id.clone(),
-        };
-        let var_ir = ctx.new_ir_variable(diags, span_if, var_ir_info)?;
-
-        // add assignments to all block
-        // TODO include reason for conversion in potential error message
-        let then_value_ir = then_value
-            .value
-            .as_ir_expression(diags, then_value.event.assigned_value_span, &ty_hw)?;
-        let else_value_ir = else_value
-            .value
-            .as_ir_expression(diags, else_value.event.assigned_value_span, &ty_hw)?;
-
-        let var_target = || IrAssignmentTarget::variable(var_ir);
-        let assign_then = Spanned {
-            span: span_if,
-            inner: IrStatement::Assign(var_target(), then_value_ir.expr),
-        };
-        let assign_else = Spanned {
-            span: span_if,
-            inner: IrStatement::Assign(var_target(), else_value_ir.expr),
-        };
-
-        // return the resulting variable
-        let result = AssignedValue {
-            // TODO this span is probably not correct
-            event: AssignmentEvent {
-                assigned_value_span: span_if,
-            },
-            value: MaybeCompile::Other(TypedIrExpression {
-                ty: ty_hw,
-                domain: then_value_ir.domain.join(&else_value_ir.domain),
-                expr: IrExpression::Variable(var_ir),
-            }),
-        };
-        Ok((assign_then, assign_else, result))
     }
 
     fn elaborate_for_statement<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         mut result_block: C::Block,
-        vars: VariableValues,
         scope: &Scope,
+        vars: &mut VariableValues,
         stmt: Spanned<&ForStatement<BlockStatement>>,
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
         let ctx_block = &mut result_block;
@@ -741,24 +549,25 @@ impl CompileItemContext<'_, '_> {
 
         let index_ty = index_ty
             .as_ref()
-            .map(|index_ty| self.eval_expression_as_ty(scope, &vars, index_ty))
+            .map(|index_ty| self.eval_expression_as_ty(scope, vars, index_ty))
             .transpose();
-        let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, &vars, scope, iter);
+        let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter);
 
         let index_ty = index_ty?;
         let iter = iter?;
 
         // TODO (deterministic!) timeout?
-        let end = self.run_for_statement(ctx, ctx_block, vars, scope, stmt, index_ty, iter)?;
+        let end = self.run_for_statement(ctx, ctx_block, scope, vars, stmt, index_ty, iter)?;
         Ok((result_block, end))
     }
 
+    // TODO code reuse between this and module?
     fn run_for_statement<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        mut vars: VariableValues,
         scope_parent: &Scope,
+        vars: &mut VariableValues,
         stmt: Spanned<&ForStatement<BlockStatement>>,
         index_ty: Option<Spanned<Type>>,
         iter: ForIterator,
@@ -773,7 +582,6 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
 
         // create inner scope with index variable
-        // TODO variable or just constant value?
         let mut scope_index = Scope::new_child(stmt.span, scope_parent);
         let index_var = self.variables.push(VariableInfo {
             id: index_id.clone(),
@@ -786,6 +594,7 @@ impl CompileItemContext<'_, '_> {
             index_id.as_ref(),
             Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
         );
+        vars.var_new(diags, Spanned::new(index_id.span(), index_var))?;
 
         // run the actual loop
         for index_value in iter {
@@ -802,23 +611,11 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
             }
 
-            // set index value
-            // TODO this span is a bit weird
-            let assigned = AssignedValue {
-                event: AssignmentEvent {
-                    assigned_value_span: index_id.span(),
-                },
-                value: index_value,
-            };
-            vars.set(
-                diags,
-                index_id.span(),
-                index_var,
-                MaybeAssignedValue::Assigned(assigned),
-            )?;
+            // set index
+            vars.var_set(diags, index_var, index_id.span(), index_value)?;
 
             // run body
-            let (body_block, body_end) = self.elaborate_block(ctx, vars, &scope_index, body)?;
+            let (body_block, body_end) = self.elaborate_block(ctx, &scope_index, vars, body)?;
 
             let body_block_spanned = Spanned {
                 span: body.span,
@@ -828,21 +625,15 @@ impl CompileItemContext<'_, '_> {
 
             // handle possible termination
             match body_end {
-                BlockEnd::Normal(new_vars) => vars = new_vars,
+                BlockEnd::Normal => {}
                 BlockEnd::Stopping(end) => match end {
-                    BlockEndStopping::Return(end) => return Ok(BlockEnd::Stopping(end)),
-                    BlockEndStopping::Break(_, new_vars) => {
-                        vars = new_vars;
-                        break;
-                    }
-                    BlockEndStopping::Continue(_, new_vars) => {
-                        vars = new_vars;
-                        continue;
-                    }
+                    BlockEndStopping::FunctionReturn(end) => return Ok(BlockEnd::Stopping(end)),
+                    BlockEndStopping::LoopBreak(_span) => break,
+                    BlockEndStopping::LoopContinue(_span) => continue,
                 },
             }
         }
 
-        Ok(BlockEnd::Normal(vars))
+        Ok(BlockEnd::Normal)
     }
 }

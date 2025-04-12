@@ -1,4 +1,3 @@
-use crate::front::assignment::VariableValues;
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::ErrorGuaranteed;
@@ -6,6 +5,7 @@ use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::Scope;
 use crate::front::value::{CompileValue, MaybeCompile};
+use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
 };
@@ -31,7 +31,8 @@ impl CompileItemContext<'_, '_> {
             }
             Item::CommonDeclaration(decl) => {
                 let ItemDeclaration { vis: _, decl } = decl;
-                self.eval_declaration(file_scope, None, &decl)
+                let mut vars = VariableValues::new_root(&self.variables);
+                self.eval_declaration(file_scope, &mut vars, &decl)
             }
             Item::Module(module) => {
                 let ast_ref = AstRefModule::new_unchecked(item);
@@ -61,11 +62,10 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_declaration(
         &mut self,
         scope: &Scope,
-        vars: Option<&VariableValues>,
+        vars: &mut VariableValues,
         decl: &CommonDeclaration,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let vars = vars.unwrap_or(&VariableValues::NO_VARS);
 
         match decl {
             CommonDeclaration::Type(decl) => {
@@ -78,7 +78,7 @@ impl CompileItemContext<'_, '_> {
 
                 match params {
                     None => {
-                        let ty = self.eval_expression_as_ty(scope, &vars, body)?;
+                        let ty = self.eval_expression_as_ty(scope, vars, body)?;
                         Ok(CompileValue::Type(ty.inner))
                     }
                     Some(params) => {
@@ -100,9 +100,9 @@ impl CompileItemContext<'_, '_> {
 
                 let ty = ty
                     .as_ref()
-                    .map(|ty| self.eval_expression_as_ty(scope, &vars, ty))
+                    .map(|ty| self.eval_expression_as_ty(scope, vars, ty))
                     .transpose();
-                let value = self.eval_expression_as_compile(scope, &vars, value, "const value");
+                let value = self.eval_expression_as_compile(scope, vars, value, "const value");
 
                 let ty = ty?;
                 let value = value?;
@@ -150,7 +150,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_and_declare_declaration(
         &mut self,
         scope: &mut Scope,
-        vars: Option<&VariableValues>,
+        vars: &mut VariableValues,
         decl: &CommonDeclaration,
     ) {
         let diags = self.refs.diags;

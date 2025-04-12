@@ -171,6 +171,7 @@ impl Type {
         self == &self.union(ty, allow_compound_subtype)
     }
 
+    // TODO centralize error messages for this, everyone is just doing them manually for now
     pub fn as_hardware_type(&self) -> Option<HardwareType> {
         match self {
             Type::Clock => Some(HardwareType::Clock),
@@ -234,13 +235,13 @@ impl HardwareType {
         }
     }
 
-    pub fn to_ir(&self) -> IrType {
+    pub fn as_ir(&self) -> IrType {
         match self {
             HardwareType::Clock => IrType::Bool,
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.clone()),
-            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::to_ir).collect_vec()),
-            HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.to_ir()), len.clone()),
+            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::as_ir).collect_vec()),
+            HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir()), len.clone()),
         }
     }
 

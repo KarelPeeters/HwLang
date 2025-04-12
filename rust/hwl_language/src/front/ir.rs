@@ -10,6 +10,9 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use unwrap_match::unwrap_match;
 
+// TODO add an "optimization" pass that does some basic stuff like dead code elimination and
+//   inlining variables that are just copies of other variables.
+//   That would allow the frontend to be less worried about avoiding redundant variable copies.
 #[derive(Debug)]
 pub struct IrDatabase {
     pub modules: IrModules,

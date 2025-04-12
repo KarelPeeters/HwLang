@@ -18,3 +18,4 @@ pub mod item;
 pub mod module;
 pub mod scope;
 pub mod steps;
+pub mod variables;

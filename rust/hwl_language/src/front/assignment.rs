@@ -7,36 +7,14 @@ use crate::front::expression::{eval_binary_expression, ExpressionWithImplication
 use crate::front::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::front::misc::{Signal, SignalOrVariable, ValueDomain};
+use crate::front::misc::{Signal, ValueDomain};
 use crate::front::scope::Scope;
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::MaybeCompile;
+use crate::front::variables::VariableValues;
 use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
-use indexmap::IndexMap;
-
-// TODO move
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MaybeAssignedValue {
-    Assigned(AssignedValue),
-    NotYetAssigned,
-    PartiallyAssigned,
-    FailedIfMerge(Span),
-}
-
-// TODO move
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AssignedValue {
-    pub event: AssignmentEvent,
-    pub value: MaybeCompile<TypedIrExpression>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AssignmentEvent {
-    // TODO this is weird, especially for partial assigns (eg. array[0] = 1)
-    pub assigned_value_span: Span,
-}
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget<B = AssignmentTargetBase> {
@@ -63,167 +41,15 @@ impl AssignmentTarget {
     }
 }
 
-// TODO move this into context, together with the ir block being written and the scope
-// TODO this should not be clone, that's really expensive. Instead, work with shadowing overlays, simular to scopes.
-//   all this vars cloning is probably the slow part of compilation right now
-//   (actually, why do we still have this and scopes? can't we merge these?)
-#[derive(Debug, Clone)]
-pub struct VariableValues {
-    pub inner: Option<VariableValuesInner>,
-}
-
-#[derive(Debug, Clone)]
-pub struct VariableValuesInner {
-    // TODO for combinatorial blocks: include which bits have been written/read on signals,
-    //   so that we can report an error if not bits are written at the end and if bits are read before they are written
-    //   (if any other bit of the respective signal is written later)
-    pub versions: IndexMap<SignalOrVariable, u64>,
-    pub map: IndexMap<Variable, MaybeAssignedValue>,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct ValueVersioned {
-    pub value: SignalOrVariable,
-    pub version: ValueVersion,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct ValueVersion(u64);
-
-impl VariableValues {
-    pub const NO_VARS: Self = Self { inner: None };
-
-    pub fn new() -> Self {
-        Self {
-            inner: Some(VariableValuesInner {
-                versions: IndexMap::new(),
-                map: IndexMap::new(),
-            }),
-        }
-    }
-
-    pub fn get(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> Result<&AssignedValue, ErrorGuaranteed> {
-        match self.get_maybe(diags, span_use, var)? {
-            MaybeAssignedValue::Assigned(value) => Ok(value),
-            MaybeAssignedValue::NotYetAssigned => Err(diags.report_simple(
-                "variable has not yet been assigned a value",
-                span_use,
-                "variable used here",
-            )),
-            // TODO point to examples of assignment and non-assignment
-            MaybeAssignedValue::PartiallyAssigned => Err(diags.report_simple(
-                "variable has not yet been assigned a value in all preceding branches",
-                span_use,
-                "variable used here",
-            )),
-            &MaybeAssignedValue::FailedIfMerge(span_if) => {
-                // TODO include more specific reason and/or hint
-                //   in particular, point to the runtime condition and the if keyword,
-                //   similar to the return/break/continue error message
-                let diag = Diagnostic::new("variable value from different `if` branches could not be merged")
-                    .add_error(span_use, "variable used here")
-                    .add_info(span_if, "if that caused the merge failure here")
-                    .finish();
-                Err(diags.report(diag))
-            }
-        }
-    }
-
-    pub fn get_maybe(
-        &self,
-        diags: &Diagnostics,
-        span_use: Span,
-        var: Variable,
-    ) -> Result<&MaybeAssignedValue, ErrorGuaranteed> {
-        let map = &self
-            .inner
-            .as_ref()
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable are not allowed in this context"))?
-            .map;
-        let maybe = map
-            .get(&var)
-            .ok_or_else(|| diags.report_internal_error(span_use, "variable used here has not been declared"))?;
-        Ok(maybe)
-    }
-
-    pub fn set(
-        &mut self,
-        diags: &Diagnostics,
-        span_set: Span,
-        var: Variable,
-        value: MaybeAssignedValue,
-    ) -> Result<(), ErrorGuaranteed> {
-        match &mut self.inner {
-            None => Err(diags.report_internal_error(span_set, "variables are not allowed in this context")),
-            Some(inner) => {
-                inner.map.insert(var, value);
-                *inner.versions.entry(SignalOrVariable::Variable(var)).or_insert(0) += 1;
-                Ok(())
-            }
-        }
-    }
-
-    pub fn value_versioned(&self, value: SignalOrVariable) -> Option<ValueVersioned> {
-        let inner = self.inner.as_ref()?;
-        let version = ValueVersion(*inner.versions.get(&value).unwrap_or(&0));
-        Some(ValueVersioned { value, version })
-    }
-
-    pub fn report_signal_assignment(
-        &mut self,
-        diags: &Diagnostics,
-        signal: Spanned<Signal>,
-    ) -> Result<(), ErrorGuaranteed> {
-        let inner = self.inner.as_mut().ok_or_else(|| {
-            diags.report_internal_error(
-                signal.span,
-                "signal versioning doesn't make sense in contexts without variables",
-            )
-        })?;
-        *inner
-            .versions
-            .entry(SignalOrVariable::Signal(signal.inner))
-            .or_insert(0) += 1;
-        Ok(())
-    }
-}
-
-// TODO move to better place?
-pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
-    diags: &Diagnostics,
-    ctx: &mut C,
-    ctx_block: &mut C::Block,
-    debug_info_id: MaybeIdentifier,
-    expr: TypedIrExpression,
-) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
-    let span = debug_info_id.span();
-    let var_ir_info = IrVariableInfo {
-        ty: expr.ty.to_ir(),
-        debug_info_id,
-    };
-    let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;
-
-    let stmt_store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), expr.expr);
-    ctx.push_ir_statement(diags, ctx_block, Spanned::new(span, stmt_store))?;
-
-    Ok(TypedIrExpression {
-        ty: expr.ty,
-        domain: expr.domain,
-        expr: var_ir,
-    })
-}
-
 impl CompileItemContext<'_, '_> {
     pub fn elaborate_assignment<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
-        mut vars: VariableValues,
         scope: &Scope,
+        vars: &mut VariableValues,
         stmt: &Assignment,
-    ) -> Result<VariableValues, ErrorGuaranteed> {
-        println!("elaborate_assignment to {:?}", stmt.target);
-
+    ) -> Result<(), ErrorGuaranteed> {
         let diags = self.refs.diags;
         let Assignment {
             span: _,
@@ -233,7 +59,7 @@ impl CompileItemContext<'_, '_> {
         } = stmt;
 
         // evaluate target
-        let target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, &vars, target_expr)?;
+        let target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, target_expr)?;
         let AssignmentTarget {
             base: target_base,
             array_steps: target_steps,
@@ -261,7 +87,7 @@ impl CompileItemContext<'_, '_> {
         } else {
             &target_expected_ty
         };
-        let right_eval = self.eval_expression(ctx, ctx_block, scope, &vars, &right_expected_ty, right_expr)?;
+        let right_eval = self.eval_expression(ctx, ctx_block, scope, vars, &right_expected_ty, right_expr)?;
 
         // figure out if we need a compile or hardware assignment
         let target_base_signal = match target_base.inner {
@@ -272,7 +98,7 @@ impl CompileItemContext<'_, '_> {
                 self.elaborate_variable_assignment(
                     ctx,
                     ctx_block,
-                    &mut vars,
+                    vars,
                     stmt.span,
                     target,
                     var,
@@ -280,15 +106,13 @@ impl CompileItemContext<'_, '_> {
                     *op,
                     right_eval,
                 )?;
-                return Ok(vars);
+                return Ok(());
             }
         };
 
-        println!("target signal: {target_base_signal:?}");
-
         // handle hardware signal assignment
         // TODO report exact range/sub-access that is being assigned
-        ctx.report_assignment(diags, Spanned::new(target_base.span, target_base_signal), &mut vars)?;
+        ctx.report_assignment(diags, Spanned::new(target_base.span, target_base_signal), vars)?;
 
         // get inner type and steps
         let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
@@ -365,8 +189,7 @@ impl CompileItemContext<'_, '_> {
             },
         )?;
 
-        // vars have not changed
-        Ok(vars)
+        Ok(())
     }
 
     fn elaborate_variable_assignment<C: ExpressionContext>(
@@ -381,8 +204,6 @@ impl CompileItemContext<'_, '_> {
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<(), ErrorGuaranteed> {
-        println!("elaborate_variable_assignment");
-
         let diags = self.refs.diags;
         let AssignmentTarget {
             base: target_base,
@@ -392,6 +213,7 @@ impl CompileItemContext<'_, '_> {
         // TODO move all of this into a function
         // check mutable
         if !self.variables[var].mutable {
+            // TODO allow if the variable is not mutable and is fully un-assigned so far
             let diag = Diagnostic::new("assignment to immutable variable")
                 .add_error(target_base.span, "variable assigned to here")
                 .add_info(self.variables[var].id.span(), "variable declared as immutable here")
@@ -406,9 +228,10 @@ impl CompileItemContext<'_, '_> {
             let value_eval = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
+                    // TODO apply implications
                     let target_eval = Spanned::new(
                         target.span,
-                        ExpressionWithImplications::simple(vars.get(diags, target.span, var)?.value.clone()),
+                        ExpressionWithImplications::simple(vars.var_get(diags, target.span, var)?.value()),
                     );
                     let value_eval = eval_binary_expression(
                         diags,
@@ -447,23 +270,13 @@ impl CompileItemContext<'_, '_> {
             };
 
             // set variable
-            vars.set(
-                diags,
-                stmt_span,
-                var,
-                MaybeAssignedValue::Assigned(AssignedValue {
-                    event: AssignmentEvent {
-                        assigned_value_span: value_eval.span,
-                    },
-                    value: value_stored,
-                }),
-            )?;
+            vars.var_set(diags, var, stmt_span, value_stored)?;
             return Ok(());
         }
 
         // at this point the current target value needs to be evaluated
         // TODO apply implications
-        let target_base_eval = Spanned::new(target_base.span, &vars.get(diags, target_base.span, var)?.value);
+        let target_base_eval = Spanned::new(target_base.span, vars.var_get(diags, target_base.span, var)?.value());
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;
@@ -471,12 +284,12 @@ impl CompileItemContext<'_, '_> {
         any_hardware |= target_steps.any_hardware();
         any_hardware |= matches!(right_eval.inner, MaybeCompile::Other(_));
 
-        if any_hardware {
+        let result = if any_hardware {
             // figure out the assigned value
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = target_steps.apply_to_value(diags, target_base_eval.cloned())?;
+                    let target_eval = target_steps.apply_to_value(diags, target_base_eval.clone())?;
                     let value_eval = eval_binary_expression(
                         diags,
                         stmt_span,
@@ -500,7 +313,7 @@ impl CompileItemContext<'_, '_> {
                 target.span,
                 target_base.span,
                 var,
-                target_base_eval.inner,
+                &target_base_eval.inner,
             )?;
 
             // figure out the inner type and steps
@@ -525,20 +338,15 @@ impl CompileItemContext<'_, '_> {
             let mut combined_domain = target_base_domain.join(value.inner.domain());
             target_steps.for_each_domain(|d| combined_domain = combined_domain.join(d.inner));
 
-            let assigned = AssignedValue {
-                event: AssignmentEvent {
-                    assigned_value_span: value.span,
-                },
-                value: MaybeCompile::Other(TypedIrExpression {
-                    ty: target_base_ty.inner,
-                    domain: combined_domain,
-                    expr: IrExpression::Variable(target_base_ir_var),
-                }),
+            let value_assigned = TypedIrExpression {
+                ty: target_base_ty.inner,
+                domain: combined_domain,
+                expr: IrExpression::Variable(target_base_ir_var),
             };
-            vars.set(diags, stmt_span, var, MaybeAssignedValue::Assigned(assigned))?;
+            MaybeCompile::Other(value_assigned)
         } else {
             // everything is compile-time, do assignment at compile-time
-            let target_base_eval = target_base_eval.map_inner(|m| m.as_ref().unwrap_compile());
+            let target_base_eval = target_base_eval.map_inner(|m| m.unwrap_compile());
             let target_steps = target_steps.unwrap_compile();
             let right_eval = right_eval.map_inner(MaybeCompile::unwrap_compile);
 
@@ -546,7 +354,7 @@ impl CompileItemContext<'_, '_> {
             let value_eval = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = target_steps.get_compile_value(diags, target_base_eval.cloned())?;
+                    let target_eval = target_steps.get_compile_value(diags, target_base_eval.clone())?;
                     let value = eval_binary_expression(
                         diags,
                         stmt_span,
@@ -582,22 +390,11 @@ impl CompileItemContext<'_, '_> {
             }
 
             // do assignment
-            let event = AssignmentEvent {
-                assigned_value_span: value_eval.span,
-            };
-            let result_value =
-                target_steps.set_compile_value(diags, target_base_eval.map_inner(Clone::clone), op.span, value_eval)?;
-            vars.set(
-                diags,
-                stmt_span,
-                var,
-                MaybeAssignedValue::Assigned(AssignedValue {
-                    event,
-                    value: MaybeCompile::Compile(result_value),
-                }),
-            )?;
-        }
+            let result_value = target_steps.set_compile_value(diags, target_base_eval, op.span, value_eval)?;
+            MaybeCompile::Compile(result_value)
+        };
 
+        vars.var_set(diags, var, stmt_span, result)?;
         Ok(())
     }
 
@@ -613,6 +410,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         // pick a type and convert the current base value to hardware
+        // TODO allow just inferring types, the user can specify one if they really want to
         let target_base_ty = self.variables[var].ty.as_ref().ok_or_else(|| {
             let diag = Diagnostic::new("variable needs type annotation")
                 .add_error(
@@ -732,4 +530,29 @@ impl CompileItemContext<'_, '_> {
             }
         }
     }
+}
+
+// TODO move to better place?
+pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
+    diags: &Diagnostics,
+    ctx: &mut C,
+    ctx_block: &mut C::Block,
+    debug_info_id: MaybeIdentifier,
+    expr: TypedIrExpression,
+) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
+    let span = debug_info_id.span();
+    let var_ir_info = IrVariableInfo {
+        ty: expr.ty.as_ir(),
+        debug_info_id,
+    };
+    let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;
+
+    let stmt_store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), expr.expr);
+    ctx.push_ir_statement(diags, ctx_block, Spanned::new(span, stmt_store))?;
+
+    Ok(TypedIrExpression {
+        ty: expr.ty,
+        domain: expr.domain,
+        expr: var_ir,
+    })
 }

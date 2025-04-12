@@ -12,7 +12,7 @@ use itertools::enumerate;
 use std::convert::identity;
 
 // TODO rename
-// TODO just provide both as default args
+// TODO just provide both as default args, by now it's pretty clear that this uses TypedIrExpression almost always
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum MaybeCompile<T, C = CompileValue> {
     Compile(C),
@@ -175,7 +175,7 @@ impl CompileValue {
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,
-                    |e| IrExpression::ArrayLiteral(inner_ty.to_ir(), len.clone(), e),
+                    |e| IrExpression::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
                 ),
                 _ => HardwareValueResult::InvalidType,
             },
@@ -268,6 +268,13 @@ impl<T, C> MaybeCompile<T, C> {
         match self {
             MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
             MaybeCompile::Other(v) => MaybeCompile::Other(v),
+        }
+    }
+
+    pub fn try_map_other<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<MaybeCompile<U, C>, E> {
+        match self {
+            MaybeCompile::Compile(v) => Ok(MaybeCompile::Compile(v)),
+            MaybeCompile::Other(v) => Ok(MaybeCompile::Other(f(v)?)),
         }
     }
 }

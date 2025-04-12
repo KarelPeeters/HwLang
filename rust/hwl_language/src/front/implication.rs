@@ -1,5 +1,5 @@
-use crate::front::assignment::ValueVersioned;
 use crate::front::types::ClosedIncRange;
+use crate::front::variables::ValueVersioned;
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
 

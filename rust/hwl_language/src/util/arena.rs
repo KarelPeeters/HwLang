@@ -3,7 +3,7 @@ use indexmap::map::IndexMap;
 use itertools::Itertools;
 use std::fmt::Debug;
 use std::fmt::Formatter;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 // TODO use refcell for all of these data structures?
@@ -59,21 +59,20 @@ pub trait IndexType: Sized + Debug + Copy + Eq + Hash {
     fn inner(&self) -> Idx;
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq)]
 pub struct Idx {
     index: usize,
-    check: u64,
+    check: RandomCheck,
 }
 
-impl Idx {
-    pub fn index(&self) -> usize {
-        self.index
-    }
-}
+/// Large enough for a really low chance of collision,
+/// small enough to leave room for niche value optimization in containing types.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct RandomCheck(u32);
 
 pub struct Arena<K: IndexType, T> {
     values: Vec<T>,
-    check: u64,
+    check: RandomCheck,
     ph: PhantomData<K>,
 }
 
@@ -98,6 +97,10 @@ impl<K: IndexType, T> Arena<K, T> {
 
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn check(&self) -> RandomCheck {
+        self.check
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (K, &T)> {
@@ -181,7 +184,7 @@ impl<K: IndexType, T> Default for Arena<K, T> {
     fn default() -> Self {
         Self {
             values: vec![],
-            check: rand::random(),
+            check: RandomCheck::new(),
             ph: PhantomData,
         }
     }
@@ -196,13 +199,13 @@ impl<K: IndexType, T: Debug> Debug for Arena<K, T> {
 
 pub struct ArenaIteratorRef<'s, K, T> {
     inner: std::iter::Enumerate<std::slice::Iter<'s, T>>,
-    check: u64,
+    check: RandomCheck,
     ph: PhantomData<K>,
 }
 
 pub struct ArenaIteratorMut<'s, K, T> {
     inner: std::iter::Enumerate<std::slice::IterMut<'s, T>>,
-    check: u64,
+    check: RandomCheck,
     ph: PhantomData<K>,
 }
 
@@ -258,8 +261,40 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorMut<'s, K, T> {
     }
 }
 
-fn key_wrapper<K: IndexType, V>(check: u64) -> impl Fn((usize, V)) -> (K, V) {
+fn key_wrapper<K: IndexType, V>(check: RandomCheck) -> impl Fn((usize, V)) -> (K, V) {
     move |(index, value)| (K::new(Idx { index, check }), value)
+}
+
+impl Idx {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn check(&self) -> RandomCheck {
+        self.check
+    }
+}
+
+impl PartialEq for Idx {
+    fn eq(&self, other: &Self) -> bool {
+        assert_eq!(
+            self.check, other.check,
+            "indices from different arenas should not be compared"
+        );
+        self.index == other.index
+    }
+}
+
+impl Hash for Idx {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+    }
+}
+
+impl RandomCheck {
+    pub fn new() -> Self {
+        Self(rand::random())
+    }
 }
 
 #[cfg(test)]
