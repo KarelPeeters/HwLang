@@ -3,7 +3,7 @@ use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::lower_verilog::lower;
 use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{FileId, FilePath, SourceDatabaseBuilder};
+use hwl_language::syntax::source::{FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use itertools::Itertools;
@@ -25,48 +25,11 @@ pub struct CompileAndLowerResult {
     pub lowered_cpp: String,
 }
 
-// TODO include entire std dir, instead of this hardcoding
-const SRC_TOP: &str = include_str!("../../../design/top_webdemo.kh");
-const SRC_STD_TYPES: &str = include_str!("../../../design/project/std/types.kh");
-const SRC_STD_MATH: &str = include_str!("../../../design/project/std/math.kh");
-const SRC_STD_UTIL: &str = include_str!("../../../design/project/std/util.kh");
-
 const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[wasm_bindgen]
-pub fn initial_source() -> String {
-    SRC_TOP.to_owned()
-}
-
-#[wasm_bindgen]
-pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
-    let mut source = SourceDatabaseBuilder::new();
-    source
-        .add_file(
-            FilePath(vec!["std".to_owned(), "types".to_owned()]),
-            "std/types.kh".to_owned(),
-            SRC_STD_TYPES.to_owned(),
-        )
-        .unwrap();
-    source
-        .add_file(
-            FilePath(vec!["std".to_owned(), "math".to_owned()]),
-            "std/math.kh".to_owned(),
-            SRC_STD_MATH.to_owned(),
-        )
-        .unwrap();
-    source
-        .add_file(
-            FilePath(vec!["std".to_owned(), "util".to_owned()]),
-            "std/util.kh".to_owned(),
-            SRC_STD_UTIL.to_owned(),
-        )
-        .unwrap();
-    source
-        .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), src)
-        .unwrap();
-
-    let source = source.finish();
+pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
+    let source = build_source(top_src);
 
     let diags = Diagnostics::new();
     let parsed = ParsedDatabase::new(&diags, &source);
@@ -108,6 +71,28 @@ pub fn compile_and_lower(src: String) -> CompileAndLowerResult {
         lowered_verilog,
         lowered_cpp,
     }
+}
+
+mod included_sources {
+    pub const SRC_INITIAL_TOP: &str = include_str!("../../../design/top_webdemo.kh");
+    include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));
+}
+
+#[wasm_bindgen]
+pub fn initial_source() -> String {
+    included_sources::SRC_INITIAL_TOP.to_owned()
+}
+
+fn build_source(top_src: String) -> SourceDatabase {
+    let mut source = SourceDatabaseBuilder::new();
+    for &(steps, path, content) in included_sources::STD_SOURCES {
+        let steps = FilePath(steps.iter().map(|&s| s.to_owned()).collect_vec());
+        source.add_file(steps, path.to_owned(), content.to_owned()).unwrap();
+    }
+    source
+        .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), top_src)
+        .unwrap();
+    source.finish()
 }
 
 /// See <https://lezer.codemirror.net/docs/ref/#common.Tree^build>

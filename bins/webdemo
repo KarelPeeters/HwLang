@@ -5,5 +5,5 @@ cd $(dirname "$0")/..
 
 # TODO collect commands to install and setup npm
 
-(cd rust/hwl_wasm && wasm-pack build)
+(cd rust/hwl_wasm && wasm-pack build --dev)
 (cd web_demo && npm ci && npm run start)

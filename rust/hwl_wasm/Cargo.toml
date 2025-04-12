@@ -7,6 +7,10 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[build-dependencies]
+hwl_language.workspace = true
+itertools.workspace = true
+
 [dependencies]
 console_error_panic_hook.workspace = true
 hwl_language.workspace = true
