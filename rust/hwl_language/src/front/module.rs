@@ -6,7 +6,9 @@ use crate::front::check::{
 use crate::front::compile::{
     ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
-use crate::front::context::{CompileTimeExpressionContext, ExpressionContext, IrBuilderExpressionContext};
+use crate::front::context::{
+    CompileTimeExpressionContext, ExpressionContext, ExtraRegister, IrBuilderExpressionContext,
+};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::EvaluatedId;
 use crate::front::ir::{
@@ -16,8 +18,8 @@ use crate::front::ir::{
 };
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{DeclaredValueSingle, Scope};
-use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValueResult, MaybeCompile, NamedValue};
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{self, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind};
 use crate::syntax::ast::{
@@ -665,7 +667,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         self.drivers
                             .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
                     };
-                    let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
+                    let mut ctx = IrBuilderExpressionContext::new(&block_domain, None, &mut report_assignment);
 
                     let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars_inner, block);
 
@@ -711,13 +713,29 @@ impl BodyElaborationContext<'_, '_, '_> {
                             self.drivers
                                 .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
                         };
-                        let mut ctx = IrBuilderExpressionContext::new(&block_domain, &mut report_assignment);
+
+                        let mut extra_regs = vec![];
+                        let mut ctx = IrBuilderExpressionContext::new(
+                            &block_domain,
+                            Some((&mut self.ir_registers, &mut extra_regs)),
+                            &mut report_assignment,
+                        );
 
                         let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars_inner, block);
+                        let ir_variables = ctx.finish();
 
                         ir_block.and_then(|(ir_block, end)| {
-                            let ir_variables = ctx.finish();
                             end.unwrap_outside_function_and_loop(diags)?;
+
+                            // will be filled in more later, during driver checking and merging
+                            let mut on_reset = vec![];
+                            for extra_reg in extra_regs {
+                                let ExtraRegister { span, reg, init } = extra_reg;
+                                if let Some(init) = init {
+                                    let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
+                                    on_reset.push(Spanned::new(span, stmt));
+                                }
+                            }
 
                             let process = IrClockedProcess {
                                 domain: Spanned {
@@ -726,8 +744,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                                 },
                                 locals: ir_variables,
                                 on_clock: ir_block,
-                                // will be filled in later, during driver checking and merging
-                                on_reset: IrBlock { statements: vec![] },
+                                on_reset: IrBlock { statements: on_reset },
                             };
                             Ok(IrModuleChild::ClockedProcess(process))
                         })
@@ -1061,7 +1078,8 @@ impl BodyElaborationContext<'_, '_, '_> {
 
                 // eval expr
                 let mut report_assignment = report_assignment_internal_error(diags, "module instance port connection");
-                let mut ctx = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
+                let mut ctx =
+                    IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, None, &mut report_assignment);
                 let mut ctx_block = ctx.new_ir_block();
 
                 let mut vars_inner = VariableValues::new_child(vars);
@@ -1285,7 +1303,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         .add_info(decl_span, "declared here")
                         .footer(
                             Level::Help,
-                            format!("either drive the {kind} from a combinatorial block or turn it into a register"),
+                            format!("either drive the {kind} from a combinatorial block or mark it as a register"),
                         )
                         .finish();
                     any_err = Err(diags.report(diag));
@@ -1398,7 +1416,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         // TODO move wire value creation/checking into pass 2, to better preserve the process order
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
-        let mut ctx_expr = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, &mut report_assignment);
+        let mut ctx_expr = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, None, &mut report_assignment);
         let mut ctx_block = ctx_expr.new_ir_block();
 
         let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
@@ -1767,32 +1785,10 @@ fn pull_register_init_into_process(
             if let IrModuleChild::ClockedProcess(process) = &mut processes[process_index].as_ref_mut_ok()? {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
-
-                    // TODO fix duplication with CompileValue::to_ir_expression
-                    // TODO move this to where the register is initially visited
-                    let init_ir = match init.inner.as_hardware_value(&reg_info.ty.inner) {
-                        HardwareValueResult::Success(v) => Some(v),
-                        HardwareValueResult::Undefined => None,
-                        HardwareValueResult::PartiallyUndefined => {
-                            return Err(diags.report_todo(init.span, "partially undefined register reset value"))
-                        }
-                        HardwareValueResult::Unrepresentable => throw!(diags.report_internal_error(
-                            init.span,
-                            format!(
-                                "value `{}` has hardware type but is itself not representable",
-                                init.inner.to_diagnostic_string()
-                            ),
-                        )),
-                        HardwareValueResult::InvalidType => throw!(diags.report_internal_error(
-                            init.span,
-                            format!(
-                                "value `{}` with type `{}` cannot be represented as hardware type `{}`",
-                                init.inner.to_diagnostic_string(),
-                                init.inner.ty().to_diagnostic_string(),
-                                reg_info.ty.inner.to_diagnostic_string()
-                            ),
-                        )),
-                    };
+                    let init_ir = init
+                        .inner
+                        .as_ir_expression_or_undefined(diags, init.span, &reg_info.ty.inner)?
+                        .map(|expr| expr.expr);
 
                     if let Some(init_ir) = init_ir {
                         let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg_info.ir), init_ir);

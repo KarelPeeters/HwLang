@@ -545,9 +545,13 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
 }
 
 ExprLevelCallReal<allow_struct>: ExpressionKind = {
-    // call
-    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")" => ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelAtomic<allow_struct>>> "(" <args:Args> ")" => ExpressionKind::Call(target, args),
+    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")"
+        => ExpressionKind::Builtin(args),
+    <target:BoxSpanned<ExprLevelAtomic<allow_struct>>> "(" <args:Args> ")"
+        => ExpressionKind::Call(target, args),
+    <span_keyword:Span<"reg">> "(" <value:BoxExpr> "," <init:BoxExpr> ")"
+        => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
+
     ExprLevelDotIndex<allow_struct>,
 }
 

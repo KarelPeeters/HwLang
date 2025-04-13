@@ -187,23 +187,20 @@ impl CompileValue {
         }
     }
 
-    pub fn as_ir_expression(
+    pub fn as_ir_expression_or_undefined(
         &self,
         diags: &Diagnostics,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    ) -> Result<Option<TypedIrExpression>, ErrorGuaranteed> {
         match self.as_hardware_value(ty_hw) {
-            HardwareValueResult::Success(v) => Ok(TypedIrExpression {
+            HardwareValueResult::Success(v) => Ok(Some(TypedIrExpression {
                 ty: ty_hw.clone(),
                 domain: ValueDomain::CompileTime,
                 expr: v,
-            }),
-            HardwareValueResult::Undefined | HardwareValueResult::PartiallyUndefined => Err(diags.report_simple(
-                "undefined can only be used for register initialization",
-                span,
-                "value is undefined",
-            )),
+            })),
+            HardwareValueResult::Undefined => Ok(None),
+            HardwareValueResult::PartiallyUndefined => Err(diags.report_todo(span, "partially undefined values")),
             HardwareValueResult::Unrepresentable => Err(diags.report_internal_error(
                 span,
                 format!(
@@ -220,6 +217,22 @@ impl CompileValue {
                     self.ty().to_diagnostic_string(),
                     ty_hw.as_type().to_diagnostic_string()
                 ),
+            )),
+        }
+    }
+
+    pub fn as_ir_expression(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        ty_hw: &HardwareType,
+    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
+        match self.as_ir_expression_or_undefined(diags, span, ty_hw)? {
+            Some(ir_expr) => Ok(ir_expr),
+            None => Err(diags.report_simple(
+                "undefined values are not allowed here",
+                span,
+                format!("undefined value `{}` here", self.to_diagnostic_string()),
             )),
         }
     }

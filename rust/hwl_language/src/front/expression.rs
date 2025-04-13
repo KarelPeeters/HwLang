@@ -9,7 +9,8 @@ use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp, IrStatement,
+    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp,
+    IrStatement, IrVariableInfo,
 };
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, SignalOrVariable, ValueDomain};
 use crate::front::scope::Scope;
@@ -19,14 +20,14 @@ use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::syntax::ast::{
     ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression, ExpressionKind,
-    Identifier, IntLiteral, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
+    Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, RegisterDelay, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
-use crate::util::{Never, ResultDoubleExt, ResultNeverExt};
+use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use itertools::{enumerate, Either};
 use std::cmp::{max, min};
 use std::ops::Sub;
@@ -470,6 +471,54 @@ impl CompileItemContext<'_, '_> {
                 result_value
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
+            ExpressionKind::RegisterDelay(reg_delay) => {
+                let &RegisterDelay {
+                    span_keyword,
+                    ref value,
+                    ref init,
+                } = reg_delay;
+
+                // eval
+                let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
+                let init = self.eval_expression_as_compile(scope, vars, init, "register init");
+                let (value, init) = result_pair(value, init)?;
+
+                // figure out type
+                let value_ty = value.inner.ty();
+                let init_ty = init.inner.ty();
+                let ty = value_ty.union(&init_ty, true);
+                let ty_hw = ty.as_hardware_type().ok_or_else(|| todo!())?;
+
+                // convert values to hardware
+                let value = value.inner.as_ir_expression(diags, value.span, &ty_hw)?;
+                let init = init
+                    .inner
+                    .as_ir_expression_or_undefined(diags, init.span, &ty_hw)?
+                    .map(|expr| expr.expr);
+
+                // create a register and variable
+                let dummy_id = MaybeIdentifier::Dummy(span_keyword);
+                let var_info = IrVariableInfo {
+                    ty: ty_hw.as_ir(),
+                    debug_info_id: dummy_id.clone(),
+                };
+                let var = ctx.new_ir_variable(diags, span_keyword, var_info)?;
+                let (domain, reg) = ctx.new_ir_register(self, diags, dummy_id, ty_hw.clone(), init)?;
+
+                // do the right shuffle operations
+                let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(var), IrExpression::Register(reg));
+                ctx.push_ir_statement(diags, ctx_block, Spanned::new(span_keyword, stmt_load))?;
+
+                let stmt_store = IrStatement::Assign(IrAssignmentTarget::register(reg), value.expr);
+                ctx.push_ir_statement(diags, ctx_block, Spanned::new(span_keyword, stmt_store))?;
+
+                // return the variable, now containing the previous value of the register
+                MaybeCompile::Other(TypedIrExpression {
+                    ty: ty_hw,
+                    domain: ValueDomain::Sync(domain),
+                    expr: IrExpression::Variable(var),
+                })
+            }
         };
 
         Ok(ExpressionWithImplications::simple(result_simple))

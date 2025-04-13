@@ -451,6 +451,14 @@ pub enum ExpressionKind {
     // Calls
     Call(Box<Expression>, Args),
     Builtin(Spanned<Vec<Expression>>),
+    RegisterDelay(RegisterDelay),
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterDelay {
+    pub span_keyword: Span,
+    pub value: Box<Expression>,
+    pub init: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]

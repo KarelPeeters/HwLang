@@ -28,6 +28,7 @@ pub struct FunctionValue {
     pub decl_span: Span,
     pub scope_captured: CapturedScope,
 
+    // TODO point into ast instead of storing a clone here
     pub params: Spanned<Vec<AstParameter>>,
     pub body: Spanned<FunctionBody>,
 }

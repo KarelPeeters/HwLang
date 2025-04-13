@@ -1,10 +1,15 @@
 use crate::front::block::BlockDomain;
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::Implication;
-use crate::front::ir::{IrBlock, IrStatement, IrVariable, IrVariableInfo, IrVariables};
-use crate::front::misc::{Signal, ValueDomain};
+use crate::front::ir::{
+    IrBlock, IrExpression, IrRegister, IrRegisterInfo, IrRegisters, IrStatement, IrVariable, IrVariableInfo,
+    IrVariables,
+};
+use crate::front::misc::{DomainSignal, Signal, ValueDomain};
+use crate::front::types::HardwareType;
 use crate::front::variables::{ValueVersioned, VariableValues};
-use crate::syntax::ast::Spanned;
+use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use std::fmt::Debug;
@@ -31,6 +36,15 @@ pub trait ExpressionContext {
         span: Span,
         info: IrVariableInfo,
     ) -> Result<IrVariable, ErrorGuaranteed>;
+
+    fn new_ir_register(
+        &mut self,
+        ctx: &CompileItemContext,
+        diags: &Diagnostics,
+        id: MaybeIdentifier,
+        ty: HardwareType,
+        init: Option<IrExpression>,
+    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed>;
 
     fn report_assignment(
         &mut self,
@@ -105,6 +119,18 @@ impl ExpressionContext for CompileTimeExpressionContext {
         Err(diags.report_internal_error(span, "trying to create IR variable in compile-time context"))
     }
 
+    fn new_ir_register(
+        &mut self,
+        ctx: &CompileItemContext,
+        diags: &Diagnostics,
+        id: MaybeIdentifier,
+        ty: HardwareType,
+        init: Option<IrExpression>,
+    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed> {
+        let _ = (ctx, ty, init);
+        Err(diags.report_internal_error(id.span(), "trying to create register in compile-time context"))
+    }
+
     fn report_assignment(
         &mut self,
         diags: &Diagnostics,
@@ -174,17 +200,28 @@ impl ExpressionContext for CompileTimeExpressionContext {
     }
 }
 
+pub struct ExtraRegister {
+    pub span: Span,
+    pub reg: IrRegister,
+    pub init: Option<IrExpression>,
+}
+
+// TODO rename to hardware
+// TODO move to module?
+// TODO make a shared enum between comb/clocked, there is a bunch of behavior that's different
 pub struct IrBuilderExpressionContext<'a> {
     block_domain: &'a BlockDomain,
     report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     condition_domains: Vec<Spanned<ValueDomain>>,
     implications: Vec<Implication>,
     ir_variables: IrVariables,
+    ir_registers: Option<(&'a mut IrRegisters, &'a mut Vec<ExtraRegister>)>,
 }
 
 impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
         block_domain: &'a BlockDomain,
+        ir_registers: Option<(&'a mut IrRegisters, &'a mut Vec<ExtraRegister>)>,
         report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     ) -> Self {
         Self {
@@ -193,6 +230,7 @@ impl<'a> IrBuilderExpressionContext<'a> {
             condition_domains: vec![],
             implications: vec![],
             ir_variables: IrVariables::new(),
+            ir_registers,
         }
     }
 
@@ -202,7 +240,7 @@ impl<'a> IrBuilderExpressionContext<'a> {
     }
 }
 
-impl ExpressionContext for IrBuilderExpressionContext<'_> {
+impl<'a> ExpressionContext for IrBuilderExpressionContext<'a> {
     type Block = IrBlock;
 
     fn new_ir_block(&self) -> Self::Block {
@@ -242,6 +280,47 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
     ) -> Result<IrVariable, ErrorGuaranteed> {
         let _ = (diags, span);
         Ok(self.ir_variables.push(info))
+    }
+
+    fn new_ir_register(
+        &mut self,
+        ctx: &CompileItemContext,
+        diags: &Diagnostics,
+        id: MaybeIdentifier,
+        ty: HardwareType,
+        init: Option<IrExpression>,
+    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed> {
+        match &mut self.ir_registers {
+            None => Err(diags.report_simple(
+                "defining new registers is only allowed in a clocked block",
+                id.span(),
+                "attempt to create a register here",
+            )),
+            Some((ir_registers, register_inits)) => {
+                let domain = match self.block_domain {
+                    BlockDomain::Clocked(domain) => domain.inner,
+                    BlockDomain::CompileTime | BlockDomain::Combinatorial => {
+                        return Err(diags.report_internal_error(id.span(), "expected clocked domain"))
+                    }
+                };
+
+                let reg_info = IrRegisterInfo {
+                    ty: ty.as_ir(),
+                    debug_info_id: id.clone(),
+                    debug_info_ty: ty,
+                    debug_info_domain: domain.to_diagnostic_string(ctx),
+                };
+
+                let reg = ir_registers.push(reg_info);
+                let extra = ExtraRegister {
+                    span: id.span(),
+                    reg,
+                    init,
+                };
+                register_inits.push(extra);
+                Ok((domain, reg))
+            }
+        }
     }
 
     fn report_assignment(
