@@ -30,27 +30,37 @@ struct Args {
     print_files: bool,
     #[arg(long)]
     only_top: bool,
+    #[arg(long)]
+    keep_main_stack: bool,
 }
 
 fn main() -> ExitCode {
-    // spawn a new thread with a larger stack size
-    // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
-    std::thread::Builder::new()
-        .stack_size(THREAD_STACK_SIZE)
-        .spawn(main_inner)
-        .unwrap()
-        .join()
-        .unwrap()
+    let args = Args::parse();
+
+    if args.keep_main_stack {
+        main_inner(args)
+    } else {
+        // spawn a new thread with a larger stack size
+        // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
+        std::thread::Builder::new()
+            .stack_size(THREAD_STACK_SIZE)
+            .spawn(|| main_inner(args))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
 }
 
-fn main_inner() -> ExitCode {
+fn main_inner(args: Args) -> ExitCode {
     let Args {
         root,
         thread_count,
         profile,
         print_files,
         only_top,
-    } = Args::parse();
+        keep_main_stack: _,
+    } = args;
+
     let thread_count = thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE));
     let elaboration_set = if only_top {
         ElaborationSet::TopOnly
