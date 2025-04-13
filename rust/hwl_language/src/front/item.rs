@@ -4,7 +4,7 @@ use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
 use crate::front::misc::ScopedEntry;
 use crate::front::scope::Scope;
-use crate::front::value::{CompileValue, MaybeCompile};
+use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
@@ -26,7 +26,8 @@ impl CompileItemContext<'_, '_> {
             }
             Item::Instance(instance) => {
                 // TODO this is a bit weird, we're not actually evaluating the item
-                self.elaborate_module_header(file_scope, instance)?;
+                let mut vars = VariableValues::new_root(&self.variables);
+                self.elaborate_module_header(file_scope, &mut vars, instance)?;
                 Ok(CompileValue::UNIT)
             }
             Item::CommonDeclaration(decl) => {
@@ -154,10 +155,11 @@ impl CompileItemContext<'_, '_> {
         decl: &CommonDeclaration,
     ) {
         let diags = self.refs.diags;
-        let entry = self
-            .eval_declaration(scope, vars, decl)
-            .map(|v| ScopedEntry::Value(MaybeCompile::Compile(v)));
-        let (_, id) = decl.info();
+        let (decl_span, id) = decl.info();
+        let entry = self.eval_declaration(scope, vars, decl).and_then(|v| {
+            let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, MaybeCompile::Compile(v));
+            Ok(ScopedEntry::Named(NamedValue::Variable(var)))
+        });
         scope.maybe_declare(diags, id.as_ref(), entry);
     }
 }

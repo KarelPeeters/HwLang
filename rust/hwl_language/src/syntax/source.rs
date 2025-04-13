@@ -100,7 +100,7 @@ impl SourceDatabase {
 
 impl SourceDatabaseBuilder {
     pub fn new() -> Self {
-        let mut dirs = Arena::default();
+        let mut dirs = Arena::new();
         let root_dir = dirs.push(DirectoryInfo {
             path: FilePath(vec![]),
             file: None,
@@ -110,7 +110,7 @@ impl SourceDatabaseBuilder {
         SourceDatabaseBuilder {
             root_directory: root_dir,
             directories: dirs,
-            files: Arena::default(),
+            files: Arena::new(),
         }
     }
 
@@ -135,8 +135,8 @@ impl SourceDatabaseBuilder {
 
         // TODO this is a mess, we're redundantly allocating arenas and hashmaps
         //   but it's all O(files), so not _that_ bad
-        let mut dirs_dummy: Arena<Directory, ()> = Arena::default();
-        let mut files_dummy: Arena<FileId, ()> = Arena::default();
+        let mut dirs_dummy: Arena<Directory, ()> = Arena::new();
+        let mut files_dummy: Arena<FileId, ()> = Arena::new();
 
         let mut dirs_build_to_final = IndexMap::new();
         let mut dirs_final_to_build = IndexMap::new();
@@ -309,7 +309,7 @@ fn to_str_or_err<'s>(path: &Path, s: &'s OsStr) -> Result<&'s str, SourceSetErro
 
 impl FileId {
     pub fn dummy() -> FileId {
-        let mut arena = Arena::default();
+        let mut arena = Arena::new();
         arena.push(())
     }
 }

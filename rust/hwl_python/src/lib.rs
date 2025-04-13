@@ -1,6 +1,9 @@
 use check::{check_diags, convert_diag_error, unwrap_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
-use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler};
+use hwl_language::front::compile::{
+    ArenaPorts, ArenaVariables, CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler,
+};
+use hwl_language::front::variables::VariableValues;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
@@ -236,7 +239,7 @@ impl Compile {
             let found = unwrap_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
             let item = match found.value {
                 &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-                ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
+                ScopedEntry::Named(_) => {
                     let e = diags.report_internal_error(
                         found.defining_span,
                         "file scope should only contain items, not named/value",
@@ -253,7 +256,7 @@ impl Compile {
                 print_handler: &StdoutPrintHandler,
                 should_stop: &|| false,
             };
-            let mut item_ctx = CompileItemContext::new(refs, None);
+            let mut item_ctx = CompileItemContext::new(refs, None, ArenaVariables::new(), ArenaPorts::new());
 
             let value = item_ctx.eval_item(item);
             let value = unwrap_diag_error(source, &diags, value)?;
@@ -319,13 +322,16 @@ impl Function {
                 print_handler: &StdoutPrintHandler,
                 should_stop: &|| false,
             };
-            let mut item_ctx = CompileItemContext::new(refs, None);
+
+            let mut item_ctx = CompileItemContext::new(refs, None, ArenaVariables::new(), ArenaPorts::new());
+            let mut vars = VariableValues::new_root(&item_ctx.variables);
 
             let mut ctx = CompileTimeExpressionContext {
                 span: dummy_span,
                 reason: "external call".to_owned(),
             };
-            let returned = item_ctx.call_function(&mut ctx, &self.function_value, args);
+
+            let returned = item_ctx.call_function(&mut ctx, &mut vars, &self.function_value, args);
             let ((), returned) = unwrap_diag_error(source, &diags, returned)?;
 
             // unwrap compile

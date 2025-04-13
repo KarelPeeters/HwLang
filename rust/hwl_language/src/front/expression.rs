@@ -69,7 +69,6 @@ impl CompileItemContext<'_, '_> {
                     Ok(EvaluatedId::Value(MaybeCompile::Compile(s.eval_item(item)?.clone())))
                 })
                 .flatten_err()?,
-            ScopedEntry::Value(value) => EvaluatedId::Value(value.clone()),
         };
         Ok(Spanned {
             span: def_span,
@@ -86,6 +85,7 @@ impl CompileItemContext<'_, '_> {
         expected_ty: &Type,
         expr: &Expression,
     ) -> Result<Spanned<MaybeCompile<TypedIrExpression>>, ErrorGuaranteed> {
+        assert_eq!(self.variables.check(), vars.check());
         Ok(self
             .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, expr)?
             .map_inner(|r| r.value))
@@ -310,7 +310,14 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             ExpressionKind::ArrayComprehension(array_comprehension) => {
-                let ArrayComprehension { body, index, iter } = array_comprehension;
+                let ArrayComprehension {
+                    body,
+                    index,
+                    span_keyword,
+                    iter,
+                } = array_comprehension;
+                let span_keyword = *span_keyword;
+
                 let expected_ty_inner = match expected_ty {
                     Type::Array(inner, _) => inner,
                     _ => &Type::Any,
@@ -320,12 +327,16 @@ impl CompileItemContext<'_, '_> {
 
                 let mut values = vec![];
                 for index_value in iter {
+                    let index_var =
+                        vars.var_new_immutable_init(&mut self.variables, index.clone(), span_keyword, index_value);
+
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
-
-                    // TODO variable or just constant value?
-                    let index_entry = ScopedEntry::Value(index_value);
-                    scope_body.maybe_declare(diags, index.as_ref(), Ok(index_entry));
+                    scope_body.maybe_declare(
+                        diags,
+                        index.as_ref(),
+                        Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
+                    );
 
                     let value = body
                         .map_inner(|body_expr| {
@@ -468,7 +479,7 @@ impl CompileItemContext<'_, '_> {
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
                 let (result_block, result_value) = self
-                    .recurse(entry, |s| s.call_function(ctx, &target, args))
+                    .recurse(entry, |s| s.call_function(ctx, vars, &target, args))
                     .flatten_err()?;
 
                 let result_block_spanned = Spanned {

@@ -2,7 +2,7 @@ use crate::front::block::TypedIrExpression;
 use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
 use crate::front::ir::{IrAssignmentTargetBase, IrExpression};
 use crate::front::types::HardwareType;
-use crate::front::value::{MaybeCompile, NamedValue};
+use crate::front::value::NamedValue;
 use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
 
@@ -15,8 +15,6 @@ pub enum ScopedEntry {
     /// These are not fully evaluated immediately, they might be used symbolically
     ///   as assignment targets or in domain expressions.
     Named(NamedValue),
-    /// A simple value: constants or parameters.
-    Value(MaybeCompile<TypedIrExpression>),
 }
 
 pub type DomainSignal = Polarized<Signal>;

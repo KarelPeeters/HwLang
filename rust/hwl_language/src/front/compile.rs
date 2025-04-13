@@ -160,7 +160,7 @@ impl<'s> CompileRefs<'_, 's> {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
-                        let mut ctx = CompileItemContext::new(self, Some(item));
+                        let mut ctx = CompileItemContext::new(self, Some(item), ArenaVariables::new(), Arena::new());
                         let result = ctx.eval_item_new(item);
                         result
                     });
@@ -264,12 +264,15 @@ pub struct CompileRefs<'a, 's> {
     pub should_stop: &'a dyn Fn() -> bool,
 }
 
+pub type ArenaVariables = Arena<Variable, VariableInfo>;
+pub type ArenaPorts = Arena<Port, PortInfo>;
+
 pub struct CompileItemContext<'a, 's> {
     // TODO maybe inline this
     pub refs: CompileRefs<'a, 's>,
 
-    pub variables: Arena<Variable, VariableInfo>,
-    pub ports: Arena<Port, PortInfo<Port>>,
+    pub variables: ArenaVariables,
+    pub ports: ArenaPorts,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
 
@@ -300,13 +303,19 @@ impl StackEntry {
 }
 
 impl<'a, 's> CompileItemContext<'a, 's> {
-    pub fn new(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
+    // TODO check that this is actually ever used with existing arenas, if not simplify again
+    pub fn new(
+        refs: CompileRefs<'a, 's>,
+        origin: Option<AstRefItem>,
+        variables: ArenaVariables,
+        ports: Arena<Port, PortInfo>,
+    ) -> Self {
         CompileItemContext {
             refs,
-            variables: Arena::default(),
-            ports: Arena::default(),
-            wires: Arena::default(),
-            registers: Arena::default(),
+            variables,
+            ports,
+            wires: Arena::new(),
+            registers: Arena::new(),
             origin,
             stack: vec![],
         }
@@ -335,7 +344,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         self.recurse(StackEntry::ItemEvaluation(item), |s| {
             let origin = s.origin.map(|origin| (origin, s.stack.clone()));
             let f_compute = || {
-                let mut ctx = CompileItemContext::new(s.refs, Some(item));
+                let mut ctx = CompileItemContext::new(s.refs, Some(item), ArenaVariables::new(), ArenaPorts::new());
                 ctx.eval_item_new(item)
             };
             let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(s.refs.fixed.parsed, stack));
@@ -432,7 +441,7 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug)]
-pub struct PortInfo<P> {
+pub struct PortInfo<P = Port> {
     pub id: Identifier,
     pub direction: Spanned<PortDirection>,
     pub domain: Spanned<PortDomain<P>>,
@@ -456,7 +465,7 @@ pub struct RegisterInfo {
     pub ir: IrRegister,
 }
 
-impl PortInfo<Port> {
+impl PortInfo {
     pub fn typed_ir_expr(&self) -> TypedIrExpression {
         TypedIrExpression {
             ty: self.ty.inner.clone(),
@@ -649,11 +658,11 @@ fn find_top_module(
             },
             _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
         },
-        ScopedEntry::Named(_) | ScopedEntry::Value(_) => {
+        ScopedEntry::Named(_) => {
             // TODO include "got" string
             // TODO is this even ever possible? direct should only be inside of scopes
             Err(diags.report_simple(
-                "top should be an item, got a named/value",
+                "top should be an item, got a named value",
                 top_entry.defining_span,
                 "defined here",
             ))
@@ -695,7 +704,7 @@ impl CompileShared {
             work_queue,
             item_values,
             elaborated_modules: ComputeOnceMap::new(),
-            ir_modules: Mutex::new(Arena::default()),
+            ir_modules: Mutex::new(Arena::new()),
         }
     }
 

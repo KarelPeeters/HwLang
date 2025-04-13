@@ -1,5 +1,5 @@
 use crate::front::block::TypedIrExpression;
-use crate::front::compile::{Variable, VariableInfo};
+use crate::front::compile::{ArenaVariables, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{IrAssignmentTarget, IrStatement, IrVariable, IrVariableInfo};
@@ -8,7 +8,7 @@ use crate::front::types::{HardwareType, Typed};
 use crate::front::value::MaybeCompile;
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
-use crate::util::arena::{Arena, IndexType, RandomCheck};
+use crate::util::arena::{IndexType, RandomCheck};
 use crate::util::data::IndexMapExt;
 use crate::util::result_pair;
 use indexmap::IndexMap;
@@ -21,12 +21,15 @@ use std::hash::Hash;
 #[derive(Debug)]
 pub struct VariableValues<'p> {
     kind: ParentKind<'p>,
-    content: VariableValuesContent,
+    check: RandomCheck,
+    var_values: IndexMap<Variable, MaybeAssignedValue>,
+    signal_versions: IndexMap<Signal, ValueVersion>,
 }
 
 #[derive(Debug)]
 pub struct VariableValuesContent {
     check: RandomCheck,
+    next_version_if_root: Option<u64>,
     var_values: IndexMap<Variable, MaybeAssignedValue>,
     signal_versions: IndexMap<Signal, ValueVersion>,
 }
@@ -61,6 +64,7 @@ enum ParentKind<'p> {
     },
     Child {
         parent: &'p VariableValues<'p>,
+        // technically redundant, but prevents constant pointer chasing
         next_version: &'p Cell<u64>,
     },
 }
@@ -75,16 +79,14 @@ pub struct ValueVersioned {
 }
 
 impl VariableValues<'static> {
-    pub fn new_root(variables: &Arena<Variable, VariableInfo>) -> Self {
+    pub fn new_root(variables: &ArenaVariables) -> Self {
         Self {
+            check: variables.check(),
             kind: ParentKind::Root {
                 next_version: Cell::new(0),
             },
-            content: VariableValuesContent {
-                check: variables.check(),
-                var_values: Default::default(),
-                signal_versions: Default::default(),
-            },
+            var_values: Default::default(),
+            signal_versions: Default::default(),
         }
     }
 }
@@ -92,35 +94,86 @@ impl VariableValues<'static> {
 impl<'p> VariableValues<'p> {
     pub fn new_child(parent: &'p VariableValues) -> Self {
         Self {
+            check: parent.check,
             kind: ParentKind::Child {
                 parent,
                 next_version: parent.kind.next_version(),
             },
-            content: VariableValuesContent {
-                check: parent.content.check,
-                var_values: Default::default(),
-                signal_versions: Default::default(),
-            },
+            var_values: Default::default(),
+            signal_versions: Default::default(),
         }
     }
 
     pub fn into_content(self) -> VariableValuesContent {
-        self.content
+        let next_version_if_root = match self.kind {
+            ParentKind::Root { next_version } => Some(next_version.get()),
+            ParentKind::Child { .. } => None,
+        };
+
+        VariableValuesContent {
+            check: self.check,
+            next_version_if_root,
+            var_values: self.var_values,
+            signal_versions: self.signal_versions,
+        }
     }
 
-    pub fn var_new(&mut self, diags: &Diagnostics, var: Spanned<Variable>) -> Result<(), ErrorGuaranteed> {
-        assert_eq!(self.content.check, var.inner.inner().check());
-        let known_var = self
-            .iter_up()
-            .any(|curr| curr.content.var_values.contains_key(&var.inner));
-        if known_var {
-            return Err(diags.report_internal_error(var.span, "reporting new existing variable"));
-        }
+    pub fn restore_root_from_content(variables: &ArenaVariables, content: VariableValuesContent) -> Self {
+        let VariableValuesContent {
+            check,
+            next_version_if_root,
+            var_values,
+            signal_versions,
+        } = content;
 
-        self.content
-            .var_values
-            .insert_first(var.inner, MaybeAssignedValue::NotYetAssigned);
-        Ok(())
+        assert_eq!(variables.check(), check);
+        let next_version = next_version_if_root.expect("expected root content");
+        let kind = ParentKind::Root {
+            next_version: Cell::new(next_version),
+        };
+
+        Self {
+            kind,
+            check,
+            var_values,
+            signal_versions,
+        }
+    }
+
+    pub fn check(&self) -> RandomCheck {
+        self.check
+    }
+
+    pub fn var_new(&mut self, variables: &mut ArenaVariables, info: VariableInfo) -> Variable {
+        assert_eq!(self.check, variables.check());
+
+        let var = variables.push(info);
+        self.var_values.insert_first(var, MaybeAssignedValue::NotYetAssigned);
+        var
+    }
+
+    pub fn var_new_immutable_init(
+        &mut self,
+        variables: &mut ArenaVariables,
+        id: MaybeIdentifier,
+        assign_span: Span,
+        value: MaybeCompile<TypedIrExpression>,
+    ) -> Variable {
+        let info = VariableInfo {
+            id,
+            mutable: false,
+            ty: None,
+        };
+        let var = self.var_new(variables, info);
+        let assigned = AssignedValue {
+            last_assignment_span: assign_span,
+            value_and_version: match value {
+                MaybeCompile::Compile(value) => MaybeCompile::Compile(value),
+                MaybeCompile::Other(value) => MaybeCompile::Other((value, self.kind.increment_version())),
+            },
+        };
+        self.var_values.insert(var, MaybeAssignedValue::Assigned(assigned));
+        var
     }
 
     pub fn var_set(
@@ -130,10 +183,10 @@ impl<'p> VariableValues<'p> {
         assignment_span: Span,
         value: MaybeCompile<TypedIrExpression>,
     ) -> Result<(), ErrorGuaranteed> {
-        assert_eq!(self.content.check, var.inner().check());
-        let known_var = self.iter_up().any(|curr| curr.content.var_values.contains_key(&var));
+        assert_eq!(self.check, var.inner().check());
+        let known_var = self.iter_up().any(|curr| curr.var_values.contains_key(&var));
         if !known_var {
-            return Err(diags.report_internal_error(assignment_span, "unknown variable"));
+            return Err(diags.report_internal_error(assignment_span, "set unknown variable"));
         }
 
         let value_and_version = match value {
@@ -145,7 +198,7 @@ impl<'p> VariableValues<'p> {
             last_assignment_span: assignment_span,
             value_and_version,
         });
-        self.content.var_values.insert(var, assigned);
+        self.var_values.insert(var, assigned);
         Ok(())
     }
 
@@ -180,40 +233,37 @@ impl<'p> VariableValues<'p> {
         var: Variable,
     ) -> Result<&MaybeAssignedValue, ErrorGuaranteed> {
         self.var_find(var)
-            .ok_or_else(|| diags.report_internal_error(span_use, "unknown variable"))
+            .ok_or_else(|| diags.report_internal_error(span_use, "get unknown variable"))
     }
 
     fn var_find(&self, var: Variable) -> Option<&MaybeAssignedValue> {
-        assert_eq!(self.content.check, var.inner().check());
-        self.iter_up().find_map(|curr| curr.content.var_values.get(&var))
+        assert_eq!(self.check, var.inner().check());
+        self.iter_up().find_map(|curr| curr.var_values.get(&var))
     }
 
     pub fn signal_new(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
-        match &self.kind {
-            ParentKind::Root { .. } => {
-                self.content
-                    .signal_versions
-                    .insert_first(signal.inner, self.kind.increment_version());
-                Ok(())
-            }
-            ParentKind::Child { .. } => {
-                Err(diags.report_internal_error(signal.span, "report new signal in child vars"))
-            }
+        let known_signal = self
+            .iter_up()
+            .any(|curr| curr.signal_versions.contains_key(&signal.inner));
+        if known_signal {
+            return Err(diags.report_internal_error(signal.span, "redefining signal"));
         }
+
+        self.signal_versions
+            .insert_first(signal.inner, self.kind.increment_version());
+        Ok(())
     }
 
     pub fn signal_report_write(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
         // TODO checking only the root is enough, signals will always be declared there
         let known_signal = self
             .iter_up()
-            .any(|curr| curr.content.signal_versions.contains_key(&signal.inner));
+            .any(|curr| curr.signal_versions.contains_key(&signal.inner));
         if !known_signal {
             return Err(diags.report_internal_error(signal.span, "write to unknown signal"));
         }
 
-        self.content
-            .signal_versions
-            .insert(signal.inner, self.kind.increment_version());
+        self.signal_versions.insert(signal.inner, self.kind.increment_version());
         Ok(())
     }
 
@@ -223,7 +273,7 @@ impl<'p> VariableValues<'p> {
     //   This should also simplify the backends.
     pub fn signal_get_version(&self, signal: Signal) -> Option<ValueVersion> {
         self.iter_up()
-            .find_map(|curr| curr.content.signal_versions.get(&signal).copied())
+            .find_map(|curr| curr.signal_versions.get(&signal).copied())
     }
 
     pub fn signal_versioned(&self, signal: Signal) -> Option<ValueVersioned> {
@@ -277,7 +327,7 @@ impl ParentKind<'_> {
 pub fn merge_variable_branches<C: ExpressionContext>(
     diags: &Diagnostics,
     ctx: &mut C,
-    variables: &Arena<Variable, VariableInfo>,
+    variables: &ArenaVariables,
     parent: &mut VariableValues,
     span_merge: Span,
     ctx_block_0: &mut C::Block,
@@ -287,16 +337,18 @@ pub fn merge_variable_branches<C: ExpressionContext>(
 ) -> Result<(), ErrorGuaranteed> {
     let VariableValuesContent {
         check: check_0,
+        next_version_if_root: _,
         var_values: var_values_0,
         signal_versions: signal_versions_0,
     } = child_0;
     let VariableValuesContent {
         check: check_1,
+        next_version_if_root: _,
         var_values: var_values_1,
         signal_versions: signal_versions_1,
     } = child_1;
-    assert_eq!(parent.content.check, check_0);
-    assert_eq!(parent.content.check, check_1);
+    assert_eq!(parent.check, check_0);
+    assert_eq!(parent.check, check_1);
 
     // TODO avoid cloning values, but that probably requires us to clone map keys
     for &var in combined_keys(&var_values_0, &var_values_1) {
@@ -370,7 +422,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
             (&MaybeAssignedValue::Error(e), _) | (_, &MaybeAssignedValue::Error(e)) => MaybeAssignedValue::Error(e),
         };
 
-        parent.content.var_values.insert(var, value_combined);
+        parent.var_values.insert(var, value_combined);
     }
 
     for &signal in combined_keys(&signal_versions_0, &signal_versions_1) {
@@ -388,7 +440,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
         } else {
             parent.kind.increment_version()
         };
-        parent.content.signal_versions.insert(signal, version_combined);
+        parent.signal_versions.insert(signal, version_combined);
     }
 
     Ok(())

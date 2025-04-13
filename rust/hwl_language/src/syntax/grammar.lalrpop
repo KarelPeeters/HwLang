@@ -538,8 +538,8 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
         => ExpressionKind::TupleLiteral(<>),
 
     // array comprehension
-    "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> "in" <iter:Box<ExprLevelNoIn>> "]"
-        => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, iter }),
+    "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
+        => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
     ExprLevelCallReal<allow_struct>,
 }

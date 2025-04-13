@@ -192,7 +192,7 @@ impl<'a> IrBuilderExpressionContext<'a> {
             report_assignment,
             condition_domains: vec![],
             implications: vec![],
-            ir_variables: IrVariables::default(),
+            ir_variables: IrVariables::new(),
         }
     }
 

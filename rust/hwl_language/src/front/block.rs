@@ -215,8 +215,7 @@ impl CompileItemContext<'_, '_> {
                             mutable,
                             ty,
                         };
-                        let variable = self.variables.push(info);
-                        vars.var_new(diags, Spanned::new(id.span(), variable))?;
+                        let var = vars.var_new(&mut self.variables, info);
 
                         // store initial value if there is one
                         if let Some(init) = init {
@@ -224,10 +223,10 @@ impl CompileItemContext<'_, '_> {
                                 store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), init)
                                     .map(TypedIrExpression::to_general_expression)
                             })?;
-                            vars.var_set(diags, variable, decl.span, init)?;
+                            vars.var_set(diags, var, decl.span, init)?;
                         }
 
-                        Ok(ScopedEntry::Named(NamedValue::Variable(variable)))
+                        Ok(ScopedEntry::Named(NamedValue::Variable(var)))
                     });
 
                     scope.maybe_declare(diags, id.as_ref(), entry);
@@ -581,21 +580,6 @@ impl CompileItemContext<'_, '_> {
             ref body,
         } = stmt.inner;
 
-        // create inner scope with index variable
-        let mut scope_index = Scope::new_child(stmt.span, scope_parent);
-        let index_var = self.variables.push(VariableInfo {
-            id: index_id.clone(),
-            mutable: false,
-            // TODO should this contain the type if set?
-            ty: None,
-        });
-        scope_index.maybe_declare(
-            diags,
-            index_id.as_ref(),
-            Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
-        );
-        vars.var_new(diags, Spanned::new(index_id.span(), index_var))?;
-
         // run the actual loop
         for index_value in iter {
             self.refs.check_should_stop(span_keyword)?;
@@ -611,8 +595,16 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
             }
 
-            // set index
-            vars.var_set(diags, index_var, index_id.span(), index_value)?;
+            // create scope and set index
+            let index_var =
+                vars.var_new_immutable_init(&mut self.variables, index_id.clone(), span_keyword, index_value);
+
+            let mut scope_index = Scope::new_child(stmt.span, scope_parent);
+            scope_index.maybe_declare(
+                diags,
+                index_id.as_ref(),
+                Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
+            );
 
             // run body
             let (body_block, body_end) = self.elaborate_block(ctx, &scope_index, vars, body)?;

@@ -23,7 +23,7 @@ impl IrDatabase {
 
 impl IrModuleInfo {
     pub fn validate(&self, db: &IrDatabase, diags: &Diagnostics) -> Result<(), ErrorGuaranteed> {
-        let no_variables = &IrVariables::default();
+        let no_variables = &IrVariables::new();
 
         for child in &self.children {
             match child {

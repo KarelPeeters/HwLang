@@ -78,6 +78,14 @@ pub struct Arena<K: IndexType, T> {
 
 #[allow(dead_code)]
 impl<K: IndexType, T> Arena<K, T> {
+    pub fn new() -> Self {
+        Self {
+            values: vec![],
+            check: RandomCheck::new(),
+            ph: PhantomData,
+        }
+    }
+
     pub fn push(&mut self, value: T) -> K {
         self.push_with_index(|_| value)
     }
@@ -177,16 +185,6 @@ impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
             index
         );
         &mut self.values[index.inner().index]
-    }
-}
-
-impl<K: IndexType, T> Default for Arena<K, T> {
-    fn default() -> Self {
-        Self {
-            values: vec![],
-            check: RandomCheck::new(),
-            ph: PhantomData,
-        }
     }
 }
 
@@ -305,7 +303,7 @@ mod test {
 
     #[test]
     fn basic() {
-        let mut arena: Arena<TestIdx, char> = Default::default();
+        let mut arena: Arena<TestIdx, char> = Arena::new();
         let ai = arena.push('a');
         let bi = arena.push('b');
         assert_eq!(arena[ai], 'a');
@@ -314,7 +312,7 @@ mod test {
 
     #[test]
     fn duplicate() {
-        let mut arena: Arena<TestIdx, char> = Default::default();
+        let mut arena: Arena<TestIdx, char> = Arena::new();
         let ai0 = arena.push('a');
         let ai1 = arena.push('a');
         assert_eq!(arena[ai0], 'a');
@@ -324,7 +322,7 @@ mod test {
 
     #[test]
     fn iter() {
-        let mut arena: Arena<TestIdx, char> = Default::default();
+        let mut arena: Arena<TestIdx, char> = Arena::new();
         let ai = arena.push('a');
         let bi = arena.push('b');
 

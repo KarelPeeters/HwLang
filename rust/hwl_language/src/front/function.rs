@@ -1,6 +1,6 @@
 use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
+use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::misc::ScopedEntry;
@@ -9,7 +9,7 @@ use crate::front::types::Type;
 use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, Parameter as AstParameter, Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
@@ -51,6 +51,7 @@ pub enum FunctionBody {
     // TODO should generic modules are be implemented here?
 }
 
+// TODO maybe move this into the variables module
 // TODO avoid repeated hashing of this potentially large type
 // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
 //   We only need to check for captures values that could actually be used
@@ -81,12 +82,13 @@ pub enum FailedCaptureReason {
 }
 
 impl CompileItemContext<'_, '_> {
-    pub fn match_args_to_params_and_typecheck<I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
+    pub fn match_args_to_params_and_typecheck<'p, I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
         &mut self,
-        scope: &mut Scope,
+        vars: &mut VariableValues,
+        scope_outer: &'p Scope,
         params: &Spanned<Vec<AstParameter>>,
         args: &Args<I, Spanned<V>>,
-    ) -> Result<Vec<(Identifier, V)>, ErrorGuaranteed>
+    ) -> Result<(Scope<'p>, Vec<(Identifier, V)>), ErrorGuaranteed>
     where
         for<'i> &'i I: Into<Option<&'i Identifier>>,
     {
@@ -195,14 +197,15 @@ impl CompileItemContext<'_, '_> {
             return Err(diags.report_internal_error(args.span, "finished matching args, but got wrong final length"));
         }
 
+        // TODO wrong span, this should include the body
         let mut param_values_vec = vec![];
-        let mut vars = VariableValues::new_root(&self.variables);
+        let mut scope = Scope::new_child(params.span, scope_outer);
 
         for param_info in &params.inner {
             let param_id = &param_info.id;
 
             // eval and check param type
-            let param_ty = self.eval_expression_as_ty(scope, &mut vars, &param_info.ty)?;
+            let param_ty = self.eval_expression_as_ty(&scope, vars, &param_info.ty)?;
             let (_, _, arg_value) = args_passed.get(&param_id.string).ok_or_else(|| {
                 diags.report_internal_error(params.span, "finished matching args, but got missing param name")
             })?;
@@ -219,14 +222,20 @@ impl CompileItemContext<'_, '_> {
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
             // declare param in scope
+            let param_var = vars.var_new_immutable_init(
+                &mut self.variables,
+                MaybeIdentifier::Identifier(param_id.clone()),
+                param_id.span,
+                arg_value_maybe.inner,
+            );
             let entry = DeclaredValueSingle::Value {
                 span: param_id.span,
-                value: ScopedEntry::Value(arg_value_maybe.inner),
+                value: ScopedEntry::Named(NamedValue::Variable(param_var)),
             };
             scope.declare_already_checked(param_id.string.clone(), entry);
         }
 
-        Ok(param_values_vec)
+        Ok((scope, param_values_vec))
     }
 }
 
@@ -234,6 +243,7 @@ impl CompileItemContext<'_, '_> {
     pub fn call_function<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
+        vars: &mut VariableValues,
         function: &FunctionValue,
         args: Args<Option<Identifier>, Spanned<MaybeCompile<TypedIrExpression>>>,
     ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
@@ -242,20 +252,19 @@ impl CompileItemContext<'_, '_> {
 
         // recreate captured scope
         let span_scope = function.params.span.join(function.body.span);
-        let scope_captured = function.scope_captured.to_scope(self.refs, span_scope)?;
+        let scope_captured = function
+            .scope_captured
+            .to_scope(&mut self.variables, vars, self.refs, span_scope)?;
 
         // map params into scope
-        let mut scope = Scope::new_child(span_scope, &scope_captured);
-        self.match_args_to_params_and_typecheck(&mut scope, &function.params, &args)?;
-        let scope = &scope;
-        let mut vars = VariableValues::new_root(&self.variables);
+        let (scope, _) = self.match_args_to_params_and_typecheck(vars, &scope_captured, &function.params, &args)?;
 
         // run the body
         let entry = StackEntry::FunctionRun(function.decl_span);
         self.recurse(entry, |s| {
             match &function.body.inner {
                 FunctionBody::TypeAliasExpr(expr) => {
-                    let result = s.eval_expression_as_ty(scope, &mut vars, expr)?.inner;
+                    let result = s.eval_expression_as_ty(&scope, vars, expr)?.inner;
                     let result = MaybeCompile::Compile(CompileValue::Type(result));
 
                     let empty_block = ctx.new_ir_block();
@@ -265,12 +274,11 @@ impl CompileItemContext<'_, '_> {
                     // evaluate return type
                     let ret_ty = ret_ty
                         .as_ref()
-                        .map(|ret_ty| s.eval_expression_as_ty(scope, &mut vars, ret_ty))
+                        .map(|ret_ty| s.eval_expression_as_ty(&scope, vars, ret_ty))
                         .transpose();
 
                     // evaluate block
-                    let mut vars = VariableValues::new_root(&s.variables);
-                    let (ir_block, end) = s.elaborate_block(ctx, scope, &mut vars, body)?;
+                    let (ir_block, end) = s.elaborate_block(ctx, &scope, vars, body)?;
 
                     // check return type
                     let ret_ty = ret_ty?;
@@ -385,36 +393,13 @@ impl CapturedScope {
                                     ScopedEntry::Named(named) => match named {
                                         &NamedValue::Variable(var) => {
                                             // TODO these spans are probably wrong
-                                            match vars.var_get_maybe(diags, span, var)? {
-                                                MaybeAssignedValue::Assigned(assigned) => {
-                                                    match &assigned.value_and_version {
-                                                        MaybeCompile::Compile(value) => {
-                                                            Ok(CapturedValue::Value(value.clone()))
-                                                        }
-                                                        MaybeCompile::Other(_) => Ok(CapturedValue::FailedCapture(
-                                                            FailedCaptureReason::NotCompile,
-                                                        )),
-                                                    }
-                                                }
-                                                MaybeAssignedValue::NotYetAssigned
-                                                | MaybeAssignedValue::PartiallyAssigned => {
-                                                    Ok(CapturedValue::FailedCapture(
-                                                        FailedCaptureReason::NotFullyInitialized,
-                                                    ))
-                                                }
-                                                &MaybeAssignedValue::Error(e) => Err(e),
-                                            }
+                                            let maybe = vars.var_get_maybe(diags, span, var)?;
+                                            maybe_assigned_to_captured(maybe)
                                         }
                                         NamedValue::Port(_) | NamedValue::Wire(_) | NamedValue::Register(_) => {
                                             Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
                                         }
                                     },
-                                    ScopedEntry::Value(MaybeCompile::Compile(value)) => {
-                                        Ok(CapturedValue::Value(value.clone()))
-                                    }
-                                    ScopedEntry::Value(MaybeCompile::Other(_)) => {
-                                        Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
-                                    }
                                 };
                                 captured.map(|c| Spanned::new(span, c))
                             }
@@ -442,7 +427,13 @@ impl CapturedScope {
         })
     }
 
-    pub fn to_scope<'s>(&self, refs: CompileRefs<'_, 's>, scope_span: Span) -> Result<Scope<'s>, ErrorGuaranteed> {
+    pub fn to_scope<'s>(
+        &self,
+        variables: &mut ArenaVariables,
+        vars: &mut VariableValues,
+        refs: CompileRefs<'_, 's>,
+        scope_span: Span,
+    ) -> Result<Scope<'s>, ErrorGuaranteed> {
         let CapturedScope {
             parent_file,
             child_values,
@@ -461,10 +452,23 @@ impl CapturedScope {
                             span,
                             value: ScopedEntry::Item(item),
                         },
-                        CapturedValue::Value(value) => DeclaredValueSingle::Value {
-                            span,
-                            value: ScopedEntry::Value(MaybeCompile::Compile(value.clone())),
-                        },
+                        CapturedValue::Value(ref value) => {
+                            let id_recreated = MaybeIdentifier::Identifier(Identifier {
+                                span,
+                                string: id.clone(),
+                            });
+                            let var = vars.var_new_immutable_init(
+                                variables,
+                                id_recreated,
+                                span,
+                                MaybeCompile::Compile(value.clone()),
+                            );
+
+                            DeclaredValueSingle::Value {
+                                span,
+                                value: ScopedEntry::Named(NamedValue::Variable(var)),
+                            }
+                        }
                         &CapturedValue::FailedCapture(reason) => DeclaredValueSingle::FailedCapture(span, reason),
                     }
                 }
@@ -474,6 +478,19 @@ impl CapturedScope {
         }
 
         Ok(scope)
+    }
+}
+
+fn maybe_assigned_to_captured(maybe: &MaybeAssignedValue) -> Result<CapturedValue, ErrorGuaranteed> {
+    match maybe {
+        MaybeAssignedValue::Assigned(assigned) => match &assigned.value_and_version {
+            MaybeCompile::Compile(value) => Ok(CapturedValue::Value(value.clone())),
+            MaybeCompile::Other(_) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
+        },
+        MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned => {
+            Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))
+        }
+        &MaybeAssignedValue::Error(e) => Err(e),
     }
 }
 

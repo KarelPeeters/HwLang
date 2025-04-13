@@ -550,6 +550,7 @@ impl<T, E> ArrayLiteralElement<Result<T, E>> {
 pub struct ArrayComprehension {
     pub body: Box<ArrayLiteralElement<Expression>>,
     pub index: MaybeIdentifier,
+    pub span_keyword: Span,
     pub iter: Box<Expression>,
 }
 
