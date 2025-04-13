@@ -18,7 +18,7 @@ fn main() {
 
     let mut found_any = false;
 
-    recurse_for_each_file(&Path::new(&std_folder), |steps, entry| {
+    recurse_for_each_file(Path::new(&std_folder), |steps, entry| {
         let entry_path = entry.path();
         if entry_path.extension() == Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
             let mut steps = steps.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();

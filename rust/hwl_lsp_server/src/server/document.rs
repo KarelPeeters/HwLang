@@ -104,12 +104,12 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
                 FileChangeType::CREATED => {
                     let path = uri_to_path(&uri)?;
                     let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
-                    vfs.create(&uri, Content::Unknown(content)).map_err(VfsError::from)?;
+                    vfs.create(&uri, Content::Unknown(content))?;
                 }
                 FileChangeType::CHANGED => {
                     let path = uri_to_path(&uri)?;
                     let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
-                    vfs.update(&uri, Content::Unknown(content)).map_err(VfsError::from)?;
+                    vfs.update(&uri, Content::Unknown(content))?;
                 }
                 FileChangeType::DELETED => match vfs.delete(&uri) {
                     Ok(()) => {}

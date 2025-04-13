@@ -263,7 +263,7 @@ impl<'a> IrBuilderExpressionContext<'a> {
     }
 }
 
-impl<'a> ExpressionContext for IrBuilderExpressionContext<'a> {
+impl ExpressionContext for IrBuilderExpressionContext<'_> {
     type Block = IrBlock;
 
     fn new_ir_block(&self) -> Self::Block {

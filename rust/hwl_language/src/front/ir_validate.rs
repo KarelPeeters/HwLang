@@ -44,7 +44,7 @@ impl IrModuleInfo {
                         &IrType::Bool,
                         &clock_signal.inner.ty(self, no_variables),
                     )?;
-                    clock_block.validate(diags, self, &locals)?;
+                    clock_block.validate(diags, self, locals)?;
 
                     if let Some((reset_signal, reset_block)) = async_reset_signal_and_block {
                         reset_signal
@@ -56,7 +56,7 @@ impl IrModuleInfo {
                             &IrType::Bool,
                             &reset_signal.inner.ty(self, no_variables),
                         )?;
-                        reset_block.validate(diags, self, &locals)?;
+                        reset_block.validate(diags, self, locals)?;
                     }
                 }
                 IrModuleChild::CombinatorialProcess(process) => {
@@ -89,7 +89,7 @@ impl IrModuleInfo {
                                 }
                             }
                         };
-                        check_type_match(diags, connection.span, &ty, &conn_ty)?;
+                        check_type_match(diags, connection.span, ty, &conn_ty)?;
                     }
                 }
             }

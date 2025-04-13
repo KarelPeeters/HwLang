@@ -84,21 +84,21 @@ impl ClosedIncRangeMulti {
             ImplicationOp::Neq => {
                 for i in 0..self.ranges.len() {
                     let range = &self.ranges[i];
-                    if range.contains(&right) {
+                    if range.contains(right) {
                         let mut new_ranges = vec![];
 
                         let first = ClosedIncRange {
                             start_inc: range.start_inc.clone(),
                             end_inc: right - 1,
                         };
-                        if &first.start_inc <= &first.end_inc {
+                        if first.start_inc <= first.end_inc {
                             new_ranges.push(first);
                         }
                         let second = ClosedIncRange {
                             start_inc: right + 1,
                             end_inc: range.end_inc.clone(),
                         };
-                        if &second.start_inc <= &second.end_inc {
+                        if second.start_inc <= second.end_inc {
                             new_ranges.push(second);
                         }
 

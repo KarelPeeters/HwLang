@@ -6,11 +6,7 @@ use std::{fs, io};
 pub fn recurse_for_each_file<E: From<IoErrorWithPath>>(
     dir: &Path,
     mut f: impl FnMut(&[OsString], &DirEntry) -> Result<(), E>,
-    // TODO does the compiler realize this bound is redundant?
-) -> Result<(), E>
-where
-    E: From<IoErrorWithPath>,
-{
+) -> Result<(), E> {
     let mut stack = vec![];
     recurse_for_each_file_impl(dir, &mut stack, &mut f)
 }

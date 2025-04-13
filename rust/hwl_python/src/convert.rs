@@ -65,7 +65,7 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
     // TODO convert some obvious python types: int, bool, range, types.any
-    if let Ok(_) = value.extract::<PyRef<Undefined>>() {
+    if value.extract::<PyRef<Undefined>>().is_ok() {
         return Ok(CompileValue::Undefined);
     }
     if let Ok(value) = value.extract::<PyRef<Type>>() {

@@ -186,14 +186,14 @@ impl CompileItemContext<'_, '_> {
                     // eval ty
                     let ty = ty
                         .as_ref()
-                        .map(|ty| self.eval_expression_as_ty(&scope, vars, ty))
+                        .map(|ty| self.eval_expression_as_ty(scope, vars, ty))
                         .transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Type, |ty| &ty.inner);
                         init.as_ref()
-                            .map(|init| self.eval_expression(ctx, &mut ctx_block, &scope, vars, init_expected_ty, init))
+                            .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, vars, init_expected_ty, init))
                             .transpose()
                     });
 
@@ -232,14 +232,14 @@ impl CompileItemContext<'_, '_> {
                     scope.maybe_declare(diags, id.as_ref(), entry);
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    self.elaborate_assignment(ctx, &mut ctx_block, &scope, vars, stmt)?;
+                    self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<MaybeCompile<TypedIrExpression>> =
-                        self.eval_expression(ctx, &mut ctx_block, &scope, vars, &Type::Type, expr)?;
+                        self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Type, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, &scope, vars, inner_block)?;
+                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, scope, vars, inner_block)?;
 
                     let inner_block_spanned = Spanned {
                         span: inner_block.span,
@@ -262,7 +262,7 @@ impl CompileItemContext<'_, '_> {
                     let block_end = self.elaborate_if_statement(
                         ctx,
                         &mut ctx_block,
-                        &scope,
+                        scope,
                         vars,
                         Some((initial_if, else_ifs)),
                         final_else,
@@ -283,7 +283,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs.check_should_stop(span_keyword)?;
 
                         // eval cond
-                        let cond = self.eval_expression_as_compile(&scope, vars, cond, "while loop condition")?;
+                        let cond = self.eval_expression_as_compile(scope, vars, cond, "while loop condition")?;
 
                         let reason = TypeContainsReason::WhileCondition(span_keyword);
                         check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -299,7 +299,7 @@ impl CompileItemContext<'_, '_> {
                         }
 
                         // visit body
-                        let (body_ir, end) = self.elaborate_block(ctx, &scope, vars, body)?;
+                        let (body_ir, end) = self.elaborate_block(ctx, scope, vars, body)?;
                         let body_ir_spanned = Spanned {
                             span: body.span,
                             inner: body_ir,
@@ -324,7 +324,7 @@ impl CompileItemContext<'_, '_> {
                         span: stmt.span,
                         inner: stmt_for,
                     };
-                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, &scope, vars, stmt_for)?;
+                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, scope, vars, stmt_for)?;
                     ctx_block = block;
 
                     match end {
@@ -344,7 +344,7 @@ impl CompileItemContext<'_, '_> {
                     //  checking happens in the function call, and expanding at the call expression
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, &scope, vars, &Type::Type, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Type, value))
                         .transpose()?;
 
                     let end =
@@ -382,7 +382,7 @@ impl CompileItemContext<'_, '_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, &scope, vars, final_else)?;
+                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, scope, vars, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
@@ -400,7 +400,7 @@ impl CompileItemContext<'_, '_> {
             ref cond,
             ref block,
         } = initial_if;
-        let cond = self.eval_expression_with_implications(ctx, ctx_block, &scope, vars, &Type::Bool, cond)?;
+        let cond = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
         check_type_contains_value(
@@ -422,7 +422,7 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, block_end) = self.elaborate_block(ctx, &scope, vars, block)?;
+                    let (block_ir, block_end) = self.elaborate_block(ctx, scope, vars, block)?;
                     let block_ir_spanned = Spanned {
                         span: block.span,
                         inner: block_ir,
@@ -470,7 +470,7 @@ impl CompileItemContext<'_, '_> {
                         let mut then_vars = VariableValues::new_child(vars);
                         let (then_ir, then_end) =
                             ctx.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
-                                self.elaborate_block(ctx_inner, &scope, &mut then_vars, block)
+                                self.elaborate_block(ctx_inner, scope, &mut then_vars, block)
                             })?;
 
                         // lower else

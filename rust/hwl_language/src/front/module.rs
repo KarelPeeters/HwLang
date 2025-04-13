@@ -85,7 +85,7 @@ pub struct ElaboratedModule {
     pub ports: InstancePorts,
 }
 
-impl<'s> CompileRefs<'_, 's> {
+impl CompileRefs<'_, '_> {
     pub fn elaborate_module_params_new(
         &self,
         module: AstRefModule,
@@ -228,9 +228,9 @@ impl<'s> CompileRefs<'_, 's> {
                             }),
                         ),
                         WireKind::Normal { domain, ty } => (
-                            ctx.eval_port_domain(&mut scope_ports, domain)
+                            ctx.eval_port_domain(&scope_ports, domain)
                                 .map(|d| d.map_inner(PortDomain::Kind)),
-                            ctx.eval_expression_as_ty_hardware(&mut scope_ports, vars, ty, "port"),
+                            ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port"),
                         ),
                     };
 
@@ -445,7 +445,7 @@ fn push_port(
         ty: ty.inner.as_ir(),
         debug_info_id: id.clone(),
         debug_info_ty: ty.inner.clone(),
-        debug_info_domain: domain.inner.to_diagnostic_string(&ctx),
+        debug_info_domain: domain.inner.to_diagnostic_string(ctx),
     });
     let port = ctx.ports.push(PortInfo {
         id: id.clone(),
@@ -485,11 +485,11 @@ impl<'s> CompileItemContext<'_, 's> {
 
         // eval module and generics
         let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
-            self.eval_expression_as_compile(&scope, vars, module, "module instance");
+            self.eval_expression_as_compile(scope, vars, module, "module instance");
         let generic_args = generic_args
             .as_ref()
             .map(|generic_args| {
-                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(&scope, vars, a, "generic arg"))
+                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(scope, vars, a, "generic arg"))
             })
             .transpose();
 
@@ -677,7 +677,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     scope.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(&scope, vars, decl));
+                    let (wire, process) = result_pair_split(self.elaborate_module_declaration_wire(scope, vars, decl));
                     let process = process.transpose();
 
                     if let Ok(wire) = wire {
@@ -703,7 +703,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
                     //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(&scope, vars, decl) {
+                    match self.elaborate_module_declaration_reg_out_port(scope, vars, decl) {
                         Ok((port, reg_init)) => {
                             let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
                             assert!(port_drivers.is_empty());
@@ -863,7 +863,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // check that the reset is sync to the clock
                 ResetKind::Sync => {
                     let target = clock.map_inner(|s| ValueDomain::Sync(SyncDomain { clock: s, reset: None }));
-                    let source = Spanned::new(reset.span, signal.inner.signal.domain(&self.ctx).inner);
+                    let source = Spanned::new(reset.span, signal.inner.signal.domain(self.ctx).inner);
                     self.ctx.check_valid_domain_crossing(
                         span_domain,
                         target.as_ref(),
@@ -1109,10 +1109,10 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         for (port, connection) in zip_eq(ports.keys(), &port_connections.inner) {
             match self.elaborate_instance_port_connection(
-                &scope,
+                scope,
                 vars,
                 stmt_index,
-                &ports,
+                ports,
                 &port_signals,
                 port,
                 connection,
@@ -1578,7 +1578,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let domain = ctx
                     .eval_domain(scope_body, domain)
                     .map(|d| d.map_inner(ValueDomain::from_domain_kind));
-                let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &mut vars_inner, ty, "wire");
+                let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire");
                 (domain, ty)
             }
         };
@@ -1701,10 +1701,10 @@ impl BodyElaborationContext<'_, '_, '_> {
         // evaluate
         let sync = sync
             .as_ref()
-            .map_inner(|sync| ctx.eval_domain_sync(&scope_body, sync))
+            .map_inner(|sync| ctx.eval_domain_sync(scope_body, sync))
             .transpose();
-        let ty = ctx.eval_expression_as_ty_hardware(&scope_body, &mut vars_inner, ty, "register");
-        let init = ctx.eval_expression_as_compile(&scope_body, &mut vars_inner, init.as_ref(), "register reset value");
+        let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "register");
+        let init = ctx.eval_expression_as_compile(scope_body, &mut vars_inner, init.as_ref(), "register reset value");
 
         let sync = sync?;
         let ty = ty?;
@@ -1759,7 +1759,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         // evaluate init
         let mut vars_inner = VariableValues::new_child(vars_body);
-        let init = ctx.eval_expression_as_compile(&scope_body, &mut vars_inner, init, "register reset value");
+        let init = ctx.eval_expression_as_compile(scope_body, &mut vars_inner, init, "register reset value");
 
         let port = port?;
         let port_info = &ctx.ports[port];

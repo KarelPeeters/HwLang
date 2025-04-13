@@ -161,8 +161,7 @@ impl<'s> CompileRefs<'_, 's> {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
                         let mut ctx = CompileItemContext::new(self, Some(item), ArenaVariables::new(), Arena::new());
-                        let result = ctx.eval_item_new(item);
-                        result
+                        ctx.eval_item_new(item)
                     });
                 }
                 WorkItem::ElaborateModule(header, ir_module) => {

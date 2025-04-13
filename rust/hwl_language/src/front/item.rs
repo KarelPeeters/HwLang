@@ -33,7 +33,7 @@ impl CompileItemContext<'_, '_> {
             Item::CommonDeclaration(decl) => {
                 let ItemDeclaration { vis: _, decl } = decl;
                 let mut vars = VariableValues::new_root(&self.variables);
-                self.eval_declaration(file_scope, &mut vars, &decl)
+                self.eval_declaration(file_scope, &mut vars, decl)
             }
             Item::Module(module) => {
                 let ast_ref = AstRefModule::new_unchecked(item);
@@ -156,9 +156,9 @@ impl CompileItemContext<'_, '_> {
     ) {
         let diags = self.refs.diags;
         let (decl_span, id) = decl.info();
-        let entry = self.eval_declaration(scope, vars, decl).and_then(|v| {
+        let entry = self.eval_declaration(scope, vars, decl).map(|v| {
             let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, MaybeCompile::Compile(v));
-            Ok(ScopedEntry::Named(NamedValue::Variable(var)))
+            ScopedEntry::Named(NamedValue::Variable(var))
         });
         scope.maybe_declare(diags, id.as_ref(), entry);
     }

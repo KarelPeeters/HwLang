@@ -97,7 +97,7 @@ impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
 
 impl<T, E> ResultDoubleExt<T, E> for Result<Result<T, E>, E> {
     fn flatten_err(self) -> Result<T, E> {
-        Ok(self??)
+        self?
     }
 }
 

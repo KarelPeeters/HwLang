@@ -107,14 +107,14 @@ impl<'p> Scope<'p> {
 
     pub fn immediate_entries(&self) -> impl Iterator<Item = (&str, DeclaredValueSingle<&ScopedEntry>)> {
         self.content.values.iter().map(|(k, v)| {
-            let v = match v {
-                &DeclaredValue::Once { ref value, span } => match value {
+            let v = match *v {
+                DeclaredValue::Once { ref value, span } => match value {
                     Ok(value) => DeclaredValueSingle::Value { span, value },
                     &Err(e) => DeclaredValueSingle::Error(e),
                 },
-                &DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
-                &DeclaredValue::FailedCapture(span, reason) => DeclaredValueSingle::FailedCapture(span, reason),
-                &DeclaredValue::Error(err) => DeclaredValueSingle::Error(err),
+                DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
+                DeclaredValue::FailedCapture(span, reason) => DeclaredValueSingle::FailedCapture(span, reason),
+                DeclaredValue::Error(err) => DeclaredValueSingle::Error(err),
             };
             (k.as_str(), v)
         })

@@ -70,6 +70,9 @@ too_many_arguments = "allow"
 len_without_is_empty = "allow"
 new_without_default = "allow"
 get_first = "allow"
+needless_range_loop = "allow"
+ptr_arg = "allow"
+single_match = "allow"
 
 # These should be investigated and fixed and some point.
 result_large_err = "allow"

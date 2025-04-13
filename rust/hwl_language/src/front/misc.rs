@@ -188,12 +188,9 @@ impl Signal {
 
     pub fn domain(self, state: &CompileItemContext) -> Spanned<ValueDomain> {
         match self {
-            Signal::Port(port) => state.ports[port]
-                .domain
-                .clone()
-                .map_inner(ValueDomain::from_port_domain),
+            Signal::Port(port) => state.ports[port].domain.map_inner(ValueDomain::from_port_domain),
             Signal::Wire(wire) => state.wires[wire].domain.clone(),
-            Signal::Register(reg) => state.registers[reg].domain.clone().map_inner(ValueDomain::Sync),
+            Signal::Register(reg) => state.registers[reg].domain.map_inner(ValueDomain::Sync),
         }
     }
 
@@ -211,7 +208,7 @@ impl Signal {
                 let port_info = &state.ports[port];
                 TypedIrExpression {
                     ty: port_info.ty.inner.clone(),
-                    domain: ValueDomain::from_port_domain(port_info.domain.inner.clone()),
+                    domain: ValueDomain::from_port_domain(port_info.domain.inner),
                     expr: IrExpression::Port(port_info.ir),
                 }
             }
@@ -227,7 +224,7 @@ impl Signal {
                 let reg_info = &state.registers[reg];
                 TypedIrExpression {
                     ty: reg_info.ty.inner.clone(),
-                    domain: ValueDomain::Sync(reg_info.domain.inner.clone()),
+                    domain: ValueDomain::Sync(reg_info.domain.inner),
                     expr: IrExpression::Register(reg_info.ir),
                 }
             }

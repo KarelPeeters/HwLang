@@ -483,7 +483,7 @@ fn lower_module_statements(
 
                 let inner_name_map = NameMap {
                     ports: port_name_map,
-                    registers_outer: &reg_name_map,
+                    registers_outer: reg_name_map,
                     registers_inner: &shadowing_reg_name_map,
                     wires: wire_name_map,
                     variables: &variables,

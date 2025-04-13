@@ -87,7 +87,7 @@ impl CompileItemContext<'_, '_> {
         } else {
             &target_expected_ty
         };
-        let right_eval = self.eval_expression(ctx, ctx_block, scope, vars, &right_expected_ty, right_expr)?;
+        let right_eval = self.eval_expression(ctx, ctx_block, scope, vars, right_expected_ty, right_expr)?;
 
         // figure out if we need a compile or hardware assignment
         let target_base_signal = match target_base.inner {

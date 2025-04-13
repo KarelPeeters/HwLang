@@ -158,11 +158,7 @@ impl Source {
 
     #[getter]
     fn files(&self) -> Vec<String> {
-        self.source
-            .files()
-            .into_iter()
-            .map(|id| self.source[id].path_raw.clone())
-            .collect()
+        self.source.files().map(|id| self.source[id].path_raw.clone()).collect()
     }
 
     fn parse(slf: Py<Self>, py: Python) -> PyResult<Parsed> {
@@ -372,7 +368,7 @@ impl Module {
         let f_arg = |v| Spanned::new(dummy_span, v);
         let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
         // TODO this is really hacky, maybe the Some/None distinction should not exist for generics?
-        let args = if args.inner.len() == 0 && parsed[self.module].params.is_none() {
+        let args = if args.inner.is_empty() && parsed[self.module].params.is_none() {
             None
         } else {
             Some(args)
@@ -420,8 +416,7 @@ impl ModuleInstance {
             let fixed = CompileFixed { source, parsed };
             let replacement_diags = Diagnostics::new();
             let replacement_state = CompileShared::new(fixed, &replacement_diags, false, NON_ZERO_USIZE_ONE);
-            let state = std::mem::replace(&mut compile.state, replacement_state);
-            state
+            std::mem::replace(&mut compile.state, replacement_state)
         };
 
         // check that all modules are resolved

@@ -565,15 +565,15 @@ impl<V> ArrayLiteralElement<Spanned<V>> {
 impl<V> ArrayLiteralElement<V> {
     pub fn map_inner<W>(&self, f: impl FnOnce(&V) -> W) -> ArrayLiteralElement<W> {
         match self {
-            ArrayLiteralElement::Single(value) => ArrayLiteralElement::Single(f(&value)),
-            ArrayLiteralElement::Spread(span, value) => ArrayLiteralElement::Spread(*span, f(&value)),
+            ArrayLiteralElement::Single(value) => ArrayLiteralElement::Single(f(value)),
+            ArrayLiteralElement::Spread(span, value) => ArrayLiteralElement::Spread(*span, f(value)),
         }
     }
 
     pub fn value(&self) -> &V {
         match self {
-            ArrayLiteralElement::Single(value) => &value,
-            ArrayLiteralElement::Spread(_, value) => &value,
+            ArrayLiteralElement::Single(value) => value,
+            ArrayLiteralElement::Spread(_, value) => value,
         }
     }
 }

@@ -62,9 +62,9 @@ impl CompileItemContext<'_, '_> {
 
         let found = scope.find(diags, id)?;
         let def_span = found.defining_span;
-        let result = match found.value {
-            &ScopedEntry::Named(value) => EvaluatedId::Named(value),
-            &ScopedEntry::Item(item) => self
+        let result = match *found.value {
+            ScopedEntry::Named(value) => EvaluatedId::Named(value),
+            ScopedEntry::Item(item) => self
                 .recurse(StackEntry::ItemUsage(id.span), |s| {
                     Ok(EvaluatedId::Value(MaybeCompile::Compile(s.eval_item(item)?.clone())))
                 })
@@ -561,7 +561,7 @@ impl CompileItemContext<'_, '_> {
 
         // evaluate
         let values = values
-            .into_iter()
+            .iter()
             .map(|v| {
                 let expected_ty_curr = match v {
                     ArrayLiteralElement::Single(_) => expected_ty_inner,
@@ -1081,10 +1081,10 @@ impl CompileItemContext<'_, '_> {
         domain: &SyncDomain<Box<Expression>>,
     ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
         let SyncDomain { clock, reset } = domain;
-        let clock = self.eval_expression_as_domain_signal(scope, &clock);
+        let clock = self.eval_expression_as_domain_signal(scope, clock);
         let reset = reset
             .as_ref()
-            .map(|reset| self.eval_expression_as_domain_signal(scope, &reset));
+            .map(|reset| self.eval_expression_as_domain_signal(scope, reset));
         Ok(SyncDomain {
             clock: clock?.inner,
             reset: reset.transpose()?.map(|r| r.inner),

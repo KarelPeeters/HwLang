@@ -13,10 +13,9 @@ pub mod pos;
 pub mod source;
 pub mod token;
 
-#[allow(clippy::redundant_field_names)]
+#[allow(clippy::all)]
 mod grammar_wrapper {
     use lalrpop_util::lalrpop_mod;
-
     lalrpop_mod!(pub grammar, "/syntax/grammar.rs");
 }
 

@@ -2,7 +2,7 @@ fn main() {
     // increase stack space for lalrpop
     std::thread::Builder::new()
         .stack_size(1024 * 1024 * 1024)
-        .spawn(|| main_inner())
+        .spawn(main_inner)
         .unwrap()
         .join()
         .unwrap();
