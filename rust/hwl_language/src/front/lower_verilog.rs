@@ -22,7 +22,6 @@ use itertools::enumerate;
 use lazy_static::lazy_static;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::hash::Hash;
 use std::num::NonZeroU32;
 
 #[derive(Debug, Clone)]
@@ -189,9 +188,18 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> Result<(), 
 #[derive(Debug, Copy, Clone)]
 struct NameMap<'a> {
     ports: &'a IndexMap<IrPort, LoweredName>,
-    registers: &'a IndexMap<IrRegister, LoweredName>,
+    registers_inner: &'a IndexMap<IrRegister, LoweredName>,
+    registers_outer: &'a IndexMap<IrRegister, LoweredName>,
     wires: &'a IndexMap<IrWire, LoweredName>,
     variables: &'a IndexMap<IrVariable, LoweredName>,
+}
+
+impl NameMap<'_> {
+    pub fn map_reg(&self, reg: IrRegister) -> &LoweredName {
+        self.registers_inner
+            .get(&reg)
+            .unwrap_or_else(|| self.registers_outer.get(&reg).unwrap())
+    }
 }
 
 fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModule, ErrorGuaranteed> {
@@ -418,7 +426,8 @@ fn lower_module_statements(
 
                 let name_map = NameMap {
                     ports: port_name_map,
-                    registers: reg_name_map,
+                    registers_outer: reg_name_map,
+                    registers_inner: &IndexMap::default(),
                     wires: wire_name_map,
                     variables: &variables,
                 };
@@ -437,7 +446,8 @@ fn lower_module_statements(
 
                 let outer_name_map = NameMap {
                     ports: port_name_map,
-                    registers: reg_name_map,
+                    registers_outer: reg_name_map,
+                    registers_inner: &IndexMap::default(),
                     wires: wire_name_map,
                     variables: &IndexMap::new(),
                 };
@@ -458,15 +468,8 @@ fn lower_module_statements(
                 collect_written_registers(on_clock, &mut written_regs);
                 collect_written_registers(on_reset, &mut written_regs);
 
-                let shadowing_reg_name_map = lower_shadow_registers(
-                    diags,
-                    module_name_scope,
-                    reg_name_map,
-                    registers,
-                    &written_regs,
-                    f,
-                    &mut newline,
-                )?;
+                let shadowing_reg_name_map =
+                    lower_shadow_registers(diags, module_name_scope, registers, &written_regs, f, &mut newline)?;
 
                 let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
 
@@ -480,7 +483,8 @@ fn lower_module_statements(
 
                 let inner_name_map = NameMap {
                     ports: port_name_map,
-                    registers: &shadowing_reg_name_map,
+                    registers_outer: &reg_name_map,
+                    registers_inner: &shadowing_reg_name_map,
                     wires: wire_name_map,
                     variables: &variables,
                 };
@@ -529,7 +533,8 @@ fn lower_module_statements(
 
                     let name_map = NameMap {
                         ports: port_name_map,
-                        registers: reg_name_map,
+                        registers_outer: reg_name_map,
+                        registers_inner: &IndexMap::default(),
                         wires: wire_name_map,
                         variables: &IndexMap::new(),
                     };
@@ -609,7 +614,6 @@ fn declare_locals(
 fn lower_shadow_registers(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
-    reg_name_map: &IndexMap<IrRegister, LoweredName>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
     written_regs: &HashSet<IrRegister>,
     f: &mut String,
@@ -619,34 +623,28 @@ fn lower_shadow_registers(
 
     newline.start_new_block();
 
-    for reg in registers.keys() {
-        let mapped = if written_regs.contains(&reg) {
-            let register_info = &registers[reg];
-            let ty = VerilogType::from_ir_ty(diags, register_info.debug_info_id.span(), &register_info.ty)?;
+    for &reg in written_regs {
+        let register_info = &registers[reg];
+        let ty = VerilogType::from_ir_ty(diags, register_info.debug_info_id.span(), &register_info.ty)?;
 
-            let register_name = register_info.debug_info_id.string();
-            let shadow_name = module_name_scope.make_unique_str(
-                diags,
-                register_info.debug_info_id.span(),
-                &format!("shadow_{}", register_name),
-            )?;
+        let register_name = register_info.debug_info_id.string();
+        let shadow_name = module_name_scope.make_unique_str(
+            diags,
+            register_info.debug_info_id.span(),
+            &format!("shadow_{}", register_name),
+        )?;
 
-            match ty.to_prefix_str() {
-                Ok(ty_prefix_str) => {
-                    newline.before_item(f);
-                    swriteln!(f, "{I}{I}reg {ty_prefix_str}{shadow_name};");
-                }
-                Err(ZeroWidth) => {
-                    // don't declare shadows for zero-width registers
-                }
+        match ty.to_prefix_str() {
+            Ok(ty_prefix_str) => {
+                newline.before_item(f);
+                swriteln!(f, "{I}{I}reg {ty_prefix_str}{shadow_name};");
             }
+            Err(ZeroWidth) => {
+                // don't declare shadows for zero-width registers
+            }
+        }
 
-            shadow_name
-        } else {
-            reg_name_map.get(&reg).unwrap().clone()
-        };
-
-        shadowing_reg_name_map.insert_first(reg, mapped);
+        shadowing_reg_name_map.insert_first(reg, shadow_name);
     }
 
     Ok(shadowing_reg_name_map)
@@ -753,7 +751,7 @@ fn lower_assign_target(
     match *base {
         IrAssignmentTargetBase::Port(port) => swrite!(f, "{}", name_map.ports.get(&port).unwrap()),
         IrAssignmentTargetBase::Wire(wire) => swrite!(f, "{}", name_map.wires.get(&wire).unwrap()),
-        IrAssignmentTargetBase::Register(reg) => swrite!(f, "{}", name_map.registers.get(&reg).unwrap()),
+        IrAssignmentTargetBase::Register(reg) => swrite!(f, "{}", name_map.map_reg(reg)),
         IrAssignmentTargetBase::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
     }
 
@@ -787,25 +785,14 @@ fn lower_expression(
     expr: &IrExpression,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
-    fn try_get<'m, K: Eq + Hash, V>(
-        diags: &Diagnostics,
-        span: Span,
-        map: &'m IndexMap<K, V>,
-        key: K,
-        kind: &str,
-    ) -> Result<&'m V, ErrorGuaranteed> {
-        map.get(&key)
-            .ok_or_else(|| diags.report_internal_error(span, format!("failed to find {kind} in name map")))
-    }
-
     match expr {
         &IrExpression::Bool(x) => swrite!(f, "1'b{}", x as u8),
         IrExpression::Int(x) => swrite!(f, "{}", lower_int_str(x)),
 
-        &IrExpression::Port(port) => swrite!(f, "{}", try_get(diags, span, name_map.ports, port, "port")?),
-        &IrExpression::Wire(wire) => swrite!(f, "{}", try_get(diags, span, name_map.wires, wire, "wire")?),
-        &IrExpression::Register(reg) => swrite!(f, "{}", try_get(diags, span, name_map.registers, reg, "register")?),
-        &IrExpression::Variable(var) => swrite!(f, "{}", try_get(diags, span, name_map.variables, var, "variable")?),
+        &IrExpression::Port(port) => swrite!(f, "{}", name_map.ports.get(&port).unwrap()),
+        &IrExpression::Wire(wire) => swrite!(f, "{}", name_map.wires.get(&wire).unwrap()),
+        &IrExpression::Register(reg) => swrite!(f, "{}", name_map.map_reg(reg)),
+        &IrExpression::Variable(var) => swrite!(f, "{}", name_map.variables.get(&var).unwrap()),
 
         IrExpression::BoolNot(inner) => {
             swrite!(f, "(!");
