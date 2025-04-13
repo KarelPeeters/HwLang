@@ -1,0 +1,33 @@
+[package]
+name = "fuzz"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hwl_language = { path = "../hwl_language" }
+
+[[bin]]
+name = "fuzz_token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_compile"
+path = "fuzz_targets/compile.rs"
+test = false
+doc = false
+bench = false

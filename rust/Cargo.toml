@@ -4,6 +4,7 @@ members = [
     "hwl_lsp_server",
     "hwl_wasm",
     "hwl_python",
+    "fuzz",
 ]
 resolver = "2"
 
