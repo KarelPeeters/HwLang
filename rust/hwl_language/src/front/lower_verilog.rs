@@ -473,25 +473,13 @@ fn lower_module_statements(
                     None => swriteln!(f, "{I}always @({} {}) begin", clock_edge.edge, clock_edge.value,),
                 }
 
+                // shadowing is only for writes in the clocked body, we don't care about the resets
+                //   (although typically those should be a subset)
                 let mut written_regs = HashSet::new();
                 collect_written_registers(clock_block, &mut written_regs);
-                if let Some((_, reset_block)) = &async_reset_signal_and_block {
-                    collect_written_registers(reset_block, &mut written_regs);
-                }
                 let shadowing_reg_name_map =
                     lower_shadow_registers(diags, module_name_scope, registers, &written_regs, f, &mut newline)?;
-
                 let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
-
-                // populate shadow registers
-                // TODO move into "if clock" block, don't confuse reset structure matching in synthesis tools
-                //    (also do this for the write-back)
-                newline.start_new_block();
-                for (&reg, shadow_name) in &shadowing_reg_name_map {
-                    newline.before_item(f);
-                    let orig_name = reg_name_map.get(&reg).unwrap();
-                    swriteln!(f, "{I}{I}{shadow_name} = {orig_name};");
-                }
 
                 let inner_name_map = NameMap {
                     ports: port_name_map,
@@ -504,25 +492,41 @@ fn lower_module_statements(
                 // main reset/clock structure
                 newline.start_new_block();
                 newline.before_item(f);
-                match async_reset_signal_and_block {
-                    None => lower_block(diags, inner_name_map, clock_block, f, Indent::new(2), &mut newline)?,
+
+                // reset header
+                let indent_clocked = match &async_reset_signal_and_block {
+                    None => Indent::new(2),
                     Some((reset_edge, reset_block)) => {
+                        // reset, using outer name map (no shadowing)
                         swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
-                        lower_block(diags, inner_name_map, reset_block, f, Indent::new(3), &mut newline)?;
+                        lower_block(diags, outer_name_map, reset_block, f, Indent::new(3), &mut newline)?;
                         swriteln!(f, "{I}{I}end else begin");
-                        lower_block(diags, inner_name_map, clock_block, f, Indent::new(3), &mut newline)?;
-                        swriteln!(f, "{I}{I}end");
+                        Indent::new(3)
                     }
-                }
+                };
 
-                // commit shadow writes
-                // TODO move into "if clock" block
-                newline.start_new_block();
-
+                // populate shadow registers
                 for (&reg, shadow_name) in &shadowing_reg_name_map {
                     newline.before_item(f);
                     let orig_name = reg_name_map.get(&reg).unwrap();
-                    swriteln!(f, "{I}{I}{orig_name} <= {shadow_name};");
+                    swriteln!(f, "{indent_clocked}{shadow_name} = {orig_name};");
+                }
+
+                // block itself, using inner name map (with shadowing)
+                newline.start_new_block();
+                lower_block(diags, inner_name_map, clock_block, f, indent_clocked, &mut newline)?;
+
+                // write-back shadow registers
+                newline.start_new_block();
+                for (&reg, shadow_name) in &shadowing_reg_name_map {
+                    newline.before_item(f);
+                    let orig_name = reg_name_map.get(&reg).unwrap();
+                    swriteln!(f, "{indent_clocked}{orig_name} <= {shadow_name};");
+                }
+
+                // reset tail
+                if async_reset_signal_and_block.is_some() {
+                    swriteln!(f, "{I}{I}end");
                 }
 
                 swriteln!(f, "{I}end");
