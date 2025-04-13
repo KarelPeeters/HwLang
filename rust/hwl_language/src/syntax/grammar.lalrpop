@@ -519,7 +519,7 @@ ExprLevelPower: ExpressionKind = {
 }
 
 // TODO real implementation again, only matters once we have struct literals and if we decide to use {} for them
-ExprLevelArray = ExprLevelArrayImpl<"yes">;
+ExprLevelArray = ExprLevelArrayImpl<"true">;
 ExprLevelArrayNoStruct = ExprLevelArrayImpl<"no">;
 
 ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
@@ -593,7 +593,7 @@ ExprLevelAtomic<allow_struct>: ExpressionKind = {
     // parentheses
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
     // TODO actual block expression
-    "{" <statements:BlockStatement*> <expression:BoxExpr> "}" if allow_struct == "yes"
+    "{" <statements:BlockStatement*> <expression:BoxExpr> "}" if allow_struct == "true"
         => ExpressionKind::Block(BlockExpression { statements, expression }),
 
     // TODO allow paths as expressions
