@@ -7,11 +7,14 @@ use crate::front::ir::{
     IrVariables,
 };
 use crate::front::misc::{DomainSignal, Signal, ValueDomain};
+use crate::front::module::ExtraRegisterInit;
 use crate::front::types::HardwareType;
+use crate::front::value::MaybeUndefined;
 use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
+use annotate_snippets::Level;
 use std::fmt::Debug;
 
 pub trait ExpressionContext {
@@ -43,8 +46,8 @@ pub trait ExpressionContext {
         diags: &Diagnostics,
         id: MaybeIdentifier,
         ty: HardwareType,
-        init: Option<IrExpression>,
-    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed>;
+        init: Spanned<MaybeUndefined<IrExpression>>,
+    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed>;
 
     fn report_assignment(
         &mut self,
@@ -53,7 +56,7 @@ pub trait ExpressionContext {
         vars: &mut VariableValues,
     ) -> Result<(), ErrorGuaranteed>;
 
-    fn block_domain(&self) -> &BlockDomain;
+    fn block_domain(&self) -> BlockDomain;
 
     fn condition_domains(&self) -> &[Spanned<ValueDomain>];
 
@@ -83,6 +86,7 @@ pub struct CompileTimeExpressionContext {
     pub reason: String,
 }
 
+// TODO some of these errors should probably be real errors, instead of internal compiler errors
 impl ExpressionContext for CompileTimeExpressionContext {
     type Block = ();
 
@@ -125,8 +129,8 @@ impl ExpressionContext for CompileTimeExpressionContext {
         diags: &Diagnostics,
         id: MaybeIdentifier,
         ty: HardwareType,
-        init: Option<IrExpression>,
-    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed> {
+        init: Spanned<MaybeUndefined<IrExpression>>,
+    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
         let _ = (ctx, ty, init);
         Err(diags.report_internal_error(id.span(), "trying to create register in compile-time context"))
     }
@@ -144,8 +148,8 @@ impl ExpressionContext for CompileTimeExpressionContext {
         ))
     }
 
-    fn block_domain(&self) -> &BlockDomain {
-        &BlockDomain::CompileTime
+    fn block_domain(&self) -> BlockDomain {
+        BlockDomain::CompileTime
     }
 
     fn condition_domains(&self) -> &[Spanned<ValueDomain>] {
@@ -200,37 +204,56 @@ impl ExpressionContext for CompileTimeExpressionContext {
     }
 }
 
-pub struct ExtraRegister {
-    pub span: Span,
-    pub reg: IrRegister,
-    pub init: Option<IrExpression>,
-}
-
 // TODO rename to hardware
 // TODO move to module?
-// TODO make a shared enum between comb/clocked, there is a bunch of behavior that's different
+// TODO move report_assignment into BlockKind
+//   probably as part of the "coverage" tracking for combinatorial loops (=don't read before write)
 pub struct IrBuilderExpressionContext<'a> {
-    block_domain: &'a BlockDomain,
     report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+    block_kind: BlockKind<'a>,
+    ir_variables: IrVariables,
     condition_domains: Vec<Spanned<ValueDomain>>,
     implications: Vec<Implication>,
-    ir_variables: IrVariables,
-    ir_registers: Option<(&'a mut IrRegisters, &'a mut Vec<ExtraRegister>)>,
+}
+
+#[derive(Debug)]
+pub enum BlockKind<'a> {
+    // real blocks
+    Combinatorial {
+        span_keyword: Span,
+    },
+    Clocked {
+        span_keyword: Span,
+        domain: Spanned<SyncDomain<DomainSignal>>,
+        ir_registers: &'a mut IrRegisters,
+        extra_registers: ExtraRegisters<'a>,
+    },
+    // misc
+    InstancePortConnection {
+        span_connection: Span,
+    },
+    WireValue {
+        span_value: Span,
+    },
+}
+
+#[derive(Debug)]
+pub enum ExtraRegisters<'a> {
+    NoReset,
+    WithReset(&'a mut Vec<ExtraRegisterInit>),
 }
 
 impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
-        block_domain: &'a BlockDomain,
-        ir_registers: Option<(&'a mut IrRegisters, &'a mut Vec<ExtraRegister>)>,
+        block_kind: BlockKind<'a>,
         report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     ) -> Self {
         Self {
-            block_domain,
+            block_kind,
             report_assignment,
+            ir_variables: IrVariables::new(),
             condition_domains: vec![],
             implications: vec![],
-            ir_variables: IrVariables::new(),
-            ir_registers,
         }
     }
 
@@ -288,38 +311,71 @@ impl<'a> ExpressionContext for IrBuilderExpressionContext<'a> {
         diags: &Diagnostics,
         id: MaybeIdentifier,
         ty: HardwareType,
-        init: Option<IrExpression>,
-    ) -> Result<(SyncDomain<DomainSignal>, IrRegister), ErrorGuaranteed> {
-        match &mut self.ir_registers {
-            None => Err(diags.report_simple(
-                "defining new registers is only allowed in a clocked block",
-                id.span(),
-                "attempt to create a register here",
-            )),
-            Some((ir_registers, register_inits)) => {
-                let domain = match self.block_domain {
-                    BlockDomain::Clocked(domain) => domain.inner,
-                    BlockDomain::CompileTime | BlockDomain::Combinatorial => {
-                        return Err(diags.report_internal_error(id.span(), "expected clocked domain"))
-                    }
-                };
+        init: Spanned<MaybeUndefined<IrExpression>>,
+    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
+        let span = id.span();
 
+        let error_not_clocked = |block_span: Span, block_kind: &str| {
+            let diag = Diagnostic::new("creating new registers is only allowed in a clocked block")
+                .add_error(span, "attempt to create a register here")
+                .add_info(block_span, format!("currently in this {block_kind}"))
+                .finish();
+            diags.report(diag)
+        };
+
+        match &mut self.block_kind {
+            BlockKind::Clocked {
+                span_keyword: _,
+                domain,
+                ir_registers,
+                extra_registers,
+            } => {
                 let reg_info = IrRegisterInfo {
                     ty: ty.as_ir(),
                     debug_info_id: id.clone(),
-                    debug_info_ty: ty,
-                    debug_info_domain: domain.to_diagnostic_string(ctx),
+                    debug_info_ty: ty.clone(),
+                    debug_info_domain: domain.inner.to_diagnostic_string(ctx),
                 };
-
                 let reg = ir_registers.push(reg_info);
-                let extra = ExtraRegister {
-                    span: id.span(),
-                    reg,
-                    init,
-                };
-                register_inits.push(extra);
-                Ok((domain, reg))
+
+                match extra_registers {
+                    ExtraRegisters::NoReset => match init.inner {
+                        MaybeUndefined::Undefined => {
+                            // we can't reset, but luckily we don't need to
+                        }
+                        MaybeUndefined::Defined(_) => {
+                            let diag = Diagnostic::new("registers without reset cannot have an initial value")
+                                .add_error(init.span, "attempt to create a register with init here")
+                                .add_info(domain.span, "the current clocked block is defined without reset here")
+                                .footer(
+                                    Level::Help,
+                                    "either add an reset to the block or use `undef` as the the initial value",
+                                )
+                                .finish();
+                            let _ = diags.report(diag);
+                        }
+                    },
+                    ExtraRegisters::WithReset(extra_registers) => {
+                        match init.inner {
+                            MaybeUndefined::Undefined => {
+                                // we can reset but we don't need to
+                            }
+                            MaybeUndefined::Defined(init) => {
+                                extra_registers.push(ExtraRegisterInit { span, reg, init });
+                            }
+                        }
+                    }
+                }
+
+                Ok((reg, domain.inner))
             }
+            &mut BlockKind::Combinatorial { span_keyword } => {
+                Err(error_not_clocked(span_keyword, "combinatorial block"))
+            }
+            &mut BlockKind::InstancePortConnection { span_connection } => {
+                Err(error_not_clocked(span_connection, "instance port connection"))
+            }
+            &mut BlockKind::WireValue { span_value } => Err(error_not_clocked(span_value, "wire value")),
         }
     }
 
@@ -339,8 +395,13 @@ impl<'a> ExpressionContext for IrBuilderExpressionContext<'a> {
         Ok(())
     }
 
-    fn block_domain(&self) -> &BlockDomain {
-        self.block_domain
+    fn block_domain(&self) -> BlockDomain {
+        match self.block_kind {
+            BlockKind::Clocked { domain, .. } => BlockDomain::Clocked(domain),
+            BlockKind::Combinatorial { .. }
+            | BlockKind::InstancePortConnection { .. }
+            | BlockKind::WireValue { .. } => BlockDomain::Combinatorial,
+        }
     }
 
     fn condition_domains(&self) -> &[Spanned<ValueDomain>] {

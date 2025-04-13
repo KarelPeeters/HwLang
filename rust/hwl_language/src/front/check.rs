@@ -49,7 +49,16 @@ impl CompileItemContext<'_, '_> {
                     reset: source_reset,
                 } = source_inner;
 
-                match (target_clock == source_clock, target_reset == source_reset) {
+                // protect again clock domain crossings
+                let clock_match = target_clock == source_clock;
+                // protect against the source resetting while the target is not
+                let reset_match = match (target_reset, source_reset) {
+                    (_, None) => true,
+                    (None, Some(_)) => false,
+                    (Some(target_reset), Some(source_reset)) => target_reset == source_reset,
+                };
+
+                match (clock_match, reset_match) {
                     (true, true) => Ok(()),
                     (false, true) => Err("different clock"),
                     (true, false) => Err("different reset"),

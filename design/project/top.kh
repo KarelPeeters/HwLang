@@ -26,12 +26,12 @@ pub module top ports(
     reg clk_div_reg: sync(clk, rst) bool = false;
     wire clk_div: clock = unsafe_cast_clock(clk_div_reg);
 
-    clocked(clk, rst) {
+    clocked(clk, async rst) {
         print("clk tick");
         clk_div_reg = !clk_div_reg;
     }
 
-    clocked(clk_div, rst) {
+    clocked(clk_div, async rst) {
         print("clk_div tick");
     }
 

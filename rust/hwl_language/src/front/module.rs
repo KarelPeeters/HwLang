@@ -1,4 +1,3 @@
-use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, check_type_is_bool_compile,
     TypeContainsReason,
@@ -7,21 +6,24 @@ use crate::front::compile::{
     ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs, Port, PortInfo, Register, RegisterInfo, Wire, WireInfo,
 };
 use crate::front::context::{
-    CompileTimeExpressionContext, ExpressionContext, ExtraRegister, IrBuilderExpressionContext,
+    BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
 };
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::EvaluatedId;
 use crate::front::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrModule, IrModuleChild,
-    IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
-    IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrModule,
+    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
+    IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::scope::{DeclaredValueSingle, Scope};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, NamedValue};
 use crate::front::variables::VariableValues;
-use crate::syntax::ast::{self, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind};
+use crate::syntax::ast::{
+    self, ClockedBlockReset, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind,
+    ResetKind,
+};
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
     ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, PortDirection,
@@ -38,22 +40,6 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{zip_eq, Either, Itertools};
 use std::hash::Hash;
-
-struct BodyElaborationContext<'c, 'a, 's> {
-    ctx: &'c mut CompileItemContext<'a, 's>,
-
-    ir_ports: Arena<IrPort, IrPortInfo>,
-    ir_wires: Arena<IrWire, IrWireInfo>,
-    ir_registers: Arena<IrRegister, IrRegisterInfo>,
-    drivers: Drivers,
-
-    register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
-    out_port_register_connections: IndexMap<Port, Register>,
-
-    pass_1_next_statement_index: usize,
-    clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
-}
 
 type SignalsInScope = Vec<Spanned<Signal>>;
 
@@ -340,14 +326,14 @@ impl<'s> CompileRefs<'_, 's> {
 
             pass_1_next_statement_index: 0,
             clocked_block_statement_index_to_process_index: IndexMap::new(),
-            processes: vec![],
+            children: vec![],
         };
 
         // process declarations
         ctx.elaborate_block(scope_header, vars, &mut signals_in_scope, body);
 
         // stop if any errors have happened so far, we don't want spurious errors about drivers
-        for p in &ctx.processes {
+        for p in &ctx.children {
             p.as_ref_ok()?;
         }
 
@@ -357,6 +343,7 @@ impl<'s> CompileRefs<'_, 's> {
         ctx.pass_2_check_drivers_and_populate_resets()?;
 
         // create process for registered output ports
+        // TODO is it worth trying to avoid this and using the "reg" port markers in verilog?
         if !ctx.out_port_register_connections.is_empty() {
             let mut statements = vec![];
 
@@ -376,11 +363,21 @@ impl<'s> CompileRefs<'_, 's> {
                 locals: IrVariables::new(),
                 block: IrBlock { statements },
             };
-            ctx.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
+            ctx.children
+                .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
         }
 
         // return result
-        let processes = ctx.processes.into_iter().try_collect()?;
+        let processes = ctx
+            .children
+            .into_iter()
+            .map(|c| {
+                c.map(|c| match c {
+                    Child::Finished(c) => c,
+                    Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
+                })
+            })
+            .try_collect()?;
 
         Ok(IrModuleInfo {
             ports: ctx.ir_ports,
@@ -516,6 +513,111 @@ impl<'s> CompileItemContext<'_, 's> {
     }
 }
 
+struct BodyElaborationContext<'c, 'a, 's> {
+    ctx: &'c mut CompileItemContext<'a, 's>,
+
+    ir_ports: Arena<IrPort, IrPortInfo>,
+    ir_wires: Arena<IrWire, IrWireInfo>,
+    ir_registers: Arena<IrRegister, IrRegisterInfo>,
+    drivers: Drivers,
+
+    register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
+    out_port_register_connections: IndexMap<Port, Register>,
+
+    pass_1_next_statement_index: usize,
+    clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
+    children: Vec<Result<Child, ErrorGuaranteed>>,
+}
+
+enum Child {
+    Finished(IrModuleChild),
+    Clocked(ChildClockedProcess),
+}
+
+struct ChildClockedProcess {
+    locals: IrVariables,
+    clock_signal: Spanned<DomainSignal>,
+    clock_block: IrBlock,
+    reset: Option<ChildClockedProcessReset>,
+}
+
+impl ChildClockedProcess {
+    pub fn finish(self, ctx: &CompileItemContext) -> IrClockedProcess {
+        let ChildClockedProcess {
+            locals,
+            clock_signal,
+            clock_block,
+            reset,
+        } = self;
+
+        let (clock_block, async_reset_signal_and_block) = match reset {
+            None => {
+                // nothing to do here
+                (clock_block, None)
+            }
+            Some(reset) => {
+                let ChildClockedProcessReset {
+                    kind,
+                    signal: reset_signal,
+                    reg_inits,
+                } = reset;
+                let reset_signal_ir = reset_signal.map_inner(|s| ctx.domain_signal_to_ir(s));
+
+                // create reset statements
+                let mut reset_statements = vec![];
+                for init in reg_inits {
+                    let ExtraRegisterInit { span, reg, init } = init;
+                    let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
+                    reset_statements.push(Spanned::new(span, stmt));
+                }
+                let reset_block = IrBlock {
+                    statements: reset_statements,
+                };
+
+                // put them in the right place
+                match kind {
+                    ResetKind::Async => {
+                        // async reset becomes a separate block, sensitive to the signal
+                        (clock_block, Some((reset_signal_ir, reset_block)))
+                    }
+                    ResetKind::Sync => {
+                        // async reset becomes an extra if branch inside the clocked block
+                        let if_stmt = IrIfStatement {
+                            condition: reset_signal_ir.inner,
+                            then_block: reset_block,
+                            else_block: Some(clock_block),
+                        };
+                        let root_block = IrBlock {
+                            statements: vec![Spanned::new(reset_signal.span, IrStatement::If(if_stmt))],
+                        };
+                        (root_block, None)
+                    }
+                }
+            }
+        };
+
+        IrClockedProcess {
+            locals,
+            clock_signal: clock_signal.map_inner(|s| ctx.domain_signal_to_ir(s)),
+            clock_block,
+            async_reset_signal_and_block,
+        }
+    }
+}
+
+struct ChildClockedProcessReset {
+    kind: ResetKind,
+    signal: Spanned<DomainSignal>,
+    reg_inits: Vec<ExtraRegisterInit>,
+}
+
+#[derive(Debug)]
+pub struct ExtraRegisterInit {
+    pub span: Span,
+    pub reg: IrRegister,
+    pub init: IrExpression,
+}
+
 impl BodyElaborationContext<'_, '_, '_> {
     fn elaborate_block(
         &mut self,
@@ -587,7 +689,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                     }
 
                     if let Some(process) = process {
-                        self.processes.push(process.map(IrModuleChild::CombinatorialProcess));
+                        self.children
+                            .push(process.map(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
@@ -644,13 +747,13 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
                 ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, vars, signals, if_stmt) {
                     Ok(()) => {}
-                    Err(e) => self.processes.push(Err(e)),
+                    Err(e) => self.children.push(Err(e)),
                 },
                 ModuleStatementKind::For(for_stmt) => {
                     let for_stmt = Spanned::new(stmt.span, for_stmt);
                     match self.elaborate_for(scope, vars, signals, for_stmt) {
                         Ok(()) => {}
-                        Err(e) => self.processes.push(Err(e)),
+                        Err(e) => self.children.push(Err(e)),
                     }
                 }
                 // declarations, already handled
@@ -663,21 +766,23 @@ impl BodyElaborationContext<'_, '_, '_> {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
 
                     let ir_process = self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block);
-                    self.processes.push(ir_process.map(IrModuleChild::CombinatorialProcess));
+                    self.children
+                        .push(ir_process.map(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
                     let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block);
 
-                    let process_index = self.processes.len();
-                    self.processes.push(ir_process.map(IrModuleChild::ClockedProcess));
+                    let child_index = self.children.len();
+                    self.children.push(ir_process.map(Child::Clocked));
                     self.clocked_block_statement_index_to_process_index
-                        .insert_first(stmt_index, process_index);
+                        .insert_first(stmt_index, child_index);
                 }
                 ModuleStatementKind::Instance(instance) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
                     let instance_ir = self.elaborate_instance(scope, &mut vars_inner, stmt_index, instance);
-                    self.processes.push(instance_ir.map(IrModuleChild::ModuleInstance));
+                    self.children
+                        .push(instance_ir.map(|c| Child::Finished(IrModuleChild::ModuleInstance(c))));
                 }
             }
         }
@@ -690,19 +795,19 @@ impl BodyElaborationContext<'_, '_, '_> {
         stmt_index: usize,
         block: &CombinatorialBlock,
     ) -> Result<IrCombinatorialProcess, ErrorGuaranteed> {
-        let CombinatorialBlock {
+        let &CombinatorialBlock {
             span: _,
-            span_keyword: _,
-            block,
+            span_keyword,
+            ref block,
         } = block;
         let diags = self.ctx.refs.diags;
 
-        let block_domain = BlockDomain::Combinatorial;
+        let block_kind = BlockKind::Combinatorial { span_keyword };
         let mut report_assignment = |target: Spanned<Signal>| {
             self.drivers
                 .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
         };
-        let mut ctx = IrBuilderExpressionContext::new(&block_domain, None, &mut report_assignment);
+        let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
 
         let (ir_block, end) = self.ctx.elaborate_block(&mut ctx, scope, vars, block)?;
         let ir_variables = ctx.finish();
@@ -720,64 +825,105 @@ impl BodyElaborationContext<'_, '_, '_> {
         scope: &Scope,
         stmt_index: usize,
         block: &ClockedBlock,
-    ) -> Result<IrClockedProcess, ErrorGuaranteed> {
+    ) -> Result<ChildClockedProcess, ErrorGuaranteed> {
         let &ClockedBlock {
             span: _,
             span_keyword,
-            ref domain,
+            span_domain,
+            ref clock,
+            ref reset,
             ref block,
         } = block;
         let diags = self.ctx.refs.diags;
 
-        let domain = domain
+        // eval signals
+        let clock = self.ctx.eval_expression_as_domain_signal(scope, clock);
+        let reset = reset
             .as_ref()
-            .map_inner(|d| self.ctx.eval_domain_sync(scope, d))
-            .transpose()?;
+            .map(|reset| {
+                reset
+                    .as_ref()
+                    .map_inner(|reset| {
+                        let &ClockedBlockReset { kind, ref signal } = reset;
+                        let signal = self.ctx.eval_expression_as_domain_signal(scope, signal)?;
+                        Ok(ClockedBlockReset { kind, signal })
+                    })
+                    .transpose()
+            })
+            .transpose();
+        let (clock, reset) = result_pair(clock, reset)?;
 
-        let ir_domain = SyncDomain {
-            clock: self.ctx.domain_signal_to_ir(&domain.inner.clock),
-            reset: self.ctx.domain_signal_to_ir(&domain.inner.reset),
-        };
-
-        let block_domain = Spanned {
-            span: span_keyword.join(domain.span),
-            inner: domain.inner,
-        };
-        let block_domain = BlockDomain::Clocked(block_domain);
-        let mut report_assignment = |target: Spanned<Signal>| {
-            self.drivers
-                .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
-        };
-
-        let mut extra_regs = vec![];
-        let mut ctx = IrBuilderExpressionContext::new(
-            &block_domain,
-            Some((&mut self.ir_registers, &mut extra_regs)),
-            &mut report_assignment,
-        );
-
-        let (ir_block, end) = self.ctx.elaborate_block(&mut ctx, scope, vars, block)?;
-        let ir_variables = ctx.finish();
-        end.unwrap_outside_function_and_loop(diags)?;
-
-        // will be filled in more later, during driver checking and merging
-        let mut on_reset = vec![];
-        for extra_reg in extra_regs {
-            let ExtraRegister { span, reg, init } = extra_reg;
-            if let Some(init) = init {
-                let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
-                on_reset.push(Spanned::new(span, stmt));
+        // check reset domain
+        if let Some(reset) = &reset {
+            let ClockedBlockReset { kind, signal } = reset.inner;
+            match kind.inner {
+                // nothing to check for async resets
+                // TODO check that the posedge is sync to the clock
+                ResetKind::Async => {}
+                // check that the reset is sync to the clock
+                ResetKind::Sync => {
+                    let target = clock.map_inner(|s| ValueDomain::Sync(SyncDomain { clock: s, reset: None }));
+                    let source = Spanned::new(reset.span, signal.inner.signal.domain(&self.ctx).inner);
+                    self.ctx.check_valid_domain_crossing(
+                        span_domain,
+                        target.as_ref(),
+                        source.as_ref(),
+                        "sync reset",
+                    )?;
+                }
             }
-        }
+        };
 
-        Ok(IrClockedProcess {
-            domain: Spanned {
-                span: domain.span,
-                inner: ir_domain,
-            },
-            locals: ir_variables,
-            on_clock: ir_block,
-            on_reset: IrBlock { statements: on_reset },
+        // for the domain, a sync reset disappears and we only keep the clock
+        let domain = SyncDomain {
+            clock: clock.inner,
+            reset: reset.as_ref().and_then(|reset| match reset.inner.kind.inner {
+                ResetKind::Async => Some(reset.inner.signal.inner),
+                ResetKind::Sync => None,
+            }),
+        };
+        let domain = Spanned::new(span_domain, domain);
+
+        let mut elaborate_block = |extra_regs| {
+            let block_kind = BlockKind::Clocked {
+                span_keyword,
+                domain,
+                ir_registers: &mut self.ir_registers,
+                extra_registers: extra_regs,
+            };
+            let mut report_assignment = |target: Spanned<Signal>| {
+                self.drivers
+                    .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
+            };
+            let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
+
+            let (ir_block, end) = self.ctx.elaborate_block(&mut ctx, scope, vars, block)?;
+            let ir_variables = ctx.finish();
+            end.unwrap_outside_function_and_loop(diags)?;
+            Ok((ir_block, ir_variables))
+        };
+
+        let ((clock_block, locals), reset) = match reset {
+            None => (elaborate_block(ExtraRegisters::NoReset)?, None),
+            Some(reset) => {
+                let mut reg_inits = vec![];
+                let block_result = elaborate_block(ExtraRegisters::WithReset(&mut reg_inits))?;
+
+                let reset = ChildClockedProcessReset {
+                    kind: reset.inner.kind.inner,
+                    signal: reset.inner.signal,
+                    reg_inits,
+                };
+
+                (block_result, Some(reset))
+            }
+        };
+
+        Ok(ChildClockedProcess {
+            locals,
+            clock_signal: clock,
+            clock_block,
+            reset,
         })
     }
 
@@ -1040,7 +1186,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     PortDomain::Kind(port_domain_raw) => match port_domain_raw {
                         DomainKind::Const => ValueDomain::Const,
                         DomainKind::Async => ValueDomain::Async,
-                        DomainKind::Sync(sync) => ValueDomain::Sync(sync.try_map_inner(|raw_port| {
+                        DomainKind::Sync(sync) => ValueDomain::Sync(sync.try_map_signal(|raw_port| {
                             let mapped_port = match prev_port_signals.get(&raw_port.signal) {
                                 None => throw!(diags.report_internal_error(connection.span, "failed to get signal for previous port")),
                                 Some(&ConnectionSignal::Dummy(dummy_span)) => {
@@ -1095,9 +1241,12 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
 
                 // eval expr
+                // TODO this should not be an internal, this is actually possible now with block expressions
                 let mut report_assignment = report_assignment_internal_error(diags, "module instance port connection");
-                let mut ctx =
-                    IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, None, &mut report_assignment);
+                let block_kind = BlockKind::InstancePortConnection {
+                    span_connection: connection.span,
+                };
+                let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
                 let mut ctx_block = ctx.new_ir_block();
 
                 let mut vars_inner = VariableValues::new_child(vars);
@@ -1161,7 +1310,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                             locals: ctx.finish(),
                             block: ctx_block,
                         };
-                        self.processes.push(Ok(IrModuleChild::CombinatorialProcess(process)));
+                        self.children
+                            .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
 
                         IrExpression::Wire(extra_ir_wire)
                     } else {
@@ -1285,16 +1435,17 @@ impl BodyElaborationContext<'_, '_, '_> {
 
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
-            let maybe_err = match self.check_exactly_one_driver("register", self.ctx.registers[reg].id.span(), drivers)
-            {
+            let driver = self.check_exactly_one_driver("register", self.ctx.registers[reg].id.span(), drivers);
+            let maybe_err = match driver {
                 Err(e) => Err(e),
-                Ok(driver) => pull_register_init_into_process(
+                Ok((driver, first_span)) => pull_register_init_into_process(
                     self.ctx,
                     &self.clocked_block_statement_index_to_process_index,
-                    &mut self.processes,
+                    &mut self.children,
                     &self.register_initial_values,
                     reg,
                     driver,
+                    first_span,
                 ),
             };
             any_err = any_err.and(maybe_err);
@@ -1368,7 +1519,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         kind: &str,
         decl_span: Span,
         drivers: &IndexMap<Driver, Span>,
-    ) -> Result<Driver, ErrorGuaranteed> {
+    ) -> Result<(Driver, Span), ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
 
         match drivers.len() {
@@ -1379,8 +1530,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                 Err(diags.report(diag))
             }
             1 => {
-                let (&driver, _) = drivers.iter().single().unwrap();
-                Ok(driver)
+                let (&driver, &first_span) = drivers.iter().single().unwrap();
+                Ok((driver, first_span))
             }
             _ => {
                 let mut diag = Diagnostic::new(format!("{kind} has multiple drivers"));
@@ -1411,7 +1562,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             value,
         } = decl;
 
-        // evaluate
+        // evaluate domain and type
         let (domain, ty) = match &domain_ty.inner {
             WireKind::Clock => (
                 Ok(Spanned {
@@ -1432,32 +1583,36 @@ impl BodyElaborationContext<'_, '_, '_> {
             }
         };
 
-        // TODO move wire value creation/checking into pass 2, to better preserve the process order
-        let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
-        let mut ctx_expr = IrBuilderExpressionContext::new(&BlockDomain::Combinatorial, None, &mut report_assignment);
-        let mut ctx_block = ctx_expr.new_ir_block();
+        // evaluate value
+        let value = if let Some(value) = value {
+            // TODO better preserve the process order, due to pass1/pass2 the order gets a bit mixed up
+            let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
+            let block_kind = BlockKind::WireValue { span_value: value.span };
+            let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
+            let mut ctx_block = ctx_expr.new_ir_block();
 
-        let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
-        let value: Result<Option<Spanned<MaybeCompile<TypedIrExpression>>>, ErrorGuaranteed> = value
-            .as_ref()
-            .map(|value| {
-                ctx.eval_expression(
-                    &mut ctx_expr,
-                    &mut ctx_block,
-                    scope_body,
-                    &mut vars_inner,
-                    &expected_ty,
-                    value,
-                )
-            })
-            .transpose();
+            let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
+            let value = ctx.eval_expression(
+                &mut ctx_expr,
+                &mut ctx_block,
+                scope_body,
+                &mut vars_inner,
+                &expected_ty,
+                value,
+            );
+
+            let locals = ctx_expr.finish();
+            value.map(|value| Some((value, locals, ctx_block)))
+        } else {
+            Ok(None)
+        };
 
         let domain = domain?;
         let ty = ty?;
         let value = value?;
 
         let value = value
-            .map(|value| {
+            .map(|(value, process_locals, process_block)| {
                 // check type
                 let reason = TypeContainsReason::Assignment {
                     span_target: id.span(),
@@ -1479,11 +1634,11 @@ impl BodyElaborationContext<'_, '_, '_> {
                 check_domain?;
 
                 // convert to IR
-                let value_ir = value.inner.as_ir_expression(diags, value.span, &ty.inner)?;
-                Ok(Spanned {
-                    span: value.span,
-                    inner: value_ir,
-                })
+                let value_ir = value
+                    .as_ref()
+                    .map_inner(|value_inner| value_inner.as_ir_expression(diags, value.span, &ty.inner))
+                    .transpose()?;
+                Ok((value_ir, process_locals, process_block))
             })
             .transpose()?;
 
@@ -1502,7 +1657,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         });
 
         // append assignment to process
-        if let Some(value) = value {
+        let process_block = if let Some((value, process_locals, mut process_block)) = value {
             let target = IrAssignmentTarget::wire(ir_wire);
             let stmt = IrStatement::Assign(target, value.inner.expr);
 
@@ -1510,18 +1665,16 @@ impl BodyElaborationContext<'_, '_, '_> {
                 span: value.span,
                 inner: stmt,
             };
-            ctx_block.statements.push(stmt);
-        }
+            process_block.statements.push(stmt);
+            Some((process_locals, process_block))
+        } else {
+            None
+        };
 
         // build final process if necessary
-        let process = if ctx_block.statements.is_empty() {
-            None
-        } else {
-            Some(IrCombinatorialProcess {
-                locals: ctx_expr.finish(),
-                block: ctx_block,
-            })
-        };
+        let process = process_block
+            .filter(|(_, b)| !b.statements.is_empty())
+            .map(|(locals, block)| IrCombinatorialProcess { locals, block });
 
         Ok((wire, process))
     }
@@ -1666,7 +1819,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             id: MaybeIdentifier::Identifier(id.clone()),
             domain: Spanned {
                 span: port_info.domain.span,
-                inner: domain.map_inner(|p| p.map_inner(Signal::Port)),
+                inner: domain.map_signal(|p| p.map_inner(Signal::Port)),
             },
             ty: port_info.ty.clone(),
             ir: ir_reg,
@@ -1791,30 +1944,55 @@ fn report_assignment_internal_error<'a>(
 fn pull_register_init_into_process(
     ctx: &CompileItemContext,
     clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
-    processes: &mut Vec<Result<IrModuleChild, ErrorGuaranteed>>,
+    children: &mut Vec<Result<Child, ErrorGuaranteed>>,
     register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     reg: Register,
     driver: Driver,
+    driver_first_span: Span,
 ) -> Result<(), ErrorGuaranteed> {
     let diags = ctx.refs.diags;
     let reg_info = &ctx.registers[reg];
 
     if let Driver::ClockedBlock(stmt_index) = driver {
         if let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index) {
-            if let IrModuleChild::ClockedProcess(process) = &mut processes[process_index].as_ref_mut_ok()? {
+            if let Child::Clocked(process) = &mut children[process_index].as_ref_mut_ok()? {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
                     let init_ir = init
                         .inner
-                        .as_ir_expression_or_undefined(diags, init.span, &reg_info.ty.inner)?
-                        .map(|expr| expr.expr);
+                        .as_hardware_value_or_undefined(diags, init.span, &reg_info.ty.inner)?;
 
-                    if let Some(init_ir) = init_ir {
-                        let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg_info.ir), init_ir);
-                        process.on_reset.statements.push(Spanned {
-                            span: init.span,
-                            inner: stmt,
-                        });
+                    match init_ir {
+                        MaybeUndefined::Undefined => {
+                            // we don't need to reset
+                        }
+                        MaybeUndefined::Defined(init_ir) => {
+                            match &mut process.reset {
+                                Some(reset) => {
+                                    reset.reg_inits.push(ExtraRegisterInit {
+                                        span: init.span,
+                                        reg: reg_info.ir,
+                                        init: init_ir,
+                                    });
+                                }
+                                None => {
+                                    // TODO actually, this is conceptually a bit weird:
+                                    //   why is reset a properly of the process, and not (only) the register?
+                                    let diag = Diagnostic::new(
+                                        "clocked block without reset cannot drive register with reset value",
+                                    )
+                                    .add_error(driver_first_span, "clocked block drives register here")
+                                    .add_info(process.clock_signal.span, "clocked block declared without reset here")
+                                    .add_info(init.span, "register reset value defined here")
+                                    .footer(
+                                        Level::Help,
+                                        "either add an reset to the block or use `undef` as the the initial value",
+                                    )
+                                    .finish();
+                                    return Err(diags.report(diag));
+                                }
+                            }
+                        }
                     }
                     return Ok(());
                 }

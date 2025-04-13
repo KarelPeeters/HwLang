@@ -7,7 +7,7 @@ use crate::front::ir::{
     IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::HardwareType;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
@@ -438,10 +438,10 @@ fn lower_module_statements(
             }
             IrModuleChild::ClockedProcess(process) => {
                 let IrClockedProcess {
-                    domain,
                     locals,
-                    on_clock,
-                    on_reset,
+                    clock_signal,
+                    clock_block,
+                    async_reset_signal_and_block,
                 } = process;
 
                 let outer_name_map = NameMap {
@@ -452,28 +452,40 @@ fn lower_module_statements(
                     variables: &IndexMap::new(),
                 };
 
-                let SyncDomain { clock, reset } = &domain.inner;
-                let clock_edge = lower_edge_to_str(diags, outer_name_map, domain.span, clock)?;
-                let reset_edge = lower_edge_to_str(diags, outer_name_map, domain.span, reset)?;
-                swriteln!(
-                    f,
-                    "{I}always @({} {}, {} {}) begin",
-                    clock_edge.edge,
-                    clock_edge.value,
-                    reset_edge.edge,
-                    reset_edge.value
-                );
+                let clock_edge = lower_edge_to_str(diags, outer_name_map, clock_signal.as_ref())?;
+                let async_reset_signal_and_block = async_reset_signal_and_block
+                    .as_ref()
+                    .map(|(reset_signal, reset_block)| {
+                        let reset_edge = lower_edge_to_str(diags, outer_name_map, reset_signal.as_ref())?;
+                        Ok((reset_edge, reset_block))
+                    })
+                    .transpose()?;
+
+                match &async_reset_signal_and_block {
+                    Some((reset_edge, _)) => swriteln!(
+                        f,
+                        "{I}always @({} {}, {} {}) begin",
+                        clock_edge.edge,
+                        clock_edge.value,
+                        reset_edge.edge,
+                        reset_edge.value,
+                    ),
+                    None => swriteln!(f, "{I}always @({} {}) begin", clock_edge.edge, clock_edge.value,),
+                }
 
                 let mut written_regs = HashSet::new();
-                collect_written_registers(on_clock, &mut written_regs);
-                collect_written_registers(on_reset, &mut written_regs);
-
+                collect_written_registers(clock_block, &mut written_regs);
+                if let Some((_, reset_block)) = &async_reset_signal_and_block {
+                    collect_written_registers(reset_block, &mut written_regs);
+                }
                 let shadowing_reg_name_map =
                     lower_shadow_registers(diags, module_name_scope, registers, &written_regs, f, &mut newline)?;
 
                 let variables = declare_locals(diags, module_name_scope, locals, f, &mut newline)?;
 
                 // populate shadow registers
+                // TODO move into "if clock" block, don't confuse reset structure matching in synthesis tools
+                //    (also do this for the write-back)
                 newline.start_new_block();
                 for (&reg, shadow_name) in &shadowing_reg_name_map {
                     newline.before_item(f);
@@ -492,13 +504,19 @@ fn lower_module_statements(
                 // main reset/clock structure
                 newline.start_new_block();
                 newline.before_item(f);
-                swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
-                lower_block(diags, inner_name_map, on_reset, f, Indent::new(3), &mut newline)?;
-                swriteln!(f, "{I}{I}end else begin");
-                lower_block(diags, inner_name_map, on_clock, f, Indent::new(3), &mut newline)?;
-                swriteln!(f, "{I}{I}end");
+                match async_reset_signal_and_block {
+                    None => lower_block(diags, inner_name_map, clock_block, f, Indent::new(2), &mut newline)?,
+                    Some((reset_edge, reset_block)) => {
+                        swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
+                        lower_block(diags, inner_name_map, reset_block, f, Indent::new(3), &mut newline)?;
+                        swriteln!(f, "{I}{I}end else begin");
+                        lower_block(diags, inner_name_map, clock_block, f, Indent::new(3), &mut newline)?;
+                        swriteln!(f, "{I}{I}end");
+                    }
+                }
 
                 // commit shadow writes
+                // TODO move into "if clock" block
                 newline.start_new_block();
 
                 for (&reg, shadow_name) in &shadowing_reg_name_map {
@@ -951,12 +969,11 @@ struct EdgeString {
 fn lower_edge_to_str(
     diags: &Diagnostics,
     name_map: NameMap,
-    span: Span,
-    expr: &IrExpression,
+    expr: Spanned<&IrExpression>,
 ) -> Result<EdgeString, ErrorGuaranteed> {
     // unwrap not layers, their parity will determine the edge
     let mut not_count: u32 = 0;
-    let mut curr = expr;
+    let mut curr = expr.inner;
     while let IrExpression::BoolNot(inner) = curr {
         not_count += 1;
         curr = inner;
@@ -971,7 +988,7 @@ fn lower_edge_to_str(
     // lower expression
     let mut s = String::new();
     let f = &mut s;
-    lower_expression(diags, name_map, span, curr, f)?;
+    lower_expression(diags, name_map, expr.span, curr, f)?;
 
     Ok(EdgeString {
         edge,

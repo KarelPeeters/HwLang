@@ -97,33 +97,27 @@ impl<T, E: Copy> ResultExt<T, E> for Result<T, E> {
 
 impl<T, E> ResultDoubleExt<T, E> for Result<Result<T, E>, E> {
     fn flatten_err(self) -> Result<T, E> {
-        match self {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(e),
-        }
+        Ok(self??)
     }
 }
 
 pub fn option_pair<A, B>(left: Option<A>, right: Option<B>) -> Option<(A, B)> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some((left, right)),
-        (None, _) | (_, None) => None,
-    }
+    let left = left?;
+    let right = right?;
+    Some((left, right))
 }
 
 pub fn result_pair<A, B, E>(left: Result<A, E>, right: Result<B, E>) -> Result<(A, B), E> {
-    match (left, right) {
-        (Ok(left), Ok(right)) => Ok((left, right)),
-        (Err(e), _) | (_, Err(e)) => Err(e),
-    }
+    let left = left?;
+    let right = right?;
+    Ok((left, right))
 }
 
 pub fn result_triple<A, B, C, E>(a: Result<A, E>, b: Result<B, E>, c: Result<C, E>) -> Result<(A, B, C), E> {
-    match (a, b, c) {
-        (Ok(a), Ok(b), Ok(c)) => Ok((a, b, c)),
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
-    }
+    let a = a?;
+    let b = b?;
+    let c = c?;
+    Ok((a, b, c))
 }
 
 pub fn result_pair_split<A, B, E: Copy>(r: Result<(A, B), E>) -> (Result<A, E>, Result<B, E>) {

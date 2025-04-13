@@ -41,7 +41,7 @@ pub module axi_gearbox_v2 generics(
         input_ready = level <= (buffer_size - input_width) / step;
     }
 
-    clocked(clk, rst) {
+    clocked(clk, async rst) {
         // handle input
         // TODO off by one (<= vs <), bug in original?
         // TODO use input_ready port here? but then the level type may overflow

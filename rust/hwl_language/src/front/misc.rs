@@ -73,10 +73,20 @@ impl ValueDomain {
                 DomainKind::Async => ValueDomain::Async,
                 DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
                     clock: sync.clock.map_inner(Signal::Port),
-                    reset: sync.reset.map_inner(Signal::Port),
+                    reset: sync.reset.map(|p| p.map_inner(Signal::Port)),
                 }),
             },
         }
+    }
+
+    pub fn invert(&self) -> ValueDomain {
+        // TODO once we properly track partial domains (one for the posedge, one for the negedge),
+        //   we need to actually do something here
+        // TODO when we do that make sure to only do this for bools and bool arrays,
+        //   and once a non-trivial operation happens it needs to delay to the worst side.
+        //   Maybe implement that by changing the current join to assume the worst,
+        //   and adding a separate join_simple that propagates the edges more carefully.
+        self.clone()
     }
 
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
@@ -140,6 +150,15 @@ impl<V> Polarized<V> {
 }
 
 impl Polarized<Signal> {
+    pub fn domain(&self, s: &CompileItemContext) -> Spanned<ValueDomain> {
+        let &Polarized { inverted, signal } = self;
+        let signal_domain = signal.domain(s);
+        match inverted {
+            false => signal_domain,
+            true => signal_domain.as_ref().map_inner(ValueDomain::invert),
+        }
+    }
+
     pub fn to_diagnostic_string(self, s: &CompileItemContext) -> String {
         let Polarized { inverted, signal } = self;
         let signal_str = signal.to_diagnostic_string(s);
@@ -220,7 +239,7 @@ impl<P> PortDomain<P> {
     pub fn map_inner<Q>(self, mut f: impl FnMut(P) -> Q) -> PortDomain<Q> {
         match self {
             PortDomain::Clock => PortDomain::Clock,
-            PortDomain::Kind(kind) => PortDomain::Kind(kind.map_inner(|p: Polarized<P>| p.map_inner(&mut f))),
+            PortDomain::Kind(kind) => PortDomain::Kind(kind.map_signal(|p: Polarized<P>| p.map_inner(&mut f))),
         }
     }
 }
@@ -243,16 +262,21 @@ impl DomainKind<Polarized<Signal>> {
 
 impl SyncDomain<Polarized<Signal>> {
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
-        format!(
-            "sync({}, {})",
-            self.clock.to_diagnostic_string(s),
-            self.reset.to_diagnostic_string(s)
-        )
+        let SyncDomain { clock, reset } = self;
+
+        match reset {
+            None => format!("sync({})", clock.to_diagnostic_string(s)),
+            Some(reset) => format!(
+                "sync({}, {})",
+                clock.to_diagnostic_string(s),
+                reset.to_diagnostic_string(s)
+            ),
+        }
     }
 }
 
 impl SyncDomain<Polarized<Port>> {
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
-        self.map_inner(|p| p.map_inner(Signal::Port)).to_diagnostic_string(s)
+        self.map_signal(|p| p.map_inner(Signal::Port)).to_diagnostic_string(s)
     }
 }

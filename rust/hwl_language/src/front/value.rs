@@ -45,6 +45,12 @@ pub enum CompileValue {
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum MaybeUndefined<T> {
+    Undefined,
+    Defined(T),
+}
+
 #[derive(Debug)]
 pub enum HardwareValueResult {
     Success(IrExpression),
@@ -109,7 +115,7 @@ impl CompileValue {
         }
     }
 
-    pub fn as_hardware_value(&self, ty: &HardwareType) -> HardwareValueResult {
+    pub fn try_as_hardware_value(&self, ty: &HardwareType) -> HardwareValueResult {
         fn map_array<'t, E>(
             values: &[CompileValue],
             t: impl Fn(usize) -> &'t HardwareType,
@@ -121,7 +127,7 @@ impl CompileValue {
             let mut any_undefined = false;
 
             for (i, value) in enumerate(values) {
-                match value.as_hardware_value(t(i)) {
+                match value.try_as_hardware_value(t(i)) {
                     HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
                     HardwareValueResult::Success(v) => {
                         all_undefined = false;
@@ -187,19 +193,15 @@ impl CompileValue {
         }
     }
 
-    pub fn as_ir_expression_or_undefined(
+    pub fn as_hardware_value_or_undefined(
         &self,
         diags: &Diagnostics,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<Option<TypedIrExpression>, ErrorGuaranteed> {
-        match self.as_hardware_value(ty_hw) {
-            HardwareValueResult::Success(v) => Ok(Some(TypedIrExpression {
-                ty: ty_hw.clone(),
-                domain: ValueDomain::CompileTime,
-                expr: v,
-            })),
-            HardwareValueResult::Undefined => Ok(None),
+    ) -> Result<MaybeUndefined<IrExpression>, ErrorGuaranteed> {
+        match self.try_as_hardware_value(ty_hw) {
+            HardwareValueResult::Success(v) => Ok(MaybeUndefined::Defined(v)),
+            HardwareValueResult::Undefined => Ok(MaybeUndefined::Undefined),
             HardwareValueResult::PartiallyUndefined => Err(diags.report_todo(span, "partially undefined values")),
             HardwareValueResult::Unrepresentable => Err(diags.report_internal_error(
                 span,
@@ -221,6 +223,21 @@ impl CompileValue {
         }
     }
 
+    pub fn as_ir_expression_or_undefined(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        ty_hw: &HardwareType,
+    ) -> Result<MaybeUndefined<TypedIrExpression>, ErrorGuaranteed> {
+        let hw_value = self.as_hardware_value_or_undefined(diags, span, ty_hw)?;
+        let typed_expr = hw_value.map_inner(|expr| TypedIrExpression {
+            ty: ty_hw.clone(),
+            domain: ValueDomain::CompileTime,
+            expr,
+        });
+        Ok(typed_expr)
+    }
+
     pub fn as_ir_expression(
         &self,
         diags: &Diagnostics,
@@ -228,8 +245,8 @@ impl CompileValue {
         ty_hw: &HardwareType,
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self.as_ir_expression_or_undefined(diags, span, ty_hw)? {
-            Some(ir_expr) => Ok(ir_expr),
-            None => Err(diags.report_simple(
+            MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
+            MaybeUndefined::Undefined => Err(diags.report_simple(
                 "undefined values are not allowed here",
                 span,
                 format!("undefined value `{}` here", self.to_diagnostic_string()),
@@ -340,5 +357,14 @@ impl<T: Typed, C: Typed> Typed for MaybeCompile<T, C> {
 impl<T> From<CompileValue> for MaybeCompile<T, CompileValue> {
     fn from(value: CompileValue) -> Self {
         MaybeCompile::Compile(value)
+    }
+}
+
+impl<T> MaybeUndefined<T> {
+    pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> MaybeUndefined<U> {
+        match self {
+            MaybeUndefined::Undefined => MaybeUndefined::Undefined,
+            MaybeUndefined::Defined(v) => MaybeUndefined::Defined(f(v)),
+        }
     }
 }

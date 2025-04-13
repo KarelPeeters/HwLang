@@ -724,8 +724,8 @@ impl CompileShared {
 
 // TODO move somewhere else
 impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&self, signal: &DomainSignal) -> IrExpression {
-        let &Polarized { inverted, signal } = signal;
+    pub fn domain_signal_to_ir(&self, signal: DomainSignal) -> IrExpression {
+        let Polarized { inverted, signal } = signal;
         let inner = match signal {
             Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
             Signal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),

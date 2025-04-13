@@ -123,36 +123,40 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         match child {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
-                    domain,
                     locals,
-                    on_clock,
-                    on_reset,
+                    clock_signal,
+                    clock_block,
+                    async_reset_signal_and_block,
                 } = proc;
 
                 // reset function
-                let func_step_reset = format!("module_{module_index}_child_{child_index}_clocked_reset");
-                swriteln!(f_step_all, "{I}{func_step_reset}({step_args});");
+                if let Some((reset_signal, reset_block)) = async_reset_signal_and_block {
+                    let func_step_reset = format!("module_{module_index}_child_{child_index}_clocked_async_reset");
+                    swriteln!(f_step_all, "{I}{func_step_reset}({step_args});");
 
-                swriteln!(f_step, "void {func_step_reset}({step_params}) {{");
-                let mut ctx = CodegenBlockContext {
-                    diags,
-                    module_info,
-                    locals,
-                    f: &mut f_step,
-                    indent: Indent::new(1),
-                    next_temporary_index: 0,
-                };
-                let reset_eval = ctx.eval(domain.span, &domain.inner.reset, Stage::Next)?;
-                swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
-                swriteln!(ctx.f, "{I}{I}return;");
-                swriteln!(ctx.f, "{I}}}");
-                swriteln!(ctx.f);
+                    swriteln!(f_step, "void {func_step_reset}({step_params}) {{");
+                    let mut ctx = CodegenBlockContext {
+                        diags,
+                        module_info,
+                        locals,
+                        f: &mut f_step,
+                        indent: Indent::new(1),
+                        next_temporary_index: 0,
+                    };
 
-                //   reset doesn't need locals
-                ctx.generate_block(on_reset, Stage::Next)?;
+                    // TODO this might not be correct, think about which prev/reset combination reset needs to look at
+                    let reset_eval = ctx.eval(reset_signal.span, &reset_signal.inner, Stage::Next)?;
+                    swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
+                    swriteln!(ctx.f, "{I}{I}return;");
+                    swriteln!(ctx.f, "{I}}}");
+                    swriteln!(ctx.f);
 
-                swriteln!(f_step, "}}");
-                swriteln!(f_step);
+                    //   reset doesn't need locals
+                    ctx.generate_block(reset_block, Stage::Next)?;
+
+                    swriteln!(f_step, "}}");
+                    swriteln!(f_step);
+                }
 
                 // clock function
                 let func_step_clock = format!("module_{module_index}_child_{child_index}_clocked_clock");
@@ -167,8 +171,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     indent: Indent::new(1),
                     next_temporary_index: 0,
                 };
-                let clock_prev_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Prev)?;
-                let clock_next_eval = ctx.eval(domain.span, &domain.inner.clock, Stage::Next)?;
+                let clock_prev_eval = ctx.eval(clock_signal.span, &clock_signal.inner, Stage::Prev)?;
+                let clock_next_eval = ctx.eval(clock_signal.span, &clock_signal.inner, Stage::Next)?;
                 // TODO also skip if reset is active
                 // TODO maybe switch to a single function for both?
                 //   or maybe that just mixes sensitivities for no good reason
@@ -183,7 +187,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
-                ctx.generate_block(on_clock, Stage::Prev)?;
+                ctx.generate_block(clock_block, Stage::Prev)?;
 
                 swriteln!(f_step, "}}");
                 swriteln!(f_step);
@@ -245,7 +249,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                             IrExpression::Register(reg) => {
                                 format!("&signals.{}", reg_str(reg, &module_info.registers[reg]))
                             }
-                            // TODO maybe just remove this from IR, we can't guarantee that every expression is lowerable as a single expression
+                            // TODO maybe just remove this from IR,
+                            //   we can't guarantee that every expression is lowerable as a single expression
                             ref connection => {
                                 return Err(diags.report_todo(
                                     expr.span,

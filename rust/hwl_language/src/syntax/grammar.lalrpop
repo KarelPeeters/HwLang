@@ -201,12 +201,18 @@ ModuleStatementKind: ModuleStatementKind = {
     // clocked block
     // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
     //   registers declared inside of the block do still inherit their clock/reset from the block though
-    <start:@L> "clocked" <end_keyword:@R> "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" <block:Block<BlockStatement>> <end:@R> => {
+    <start:@L>
+        "clocked" <start_domain:@L> <end_keyword:@R> "("
+        <clock:BoxExpr> <reset:("," <Spanned<ClockedBlockReset>>)?>
+        ")" <end_domain:@R> <block:Block<BlockStatement>>
+    <end:@R> => {
         let inner = ClockedBlock {
-            domain: Spanned { span: clock.span.join(reset.span), inner: SyncDomain { clock, reset } },
+            clock,
+            reset,
             block,
             span: loc.span(start, end),
             span_keyword: loc.span(start, end_keyword),
+            span_domain: loc.span(start_domain, end_domain),
         };
         ModuleStatementKind::ClockedBlock(inner)
     },
@@ -231,6 +237,15 @@ ModuleStatementKind: ModuleStatementKind = {
         };
         ModuleStatementKind::Instance(instance)
     },
+}
+
+ClockedBlockReset: ClockedBlockReset<Box<Expression>> = {
+    <kind:Spanned<ResetKind>> <signal:BoxExpr> => ClockedBlockReset { kind, signal },
+}
+
+ResetKind: ResetKind = {
+    "sync" => ResetKind::Sync,
+    "async" => ResetKind::Async,
 }
 
 // TODO better port syntax, maybe including directionality, eg ==> and <== or -> and <-?
@@ -379,7 +394,7 @@ DomainKind: DomainKind<Box<Expression>> = {
 }
 
 SyncDomain: SyncDomain<Box<Expression>> = {
-    "sync" "(" <clock:BoxExpr> "," <reset:BoxExpr> ")" => SyncDomain { clock, reset },
+    "sync" "(" <clock:BoxExpr> <reset:("," <BoxExpr>)?> ")" => SyncDomain { clock, reset },
 }
 
 // expressions

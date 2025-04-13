@@ -508,9 +508,9 @@ impl CompileItemContext<'_, '_> {
                 // convert values to hardware
                 let value = value.inner.as_ir_expression(diags, value.span, &ty_hw)?;
                 let init = init
-                    .inner
-                    .as_ir_expression_or_undefined(diags, init.span, &ty_hw)?
-                    .map(|expr| expr.expr);
+                    .as_ref()
+                    .map_inner(|inner| inner.as_hardware_value_or_undefined(diags, init.span, &ty_hw))
+                    .transpose()?;
 
                 // create a register and variable
                 let dummy_id = MaybeIdentifier::Dummy(span_keyword);
@@ -519,7 +519,7 @@ impl CompileItemContext<'_, '_> {
                     debug_info_id: dummy_id.clone(),
                 };
                 let var = ctx.new_ir_variable(diags, span_keyword, var_info)?;
-                let (domain, reg) = ctx.new_ir_register(self, diags, dummy_id, ty_hw.clone(), init)?;
+                let (reg, domain) = ctx.new_ir_register(self, diags, dummy_id, ty_hw.clone(), init)?;
 
                 // do the right shuffle operations
                 let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(var), IrExpression::Register(reg));
@@ -1080,12 +1080,14 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         domain: &SyncDomain<Box<Expression>>,
     ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
-        let clock = self.eval_expression_as_domain_signal(scope, &domain.clock);
-        let reset = self.eval_expression_as_domain_signal(scope, &domain.reset);
-
+        let SyncDomain { clock, reset } = domain;
+        let clock = self.eval_expression_as_domain_signal(scope, &clock);
+        let reset = reset
+            .as_ref()
+            .map(|reset| self.eval_expression_as_domain_signal(scope, &reset));
         Ok(SyncDomain {
             clock: clock?.inner,
-            reset: reset?.inner,
+            reset: reset.transpose()?.map(|r| r.inner),
         })
     }
 
@@ -1119,7 +1121,7 @@ impl CompileItemContext<'_, '_> {
             inner: match result.inner {
                 DomainKind::Const => DomainKind::Const,
                 DomainKind::Async => DomainKind::Async,
-                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_inner(|signal| {
+                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|signal| {
                     signal.try_map_inner(|signal| match signal {
                         Signal::Port(port) => Ok(port),
                         Signal::Wire(_) => Err(diags.report_internal_error(domain.span, "expected port, got wire")),

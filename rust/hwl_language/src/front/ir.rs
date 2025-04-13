@@ -4,15 +4,17 @@ use std::vec;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, ResetKind, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use unwrap_match::unwrap_match;
 
-// TODO add an "optimization" pass that does some basic stuff like dead code elimination and
-//   inlining variables that are just copies of other variables.
-//   That would allow the frontend to be less worried about avoiding redundant variable copies.
+// TODO add an "optimization" pass that does some basic stuff like:
+//   * inline variables that are always equal to some other variable
+//   * skip empty blocks, skip useless ifs, ...
+//   That would allow the frontend to be freely generate redundant code,
+//     while still getting clean output RTL.
 #[derive(Debug)]
 pub struct IrDatabase {
     pub modules: IrModules,
@@ -131,11 +133,17 @@ pub enum IrModuleChild {
 /// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug)]
 pub struct IrClockedProcess {
-    pub domain: Spanned<SyncDomain<IrExpression>>,
     // TODO rename to variables
     pub locals: IrVariables,
-    pub on_clock: IrBlock,
-    pub on_reset: IrBlock,
+    pub clock_signal: Spanned<IrExpression>,
+    pub clock_block: IrBlock,
+    pub async_reset_signal_and_block: Option<(Spanned<IrExpression>, IrBlock)>,
+}
+
+pub struct IrResetInfo {
+    pub kind: ResetKind,
+    pub signal: Spanned<IrExpression>,
+    pub block: IrBlock,
 }
 
 #[derive(Debug)]

@@ -176,21 +176,21 @@ pub enum DomainKind<S> {
     Sync(SyncDomain<S>),
 }
 
-// TODO how to represent the difference between sync and async reset?
-//   this is not the same as the sync/async-ness of the reset itself! (or is it?)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SyncDomain<S> {
+    // TODO do we even need names here, is this not just a set of posedge sensitivities?
     pub clock: S,
-    // TODO make reset optional
-    pub reset: S,
+    /// No reset means there is no separate sensitivity for a reset signal.
+    /// This can be cause there is no reset, or because the reset is synchronous.
+    pub reset: Option<S>,
 }
 
 impl<S> DomainKind<S> {
-    pub fn map_inner<U>(self, f: impl FnMut(S) -> U) -> DomainKind<U> {
+    pub fn map_signal<U>(self, f: impl FnMut(S) -> U) -> DomainKind<U> {
         match self {
             DomainKind::Const => DomainKind::Const,
             DomainKind::Async => DomainKind::Async,
-            DomainKind::Sync(sync) => DomainKind::Sync(sync.map_inner(f)),
+            DomainKind::Sync(sync) => DomainKind::Sync(sync.map_signal(f)),
         }
     }
 }
@@ -199,21 +199,21 @@ impl<S> SyncDomain<S> {
     pub fn as_ref(&self) -> SyncDomain<&S> {
         SyncDomain {
             clock: &self.clock,
-            reset: &self.reset,
+            reset: self.reset.as_ref(),
         }
     }
 
-    pub fn map_inner<U>(self, mut f: impl FnMut(S) -> U) -> SyncDomain<U> {
+    pub fn map_signal<U>(self, mut f: impl FnMut(S) -> U) -> SyncDomain<U> {
         SyncDomain {
             clock: f(self.clock),
-            reset: f(self.reset),
+            reset: self.reset.map(f),
         }
     }
 
-    pub fn try_map_inner<U, E>(self, mut f: impl FnMut(S) -> Result<U, E>) -> Result<SyncDomain<U>, E> {
+    pub fn try_map_signal<U, E>(self, mut f: impl FnMut(S) -> Result<U, E>) -> Result<SyncDomain<U>, E> {
         Ok(SyncDomain {
             clock: f(self.clock)?,
-            reset: f(self.reset)?,
+            reset: self.reset.map(f).transpose()?,
         })
     }
 }
@@ -387,8 +387,39 @@ pub struct CombinatorialBlock {
 pub struct ClockedBlock {
     pub span: Span,
     pub span_keyword: Span,
-    pub domain: Spanned<SyncDomain<Box<Expression>>>,
+    pub span_domain: Span,
+    pub clock: Box<Expression>,
+    /// No reset means this block does not have a reset.
+    pub reset: Option<Spanned<ClockedBlockReset<Box<Expression>>>>,
     pub block: Block<BlockStatement>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ClockedBlockReset<S> {
+    pub kind: Spanned<ResetKind>,
+    pub signal: S,
+}
+
+impl<S> ClockedBlockReset<S> {
+    pub fn map_signal<U>(self, f: impl FnOnce(S) -> U) -> ClockedBlockReset<U> {
+        ClockedBlockReset {
+            kind: self.kind,
+            signal: f(self.signal),
+        }
+    }
+
+    pub fn as_ref(&self) -> ClockedBlockReset<&S> {
+        ClockedBlockReset {
+            kind: self.kind,
+            signal: &self.signal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResetKind {
+    Async,
+    Sync,
 }
 
 #[derive(Debug, Clone)]

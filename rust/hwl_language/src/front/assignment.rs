@@ -453,7 +453,7 @@ impl CompileItemContext<'_, '_> {
 
     fn check_assignment_domains(
         &self,
-        block_domain: &BlockDomain,
+        block_domain: BlockDomain,
         condition_domains: &[Spanned<ValueDomain>],
         op_span: Span,
         target_base_domain: Spanned<&ValueDomain>,

@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrDatabase, IrExpression,
-    IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType,
-    IrVariables, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrClockedProcess, IrDatabase,
+    IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep,
+    IrType, IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -28,32 +28,36 @@ impl IrModuleInfo {
         for child in &self.children {
             match child {
                 IrModuleChild::ClockedProcess(process) => {
-                    process
-                        .domain
-                        .inner
-                        .clock
-                        .validate(diags, self, no_variables, process.domain.span)?;
-                    process
-                        .domain
-                        .inner
-                        .reset
-                        .validate(diags, self, no_variables, process.domain.span)?;
+                    let IrClockedProcess {
+                        locals,
+                        clock_signal,
+                        clock_block,
+                        async_reset_signal_and_block,
+                    } = process;
 
+                    clock_signal
+                        .inner
+                        .validate(diags, self, no_variables, clock_signal.span)?;
                     check_type_match(
                         diags,
-                        process.domain.span,
+                        clock_signal.span,
                         &IrType::Bool,
-                        &process.domain.inner.clock.ty(self, no_variables),
+                        &clock_signal.inner.ty(self, no_variables),
                     )?;
-                    check_type_match(
-                        diags,
-                        process.domain.span,
-                        &IrType::Bool,
-                        &process.domain.inner.reset.ty(self, no_variables),
-                    )?;
+                    clock_block.validate(diags, self, &locals)?;
 
-                    process.on_reset.validate(diags, self, &process.locals)?;
-                    process.on_clock.validate(diags, self, &process.locals)?;
+                    if let Some((reset_signal, reset_block)) = async_reset_signal_and_block {
+                        reset_signal
+                            .inner
+                            .validate(diags, self, no_variables, reset_signal.span)?;
+                        check_type_match(
+                            diags,
+                            reset_signal.span,
+                            &IrType::Bool,
+                            &reset_signal.inner.ty(self, no_variables),
+                        )?;
+                        reset_block.validate(diags, self, &locals)?;
+                    }
                 }
                 IrModuleChild::CombinatorialProcess(process) => {
                     process.block.validate(diags, self, &process.locals)?;
