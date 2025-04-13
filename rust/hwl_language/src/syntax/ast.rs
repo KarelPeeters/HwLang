@@ -171,6 +171,7 @@ pub enum WireKind<S, T> {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DomainKind<S> {
+    Const,
     Async,
     Sync(SyncDomain<S>),
 }
@@ -187,6 +188,7 @@ pub struct SyncDomain<S> {
 impl<S> DomainKind<S> {
     pub fn map_inner<U>(self, f: impl FnMut(S) -> U) -> DomainKind<U> {
         match self {
+            DomainKind::Const => DomainKind::Const,
             DomainKind::Async => DomainKind::Async,
             DomainKind::Sync(sync) => DomainKind::Sync(sync.map_inner(f)),
         }

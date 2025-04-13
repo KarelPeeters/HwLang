@@ -20,6 +20,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let valid = match (target.inner, source.inner) {
+            // TODO is clock->clock actually okay?
             (ValueDomain::Clock, ValueDomain::Clock) => Ok(()),
             (ValueDomain::Clock, _) => Err("non-clock to clock"),
             (ValueDomain::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
@@ -27,7 +28,11 @@ impl CompileItemContext<'_, '_> {
 
             // compile-time from nothing else and to everything
             (_, ValueDomain::CompileTime) => Ok(()),
-            (ValueDomain::CompileTime, _) => Err("compile-time to non-compile-time"),
+            (ValueDomain::CompileTime, _) => Err("non compile to compile"),
+
+            // const only from const and to everything
+            (_, ValueDomain::Const) => Ok(()),
+            (ValueDomain::Const, _) => Err("non-const to const"),
 
             // async from everything
             (ValueDomain::Async, _) => Ok(()),

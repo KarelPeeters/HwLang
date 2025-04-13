@@ -373,6 +373,7 @@ PortDirection: PortDirection = {
 }
 
 DomainKind: DomainKind<Box<Expression>> = {
+    "const" => DomainKind::Const,
     "async" => DomainKind::Async,
     <SyncDomain> => DomainKind::Sync(<>),
 }

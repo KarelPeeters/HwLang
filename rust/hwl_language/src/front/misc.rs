@@ -48,9 +48,8 @@ pub enum PortDomain<P> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,
-    // TODO add "constant" domain, for values that are constant but not compile-time,
-    //   eg. dummy wires, tie ports, ...
     Clock,
+    Const,
     // TODO allow separate sync/async per edge, necessary for "async" reset
     Async,
     Sync(SyncDomain<V>),
@@ -70,6 +69,7 @@ impl ValueDomain {
         match domain {
             PortDomain::Clock => ValueDomain::Clock,
             PortDomain::Kind(kind) => match kind {
+                DomainKind::Const => ValueDomain::Const,
                 DomainKind::Async => ValueDomain::Async,
                 DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
                     clock: sync.clock.map_inner(Signal::Port),
@@ -83,6 +83,7 @@ impl ValueDomain {
         match self {
             ValueDomain::CompileTime => "compile-time".to_owned(),
             ValueDomain::Clock => "clock".to_owned(),
+            ValueDomain::Const => "const".to_owned(),
             ValueDomain::Async => "async".to_owned(),
             ValueDomain::Sync(sync) => sync.to_diagnostic_string(s),
         }
@@ -92,6 +93,7 @@ impl ValueDomain {
 impl<V> ValueDomain<V> {
     pub fn from_domain_kind(domain: DomainKind<V>) -> Self {
         match domain {
+            DomainKind::Const => ValueDomain::Const,
             DomainKind::Async => ValueDomain::Async,
             DomainKind::Sync(sync) => ValueDomain::Sync(SyncDomain {
                 clock: sync.clock,
@@ -232,6 +234,7 @@ impl PortDomain<Port> {
 impl DomainKind<Polarized<Signal>> {
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
         match self {
+            DomainKind::Const => "const".to_owned(),
             DomainKind::Async => "async".to_owned(),
             DomainKind::Sync(sync) => sync.to_diagnostic_string(s),
         }

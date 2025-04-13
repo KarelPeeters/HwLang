@@ -1095,6 +1095,7 @@ impl CompileItemContext<'_, '_> {
         domain: &Spanned<DomainKind<Box<Expression>>>,
     ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
         let result = match &domain.inner {
+            DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
             DomainKind::Sync(domain) => self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
         };
@@ -1116,6 +1117,7 @@ impl CompileItemContext<'_, '_> {
         Ok(Spanned {
             span: result.span,
             inner: match result.inner {
+                DomainKind::Const => DomainKind::Const,
                 DomainKind::Async => DomainKind::Async,
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_inner(|signal| {
                     signal.try_map_inner(|signal| match signal {

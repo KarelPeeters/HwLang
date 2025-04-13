@@ -1021,6 +1021,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 Ok(match port_domain_raw {
                     PortDomain::Clock => ValueDomain::Clock,
                     PortDomain::Kind(port_domain_raw) => match port_domain_raw {
+                        DomainKind::Const => ValueDomain::Const,
                         DomainKind::Async => ValueDomain::Async,
                         DomainKind::Sync(sync) => ValueDomain::Sync(sync.try_map_inner(|raw_port| {
                             let mapped_port = match prev_port_signals.get(&raw_port.signal) {
@@ -1610,6 +1611,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let domain = match &port_info.domain.inner {
             PortDomain::Clock => Err("clock"),
             PortDomain::Kind(DomainKind::Async) => Err("async"),
+            PortDomain::Kind(DomainKind::Const) => Err("const"),
             PortDomain::Kind(DomainKind::Sync(domain)) => Ok(domain),
         };
 
