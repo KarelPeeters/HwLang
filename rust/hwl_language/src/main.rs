@@ -29,6 +29,8 @@ struct Args {
     #[arg(long)]
     print_files: bool,
     #[arg(long)]
+    print_ir: bool,
+    #[arg(long)]
     only_top: bool,
     #[arg(long)]
     keep_main_stack: bool,
@@ -57,6 +59,7 @@ fn main_inner(args: Args) -> ExitCode {
         thread_count,
         profile,
         print_files,
+        print_ir,
         only_top,
         keep_main_stack: _,
     } = args;
@@ -133,6 +136,10 @@ fn main_inner(args: Args) -> ExitCode {
     for diag in diagnostics {
         let s = diag.to_string(&source, DiagnosticStringSettings::default());
         eprintln!("{}\n", s);
+    }
+
+    if print_ir {
+        println!("{:#?}", compiled);
     }
 
     // save lowered verilog
