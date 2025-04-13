@@ -594,6 +594,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                     }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
+                    // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
+                    //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
                     match self.elaborate_module_declaration_reg_out_port(&scope, vars, decl) {
                         Ok((port, reg_init)) => {
@@ -629,6 +631,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
 
+        // TODO stmt_index is broken, this is no longer unique
         for (stmt_index, stmt) in enumerate(statements) {
             match &stmt.inner {
                 // control flow
@@ -655,103 +658,15 @@ impl BodyElaborationContext<'_, '_, '_> {
                 ModuleStatementKind::CombinatorialBlock(block) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
 
-                    let CombinatorialBlock {
-                        span: _,
-                        span_keyword: _,
-                        block,
-                    } = block;
-
-                    let block_domain = BlockDomain::Combinatorial;
-
-                    let mut report_assignment = |target: Spanned<Signal>| {
-                        self.drivers
-                            .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
-                    };
-                    let mut ctx = IrBuilderExpressionContext::new(&block_domain, None, &mut report_assignment);
-
-                    let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars_inner, block);
-
-                    let ir_block = ir_block.and_then(|(ir_block, end)| {
-                        let ir_variables = ctx.finish();
-                        end.unwrap_outside_function_and_loop(diags)?;
-                        let process = IrCombinatorialProcess {
-                            locals: ir_variables,
-                            block: ir_block,
-                        };
-                        Ok(IrModuleChild::CombinatorialProcess(process))
-                    });
-
-                    self.processes.push(ir_block);
+                    let ir_process = self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block);
+                    self.processes.push(ir_process.map(IrModuleChild::CombinatorialProcess));
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
-                    let &ClockedBlock {
-                        span: _,
-                        span_keyword,
-                        ref domain,
-                        ref block,
-                    } = block;
-
-                    let domain = domain
-                        .as_ref()
-                        .map_inner(|d| self.ctx.eval_domain_sync(scope, d))
-                        .transpose();
-
-                    let ir_process = domain.and_then(|domain| {
-                        let ir_domain = SyncDomain {
-                            clock: self.ctx.domain_signal_to_ir(&domain.inner.clock),
-                            reset: self.ctx.domain_signal_to_ir(&domain.inner.reset),
-                        };
-
-                        let block_domain = Spanned {
-                            span: span_keyword.join(domain.span),
-                            inner: domain.inner,
-                        };
-                        let block_domain = BlockDomain::Clocked(block_domain);
-
-                        let mut vars_inner = self.new_vars_for_process(vars, signals);
-                        let mut report_assignment = |target: Spanned<Signal>| {
-                            self.drivers
-                                .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
-                        };
-
-                        let mut extra_regs = vec![];
-                        let mut ctx = IrBuilderExpressionContext::new(
-                            &block_domain,
-                            Some((&mut self.ir_registers, &mut extra_regs)),
-                            &mut report_assignment,
-                        );
-
-                        let ir_block = self.ctx.elaborate_block(&mut ctx, scope, &mut vars_inner, block);
-                        let ir_variables = ctx.finish();
-
-                        ir_block.and_then(|(ir_block, end)| {
-                            end.unwrap_outside_function_and_loop(diags)?;
-
-                            // will be filled in more later, during driver checking and merging
-                            let mut on_reset = vec![];
-                            for extra_reg in extra_regs {
-                                let ExtraRegister { span, reg, init } = extra_reg;
-                                if let Some(init) = init {
-                                    let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
-                                    on_reset.push(Spanned::new(span, stmt));
-                                }
-                            }
-
-                            let process = IrClockedProcess {
-                                domain: Spanned {
-                                    span: domain.span,
-                                    inner: ir_domain,
-                                },
-                                locals: ir_variables,
-                                on_clock: ir_block,
-                                on_reset: IrBlock { statements: on_reset },
-                            };
-                            Ok(IrModuleChild::ClockedProcess(process))
-                        })
-                    });
+                    let mut vars_inner = self.new_vars_for_process(vars, signals);
+                    let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block);
 
                     let process_index = self.processes.len();
-                    self.processes.push(ir_process);
+                    self.processes.push(ir_process.map(IrModuleChild::ClockedProcess));
                     self.clocked_block_statement_index_to_process_index
                         .insert_first(stmt_index, process_index);
                 }
@@ -762,6 +677,104 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
             }
         }
+    }
+
+    fn elaborate_combinatorial_block(
+        &mut self,
+        vars: &mut VariableValues,
+        scope: &Scope,
+        stmt_index: usize,
+        block: &CombinatorialBlock,
+    ) -> Result<IrCombinatorialProcess, ErrorGuaranteed> {
+        let CombinatorialBlock {
+            span: _,
+            span_keyword: _,
+            block,
+        } = block;
+        let diags = self.ctx.refs.diags;
+
+        let block_domain = BlockDomain::Combinatorial;
+        let mut report_assignment = |target: Spanned<Signal>| {
+            self.drivers
+                .report_assignment(diags, Driver::CombinatorialBlock(stmt_index), target)
+        };
+        let mut ctx = IrBuilderExpressionContext::new(&block_domain, None, &mut report_assignment);
+
+        let (ir_block, end) = self.ctx.elaborate_block(&mut ctx, scope, vars, block)?;
+        let ir_variables = ctx.finish();
+        end.unwrap_outside_function_and_loop(diags)?;
+
+        Ok(IrCombinatorialProcess {
+            locals: ir_variables,
+            block: ir_block,
+        })
+    }
+
+    fn elaborate_clocked_block(
+        &mut self,
+        vars: &mut VariableValues,
+        scope: &Scope,
+        stmt_index: usize,
+        block: &ClockedBlock,
+    ) -> Result<IrClockedProcess, ErrorGuaranteed> {
+        let &ClockedBlock {
+            span: _,
+            span_keyword,
+            ref domain,
+            ref block,
+        } = block;
+        let diags = self.ctx.refs.diags;
+
+        let domain = domain
+            .as_ref()
+            .map_inner(|d| self.ctx.eval_domain_sync(scope, d))
+            .transpose()?;
+
+        let ir_domain = SyncDomain {
+            clock: self.ctx.domain_signal_to_ir(&domain.inner.clock),
+            reset: self.ctx.domain_signal_to_ir(&domain.inner.reset),
+        };
+
+        let block_domain = Spanned {
+            span: span_keyword.join(domain.span),
+            inner: domain.inner,
+        };
+        let block_domain = BlockDomain::Clocked(block_domain);
+        let mut report_assignment = |target: Spanned<Signal>| {
+            self.drivers
+                .report_assignment(diags, Driver::ClockedBlock(stmt_index), target)
+        };
+
+        let mut extra_regs = vec![];
+        let mut ctx = IrBuilderExpressionContext::new(
+            &block_domain,
+            Some((&mut self.ir_registers, &mut extra_regs)),
+            &mut report_assignment,
+        );
+
+        let (ir_block, end) = self.ctx.elaborate_block(&mut ctx, scope, vars, block)?;
+        let ir_variables = ctx.finish();
+        end.unwrap_outside_function_and_loop(diags)?;
+
+        // will be filled in more later, during driver checking and merging
+        let mut on_reset = vec![];
+        for extra_reg in extra_regs {
+            let ExtraRegister { span, reg, init } = extra_reg;
+            if let Some(init) = init {
+                let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
+                on_reset.push(Spanned::new(span, stmt));
+            }
+        }
+
+        Ok(IrClockedProcess {
+            domain: Spanned {
+                span: domain.span,
+                inner: ir_domain,
+            },
+            locals: ir_variables,
+            on_clock: ir_block,
+            on_reset: IrBlock { statements: on_reset },
+        })
     }
 
     /// We want to create new [VariableValues] for each process, to be able to reset the variables that exist and to reset the version counters.
@@ -1052,7 +1065,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             })
             .transpose();
 
-        // always evaluate as signal for domain replacing purposes
+        // always try to evaluate as signal for domain replacing purposes
         let signal = match &connection_expr.inner {
             ExpressionKind::Dummy => ConnectionSignal::Dummy(connection_expr.span),
             _ => match self
