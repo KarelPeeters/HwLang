@@ -36,7 +36,7 @@ use crate::util::{result_pair, result_pair_split, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{enumerate, zip_eq, Either, Itertools};
+use itertools::{zip_eq, Either, Itertools};
 use std::hash::Hash;
 
 struct BodyElaborationContext<'c, 'a, 's> {
@@ -50,6 +50,7 @@ struct BodyElaborationContext<'c, 'a, 's> {
     register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     out_port_register_connections: IndexMap<Port, Register>,
 
+    pass_1_next_statement_index: usize,
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
     processes: Vec<Result<IrModuleChild, ErrorGuaranteed>>,
 }
@@ -336,6 +337,8 @@ impl<'s> CompileRefs<'_, 's> {
 
             register_initial_values: IndexMap::new(),
             out_port_register_connections: IndexMap::new(),
+
+            pass_1_next_statement_index: 0,
             clocked_block_statement_index_to_process_index: IndexMap::new(),
             processes: vec![],
         };
@@ -628,11 +631,12 @@ impl BodyElaborationContext<'_, '_, '_> {
         signals: &mut SignalsInScope,
         body: &Block<ModuleStatement>,
     ) {
-        let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
 
-        // TODO stmt_index is broken, this is no longer unique
-        for (stmt_index, stmt) in enumerate(statements) {
+        for stmt in statements {
+            let stmt_index = self.pass_1_next_statement_index;
+            self.pass_1_next_statement_index += 1;
+
             match &stmt.inner {
                 // control flow
                 ModuleStatementKind::Block(block) => {
