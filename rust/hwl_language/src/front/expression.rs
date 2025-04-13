@@ -203,15 +203,21 @@ impl CompileItemContext<'_, '_> {
                 let value = match pattern {
                     IntLiteral::Binary(s_raw) => {
                         let s_clean = s_raw[2..].replace('_', "");
-                        BigUint::from_str_radix(&s_clean, 2).unwrap()
+                        BigUint::from_str_radix(&s_clean, 2)
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
+                            .unwrap()
                     }
                     IntLiteral::Decimal(s_raw) => {
                         let s_clean = s_raw.replace('_', "");
-                        BigUint::from_str_radix(&s_clean, 10).unwrap()
+                        BigUint::from_str_radix(&s_clean, 10)
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
+                            .unwrap()
                     }
                     IntLiteral::Hexadecimal(s) => {
                         let s_hex = s[2..].replace('_', "");
-                        BigUint::from_str_radix(&s_hex, 16).unwrap()
+                        BigUint::from_str_radix(&s_hex, 16)
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
+                            .unwrap()
                     }
                 };
                 MaybeCompile::Compile(CompileValue::Int(BigInt::from(value)))

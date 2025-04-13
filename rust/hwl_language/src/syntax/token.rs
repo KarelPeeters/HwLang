@@ -165,30 +165,32 @@ impl<'s> Tokenizer<'s> {
                     })
                 };
 
+                let f_not_dummy = |c| c != '_';
                 match peek {
                     ['0', 'b'] => {
-                        if token_str[2..].chars().all(|c| matches!(c, '_' | '0' | '1')) {
-                            TokenType::IntLiteralBinary(token_str)
-                        } else {
+                        let tail = &token_str[2..];
+                        let f = |c| matches!(c, '_' | '0' | '1');
+                        if !tail.chars().any(f_not_dummy) || !tail.chars().all(f) {
                             return invalid();
                         }
+
+                        TokenType::IntLiteralBinary(token_str)
                     }
                     ['0', 'x'] => {
-                        if token_str[2..]
-                            .chars()
-                            .all(|c| matches!(c, pattern_decimal_digit!() | '_' | 'a'..='f'))
-                        {
-                            TokenType::IntLiteralHexadecimal(token_str)
-                        } else {
+                        let tail = &token_str[2..];
+                        let f = |c| matches!(c, pattern_decimal_digit!() | '_' | 'a'..='f');
+                        if !tail.chars().any(f_not_dummy) || !tail.chars().all(f) {
                             return invalid();
                         }
+
+                        TokenType::IntLiteralHexadecimal(token_str)
                     }
                     _ => {
-                        if token_str.chars().all(|c| matches!(c, pattern_decimal_digit!() | '_')) {
-                            TokenType::IntLiteralDecimal(token_str)
-                        } else {
+                        let f = |c| matches!(c, pattern_decimal_digit!() | '_');
+                        if !token_str.chars().any(f_not_dummy) || !token_str.chars().all(f) {
                             return invalid();
                         }
+                        TokenType::IntLiteralDecimal(token_str)
                     }
                 }
             }
