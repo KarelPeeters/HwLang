@@ -487,7 +487,23 @@ impl CompileItemContext<'_, '_> {
                 let value_ty = value.inner.ty();
                 let init_ty = init.inner.ty();
                 let ty = value_ty.union(&init_ty, true);
-                let ty_hw = ty.as_hardware_type().ok_or_else(|| todo!())?;
+                let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+                    let diag = Diagnostic::new("register type must be representable in hardware")
+                        .add_error(
+                            span_keyword,
+                            format!("got non-hardware type `{}`", ty.to_diagnostic_string()),
+                        )
+                        .add_info(
+                            value.span,
+                            format!("from combining `{}`", value_ty.to_diagnostic_string()),
+                        )
+                        .add_info(
+                            init.span,
+                            format!("from combining `{}`", init_ty.to_diagnostic_string()),
+                        )
+                        .finish();
+                    diags.report(diag)
+                })?;
 
                 // convert values to hardware
                 let value = value.inner.as_ir_expression(diags, value.span, &ty_hw)?;
