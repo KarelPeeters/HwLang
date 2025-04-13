@@ -9,8 +9,7 @@ use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp,
-    IrStatement, IrVariable, IrVariableInfo,
+    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp, IrStatement,
 };
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, SignalOrVariable, ValueDomain};
 use crate::front::scope::Scope;
@@ -20,7 +19,7 @@ use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
 use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::syntax::ast::{
     ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression, ExpressionKind,
-    Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
+    Identifier, IntLiteral, PortDirection, RangeLiteral, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -169,8 +168,8 @@ impl CompileItemContext<'_, '_> {
                         },
                         NamedValue::Port(port) => {
                             ctx.check_ir_context(diags, expr.span, "port")?;
-
                             let port_info = &self.ports[port];
+
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.signal_versioned(Signal::Port(port));
@@ -183,37 +182,17 @@ impl CompileItemContext<'_, '_> {
                         }
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
-
                             let wire_info = &self.wires[wire];
-                            let value_stored = store_ir_expression_in_dedicated_variable(
-                                ctx,
-                                ctx_block,
-                                diags,
-                                expr.span,
-                                &wire_info.id,
-                                wire_info.typed_ir_expr(),
-                            )?;
-                            let value_expr_raw = value_stored.to_general_expression();
 
                             let versioned = vars.signal_versioned(Signal::Wire(wire));
-                            return Ok(apply_implications(ctx, versioned, value_expr_raw));
+                            return Ok(apply_implications(ctx, versioned, wire_info.typed_ir_expr()));
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
-
                             let reg_info = &self.registers[reg];
-                            let value_stored = store_ir_expression_in_dedicated_variable(
-                                ctx,
-                                ctx_block,
-                                diags,
-                                expr.span,
-                                &reg_info.id,
-                                reg_info.typed_ir_expr(),
-                            )?;
-                            let value_expr_raw = value_stored.to_general_expression();
 
                             let versioned = vars.signal_versioned(Signal::Register(reg));
-                            return Ok(apply_implications(ctx, versioned, value_expr_raw));
+                            return Ok(apply_implications(ctx, versioned, reg_info.typed_ir_expr()));
                         }
                     },
                 }
@@ -1276,38 +1255,6 @@ fn pair_compile_general<T, C, E>(
             )))
         }
     }
-}
-
-fn store_ir_expression_in_dedicated_variable<C: ExpressionContext>(
-    ctx: &mut C,
-    ctx_block: &mut C::Block,
-    diags: &Diagnostics,
-    span_expr: Span,
-    id: &MaybeIdentifier,
-    value: TypedIrExpression,
-) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
-    let ir_variable_info = IrVariableInfo {
-        ty: value.ty.as_ir(),
-        debug_info_id: id.clone(),
-    };
-    let ir_variable = ctx.new_ir_variable(diags, span_expr, ir_variable_info)?;
-    let ir_target = IrAssignmentTarget::variable(ir_variable);
-    let ir_statement = IrStatement::Assign(ir_target, value.expr);
-    ctx.push_ir_statement(
-        diags,
-        ctx_block,
-        Spanned {
-            span: span_expr,
-            inner: ir_statement,
-        },
-    )?;
-
-    let stored_value = TypedIrExpression {
-        ty: value.ty,
-        domain: value.domain,
-        expr: ir_variable,
-    };
-    Ok(stored_value)
 }
 
 // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
