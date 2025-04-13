@@ -575,7 +575,7 @@ impl ChildClockedProcess {
                 };
 
                 // put them in the right place
-                match kind {
+                match kind.inner {
                     ResetKind::Async => {
                         // async reset becomes a separate block, sensitive to the signal
                         (clock_block, Some((reset_signal_ir, reset_block)))
@@ -606,7 +606,7 @@ impl ChildClockedProcess {
 }
 
 struct ChildClockedProcessReset {
-    kind: ResetKind,
+    kind: Spanned<ResetKind>,
     signal: Spanned<DomainSignal>,
     reg_inits: Vec<ExtraRegisterInit>,
 }
@@ -910,7 +910,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let block_result = elaborate_block(ExtraRegisters::WithReset(&mut reg_inits))?;
 
                 let reset = ChildClockedProcessReset {
-                    kind: reset.inner.kind.inner,
+                    kind: reset.inner.kind,
                     signal: reset.inner.signal,
                     reg_inits,
                 };
@@ -1969,6 +1969,26 @@ fn pull_register_init_into_process(
                         MaybeUndefined::Defined(init_ir) => {
                             match &mut process.reset {
                                 Some(reset) => {
+                                    // check that the reset style matches
+                                    let reset_style_err = |block: &str, reg: &str| {
+                                        let diag = Diagnostic::new("reset style mismatch")
+                                            .add_error(driver_first_span, "block drives register here")
+                                            .add_info(reset.kind.span, format!("block defined with {block} reset here"))
+                                            .add_info(
+                                                reg_info.domain.span,
+                                                format!("register defined with {reg} reset here"),
+                                            )
+                                            .finish();
+                                        diags.report(diag)
+                                    };
+                                    match (reset.kind.inner, reg_info.domain.inner.reset) {
+                                        (ResetKind::Async, Some(_)) => {}
+                                        (ResetKind::Sync, None) => {}
+                                        (ResetKind::Async, None) => return Err(reset_style_err("async", "sync")),
+                                        (ResetKind::Sync, Some(_)) => return Err(reset_style_err("sync", "async")),
+                                    }
+
+                                    // all good, record the reset value
                                     reset.reg_inits.push(ExtraRegisterInit {
                                         span: init.span,
                                         reg: reg_info.ir,
