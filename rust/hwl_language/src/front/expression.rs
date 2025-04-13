@@ -1916,12 +1916,19 @@ fn apply_implications<C: ExpressionContext>(
 
         match range.to_range() {
             // TODO support never type or maybe specifically empty ranges
+            // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
             None => expr_raw,
-            Some(range) => TypedIrExpression {
-                ty: HardwareType::Int(range.clone()),
-                domain: expr_raw.domain,
-                expr: IrExpression::ConstrainIntRange(range, Box::new(expr_raw.expr)),
-            },
+            Some(range) => {
+                if &range == ty {
+                    expr_raw
+                } else {
+                    TypedIrExpression {
+                        ty: HardwareType::Int(range.clone()),
+                        domain: expr_raw.domain,
+                        expr: IrExpression::ConstrainIntRange(range, Box::new(expr_raw.expr)),
+                    }
+                }
+            }
         }
     } else {
         expr_raw

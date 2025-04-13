@@ -246,7 +246,12 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                                 format!("&signals.{}", reg_str(reg, &module_info.registers[reg]))
                             }
                             // TODO maybe just remove this from IR, we can't guarantee that every expression is lowerable as a single expression
-                            _ => return Err(diags.report_todo(expr.span, "simulator input port general expression")),
+                            ref connection => {
+                                return Err(diags.report_todo(
+                                    expr.span,
+                                    format!("simulator input port general expression {connection:?}"),
+                                ))
+                            }
                         },
                         &IrPortConnection::Output(expr) => match expr {
                             None => {
