@@ -358,13 +358,15 @@ macro_rules! declare_tokens {
             $($f_token,)*
         }
 
-        #[cfg(test)]
-        const CUSTOM_TOKENS: &[(fn (&str) -> TokenType<&str>, &'static str)] = &[
-            $((|s| TokenType::$c_token(s), stringify!($c_token)),)*
-        ];
-        const FIXED_TOKENS: &[FixedTokenInfo] = &[
-            $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
-        ];
+        impl TokenType<()> {
+            #[cfg(test)]
+            const CUSTOM_TOKENS: &[(fn (&str) -> TokenType<&str>, &'static str)] = &[
+                $((|s| TokenType::$c_token(s), stringify!($c_token)),)*
+            ];
+            const FIXED_TOKENS: &[FixedTokenInfo] = &[
+                $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
+            ];
+        }
 
         // TODO function vs array?
         impl<S> TokenType<S> {
@@ -379,6 +381,13 @@ macro_rules! declare_tokens {
                 match self {
                     $(TokenType::$c_token(s) => TokenType::$c_token(f(s)),)*
                     $(TokenType::$f_token => TokenType::$f_token,)*
+                }
+            }
+
+            pub fn diagnostic_str(&self) -> &str {
+                match self {
+                    $(TokenType::$c_token(_) => stringify!($c_token),)*
+                    $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
                 }
             }
         }
@@ -527,7 +536,7 @@ lazy_static! {
     static ref FIXED_TOKENS_GROUPED_BY_LENGTH: Vec<Vec<FixedTokenInfo>> = {
         let mut result = vec![];
 
-        for &token in FIXED_TOKENS {
+        for &token in TokenType::FIXED_TOKENS {
             let i = token.literal.len();
             if i >= result.len() {
                 result.resize_with(i + 1, Vec::new);
@@ -567,7 +576,7 @@ impl TokenError {
 mod test {
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
-    use crate::syntax::token::{tokenize, Token, TokenType, CUSTOM_TOKENS, FIXED_TOKENS};
+    use crate::syntax::token::{tokenize, Token, TokenType};
     use std::collections::HashSet;
 
     #[test]
@@ -620,7 +629,7 @@ mod test {
     #[test]
     fn literal_tokens_unique() {
         let mut set = HashSet::new();
-        for info in FIXED_TOKENS {
+        for info in TokenType::FIXED_TOKENS {
             assert!(!info.literal.is_empty());
             assert!(set.insert(info.literal));
         }
@@ -630,7 +639,7 @@ mod test {
     fn literal_tokens_covered() {
         let mut any_error = false;
 
-        for info in FIXED_TOKENS {
+        for info in TokenType::FIXED_TOKENS {
             let file = FileId::dummy();
 
             let result = tokenize(file, info.literal);
@@ -657,10 +666,10 @@ mod test {
     // TODO turn this into a test case that checks whether the grammer is up-to-date
     #[test]
     fn print_grammer_enum() {
-        for (_build, name) in CUSTOM_TOKENS {
+        for (_build, name) in TokenType::CUSTOM_TOKENS {
             println!("Token{name} => TokenType::{name}(<&'s str>),")
         }
-        for info in FIXED_TOKENS {
+        for info in TokenType::FIXED_TOKENS {
             println!("{:?} => TokenType::{},", info.literal, info.name)
         }
     }

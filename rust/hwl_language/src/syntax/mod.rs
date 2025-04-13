@@ -1,12 +1,12 @@
-use annotate_snippets::Level;
-use itertools::enumerate;
-
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::Span;
+use crate::syntax::source::FileId;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 use crate::util::iter::IterExt;
+use annotate_snippets::Level;
+use grammar_wrapper::grammar;
+use itertools::enumerate;
 use pos::Pos;
-
 pub mod ast;
 pub mod parsed;
 pub mod pos;
@@ -19,9 +19,6 @@ mod grammar_wrapper {
 
     lalrpop_mod!(pub grammar, "/syntax/grammar.rs");
 }
-
-use crate::syntax::source::FileId;
-use grammar_wrapper::grammar;
 
 pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, TokenError>;
 
@@ -88,11 +85,9 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
             let (start, ty, end) = token;
             let span = Span::new(start, end);
 
-            let ty_formatted = format!("{:?}", ty.map(|_| ())).replace("(())", "");
-
             // TODO use token string instead of name for keywords and symbols
             Diagnostic::new("unexpected token")
-                .add_error(span, format!("unexpected token {:?}", ty_formatted))
+                .add_error(span, format!("unexpected token {}", ty.diagnostic_str()))
                 .footer(Level::Info, format_expected(&expected))
                 .finish()
         }
