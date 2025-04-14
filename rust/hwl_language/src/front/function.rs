@@ -342,7 +342,8 @@ fn check_function_return_value(
                     }
                 }
                 (None, Some(ret_value)) => {
-                    if ret_value.inner == MaybeCompile::Compile(CompileValue::UNIT) {
+                    let is_unit = matches!(&ret_value.inner, MaybeCompile::Compile(CompileValue::Tuple(tuple)) if tuple.is_empty());
+                    if is_unit {
                         Ok(MaybeCompile::Compile(CompileValue::UNIT))
                     } else {
                         let diag = Diagnostic::new("return value in function without return type")

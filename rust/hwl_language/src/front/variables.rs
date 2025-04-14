@@ -34,7 +34,7 @@ pub struct VariableValuesContent {
     signal_versions: IndexMap<Signal, ValueVersion>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum MaybeAssignedValue {
     Assigned(AssignedValue),
     NotYetAssigned,
@@ -42,7 +42,7 @@ pub enum MaybeAssignedValue {
     Error(ErrorGuaranteed),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct AssignedValue {
     pub last_assignment_span: Span,
     pub value_and_version: MaybeCompile<(TypedIrExpression, ValueVersion)>,
@@ -363,7 +363,15 @@ pub fn merge_variable_branches<C: ExpressionContext>(
 
         let value_combined = match (value_0, value_1) {
             (MaybeAssignedValue::Assigned(value_0), MaybeAssignedValue::Assigned(value_1)) => {
-                if value_0.value_and_version == value_1.value_and_version {
+                let same_value_and_version = match (&value_0.value_and_version, &value_1.value_and_version) {
+                    (MaybeCompile::Compile(value_0), MaybeCompile::Compile(value_1)) => value_0 == value_1,
+                    (MaybeCompile::Other((_, version_0)), MaybeCompile::Other((_, version_1))) => {
+                        version_0 == version_1
+                    }
+                    _ => false,
+                };
+
+                if same_value_and_version {
                     let span_combined = if value_0.last_assignment_span == value_1.last_assignment_span {
                         value_0.last_assignment_span
                     } else {

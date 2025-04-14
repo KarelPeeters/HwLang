@@ -414,13 +414,10 @@ fn stack_overflow_diagnostic(parsed: &ParsedDatabase, stack: &Vec<StackEntry>) -
     diag.finish()
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct StackNotEq(usize);
-
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum CompileStackEntry {
     Item(AstRefItem),
-    FunctionCall(Span, StackNotEq),
+    FunctionCall(Span),
     FunctionRun(AstRefItem, Vec<MaybeCompile<TypedIrExpression>>),
 }
 
