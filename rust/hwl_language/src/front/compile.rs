@@ -132,7 +132,11 @@ pub fn compile(
         modules,
         top_module: top_ir_module,
     };
+
+    // TODO add an option to always do this?
+    #[cfg(debug_assertions)]
     db.validate(diags)?;
+
     Ok(db)
 }
 

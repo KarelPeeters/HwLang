@@ -208,9 +208,8 @@ pub fn check_type_contains_compile_value(
     accept_undefined: bool,
 ) -> Result<(), ErrorGuaranteed> {
     let ty_contains_value = target_ty.contains_type(&value.inner.ty(), true);
-    let value_is_undefined = value.inner.contains_undefined();
 
-    if ty_contains_value && (accept_undefined || !value_is_undefined) {
+    if ty_contains_value && (accept_undefined || !value.inner.contains_undefined()) {
         Ok(())
     } else {
         let mut diag = Diagnostic::new("value does not fit in type");

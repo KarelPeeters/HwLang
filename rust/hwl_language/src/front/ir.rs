@@ -244,6 +244,7 @@ pub enum IrTargetStep {
 
 // TODO consider not nesting these, but forcing a pass through a local variable for compound expressions
 //   that should simplify the backends, at the cost of more verbose backend codegen
+// TODO _dropping_ IrExpressions is taking a long time, they should really be stored in an arena per module instead
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrExpression {
     // constants

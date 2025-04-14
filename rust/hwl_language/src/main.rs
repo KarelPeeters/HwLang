@@ -33,6 +33,8 @@ struct Args {
     #[arg(long)]
     only_top: bool,
     #[arg(long)]
+    skip_lower: bool,
+    #[arg(long)]
     keep_main_stack: bool,
 }
 
@@ -61,6 +63,7 @@ fn main_inner(args: Args) -> ExitCode {
         print_files,
         print_ir,
         only_top,
+        skip_lower,
         keep_main_stack: _,
     } = args;
 
@@ -116,17 +119,23 @@ fn main_inner(args: Args) -> ExitCode {
     let time_compile = start_compile.elapsed();
 
     // TODO parallelize lowering?
-    let start_lower = Instant::now();
-    let lowered = compiled
-        .as_ref_ok()
-        .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
-    let time_lower = start_lower.elapsed();
+    let lower_results = if skip_lower {
+        None
+    } else {
+        let start_lower = Instant::now();
+        let lowered = compiled
+            .as_ref_ok()
+            .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
+        let time_lower = start_lower.elapsed();
 
-    let start_simulator = Instant::now();
-    let simulator_code = compiled
-        .as_ref_ok()
-        .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
-    let time_simulator = start_simulator.elapsed();
+        let start_simulator = Instant::now();
+        let simulator_code = compiled
+            .as_ref_ok()
+            .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
+        let time_simulator = start_simulator.elapsed();
+
+        Some((time_lower, time_simulator, lowered, simulator_code))
+    };
 
     let time_all = start_all.elapsed();
 
@@ -142,20 +151,23 @@ fn main_inner(args: Args) -> ExitCode {
         println!("{:#?}", compiled);
     }
 
-    // save lowered verilog
-    std::fs::create_dir_all("ignored").unwrap();
-    std::fs::write(
-        "ignored/lowered.v",
-        lowered.as_ref().map_or(&String::new(), |s| &s.verilog_source),
-    )
-    .unwrap();
+    // TODO don't hardcode paths here
+    if let Some((_, _, lowered, simulator_code)) = &lower_results {
+        // save lowered verilog
+        std::fs::create_dir_all("ignored").unwrap();
+        std::fs::write(
+            "ignored/lowered.v",
+            lowered.as_ref().map_or(&String::new(), |s| &s.verilog_source),
+        )
+        .unwrap();
 
-    // save simulator code
-    std::fs::write(
-        "ignored/simulator.cpp",
-        simulator_code.as_ref().unwrap_or(&String::new()),
-    )
-    .unwrap();
+        // save simulator code
+        std::fs::write(
+            "ignored/simulator.cpp",
+            simulator_code.as_ref().unwrap_or(&String::new()),
+        )
+        .unwrap();
+    }
 
     // print profiling info
     if profile {
@@ -178,8 +190,10 @@ fn main_inner(args: Args) -> ExitCode {
         println!("tokenize:         {:?}", time_tokenize);
         println!("parse + tokenize: {:?}", time_parse);
         println!("compile:          {:?}", time_compile);
-        println!("lower verilog:    {:?}", time_lower);
-        println!("lower c++:        {:?}", time_simulator);
+        if let Some((time_lower, time_simulator, _, _)) = lower_results {
+            println!("lower verilog:    {:?}", time_lower);
+            println!("lower c++:        {:?}", time_simulator);
+        }
         println!("-----------------------------------------------");
         println!("total:            {:?}", time_all);
         println!();
