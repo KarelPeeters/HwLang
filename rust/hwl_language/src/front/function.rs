@@ -372,6 +372,7 @@ impl CapturedScope {
         vars: &VariableValues,
     ) -> Result<CapturedScope, ErrorGuaranteed> {
         // TODO should we build this incrementally, or build a normal hashmap once and then sort it at the end?
+        // it's fine to use a hashmap here, this will be sorted into a BTreeMap later
         let mut child_values = HashMap::new();
 
         let mut curr = scope;

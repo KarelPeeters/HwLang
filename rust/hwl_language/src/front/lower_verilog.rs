@@ -17,10 +17,9 @@ use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
 use crate::util::{Indent, ResultExt};
 use crate::{swrite, swriteln, throw};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use itertools::enumerate;
 use lazy_static::lazy_static;
-use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
 
@@ -90,7 +89,7 @@ struct LoweredModule {
 
 #[derive(Default)]
 struct LoweredNameScope {
-    used: HashSet<String>,
+    used: IndexSet<String>,
 }
 
 impl LoweredNameScope {
@@ -478,7 +477,7 @@ fn lower_module_statements(
 
                 // shadowing is only for writes in the clocked body, we don't care about the resets
                 //   (although typically those should be a subset)
-                let mut written_regs = HashSet::new();
+                let mut written_regs = IndexSet::new();
                 collect_written_registers(clock_block, &mut written_regs);
                 let shadowing_reg_name_map =
                     lower_shadow_registers(diags, module_name_scope, registers, &written_regs, f, &mut newline)?;
@@ -656,7 +655,7 @@ fn lower_shadow_registers(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    written_regs: &HashSet<IrRegister>,
+    written_regs: &IndexSet<IrRegister>,
     f: &mut String,
     newline: &mut NewlineGenerator,
 ) -> Result<IndexMap<IrRegister, LoweredName>, ErrorGuaranteed> {
@@ -691,7 +690,7 @@ fn lower_shadow_registers(
     Ok(shadowing_reg_name_map)
 }
 
-fn collect_written_registers(block: &IrBlock, result: &mut HashSet<IrRegister>) {
+fn collect_written_registers(block: &IrBlock, result: &mut IndexSet<IrRegister>) {
     let IrBlock { statements } = block;
 
     for stmt in statements {
@@ -1131,15 +1130,9 @@ impl Display for LoweredName {
 }
 
 lazy_static! {
+    // TODO also include vhdl keywords and ban both in generated output?
     /// Updated to "IEEE Standard for SystemVerilog", IEEE 1800-2023
-    static ref VERILOG_KEYWORDS: HashSet<&'static str> = {
-        let mut set = HashSet::new();
-        for line in include_str!("verilog_keywords.txt").lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                set.insert(line);
-            }
-        }
-        set
+    static ref VERILOG_KEYWORDS: IndexSet<&'static str> = {
+        include_str!("verilog_keywords.txt").lines().map(str::trim).filter(|line| !line.is_empty()).collect()
     };
 }

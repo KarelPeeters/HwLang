@@ -133,7 +133,7 @@ impl SourceDatabaseBuilder {
         let mut files_ordered = self.files.keys().collect_vec();
         files_ordered.sort_by_key(|&file| &self.directories[self.files[file].directory].path);
 
-        // TODO this is a mess, we're redundantly allocating arenas and hashmaps
+        // TODO this is a mess, we're redundantly allocating arenas and maps
         //   but it's all O(files), so not _that_ bad
         let mut dirs_dummy: Arena<Directory, ()> = Arena::new();
         let mut files_dummy: Arena<FileId, ()> = Arena::new();

@@ -27,6 +27,7 @@ pub type IrModules = Arena<IrModule, IrModuleInfo>;
 // TODO check for circular instantiations
 pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<IrModule> {
     let mut result = vec![];
+    // using a hashmap here is fine, we don't rely on its ordering anywhere
     let mut seen = HashSet::new();
     let mut todo = vec![top];
 
