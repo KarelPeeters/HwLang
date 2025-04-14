@@ -2,7 +2,7 @@ use crate::front::block::TypedIrExpression;
 use crate::front::compile::{ArenaVariables, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrAssignmentTarget, IrStatement, IrVariable, IrVariableInfo};
+use crate::front::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
 use crate::front::misc::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Typed};
 use crate::front::value::MaybeCompile;
@@ -327,6 +327,7 @@ impl ParentKind<'_> {
 pub fn merge_variable_branches<C: ExpressionContext>(
     diags: &Diagnostics,
     ctx: &mut C,
+    large: &mut IrLargeArena,
     variables: &ArenaVariables,
     parent: &mut VariableValues,
     span_merge: Span,
@@ -392,6 +393,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
                     let value_combined = merge_values(
                         diags,
                         ctx,
+                        large,
                         span_merge,
                         &variables[var].id,
                         value_0.as_ref(),
@@ -463,6 +465,7 @@ struct MergedValue {
 fn merge_values<C: ExpressionContext>(
     diags: &Diagnostics,
     ctx: &mut C,
+    large: &mut IrLargeArena,
     span_merge: Span,
     debug_info_id: &MaybeIdentifier,
     value_0: Spanned<&MaybeCompile<TypedIrExpression>>,
@@ -514,8 +517,8 @@ fn merge_values<C: ExpressionContext>(
     })?;
 
     // convert values to common type
-    let value_0 = value_0.inner.as_ir_expression(diags, value_0.span, &ty);
-    let value_1 = value_1.inner.as_ir_expression(diags, value_1.span, &ty);
+    let value_0 = value_0.inner.as_ir_expression(diags, large, value_0.span, &ty);
+    let value_1 = value_1.inner.as_ir_expression(diags, large, value_1.span, &ty);
     let (value_0, value_1) = result_pair(value_0, value_1)?;
 
     // create result variable

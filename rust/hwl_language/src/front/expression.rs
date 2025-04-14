@@ -9,8 +9,8 @@ use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrIntArithmeticOp, IrIntCompareOp,
-    IrStatement, IrVariableInfo,
+    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
+    IrIntCompareOp, IrLargeArena, IrStatement, IrVariableInfo,
 };
 use crate::front::misc::{DomainSignal, Polarized, ScopedEntry, Signal, SignalOrVariable, ValueDomain};
 use crate::front::scope::Scope;
@@ -164,7 +164,7 @@ impl CompileItemContext<'_, '_> {
                                     value: SignalOrVariable::Variable(var),
                                     version,
                                 };
-                                return Ok(apply_implications(ctx, Some(versioned), value.clone()));
+                                return Ok(apply_implications(ctx, &mut self.large, Some(versioned), value.clone()));
                             }
                         },
                         NamedValue::Port(port) => {
@@ -174,7 +174,12 @@ impl CompileItemContext<'_, '_> {
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.signal_versioned(Signal::Port(port));
-                                    Ok(apply_implications(ctx, versioned, port_info.typed_ir_expr()))
+                                    Ok(apply_implications(
+                                        ctx,
+                                        &mut self.large,
+                                        versioned,
+                                        port_info.typed_ir_expr(),
+                                    ))
                                 }
                                 PortDirection::Output => {
                                     Err(diags.report_todo(expr.span, "read back from output port"))
@@ -186,14 +191,24 @@ impl CompileItemContext<'_, '_> {
                             let wire_info = &self.wires[wire];
 
                             let versioned = vars.signal_versioned(Signal::Wire(wire));
-                            return Ok(apply_implications(ctx, versioned, wire_info.typed_ir_expr()));
+                            return Ok(apply_implications(
+                                ctx,
+                                &mut self.large,
+                                versioned,
+                                wire_info.typed_ir_expr(),
+                            ));
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
                             let reg_info = &self.registers[reg];
 
                             let versioned = vars.signal_versioned(Signal::Register(reg));
-                            return Ok(apply_implications(ctx, versioned, reg_info.typed_ir_expr()));
+                            return Ok(apply_implications(
+                                ctx,
+                                &mut self.large,
+                                versioned,
+                                reg_info.typed_ir_expr(),
+                            ));
                         }
                     },
                 }
@@ -310,6 +325,7 @@ impl CompileItemContext<'_, '_> {
 
                 let mut values = vec![];
                 for index_value in iter {
+                    let index_value = index_value.to_maybe_compile(&mut self.large);
                     let index_var =
                         vars.var_new_immutable_init(&mut self.variables, index.clone(), span_keyword, index_value);
 
@@ -329,7 +345,7 @@ impl CompileItemContext<'_, '_> {
                     values.push(value);
                 }
 
-                array_literal_combine_values(diags, expr.span, expected_ty_inner, values)?
+                array_literal_combine_values(diags, &mut self.large, expr.span, expected_ty_inner, values)?
             }
 
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
@@ -344,12 +360,12 @@ impl CompileItemContext<'_, '_> {
                                 start_inc: -v.ty.end_inc,
                                 end_inc: -v.ty.start_inc,
                             };
-                            let result_expr = IrExpression::IntArithmetic(
+                            let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
                                 IrIntArithmeticOp::Sub,
                                 result_range.clone(),
-                                Box::new(IrExpression::Int(BigInt::ZERO)),
-                                Box::new(v.expr),
-                            );
+                                IrExpression::Int(BigInt::ZERO),
+                                v.expr,
+                            ));
 
                             let result = TypedIrExpression {
                                 ty: HardwareType::Int(result_range),
@@ -383,7 +399,7 @@ impl CompileItemContext<'_, '_> {
                             let result = TypedIrExpression {
                                 ty: HardwareType::Bool,
                                 domain: v.domain,
-                                expr: IrExpression::BoolNot(Box::new(v.expr)),
+                                expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.expr)),
                             };
                             let result = MaybeCompile::Other(result);
 
@@ -399,7 +415,7 @@ impl CompileItemContext<'_, '_> {
             &ExpressionKind::BinaryOp(op, ref left, ref right) => {
                 let left = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, left);
                 let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
-                return eval_binary_expression(diags, expr.span, op, left?, right?);
+                return eval_binary_expression(diags, &mut self.large, expr.span, op, left?, right?);
             }
             ExpressionKind::TernarySelect(_, _, _) => {
                 return Err(diags.report_todo(expr.span, "expr kind TernarySelect"))
@@ -509,10 +525,12 @@ impl CompileItemContext<'_, '_> {
                 })?;
 
                 // convert values to hardware
-                let value = value.inner.as_ir_expression(diags, value.span, &ty_hw)?;
+                let value = value
+                    .inner
+                    .as_ir_expression(diags, &mut self.large, value.span, &ty_hw)?;
                 let init = init
                     .as_ref()
-                    .map_inner(|inner| inner.as_hardware_value_or_undefined(diags, init.span, &ty_hw))
+                    .map_inner(|inner| inner.as_hardware_value_or_undefined(diags, &mut self.large, init.span, &ty_hw))
                     .transpose()?;
 
                 // create a register and variable
@@ -581,7 +599,7 @@ impl CompileItemContext<'_, '_> {
             .try_collect_all_vec()?;
 
         // combine into compile or non-compile value
-        array_literal_combine_values(diags, expr_span, expected_ty_inner, values)
+        array_literal_combine_values(diags, &mut self.large, expr_span, expected_ty_inner, values)
     }
 
     fn eval_tuple_literal<C: ExpressionContext>(
@@ -639,7 +657,10 @@ impl CompileItemContext<'_, '_> {
                     diags.report(diag)
                 })?;
 
-                let value_ir = value.inner.as_ir_expression(diags, value.span, &expected_ty_inner_hw)?;
+                let value_ir =
+                    value
+                        .inner
+                        .as_ir_expression(diags, &mut self.large, value.span, &expected_ty_inner_hw)?;
                 result_ty.push(value_ir.ty);
                 result_domain = result_domain.join(&value_ir.domain);
                 result_expr.push(value_ir.expr);
@@ -648,7 +669,7 @@ impl CompileItemContext<'_, '_> {
             MaybeCompile::Other(TypedIrExpression {
                 ty: HardwareType::Tuple(result_ty),
                 domain: result_domain,
-                expr: IrExpression::TupleLiteral(result_expr),
+                expr: self.large.push_expr(IrExpressionLarge::TupleLiteral(result_expr)),
             })
         } else if values
             .iter()
@@ -691,7 +712,7 @@ impl CompileItemContext<'_, '_> {
         let base = base?;
         let steps = ArraySteps::new(steps?);
 
-        steps.apply_to_value(diags, base)
+        steps.apply_to_value(diags, &mut self.large, base)
     }
 
     fn eval_expression_as_array_step<C: ExpressionContext>(
@@ -1217,7 +1238,7 @@ pub enum ForIterator {
 }
 
 impl Iterator for ForIterator {
-    type Item = MaybeCompile<TypedIrExpression>;
+    type Item = MaybeCompile<TypedIrExpression<HardwareType, IrExpressionLarge>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -1246,9 +1267,9 @@ impl Iterator for ForIterator {
                 let index_expr = IrExpression::Int(BigInt::from(next.clone()));
                 *next += 1u8;
 
-                let element_expr = IrExpression::ArrayIndex {
-                    base: Box::new(base_expr.clone()),
-                    index: Box::new(index_expr),
+                let element_expr = IrExpressionLarge::ArrayIndex {
+                    base: base_expr.clone(),
+                    index: index_expr,
                 };
                 Some(MaybeCompile::Other(TypedIrExpression {
                     ty: (*ty_inner).clone(),
@@ -1332,6 +1353,7 @@ fn pair_compile_general<T, C, E>(
 // Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
 pub fn eval_binary_expression(
     diags: &Diagnostics,
+    large: &mut IrLargeArena,
     expr_span: Span,
     op: Spanned<BinaryOp>,
     left: Spanned<ExpressionWithImplications>,
@@ -1344,8 +1366,9 @@ pub fn eval_binary_expression(
         let right = check_type_is_int(diags, op_reason, right);
         Ok((left?, right?))
     };
-    let eval_binary_bool = |op, left, right| eval_binary_bool(diags, op_reason, op, left, right);
-    let eval_binary_int_compare = |op, left, right| eval_binary_int_compare(diags, op_reason, op, left, right);
+    let eval_binary_bool = |large, op, left, right| eval_binary_bool(diags, large, op_reason, op, left, right);
+    let eval_binary_int_compare =
+        |large, op, left, right| eval_binary_int_compare(diags, large, op_reason, op, left, right);
 
     let result_simple: MaybeCompile<_> = match op.inner {
         // (int, int)
@@ -1362,6 +1385,7 @@ pub fn eval_binary_expression(
                     };
                     MaybeCompile::Other(build_binary_int_arithmetic_op(
                         IrIntArithmeticOp::Add,
+                        large,
                         range,
                         left,
                         right,
@@ -1382,6 +1406,7 @@ pub fn eval_binary_expression(
                     };
                     MaybeCompile::Other(build_binary_int_arithmetic_op(
                         IrIntArithmeticOp::Sub,
+                        large,
                         range,
                         left,
                         right,
@@ -1444,10 +1469,12 @@ pub fn eval_binary_expression(
 
                             let left_ty_inner_hw = left_ty_inner.as_hardware_type().unwrap();
                             let result_len = left_len * right_inner;
+                            let result_expr =
+                                IrExpressionLarge::ArrayLiteral(left_ty_inner_hw.as_ir(), result_len.clone(), elements);
                             MaybeCompile::Other(TypedIrExpression {
-                                ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), result_len.clone()),
+                                ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), result_len),
                                 domain: value.domain,
-                                expr: IrExpression::ArrayLiteral(left_ty_inner_hw.as_ir(), result_len, elements),
+                                expr: large.push_expr(result_expr),
                             })
                         }
                     }
@@ -1472,12 +1499,9 @@ pub fn eval_binary_expression(
                                 start_inc: extremes.iter().min().unwrap().clone(),
                                 end_inc: extremes.iter().max().unwrap().clone(),
                             };
-                            MaybeCompile::Other(build_binary_int_arithmetic_op(
-                                IrIntArithmeticOp::Mul,
-                                range,
-                                left,
-                                right,
-                            ))
+                            let result =
+                                build_binary_int_arithmetic_op(IrIntArithmeticOp::Mul, large, range, left, right);
+                            MaybeCompile::Other(result)
                         }
                     }
                 }
@@ -1532,12 +1556,8 @@ pub fn eval_binary_expression(
                         }
                     };
 
-                    MaybeCompile::Other(build_binary_int_arithmetic_op(
-                        IrIntArithmeticOp::Div,
-                        range,
-                        left,
-                        right,
-                    ))
+                    let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Div, large, range, left, right);
+                    MaybeCompile::Other(result)
                 }
             }
         }
@@ -1578,12 +1598,8 @@ pub fn eval_binary_expression(
                         }
                     };
 
-                    MaybeCompile::Other(build_binary_int_arithmetic_op(
-                        IrIntArithmeticOp::Mod,
-                        range,
-                        left,
-                        right,
-                    ))
+                    let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Mod, large, range, left, right);
+                    MaybeCompile::Other(result)
                 }
             }
         }
@@ -1649,29 +1665,30 @@ pub fn eval_binary_expression(
                         start_inc: result_min,
                         end_inc: result_max,
                     };
-                    MaybeCompile::Other(build_binary_int_arithmetic_op(IrIntArithmeticOp::Pow, range, base, exp))
+                    let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Pow, large, range, base, exp);
+                    MaybeCompile::Other(result)
                 }
             }
         }
         // (bool, bool)
         // TODO these should short-circuit, so delay evaluation of right
-        BinaryOp::BoolAnd => return eval_binary_bool(left, right, IrBoolBinaryOp::And),
-        BinaryOp::BoolOr => return eval_binary_bool(left, right, IrBoolBinaryOp::Or),
-        BinaryOp::BoolXor => return eval_binary_bool(left, right, IrBoolBinaryOp::Xor),
+        BinaryOp::BoolAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
+        BinaryOp::BoolOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
+        BinaryOp::BoolXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // (T, T)
-        BinaryOp::CmpEq => return eval_binary_int_compare(left, right, IrIntCompareOp::Eq),
-        BinaryOp::CmpNeq => return eval_binary_int_compare(left, right, IrIntCompareOp::Neq),
-        BinaryOp::CmpLt => return eval_binary_int_compare(left, right, IrIntCompareOp::Lt),
-        BinaryOp::CmpLte => return eval_binary_int_compare(left, right, IrIntCompareOp::Lte),
-        BinaryOp::CmpGt => return eval_binary_int_compare(left, right, IrIntCompareOp::Gt),
-        BinaryOp::CmpGte => return eval_binary_int_compare(left, right, IrIntCompareOp::Gte),
+        BinaryOp::CmpEq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Eq),
+        BinaryOp::CmpNeq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Neq),
+        BinaryOp::CmpLt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lt),
+        BinaryOp::CmpLte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lte),
+        BinaryOp::CmpGt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gt),
+        BinaryOp::CmpGte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gte),
         // (int, range)
         BinaryOp::In => return Err(diags.report_todo(expr_span, "binary op In")),
         // (bool, bool)
         // TODO support boolean arrays
-        BinaryOp::BitAnd => return eval_binary_bool(left, right, IrBoolBinaryOp::And),
-        BinaryOp::BitOr => return eval_binary_bool(left, right, IrBoolBinaryOp::Or),
-        BinaryOp::BitXor => return eval_binary_bool(left, right, IrBoolBinaryOp::Xor),
+        BinaryOp::BitAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
+        BinaryOp::BitOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
+        BinaryOp::BitXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int),
         //   and maybe even negative shift amounts?
         BinaryOp::Shl => return Err(diags.report_todo(expr_span, "binary op Shl")),
@@ -1683,6 +1700,7 @@ pub fn eval_binary_expression(
 
 fn eval_binary_bool(
     diags: &Diagnostics,
+    large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
     left: Spanned<ExpressionWithImplications>,
     right: Spanned<ExpressionWithImplications>,
@@ -1690,6 +1708,7 @@ fn eval_binary_bool(
 ) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
     fn build_bool_gate(
         f: impl Fn(bool) -> bool,
+        large: &mut IrLargeArena,
         inner_eval: ExpressionWithImplications,
         inner_ir: TypedIrExpression<()>,
     ) -> ExpressionWithImplications {
@@ -1704,7 +1723,7 @@ fn eval_binary_bool(
                 value: MaybeCompile::Other(TypedIrExpression {
                     ty: HardwareType::Bool,
                     domain: inner_ir.domain,
-                    expr: IrExpression::BoolNot(Box::new(inner_ir.expr)),
+                    expr: large.push_expr(IrExpressionLarge::BoolNot(inner_ir.expr)),
                 }),
                 value_versioned: None,
                 implications: inner_eval.implications.invert(),
@@ -1727,18 +1746,24 @@ fn eval_binary_bool(
             )))
         }
         // partial compile-time eval
-        (MaybeCompile::Compile(left_value), MaybeCompile::Other(right_value)) => {
-            Ok(build_bool_gate(|b| op.eval(left_value, b), right.inner, right_value))
-        }
-        (MaybeCompile::Other(left_value), MaybeCompile::Compile(right_value)) => {
-            Ok(build_bool_gate(|b| op.eval(b, right_value), left.inner, left_value))
-        }
+        (MaybeCompile::Compile(left_value), MaybeCompile::Other(right_value)) => Ok(build_bool_gate(
+            |b| op.eval(left_value, b),
+            large,
+            right.inner,
+            right_value,
+        )),
+        (MaybeCompile::Other(left_value), MaybeCompile::Compile(right_value)) => Ok(build_bool_gate(
+            |b| op.eval(b, right_value),
+            large,
+            left.inner,
+            left_value,
+        )),
         // full hardware
         (MaybeCompile::Other(left_value), MaybeCompile::Other(right_value)) => {
             let expr = TypedIrExpression {
                 ty: HardwareType::Bool,
                 domain: left_value.domain.join(&right_value.domain),
-                expr: IrExpression::BoolBinary(op, Box::new(left_value.expr), Box::new(right_value.expr)),
+                expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left_value.expr, right_value.expr)),
             };
 
             let implications = match op {
@@ -1764,6 +1789,7 @@ fn eval_binary_bool(
 
 fn eval_binary_int_compare(
     diags: &Diagnostics,
+    large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
     left: Spanned<ExpressionWithImplications>,
     right: Spanned<ExpressionWithImplications>,
@@ -1806,7 +1832,7 @@ fn eval_binary_int_compare(
             let result = TypedIrExpression {
                 ty: HardwareType::Bool,
                 domain: left.inner.domain.join(&right.inner.domain),
-                expr: IrExpression::IntCompare(op, Box::new(left.inner.expr), Box::new(right.inner.expr)),
+                expr: large.push_expr(IrExpressionLarge::IntCompare(op, left.inner.expr, right.inner.expr)),
             };
             let eval = ExpressionWithImplications {
                 value: MaybeCompile::Other(result),
@@ -1820,16 +1846,16 @@ fn eval_binary_int_compare(
 
 fn build_binary_int_arithmetic_op(
     op: IrIntArithmeticOp,
+    large: &mut IrLargeArena,
     range: ClosedIncRange<BigInt>,
     left: Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
     right: Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>,
 ) -> TypedIrExpression {
-    let result_expr =
-        IrExpression::IntArithmetic(op, range.clone(), Box::new(left.inner.expr), Box::new(right.inner.expr));
+    let result_expr = IrExpressionLarge::IntArithmetic(op, range.clone(), left.inner.expr, right.inner.expr);
     TypedIrExpression {
         ty: HardwareType::Int(range),
         domain: left.inner.domain.join(&right.inner.domain),
-        expr: result_expr,
+        expr: large.push_expr(result_expr),
     }
 }
 
@@ -1907,6 +1933,7 @@ fn implications_eq(
 
 fn apply_implications<C: ExpressionContext>(
     ctx: &C,
+    large: &mut IrLargeArena,
     versioned: Option<ValueVersioned>,
     expr_raw: TypedIrExpression,
 ) -> ExpressionWithImplications {
@@ -1929,10 +1956,11 @@ fn apply_implications<C: ExpressionContext>(
                 if &range == ty {
                     expr_raw
                 } else {
+                    let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), expr_raw.expr);
                     TypedIrExpression {
-                        ty: HardwareType::Int(range.clone()),
+                        ty: HardwareType::Int(range),
                         domain: expr_raw.domain,
-                        expr: IrExpression::ConstrainIntRange(range, Box::new(expr_raw.expr)),
+                        expr: large.push_expr(expr_constr),
                     }
                 }
             }
@@ -1950,6 +1978,7 @@ fn apply_implications<C: ExpressionContext>(
 
 fn array_literal_combine_values(
     diags: &Diagnostics,
+    large: &mut IrLargeArena,
     expr_span: Span,
     expected_ty_inner: &Type,
     values: Vec<ArrayLiteralElement<Spanned<MaybeCompile<TypedIrExpression>>>>,
@@ -1980,9 +2009,10 @@ fn array_literal_combine_values(
         for elem in values {
             let (elem_ir, domain, elem_len) = match elem {
                 ArrayLiteralElement::Single(elem_inner) => {
-                    let value_ir = elem_inner
-                        .inner
-                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
+                    let value_ir =
+                        elem_inner
+                            .inner
+                            .as_ir_expression(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
 
                     check_type_contains_value(
                         diags,
@@ -2003,9 +2033,10 @@ fn array_literal_combine_values(
                     )
                 }
                 ArrayLiteralElement::Spread(_, elem_inner) => {
-                    let value_ir = elem_inner
-                        .inner
-                        .as_ir_expression(diags, elem_inner.span, &expected_ty_inner_hw)?;
+                    let value_ir =
+                        elem_inner
+                            .inner
+                            .as_ir_expression(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
 
                     let len = match value_ir.ty() {
                         Type::Array(_, len) => len,
@@ -2032,11 +2063,12 @@ fn array_literal_combine_values(
             result_len += elem_len;
         }
 
-        let result_expr = IrExpression::ArrayLiteral(expected_ty_inner_hw.as_ir(), result_len.clone(), result_exprs);
+        let result_expr =
+            IrExpressionLarge::ArrayLiteral(expected_ty_inner_hw.as_ir(), result_len.clone(), result_exprs);
         Ok(MaybeCompile::Other(TypedIrExpression {
             ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
             domain: result_domain,
-            expr: result_expr,
+            expr: large.push_expr(result_expr),
         }))
     } else {
         // all compile, create compile value

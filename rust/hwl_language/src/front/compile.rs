@@ -1,7 +1,10 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrDatabase, IrExpression, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister, IrWire};
+use crate::front::ir::{
+    IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
+    IrWire,
+};
 use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
 use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
 use crate::front::scope::Scope;
@@ -278,6 +281,7 @@ pub struct CompileItemContext<'a, 's> {
     pub ports: ArenaPorts,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
+    pub large: IrLargeArena,
 
     pub origin: Option<AstRefItem>,
     pub stack: Vec<StackEntry>,
@@ -319,6 +323,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
             ports,
             wires: Arena::new(),
             registers: Arena::new(),
+            large: IrLargeArena::new(),
             origin,
             stack: vec![],
         }
@@ -724,7 +729,7 @@ impl CompileShared {
 
 // TODO move somewhere else
 impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&self, signal: DomainSignal) -> IrExpression {
+    pub fn domain_signal_to_ir(&mut self, signal: DomainSignal) -> IrExpression {
         let Polarized { inverted, signal } = signal;
         let inner = match signal {
             Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
@@ -732,7 +737,7 @@ impl CompileItemContext<'_, '_> {
             Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
         };
         if inverted {
-            IrExpression::BoolNot(Box::new(inner))
+            self.large.push_expr(IrExpressionLarge::BoolNot(inner))
         } else {
             inner
         }

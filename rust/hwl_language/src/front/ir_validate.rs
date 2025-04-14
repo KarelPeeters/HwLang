@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrClockedProcess, IrDatabase,
-    IrExpression, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep,
-    IrType, IrVariables, IrWireOrPort,
+    IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo,
+    IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -184,44 +184,52 @@ impl IrExpression {
         locals: &IrVariables,
         span: Span,
     ) -> Result<(), ErrorGuaranteed> {
+        let large = &module.large;
+
         // validate operands
         let mut any_err = Ok(());
-        self.for_each_expression_operand(&mut |op| any_err = any_err.and(op.validate(diags, module, locals, span)));
+        self.for_each_expression_operand(large, &mut |op| {
+            any_err = any_err.and(op.validate(diags, module, locals, span))
+        });
         any_err?;
 
         // validate self
         match self {
-            IrExpression::TupleLiteral(_) => {}
-            IrExpression::ArrayLiteral(inner_ty, len, values) => {
-                let mut actual_len = BigUint::ZERO;
-                for value in values {
-                    match value {
-                        IrArrayLiteralElement::Single(value) => {
-                            let value_ty = value.ty(module, locals);
-                            check_type_match(diags, span, inner_ty, &value_ty)?;
-                            actual_len += 1u32;
-                        }
-                        IrArrayLiteralElement::Spread(value) => {
-                            let value_ty = value.ty(module, locals);
-                            let len = match value.ty(module, locals) {
-                                IrType::Array(_, len) => len,
-                                _ => unreachable!(),
-                            };
-                            check_type_match(
-                                diags,
-                                span,
-                                &IrType::Array(Box::new(inner_ty.clone()), len.clone()),
-                                &value_ty,
-                            )?;
-                            actual_len += len;
+            &IrExpression::Large(expr) => match &large[expr] {
+                IrExpressionLarge::ArrayLiteral(inner_ty, len, values) => {
+                    let mut actual_len = BigUint::ZERO;
+                    for value in values {
+                        match value {
+                            IrArrayLiteralElement::Single(value) => {
+                                let value_ty = value.ty(module, locals);
+                                check_type_match(diags, span, inner_ty, &value_ty)?;
+                                actual_len += 1u32;
+                            }
+                            IrArrayLiteralElement::Spread(value) => {
+                                let value_ty = value.ty(module, locals);
+                                let len = match value.ty(module, locals) {
+                                    IrType::Array(_, len) => len,
+                                    _ => unreachable!(),
+                                };
+                                check_type_match(
+                                    diags,
+                                    span,
+                                    &IrType::Array(Box::new(inner_ty.clone()), len.clone()),
+                                    &value_ty,
+                                )?;
+                                actual_len += len;
+                            }
                         }
                     }
+                    if &actual_len != len {
+                        let msg = format!("array literal length mismatch: expected {} but got {}", len, actual_len);
+                        return Err(diags.report_internal_error(span, msg));
+                    }
                 }
-                if &actual_len != len {
-                    let msg = format!("array literal length mismatch: expected {} but got {}", len, actual_len);
-                    return Err(diags.report_internal_error(span, msg));
-                }
-            }
+                // TODO expand
+                _ => {}
+            },
+            // TODO expand
             _ => {}
         }
 

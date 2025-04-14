@@ -2,7 +2,7 @@ use crate::front::block::TypedIrExpression;
 use crate::front::compile::{Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::function::FunctionValue;
-use crate::front::ir::{IrArrayLiteralElement, IrExpression};
+use crate::front::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::syntax::parsed::AstRefModule;
@@ -115,19 +115,20 @@ impl CompileValue {
         }
     }
 
-    pub fn try_as_hardware_value(&self, ty: &HardwareType) -> HardwareValueResult {
+    pub fn try_as_hardware_value(&self, large: &mut IrLargeArena, ty: &HardwareType) -> HardwareValueResult {
         fn map_array<'t, E>(
+            large: &mut IrLargeArena,
             values: &[CompileValue],
             t: impl Fn(usize) -> &'t HardwareType,
             e: impl Fn(IrExpression) -> E,
-            f: impl FnOnce(Vec<E>) -> IrExpression,
+            f: impl FnOnce(Vec<E>) -> IrExpressionLarge,
         ) -> HardwareValueResult {
             let mut hardware_values = vec![];
             let mut all_undefined = true;
             let mut any_undefined = false;
 
             for (i, value) in enumerate(values) {
-                match value.try_as_hardware_value(t(i)) {
+                match value.try_as_hardware_value(large, t(i)) {
                     HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
                     HardwareValueResult::Success(v) => {
                         all_undefined = false;
@@ -146,11 +147,11 @@ impl CompileValue {
                 (true, false) => HardwareValueResult::PartiallyUndefined,
                 (false, false) => {
                     assert_eq!(hardware_values.len(), values.len());
-                    HardwareValueResult::Success(f(hardware_values))
+                    HardwareValueResult::Success(large.push_expr(f(hardware_values)))
                 }
                 (false, true) => {
                     assert!(hardware_values.is_empty());
-                    HardwareValueResult::Success(f(vec![]))
+                    HardwareValueResult::Success(large.push_expr(f(vec![])))
                 }
             }
         }
@@ -164,7 +165,7 @@ impl CompileValue {
                     let expr = if ty.start_inc == ty.end_inc {
                         expr
                     } else {
-                        IrExpression::ExpandIntRange(ty.clone(), Box::new(expr))
+                        large.push_expr(IrExpressionLarge::ExpandIntRange(ty.clone(), expr))
                     };
                     HardwareValueResult::Success(expr)
                 }
@@ -172,16 +173,17 @@ impl CompileValue {
             },
             CompileValue::Tuple(values) => match ty {
                 HardwareType::Tuple(tys) if tys.len() == values.len() => {
-                    map_array(values, |i| &tys[i], identity, IrExpression::TupleLiteral)
+                    map_array(large, values, |i| &tys[i], identity, IrExpressionLarge::TupleLiteral)
                 }
                 _ => HardwareValueResult::InvalidType,
             },
             CompileValue::Array(values) => match ty {
                 HardwareType::Array(inner_ty, len) if len == &BigUint::from(values.len()) => map_array(
+                    large,
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,
-                    |e| IrExpression::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
+                    |e| IrExpressionLarge::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
                 ),
                 _ => HardwareValueResult::InvalidType,
             },
@@ -196,10 +198,11 @@ impl CompileValue {
     pub fn as_hardware_value_or_undefined(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<IrExpression>, ErrorGuaranteed> {
-        match self.try_as_hardware_value(ty_hw) {
+        match self.try_as_hardware_value(large, ty_hw) {
             HardwareValueResult::Success(v) => Ok(MaybeUndefined::Defined(v)),
             HardwareValueResult::Undefined => Ok(MaybeUndefined::Undefined),
             HardwareValueResult::PartiallyUndefined => Err(diags.report_todo(span, "partially undefined values")),
@@ -226,10 +229,11 @@ impl CompileValue {
     pub fn as_ir_expression_or_undefined(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<TypedIrExpression>, ErrorGuaranteed> {
-        let hw_value = self.as_hardware_value_or_undefined(diags, span, ty_hw)?;
+        let hw_value = self.as_hardware_value_or_undefined(diags, large, span, ty_hw)?;
         let typed_expr = hw_value.map_inner(|expr| TypedIrExpression {
             ty: ty_hw.clone(),
             domain: ValueDomain::CompileTime,
@@ -241,10 +245,11 @@ impl CompileValue {
     pub fn as_ir_expression(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
-        match self.as_ir_expression_or_undefined(diags, span, ty_hw)? {
+        match self.as_ir_expression_or_undefined(diags, large, span, ty_hw)? {
             MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
             MaybeUndefined::Undefined => Err(diags.report_simple(
                 "undefined values are not allowed here",
@@ -326,12 +331,26 @@ impl MaybeCompile<TypedIrExpression> {
     pub fn as_ir_expression(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
     ) -> Result<TypedIrExpression, ErrorGuaranteed> {
         match self {
-            MaybeCompile::Compile(v) => v.as_ir_expression(diags, span, ty),
-            MaybeCompile::Other(v) => Ok(v.clone().soft_expand_to_type(ty)),
+            MaybeCompile::Compile(v) => v.as_ir_expression(diags, large, span, ty),
+            MaybeCompile::Other(v) => Ok(v.clone().soft_expand_to_type(large, ty)),
+        }
+    }
+}
+
+impl MaybeCompile<TypedIrExpression<HardwareType, IrExpressionLarge>> {
+    pub fn to_maybe_compile(self, large: &mut IrLargeArena) -> MaybeCompile<TypedIrExpression> {
+        match self {
+            MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
+            MaybeCompile::Other(v) => MaybeCompile::Other(TypedIrExpression {
+                ty: v.ty,
+                domain: v.domain,
+                expr: large.push_expr(v.expr),
+            }),
         }
     }
 }

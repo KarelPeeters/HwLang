@@ -124,11 +124,15 @@ impl CompileItemContext<'_, '_> {
             Some(op_inner) => {
                 // TODO apply implications
                 let target_base_eval = target_base_signal.as_ir_expression(self);
-                let target_eval = target_steps
-                    .apply_to_value(diags, Spanned::new(target.span, MaybeCompile::Other(target_base_eval)))?;
+                let target_eval = target_steps.apply_to_value(
+                    diags,
+                    &mut self.large,
+                    Spanned::new(target.span, MaybeCompile::Other(target_base_eval)),
+                )?;
 
                 let value_eval = eval_binary_expression(
                     diags,
+                    &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
                     Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
@@ -156,7 +160,9 @@ impl CompileItemContext<'_, '_> {
         check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref(), true, false)?;
 
         // convert value to hardware
-        let value_ir = value.inner.as_ir_expression(diags, value.span, &target_ty)?;
+        let value_ir = value
+            .inner
+            .as_ir_expression(diags, &mut self.large, value.span, &target_ty)?;
 
         // check domains
         let value_domain = Spanned {
@@ -193,7 +199,7 @@ impl CompileItemContext<'_, '_> {
     }
 
     fn elaborate_variable_assignment<C: ExpressionContext>(
-        &self,
+        &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
         vars: &mut VariableValues,
@@ -235,6 +241,7 @@ impl CompileItemContext<'_, '_> {
                     );
                     let value_eval = eval_binary_expression(
                         diags,
+                        &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         target_eval,
@@ -289,9 +296,10 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = target_steps.apply_to_value(diags, target_base_eval.clone())?;
+                    let target_eval = target_steps.apply_to_value(diags, &mut self.large, target_base_eval.clone())?;
                     let value_eval = eval_binary_expression(
                         diags,
+                        &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
@@ -326,7 +334,9 @@ impl CompileItemContext<'_, '_> {
             check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref(), true, false)?;
 
             // do the current assignment
-            let value_ir = value.inner.as_ir_expression(diags, value.span, &target_inner_ty)?;
+            let value_ir = value
+                .inner
+                .as_ir_expression(diags, &mut self.large, value.span, &target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
                 base: IrAssignmentTargetBase::Variable(target_base_ir_var),
                 steps: target_steps_ir,
@@ -354,9 +364,11 @@ impl CompileItemContext<'_, '_> {
             let value_eval = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = target_steps.get_compile_value(diags, target_base_eval.clone())?;
+                    let target_eval =
+                        target_steps.get_compile_value(diags, &mut self.large, target_base_eval.clone())?;
                     let value = eval_binary_expression(
                         diags,
+                        &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         Spanned::new(
@@ -399,7 +411,7 @@ impl CompileItemContext<'_, '_> {
     }
 
     fn convert_variable_to_new_ir_variable<C: ExpressionContext>(
-        &self,
+        &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
         target_span: Span,
@@ -435,7 +447,8 @@ impl CompileItemContext<'_, '_> {
             diags.report(diag)
         })?;
 
-        let target_base_ir_expr = target_base_eval.as_ir_expression(diags, target_base_span, &target_base_ty_hw)?;
+        let target_base_ir_expr =
+            target_base_eval.as_ir_expression(diags, &mut self.large, target_base_span, &target_base_ty_hw)?;
         let result = store_ir_expression_in_new_variable(
             diags,
             ctx,

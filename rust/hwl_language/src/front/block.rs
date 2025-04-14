@@ -4,7 +4,7 @@ use crate::front::compile::{CompileItemContext, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::expression::ForIterator;
-use crate::front::ir::{IrExpression, IrIfStatement, IrStatement, IrVariable};
+use crate::front::ir::{IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement, IrVariable};
 use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type, Typed};
@@ -44,14 +44,14 @@ impl<T> TypedIrExpression<T, IrVariable> {
 }
 
 impl TypedIrExpression {
-    pub fn soft_expand_to_type(self, ty: &HardwareType) -> Self {
+    pub fn soft_expand_to_type(self, large: &mut IrLargeArena, ty: &HardwareType) -> Self {
         match (&self.ty, ty) {
             (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
                 if target != expr_ty && target.contains_range(expr_ty) {
                     TypedIrExpression {
                         ty: HardwareType::Int(target.clone()),
                         domain: self.domain,
-                        expr: IrExpression::ExpandIntRange(target.clone(), Box::new(self.expr)),
+                        expr: large.push_expr(IrExpressionLarge::ExpandIntRange(target.clone(), self.expr)),
                     }
                 } else {
                     self
@@ -498,6 +498,7 @@ impl CompileItemContext<'_, '_> {
                 merge_variable_branches(
                     diags,
                     ctx,
+                    &mut self.large,
                     &self.variables,
                     vars,
                     span_if,
@@ -583,6 +584,7 @@ impl CompileItemContext<'_, '_> {
         // run the actual loop
         for index_value in iter {
             self.refs.check_should_stop(span_keyword)?;
+            let index_value = index_value.to_maybe_compile(&mut self.large);
 
             // typecheck index
             // TODO we can also this this once at the start instead, but that's slightly less flexible

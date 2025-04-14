@@ -186,7 +186,7 @@ impl CompileRefs<'_, '_> {
         let scope_params = rebuild_params_scope(&mut ctx.variables, &mut vars, file_scope, def_span, &params);
         let scope_ports = rebuild_ports_scope(&scope_params, def_span, &ctx.ports);
 
-        self.elaborate_module_body_impl(&mut ctx, &vars, &scope_ports, id, params.clone(), ports_ir, body)
+        self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, params.clone(), ports_ir, body)
     }
 
     fn elaborate_module_ports_impl<'p>(
@@ -299,7 +299,7 @@ impl CompileRefs<'_, '_> {
 
     fn elaborate_module_body_impl(
         &self,
-        ctx_item: &mut CompileItemContext,
+        mut ctx_item: CompileItemContext,
         vars: &VariableValues,
         scope_header: &Scope,
         def_id: &MaybeIdentifier,
@@ -315,7 +315,7 @@ impl CompileRefs<'_, '_> {
         }
 
         let mut ctx = BodyElaborationContext {
-            ctx: ctx_item,
+            ctx: &mut ctx_item,
             ir_ports,
             ir_wires: Arena::new(),
             ir_registers: Arena::new(),
@@ -383,6 +383,7 @@ impl CompileRefs<'_, '_> {
             ports: ctx.ir_ports,
             registers: ctx.ir_registers,
             wires: ctx.ir_wires,
+            large: ctx_item.large,
             children: processes,
             debug_info_id: def_id.clone(),
             debug_info_generic_args: params,
@@ -542,7 +543,7 @@ struct ChildClockedProcess {
 }
 
 impl ChildClockedProcess {
-    pub fn finish(self, ctx: &CompileItemContext) -> IrClockedProcess {
+    pub fn finish(self, ctx: &mut CompileItemContext) -> IrClockedProcess {
         let ChildClockedProcess {
             locals,
             clock_signal,
@@ -1037,6 +1038,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         // TODO allow break?
         for index_value in iter {
             self.ctx.refs.check_should_stop(span_keyword)?;
+            let index_value = index_value.to_maybe_compile(&mut self.ctx.large);
 
             if let Some(index_ty) = &index_ty {
                 let index_value_spanned = Spanned::new(iter_span, &index_value);
@@ -1286,37 +1288,43 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // convert value to ir
                 let connection_value_ir_raw = connection_value
                     .as_ref()
-                    .map_inner(|v| Ok(v.as_ir_expression(diags, connection_expr.span, &port_ty_hw.inner)?.expr))
+                    .map_inner(|v| {
+                        Ok(
+                            v.as_ir_expression(diags, &mut self.ctx.large, connection_expr.span, &port_ty_hw.inner)?
+                                .expr,
+                        )
+                    })
                     .transpose()?;
 
                 // build extra wire and process if necessary
-                let connection_value_ir =
-                    if !ctx_block.statements.is_empty() || connection_value_ir_raw.inner.contains_variable() {
-                        let extra_ir_wire = self.ir_wires.push(IrWireInfo {
-                            ty: port_ty_hw.inner.as_ir(),
-                            debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
-                            debug_info_ty: port_ty_hw.inner.clone(),
-                            debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
-                        });
+                let connection_value_ir = if !ctx_block.statements.is_empty()
+                    || connection_value_ir_raw.inner.contains_variable(&self.ctx.large)
+                {
+                    let extra_ir_wire = self.ir_wires.push(IrWireInfo {
+                        ty: port_ty_hw.inner.as_ir(),
+                        debug_info_id: MaybeIdentifier::Identifier(port_id.clone()),
+                        debug_info_ty: port_ty_hw.inner.clone(),
+                        debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
+                    });
 
-                        ctx_block.statements.push(Spanned {
-                            span: connection.span,
-                            inner: IrStatement::Assign(
-                                IrAssignmentTarget::wire(extra_ir_wire),
-                                connection_value_ir_raw.inner,
-                            ),
-                        });
-                        let process = IrCombinatorialProcess {
-                            locals: ctx.finish(),
-                            block: ctx_block,
-                        };
-                        self.children
-                            .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
-
-                        IrExpression::Wire(extra_ir_wire)
-                    } else {
-                        connection_value_ir_raw.inner
+                    ctx_block.statements.push(Spanned {
+                        span: connection.span,
+                        inner: IrStatement::Assign(
+                            IrAssignmentTarget::wire(extra_ir_wire),
+                            connection_value_ir_raw.inner,
+                        ),
+                    });
+                    let process = IrCombinatorialProcess {
+                        locals: ctx.finish(),
+                        block: ctx_block,
                     };
+                    self.children
+                        .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
+
+                    IrExpression::Wire(extra_ir_wire)
+                } else {
+                    connection_value_ir_raw.inner
+                };
 
                 IrPortConnection::Input(Spanned {
                     span: connection_expr.span,
@@ -1636,7 +1644,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // convert to IR
                 let value_ir = value
                     .as_ref()
-                    .map_inner(|value_inner| value_inner.as_ir_expression(diags, value.span, &ty.inner))
+                    .map_inner(|value_inner| value_inner.as_ir_expression(diags, &mut ctx.large, value.span, &ty.inner))
                     .transpose()?;
                 Ok((value_ir, process_locals, process_block))
             })
@@ -1942,7 +1950,7 @@ fn report_assignment_internal_error<'a>(
 }
 
 fn pull_register_init_into_process(
-    ctx: &CompileItemContext,
+    ctx: &mut CompileItemContext,
     clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
     children: &mut Vec<Result<Child, ErrorGuaranteed>>,
     register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
@@ -1958,9 +1966,12 @@ fn pull_register_init_into_process(
             if let Child::Clocked(process) = &mut children[process_index].as_ref_mut_ok()? {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
-                    let init_ir = init
-                        .inner
-                        .as_hardware_value_or_undefined(diags, init.span, &reg_info.ty.inner)?;
+                    let init_ir = init.inner.as_hardware_value_or_undefined(
+                        diags,
+                        &mut ctx.large,
+                        init.span,
+                        &reg_info.ty.inner,
+                    )?;
 
                     match init_ir {
                         MaybeUndefined::Undefined => {

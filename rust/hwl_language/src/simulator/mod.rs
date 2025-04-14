@@ -1,10 +1,10 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
-    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort, IrPortConnection,
-    IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables,
-    IrWire, IrWireInfo, IrWireOrPort,
+    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
+    IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
+    IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
@@ -55,6 +55,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         ports,
         registers,
         wires,
+        large: _,
         children,
         debug_info_id: _,
         debug_info_generic_args: _,
@@ -375,109 +376,111 @@ impl CodegenBlockContext<'_> {
                 Evaluated::Inline(format!("{stage_read}_signals.{name}"))
             }
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
-            IrExpression::BoolNot(inner) => {
-                let inner_eval = self.eval(span, inner, stage_read)?;
-                Evaluated::Inline(format!("!({inner_eval})"))
-            }
-            IrExpression::BoolBinary(op, left, right) => {
-                let op_str = match op {
-                    IrBoolBinaryOp::And => "&",
-                    IrBoolBinaryOp::Or => "|",
-                    IrBoolBinaryOp::Xor => "^",
-                };
-                let left_eval = self.eval(span, left, stage_read)?;
-                let right_eval = self.eval(span, right, stage_read)?;
-                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
-            }
-            IrExpression::IntArithmetic(op, _ty, left, right) => {
-                // TODO types are  wrong
-                let op_str = match op {
-                    IrIntArithmeticOp::Add => "+",
-                    IrIntArithmeticOp::Sub => "-",
-                    IrIntArithmeticOp::Mul => "*",
-                    IrIntArithmeticOp::Div => "/",
-                    IrIntArithmeticOp::Mod => "%",
-                    IrIntArithmeticOp::Pow => return Err(todo("codegen power operator")),
-                };
-                let left_eval = self.eval(span, left, stage_read)?;
-                let right_eval = self.eval(span, right, stage_read)?;
-                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
-            }
-            IrExpression::IntCompare(op, left, right) => {
-                // TODO types are  wrong
-                let op_str = match op {
-                    IrIntCompareOp::Eq => "==",
-                    IrIntCompareOp::Neq => "!=",
-                    IrIntCompareOp::Lt => "<",
-                    IrIntCompareOp::Lte => "<=",
-                    IrIntCompareOp::Gt => ">",
-                    IrIntCompareOp::Gte => ">=",
-                };
-                let left_eval = self.eval(span, left, stage_read)?;
-                let right_eval = self.eval(span, right, stage_read)?;
-                Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
-            }
-
-            IrExpression::TupleLiteral(_) => return Err(todo("TupleLiteral")),
-            IrExpression::ArrayLiteral(inner_ty, len, elements) => {
-                let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
-                let tmp_result = self.new_temporary();
-
-                swriteln!(self.f, "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",);
-
-                let mut offset = BigUint::ZERO;
-                for element in elements {
-                    match element {
-                        IrArrayLiteralElement::Single(value) => {
-                            let value_eval = self.eval(span, value, stage_read)?;
-                            swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
-                            offset += 1u32;
-                        }
-                        IrArrayLiteralElement::Spread(value) => {
-                            let value_eval = self.eval(span, value, stage_read)?;
-                            let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
-                            swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
-                            offset += element_len;
-                        }
-                    }
+            &IrExpression::Large(expr_large) => match &self.module_info.large[expr_large] {
+                IrExpressionLarge::BoolNot(inner) => {
+                    let inner_eval = self.eval(span, inner, stage_read)?;
+                    Evaluated::Inline(format!("!({inner_eval})"))
+                }
+                IrExpressionLarge::BoolBinary(op, left, right) => {
+                    let op_str = match op {
+                        IrBoolBinaryOp::And => "&",
+                        IrBoolBinaryOp::Or => "|",
+                        IrBoolBinaryOp::Xor => "^",
+                    };
+                    let left_eval = self.eval(span, left, stage_read)?;
+                    let right_eval = self.eval(span, right, stage_read)?;
+                    Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+                }
+                IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
+                    // TODO types are  wrong
+                    let op_str = match op {
+                        IrIntArithmeticOp::Add => "+",
+                        IrIntArithmeticOp::Sub => "-",
+                        IrIntArithmeticOp::Mul => "*",
+                        IrIntArithmeticOp::Div => "/",
+                        IrIntArithmeticOp::Mod => "%",
+                        IrIntArithmeticOp::Pow => return Err(todo("codegen power operator")),
+                    };
+                    let left_eval = self.eval(span, left, stage_read)?;
+                    let right_eval = self.eval(span, right, stage_read)?;
+                    Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+                }
+                IrExpressionLarge::IntCompare(op, left, right) => {
+                    // TODO types are  wrong
+                    let op_str = match op {
+                        IrIntCompareOp::Eq => "==",
+                        IrIntCompareOp::Neq => "!=",
+                        IrIntCompareOp::Lt => "<",
+                        IrIntCompareOp::Lte => "<=",
+                        IrIntCompareOp::Gt => ">",
+                        IrIntCompareOp::Gte => ">=",
+                    };
+                    let left_eval = self.eval(span, left, stage_read)?;
+                    let right_eval = self.eval(span, right, stage_read)?;
+                    Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
 
-                Evaluated::Temporary(tmp_result)
-            }
+                IrExpressionLarge::TupleLiteral(_) => return Err(todo("TupleLiteral")),
+                IrExpressionLarge::ArrayLiteral(inner_ty, len, elements) => {
+                    let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
+                    let tmp_result = self.new_temporary();
 
-            IrExpression::ArrayIndex { base, index } => {
-                let base_eval = self.eval(span, base, stage_read)?;
-                let index_eval = self.eval(span, index, stage_read)?;
-                Evaluated::Inline(format!("{base_eval}[{index_eval}]"))
-            }
-            IrExpression::ArraySlice { base, start, len } => {
-                let base_eval = self.eval(span, base, stage_read)?;
-                let start_eval = self.eval(span, start, stage_read)?;
+                    swriteln!(self.f, "{indent}std::array<{inner_ty_str}, {len}> {tmp_result};",);
 
-                let tmp_result = self.new_temporary();
-                let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+                    let mut offset = BigUint::ZERO;
+                    for element in elements {
+                        match element {
+                            IrArrayLiteralElement::Single(value) => {
+                                let value_eval = self.eval(span, value, stage_read)?;
+                                swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
+                                offset += 1u32;
+                            }
+                            IrArrayLiteralElement::Spread(value) => {
+                                let value_eval = self.eval(span, value, stage_read)?;
+                                let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
+                                swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
+                                offset += element_len;
+                            }
+                        }
+                    }
 
-                swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
-                swriteln!(
-                    self.f,
-                    "{indent}std::copy_n({base_eval}.begin() + {start_eval}, {len}, {tmp_result}.begin());"
-                );
+                    Evaluated::Temporary(tmp_result)
+                }
 
-                Evaluated::Temporary(tmp_result)
-            }
+                IrExpressionLarge::ArrayIndex { base, index } => {
+                    let base_eval = self.eval(span, base, stage_read)?;
+                    let index_eval = self.eval(span, index, stage_read)?;
+                    Evaluated::Inline(format!("{base_eval}[{index_eval}]"))
+                }
+                IrExpressionLarge::ArraySlice { base, start, len } => {
+                    let base_eval = self.eval(span, base, stage_read)?;
+                    let start_eval = self.eval(span, start, stage_read)?;
 
-            IrExpression::IntToBits(_, _) => return Err(todo("IntToBits")),
-            IrExpression::IntFromBits(_, _) => return Err(todo("IntFromBits")),
-            IrExpression::ExpandIntRange(range, inner) => {
-                // check that result is still representable
-                let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
-                self.eval(span, inner, stage_read)?
-            }
-            IrExpression::ConstrainIntRange(range, inner) => {
-                // check that result is still representable
-                let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
-                self.eval(span, inner, stage_read)?
-            }
+                    let tmp_result = self.new_temporary();
+                    let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+
+                    swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
+                    swriteln!(
+                        self.f,
+                        "{indent}std::copy_n({base_eval}.begin() + {start_eval}, {len}, {tmp_result}.begin());"
+                    );
+
+                    Evaluated::Temporary(tmp_result)
+                }
+
+                IrExpressionLarge::IntToBits(_, _) => return Err(todo("IntToBits")),
+                IrExpressionLarge::IntFromBits(_, _) => return Err(todo("IntFromBits")),
+                IrExpressionLarge::ExpandIntRange(range, inner) => {
+                    // check that result is still representable
+                    let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
+                    self.eval(span, inner, stage_read)?
+                }
+                IrExpressionLarge::ConstrainIntRange(range, inner) => {
+                    // check that result is still representable
+                    let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
+                    self.eval(span, inner, stage_read)?
+                }
+            },
         };
         Ok(result)
     }

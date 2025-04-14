@@ -1,6 +1,6 @@
 use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrExpression, IrTargetStep};
+use crate::front::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
 use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeCompile};
@@ -177,6 +177,7 @@ impl ArraySteps<ArrayStep> {
     pub fn apply_to_value(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         value: Spanned<MaybeCompile<TypedIrExpression>>,
     ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
         let ArraySteps { steps } = self;
@@ -232,7 +233,7 @@ impl ArraySteps<ArrayStep> {
                             .finish();
                         diags.report(diag)
                     })?;
-                    let curr_inner = curr_inner.as_ir_expression(diags, curr.span, &ty)?;
+                    let curr_inner = curr_inner.as_ir_expression(diags, large, curr.span, &ty)?;
                     let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
                         HardwareType::Array(curr_array_inner_ty, curr_array_len) => {
                             (curr_array_inner_ty, curr_array_len)
@@ -255,9 +256,9 @@ impl ArraySteps<ArrayStep> {
                                 curr_array_len.as_ref(),
                             )?;
                             (
-                                IrExpression::ArrayIndex {
-                                    base: Box::new(curr_inner.expr),
-                                    index: Box::new(IrExpression::Int(index.clone())),
+                                IrExpressionLarge::ArrayIndex {
+                                    base: curr_inner.expr,
+                                    index: IrExpression::Int(index.clone()),
                                 },
                                 ValueDomain::CompileTime,
                                 None,
@@ -271,9 +272,9 @@ impl ArraySteps<ArrayStep> {
                                 curr_array_len.as_ref(),
                             )?;
                             (
-                                IrExpression::ArraySlice {
-                                    base: Box::new(curr_inner.expr),
-                                    start: Box::new(IrExpression::Int(start.clone())),
+                                IrExpressionLarge::ArraySlice {
+                                    base: curr_inner.expr,
+                                    start: IrExpression::Int(start.clone()),
                                     len: len.clone(),
                                 },
                                 ValueDomain::CompileTime,
@@ -287,9 +288,9 @@ impl ArraySteps<ArrayStep> {
                                 curr_array_len.as_ref(),
                             )?;
                             (
-                                IrExpression::ArrayIndex {
-                                    base: Box::new(curr_inner.expr),
-                                    index: Box::new(index.expr.clone()),
+                                IrExpressionLarge::ArrayIndex {
+                                    base: curr_inner.expr,
+                                    index: index.expr.clone(),
                                 },
                                 index.domain.clone(),
                                 None,
@@ -303,9 +304,9 @@ impl ArraySteps<ArrayStep> {
                                 curr_array_len.as_ref(),
                             )?;
                             (
-                                IrExpression::ArraySlice {
-                                    base: Box::new(curr_inner.expr),
-                                    start: Box::new(start.expr.clone()),
+                                IrExpressionLarge::ArraySlice {
+                                    base: curr_inner.expr,
+                                    start: start.expr.clone(),
                                     len: len.clone(),
                                 },
                                 start.domain.clone(),
@@ -327,6 +328,7 @@ impl ArraySteps<ArrayStep> {
                 }
             };
 
+            let next_inner = next_inner.to_maybe_compile(large);
             curr = Spanned::new(curr.span.join(step.span), next_inner);
         }
 
@@ -422,6 +424,7 @@ impl ArraySteps<&ArrayStepCompile> {
     pub fn get_compile_value(
         &self,
         diags: &Diagnostics,
+        large: &mut IrLargeArena,
         value: Spanned<CompileValue>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         // TODO avoid clones
@@ -434,7 +437,7 @@ impl ArraySteps<&ArrayStepCompile> {
         };
         let value_span = value.span;
 
-        let result = self_mapped.apply_to_value(diags, value.map_inner(MaybeCompile::Compile))?;
+        let result = self_mapped.apply_to_value(diags, large, value.map_inner(MaybeCompile::Compile))?;
         match result {
             MaybeCompile::Compile(result) => Ok(result),
             MaybeCompile::Other(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),
