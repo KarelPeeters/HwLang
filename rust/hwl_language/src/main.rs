@@ -193,6 +193,9 @@ fn main_inner(args: Args) -> ExitCode {
         if let Some((time_lower, time_simulator, _, _)) = lower_results {
             println!("lower verilog:    {:?}", time_lower);
             println!("lower c++:        {:?}", time_simulator);
+        } else {
+            println!("lower verilog:    (skipped)");
+            println!("lower c++:        (skipped)");
         }
         println!("-----------------------------------------------");
         println!("total:            {:?}", time_all);
