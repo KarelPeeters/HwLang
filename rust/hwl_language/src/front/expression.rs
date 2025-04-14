@@ -204,20 +204,17 @@ impl CompileItemContext<'_, '_> {
                     IntLiteral::Binary(s_raw) => {
                         let s_clean = s_raw[2..].replace('_', "");
                         BigUint::from_str_radix(&s_clean, 2)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
-                            .unwrap()
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
                     IntLiteral::Decimal(s_raw) => {
                         let s_clean = s_raw.replace('_', "");
                         BigUint::from_str_radix(&s_clean, 10)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
-                            .unwrap()
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
                     IntLiteral::Hexadecimal(s) => {
                         let s_hex = s[2..].replace('_', "");
                         BigUint::from_str_radix(&s_hex, 16)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))
-                            .unwrap()
+                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
                 };
                 MaybeCompile::Compile(CompileValue::Int(BigInt::from(value)))
