@@ -830,7 +830,7 @@ impl CompileItemContext<'_, '_> {
                         let HardwareValue { ty, domain, expr: _ } = v;
                         let ty_str = ty.to_diagnostic_string();
                         let domain_str = domain.to_diagnostic_string(self);
-                        format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _ , }}")
+                        format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _, }}")
                     }
                 };
                 self.refs.print_handler.println(&value_str);
