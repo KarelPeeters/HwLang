@@ -64,7 +64,7 @@ impl SyncDomain<Polarized<Port>> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,
     Clock,
@@ -75,11 +75,11 @@ pub enum ValueDomain<V = Polarized<Signal>> {
 }
 
 impl ValueDomain {
-    pub fn join(&self, other: &Self) -> Self {
+    pub fn join(self, other: Self) -> Self {
         // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
             (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other.clone(),
-            (&ValueDomain::Sync(left), &ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left),
+            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left),
             _ => ValueDomain::Async,
         }
     }

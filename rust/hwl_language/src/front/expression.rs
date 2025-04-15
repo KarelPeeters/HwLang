@@ -33,15 +33,38 @@ use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
 
+pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
+
 #[derive(Debug)]
-pub struct ExpressionWithImplications {
-    pub value: Value,
+pub struct HardwareValueWithImplications {
+    pub value: HardwareValue,
     pub value_versioned: Option<ValueVersioned>,
     pub implications: Implications,
 }
 
-impl ExpressionWithImplications {
+impl ValueWithImplications {
     pub fn simple(value: Value) -> Self {
+        value.map_hardware(|v| HardwareValueWithImplications::simple(v))
+    }
+
+    pub fn value(self) -> Value {
+        self.map_hardware(|v| v.value)
+    }
+
+    pub fn value_cloned(&self) -> Value {
+        self.as_ref().map_hardware(|v| &v.value).cloned()
+    }
+
+    pub fn value_ty(&self) -> Type {
+        match self {
+            Value::Compile(v) => v.ty(),
+            Value::Hardware(v) => v.value.ty(),
+        }
+    }
+}
+
+impl HardwareValueWithImplications {
+    pub fn simple(value: HardwareValue) -> Self {
         Self {
             value,
             value_versioned: None,
@@ -88,7 +111,10 @@ impl CompileItemContext<'_, '_> {
         assert_eq!(self.variables.check(), vars.check());
         Ok(self
             .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, expr)?
-            .map_inner(|r| r.value))
+            .map_inner(|r| match r {
+                Value::Compile(v) => Value::Compile(v),
+                Value::Hardware(v) => Value::Hardware(v.value),
+            }))
     }
 
     pub fn eval_expression_with_implications<C: ExpressionContext>(
@@ -99,12 +125,9 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<Spanned<ExpressionWithImplications>, ErrorGuaranteed> {
+    ) -> Result<Spanned<Value<CompileValue, HardwareValueWithImplications>>, ErrorGuaranteed> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
-        Ok(Spanned {
-            span: expr.span,
-            inner: value,
-        })
+        Ok(Spanned::new(expr.span, value))
     }
 
     // TODO return COW to save some allocations?
@@ -120,7 +143,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
+    ) -> Result<ValueWithImplications, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         let result_simple: Value = match &expr.inner {
@@ -164,7 +187,9 @@ impl CompileItemContext<'_, '_> {
                                     value: SignalOrVariable::Variable(var),
                                     version,
                                 };
-                                return Ok(apply_implications(ctx, &mut self.large, Some(versioned), value.clone()));
+                                let with_implications =
+                                    apply_implications(ctx, &mut self.large, Some(versioned), value.clone());
+                                return Ok(Value::Hardware(with_implications));
                             }
                         },
                         NamedValue::Port(port) => {
@@ -174,12 +199,13 @@ impl CompileItemContext<'_, '_> {
                             return match port_info.direction.inner {
                                 PortDirection::Input => {
                                     let versioned = vars.signal_versioned(Signal::Port(port));
-                                    Ok(apply_implications(
+                                    let with_implications = apply_implications(
                                         ctx,
                                         &mut self.large,
                                         versioned,
-                                        port_info.typed_ir_expr(),
-                                    ))
+                                        port_info.as_hardware_value(),
+                                    );
+                                    return Ok(Value::Hardware(with_implications));
                                 }
                                 PortDirection::Output => {
                                     Err(diags.report_todo(expr.span, "read back from output port"))
@@ -191,24 +217,18 @@ impl CompileItemContext<'_, '_> {
                             let wire_info = &self.wires[wire];
 
                             let versioned = vars.signal_versioned(Signal::Wire(wire));
-                            return Ok(apply_implications(
-                                ctx,
-                                &mut self.large,
-                                versioned,
-                                wire_info.typed_ir_expr(),
-                            ));
+                            let with_implications =
+                                apply_implications(ctx, &mut self.large, versioned, wire_info.as_hardware_value());
+                            return Ok(Value::Hardware(with_implications));
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
                             let reg_info = &self.registers[reg];
 
                             let versioned = vars.signal_versioned(Signal::Register(reg));
-                            return Ok(apply_implications(
-                                ctx,
-                                &mut self.large,
-                                versioned,
-                                reg_info.typed_ir_expr(),
-                            ));
+                            let with_implications =
+                                apply_implications(ctx, &mut self.large, versioned, reg_info.as_hardware_value());
+                            return Ok(Value::Hardware(with_implications));
                         }
                     },
                 }
@@ -355,15 +375,15 @@ impl CompileItemContext<'_, '_> {
                     let _ = check_type_is_int(
                         diags,
                         TypeContainsReason::Operator(op.span),
-                        Spanned::new(operand.span, operand.inner.value.clone()),
+                        operand.as_ref().map_inner(ValueWithImplications::value_cloned),
                     )?;
                     return Ok(operand.inner);
                 }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
-                    let operand = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
+                    let operand_int = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
 
-                    match operand.inner {
+                    match operand_int.inner {
                         Value::Compile(c) => Value::Compile(CompileValue::Int(-c)),
                         Value::Hardware(v) => {
                             let result_range = ClosedIncRange {
@@ -394,12 +414,12 @@ impl CompileItemContext<'_, '_> {
                         diags,
                         TypeContainsReason::Operator(op.span),
                         &Type::Bool,
-                        operand.as_ref().map_inner(|operand| &operand.value),
+                        operand.as_ref().map_inner(ValueWithImplications::value_cloned).as_ref(),
                         false,
                         false,
                     )?;
 
-                    match operand.inner.value {
+                    match operand.inner {
                         Value::Compile(c) => match c {
                             // TODO support boolean array
                             CompileValue::Bool(b) => Value::Compile(CompileValue::Bool(!b)),
@@ -408,16 +428,14 @@ impl CompileItemContext<'_, '_> {
                         Value::Hardware(v) => {
                             let result = HardwareValue {
                                 ty: HardwareType::Bool,
-                                domain: v.domain,
-                                expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.expr)),
+                                domain: v.value.domain,
+                                expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
                             };
-                            let result = Value::Hardware(result);
-
-                            return Ok(ExpressionWithImplications {
+                            return Ok(Value::Hardware(HardwareValueWithImplications {
                                 value: result,
                                 value_versioned: None,
-                                implications: operand.inner.implications.invert(),
-                            });
+                                implications: v.implications.invert(),
+                            }));
                         }
                     }
                 }
@@ -537,10 +555,10 @@ impl CompileItemContext<'_, '_> {
                 // convert values to hardware
                 let value = value
                     .inner
-                    .as_ir_expression(diags, &mut self.large, value.span, &ty_hw)?;
+                    .as_hardware_value(diags, &mut self.large, value.span, &ty_hw)?;
                 let init = init
                     .as_ref()
-                    .map_inner(|inner| inner.as_hardware_value_or_undefined(diags, &mut self.large, init.span, &ty_hw))
+                    .map_inner(|inner| inner.as_ir_expression_or_undefined(diags, &mut self.large, init.span, &ty_hw))
                     .transpose()?;
 
                 // create a register and variable
@@ -568,7 +586,7 @@ impl CompileItemContext<'_, '_> {
             }
         };
 
-        Ok(ExpressionWithImplications::simple(result_simple))
+        Ok(ValueWithImplications::simple(result_simple))
     }
 
     fn eval_array_literal<C: ExpressionContext>(
@@ -670,9 +688,9 @@ impl CompileItemContext<'_, '_> {
                 let value_ir =
                     value
                         .inner
-                        .as_ir_expression(diags, &mut self.large, value.span, &expected_ty_inner_hw)?;
+                        .as_hardware_value(diags, &mut self.large, value.span, &expected_ty_inner_hw)?;
                 result_ty.push(value_ir.ty);
-                result_domain = result_domain.join(&value_ir.domain);
+                result_domain = result_domain.join(value_ir.domain);
                 result_expr.push(value_ir.expr);
             }
 
@@ -1362,9 +1380,9 @@ pub fn eval_binary_expression(
     large: &mut IrLargeArena,
     expr_span: Span,
     op: Spanned<BinaryOp>,
-    left: Spanned<ExpressionWithImplications>,
-    right: Spanned<ExpressionWithImplications>,
-) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
+) -> Result<ValueWithImplications, ErrorGuaranteed> {
     let op_reason = TypeContainsReason::Operator(op.span);
 
     let check_both_int = |left, right| {
@@ -1372,14 +1390,14 @@ pub fn eval_binary_expression(
         let right = check_type_is_int(diags, op_reason, right);
         Ok((left?, right?))
     };
-    let eval_binary_bool = |large, op, left, right| eval_binary_bool(diags, large, op_reason, op, left, right);
+    let eval_binary_bool = |large, left, right, op| eval_binary_bool(diags, large, op_reason, left, right, op);
     let eval_binary_int_compare =
-        |large, op, left, right| eval_binary_int_compare(diags, large, op_reason, op, left, right);
+        |large, left, right, op| eval_binary_int_compare(diags, large, op_reason, left, right, op);
 
     let result_simple: Value<_> = match op.inner {
         // (int, int)
         BinaryOp::Add => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value), right.map_inner(|e| e.value))?;
+            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner + right.inner)),
                 Value::Hardware((left, right)) => {
@@ -1398,7 +1416,7 @@ pub fn eval_binary_expression(
             }
         }
         BinaryOp::Sub => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value), right.map_inner(|e| e.value))?;
+            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner - right.inner)),
                 Value::Hardware((left, right)) => {
@@ -1419,8 +1437,8 @@ pub fn eval_binary_expression(
         BinaryOp::Mul => {
             // TODO do we want to keep using multiplication as the "array repeat" syntax?
             //   if so, maybe allow tuples on the right side for multidimensional repeating
-            let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value));
-            match left.inner.value.ty() {
+            let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value()));
+            match left.inner.value_ty() {
                 Type::Array(left_ty_inner, left_len) => {
                     let right = right?;
                     let right_inner = match right.inner {
@@ -1448,7 +1466,7 @@ pub fn eval_binary_expression(
                         )
                     })?;
 
-                    match left.inner.value {
+                    match left.inner.value() {
                         Value::Compile(CompileValue::Array(left_inner)) => {
                             // do the repetition at compile-time
                             // TODO check for overflow (everywhere)
@@ -1482,8 +1500,8 @@ pub fn eval_binary_expression(
                     }
                 }
                 Type::Int(_) => {
-                    let left =
-                        check_type_is_int(diags, op_reason, left.map_inner(|e| e.value)).expect("int, already checked");
+                    let left = check_type_is_int(diags, op_reason, left.map_inner(|e| e.value()))
+                        .expect("int, already checked");
                     let right = right?;
                     match pair_compile_int(left, right) {
                         Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner * right.inner)),
@@ -1509,14 +1527,14 @@ pub fn eval_binary_expression(
                     return Err(diags.report_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
-                        format!("got value with type `{}`", left.inner.value.ty().to_diagnostic_string()),
+                        format!("got value with type `{}`", left.inner.value_ty().to_diagnostic_string()),
                     ))
                 }
             }
         }
         // (int, non-zero int)
         BinaryOp::Div => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value), right.map_inner(|e| e.value))?;
+            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
 
             // check nonzero
             if right.inner.range().contains(&&BigInt::ZERO) {
@@ -1562,7 +1580,7 @@ pub fn eval_binary_expression(
             }
         }
         BinaryOp::Mod => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value), right.map_inner(|e| e.value))?;
+            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
 
             // check nonzero
             if right.inner.range().contains(&&BigInt::ZERO) {
@@ -1605,7 +1623,7 @@ pub fn eval_binary_expression(
         }
         // (nonzero int, non-negative int) or (non-negative int, positive int)
         BinaryOp::Pow => {
-            let (base, exp) = check_both_int(left.map_inner(|e| e.value), right.map_inner(|e| e.value))?;
+            let (base, exp) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
 
             let zero = BigInt::ZERO;
             let base_range = base.inner.range();
@@ -1695,44 +1713,44 @@ pub fn eval_binary_expression(
         BinaryOp::Shr => return Err(diags.report_todo(expr_span, "binary op Shr")),
     };
 
-    Ok(ExpressionWithImplications::simple(result_simple))
+    Ok(ValueWithImplications::simple(result_simple))
 }
 
 fn eval_binary_bool(
     diags: &Diagnostics,
     large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
-    left: Spanned<ExpressionWithImplications>,
-    right: Spanned<ExpressionWithImplications>,
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
     op: IrBoolBinaryOp,
-) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
+) -> Result<ValueWithImplications, ErrorGuaranteed> {
     fn build_bool_gate(
         f: impl Fn(bool) -> bool,
         large: &mut IrLargeArena,
-        inner_eval: ExpressionWithImplications,
+        inner_eval: HardwareValueWithImplications,
         inner_ir: HardwareValue<()>,
-    ) -> ExpressionWithImplications {
+    ) -> ValueWithImplications {
         match (f(false), f(true)) {
             // constants
-            (false, false) => ExpressionWithImplications::simple(Value::Compile(CompileValue::Bool(false))),
-            (true, true) => ExpressionWithImplications::simple(Value::Compile(CompileValue::Bool(true))),
+            (false, false) => ValueWithImplications::simple(Value::Compile(CompileValue::Bool(false))),
+            (true, true) => ValueWithImplications::simple(Value::Compile(CompileValue::Bool(true))),
             // pass gate
-            (false, true) => inner_eval,
+            (false, true) => ValueWithImplications::Hardware(inner_eval),
             // not gate
-            (true, false) => ExpressionWithImplications {
-                value: Value::Hardware(HardwareValue {
+            (true, false) => ValueWithImplications::Hardware(HardwareValueWithImplications {
+                value: HardwareValue {
                     ty: HardwareType::Bool,
                     domain: inner_ir.domain,
                     expr: large.push_expr(IrExpressionLarge::BoolNot(inner_ir.expr)),
-                }),
+                },
                 value_versioned: None,
                 implications: inner_eval.implications.invert(),
-            },
+            }),
         }
     }
 
-    let left_value = check_type_is_bool(diags, op_reason, left.as_ref().map_inner(|e| e.value.clone()));
-    let right_value = check_type_is_bool(diags, op_reason, right.as_ref().map_inner(|e| e.value.clone()));
+    let left_value = check_type_is_bool(diags, op_reason, left.as_ref().map_inner(|e| e.value_cloned()));
+    let right_value = check_type_is_bool(diags, op_reason, right.as_ref().map_inner(|e| e.value_cloned()));
 
     let left_value = left_value?;
     let right_value = right_value?;
@@ -1740,49 +1758,50 @@ fn eval_binary_bool(
     match (left_value.inner, right_value.inner) {
         // full compile-tim eval
         (Value::Compile(left), Value::Compile(right)) => {
-            let result = op.eval(left, right);
-            Ok(ExpressionWithImplications::simple(Value::Compile(CompileValue::Bool(
-                result,
-            ))))
+            let result = CompileValue::Bool(op.eval(left, right));
+            Ok(ValueWithImplications::simple(Value::Compile(result)))
         }
         // partial compile-time eval
         (Value::Compile(left_value), Value::Hardware(right_value)) => Ok(build_bool_gate(
             |b| op.eval(left_value, b),
             large,
-            right.inner,
+            right.inner.unwrap_hardware(),
             right_value,
         )),
         (Value::Hardware(left_value), Value::Compile(right_value)) => Ok(build_bool_gate(
             |b| op.eval(b, right_value),
             large,
-            left.inner,
+            left.inner.unwrap_hardware(),
             left_value,
         )),
         // full hardware
         (Value::Hardware(left_value), Value::Hardware(right_value)) => {
             let expr = HardwareValue {
                 ty: HardwareType::Bool,
-                domain: left_value.domain.join(&right_value.domain),
+                domain: left_value.domain.join(right_value.domain),
                 expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left_value.expr, right_value.expr)),
             };
 
+            let left_inner = left.inner.unwrap_hardware();
+            let right_inner = right.inner.unwrap_hardware();
+
             let implications = match op {
                 IrBoolBinaryOp::And => Implications {
-                    if_true: vec_concat([left.inner.implications.if_true, right.inner.implications.if_true]),
+                    if_true: vec_concat([left_inner.implications.if_true, right_inner.implications.if_true]),
                     if_false: vec![],
                 },
                 IrBoolBinaryOp::Or => Implications {
                     if_true: vec![],
-                    if_false: vec_concat([left.inner.implications.if_false, right.inner.implications.if_false]),
+                    if_false: vec_concat([left_inner.implications.if_false, right_inner.implications.if_false]),
                 },
                 IrBoolBinaryOp::Xor => Implications::default(),
             };
 
-            Ok(ExpressionWithImplications {
-                value: Value::Hardware(expr),
+            Ok(ValueWithImplications::Hardware(HardwareValueWithImplications {
+                value: expr,
                 value_versioned: None,
                 implications,
-            })
+            }))
         }
     }
 }
@@ -1791,34 +1810,46 @@ fn eval_binary_int_compare(
     diags: &Diagnostics,
     large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
-    left: Spanned<ExpressionWithImplications>,
-    right: Spanned<ExpressionWithImplications>,
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
     op: IrIntCompareOp,
-) -> Result<ExpressionWithImplications, ErrorGuaranteed> {
-    let left_versioned = left.inner.value_versioned;
-    let right_versioned = right.inner.value_versioned;
+) -> Result<ValueWithImplications, ErrorGuaranteed> {
+    let left_int = check_type_is_int(
+        diags,
+        op_reason,
+        left.as_ref().map_inner(ValueWithImplications::value_cloned),
+    );
+    let right_int = check_type_is_int(
+        diags,
+        op_reason,
+        right.as_ref().map_inner(ValueWithImplications::value_cloned),
+    );
+    let left_int = left_int?;
+    let right_int = right_int?;
 
-    let left = check_type_is_int(diags, op_reason, left.map_inner(|e| e.value));
-    let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value));
-    let left = left?;
-    let right = right?;
-
-    match pair_compile_int(left, right) {
+    // TODO spans are getting unnecessarily complicated, eg. why does this try to propagate spans?
+    match pair_compile_int(left_int, right_int) {
         Value::Compile((left, right)) => {
             let result = op.eval(&left.inner, &right.inner);
-            Ok(ExpressionWithImplications::simple(Value::Compile(CompileValue::Bool(
+            Ok(ValueWithImplications::simple(Value::Compile(CompileValue::Bool(
                 result,
             ))))
         }
-        Value::Hardware((left, right)) => {
+        Value::Hardware((left_int, right_int)) => {
+            let lv = match left.inner {
+                ValueWithImplications::Compile(_) => None,
+                ValueWithImplications::Hardware(v) => v.value_versioned,
+            };
+            let rv = match right.inner {
+                ValueWithImplications::Compile(_) => None,
+                ValueWithImplications::Hardware(v) => v.value_versioned,
+            };
+
             // TODO warning if the result is always true/false (depending on the ranges)
             //   or maybe just return a compile-time value again?
-
             // build implications
-            let lv = left_versioned;
-            let rv = right_versioned;
-            let lr = left.inner.ty;
-            let rr = right.inner.ty;
+            let lr = left_int.inner.ty;
+            let rr = right_int.inner.ty;
             let implications = match op {
                 IrIntCompareOp::Lt => implications_lt(lv, lr, rv, rr),
                 IrIntCompareOp::Lte => implications_lte(lv, lr, rv, rr),
@@ -1831,15 +1862,18 @@ fn eval_binary_int_compare(
             // build the resulting expression
             let result = HardwareValue {
                 ty: HardwareType::Bool,
-                domain: left.inner.domain.join(&right.inner.domain),
-                expr: large.push_expr(IrExpressionLarge::IntCompare(op, left.inner.expr, right.inner.expr)),
+                domain: left_int.inner.domain.join(right_int.inner.domain),
+                expr: large.push_expr(IrExpressionLarge::IntCompare(
+                    op,
+                    left_int.inner.expr,
+                    right_int.inner.expr,
+                )),
             };
-            let eval = ExpressionWithImplications {
-                value: Value::Hardware(result),
+            Ok(Value::Hardware(HardwareValueWithImplications {
+                value: result,
                 value_versioned: None,
                 implications,
-            };
-            Ok(eval)
+            }))
         }
     }
 }
@@ -1854,7 +1888,7 @@ fn build_binary_int_arithmetic_op(
     let result_expr = IrExpressionLarge::IntArithmetic(op, range.clone(), left.inner.expr, right.inner.expr);
     HardwareValue {
         ty: HardwareType::Int(range),
-        domain: left.inner.domain.join(&right.inner.domain),
+        domain: left.inner.domain.join(right.inner.domain),
         expr: large.push_expr(result_expr),
     }
 }
@@ -1936,9 +1970,9 @@ fn apply_implications<C: ExpressionContext>(
     large: &mut IrLargeArena,
     versioned: Option<ValueVersioned>,
     expr_raw: HardwareValue,
-) -> ExpressionWithImplications {
+) -> HardwareValueWithImplications {
     let versioned = match versioned {
-        None => return ExpressionWithImplications::simple(Value::Hardware(expr_raw)),
+        None => return HardwareValueWithImplications::simple(expr_raw),
         Some(versioned) => versioned,
     };
 
@@ -1969,8 +2003,8 @@ fn apply_implications<C: ExpressionContext>(
         expr_raw
     };
 
-    ExpressionWithImplications {
-        value: Value::Hardware(value_expr),
+    HardwareValueWithImplications {
+        value: value_expr,
         value_versioned: Some(versioned),
         implications: Implications::default(),
     }
@@ -2012,7 +2046,7 @@ fn array_literal_combine_values(
                     let value_ir =
                         elem_inner
                             .inner
-                            .as_ir_expression(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
+                            .as_hardware_value(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
 
                     check_type_contains_value(
                         diags,
@@ -2036,7 +2070,7 @@ fn array_literal_combine_values(
                     let value_ir =
                         elem_inner
                             .inner
-                            .as_ir_expression(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
+                            .as_hardware_value(diags, large, elem_inner.span, &expected_ty_inner_hw)?;
 
                     let len = match value_ir.ty() {
                         Type::Array(_, len) => len,
@@ -2058,7 +2092,7 @@ fn array_literal_combine_values(
                 }
             };
 
-            result_domain = result_domain.join(&domain);
+            result_domain = result_domain.join(domain);
             result_exprs.push(elem_ir);
             result_len += elem_len;
         }

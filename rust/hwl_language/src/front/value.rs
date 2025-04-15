@@ -189,7 +189,7 @@ impl CompileValue {
         }
     }
 
-    pub fn as_hardware_value_or_undefined(
+    pub fn as_ir_expression_or_undefined(
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
@@ -220,14 +220,14 @@ impl CompileValue {
         }
     }
 
-    pub fn as_ir_expression_or_undefined(
+    pub fn as_hardware_value_or_undefined(
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<HardwareValue>, ErrorGuaranteed> {
-        let hw_value = self.as_hardware_value_or_undefined(diags, large, span, ty_hw)?;
+        let hw_value = self.as_ir_expression_or_undefined(diags, large, span, ty_hw)?;
         let typed_expr = hw_value.map_inner(|expr| HardwareValue {
             ty: ty_hw.clone(),
             domain: ValueDomain::CompileTime,
@@ -236,14 +236,14 @@ impl CompileValue {
         Ok(typed_expr)
     }
 
-    pub fn as_ir_expression(
+    pub fn as_hardware_value(
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<HardwareValue, ErrorGuaranteed> {
-        match self.as_ir_expression_or_undefined(diags, large, span, ty_hw)? {
+        match self.as_hardware_value_or_undefined(diags, large, span, ty_hw)? {
             MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
             MaybeUndefined::Undefined => Err(diags.report_simple(
                 "undefined values are not allowed here",
@@ -321,10 +321,19 @@ impl HardwareValue {
 }
 
 impl<C, T> Value<C, T> {
+    #[track_caller]
     pub fn unwrap_compile(self) -> C {
         match self {
             Value::Compile(v) => v,
             Value::Hardware(_) => panic!("expected compile value"),
+        }
+    }
+
+    #[track_caller]
+    pub fn unwrap_hardware(self) -> T {
+        match self {
+            Value::Compile(_) => panic!("expected hardware value"),
+            Value::Hardware(v) => v,
         }
     }
 
@@ -341,13 +350,36 @@ impl<C, T> Value<C, T> {
             Value::Hardware(v) => Ok(Value::Hardware(f(v)?)),
         }
     }
+
+    pub fn map_compile<U>(self, f: impl FnOnce(C) -> U) -> Value<U, T> {
+        match self {
+            Value::Compile(v) => Value::Compile(f(v)),
+            Value::Hardware(v) => Value::Hardware(v),
+        }
+    }
+
+    pub fn map_hardware<U>(self, f: impl FnOnce(T) -> U) -> Value<C, U> {
+        match self {
+            Value::Compile(v) => Value::Compile(v),
+            Value::Hardware(v) => Value::Hardware(f(v)),
+        }
+    }
+}
+
+impl<C: Clone, T: Clone> Value<&C, &T> {
+    pub fn cloned(self) -> Value<C, T> {
+        match self {
+            Value::Compile(v) => Value::Compile(v.clone()),
+            Value::Hardware(v) => Value::Hardware(v.clone()),
+        }
+    }
 }
 
 impl<T, E> Value<CompileValue, HardwareValue<T, E>> {
-    pub fn domain(&self) -> &ValueDomain {
+    pub fn domain(&self) -> ValueDomain {
         match self {
-            Value::Compile(_) => &ValueDomain::CompileTime,
-            Value::Hardware(value) => &value.domain,
+            Value::Compile(_) => ValueDomain::CompileTime,
+            Value::Hardware(value) => value.domain,
         }
     }
 }
@@ -357,7 +389,7 @@ impl Value {
     ///
     /// Also tries to expand the expression to the given type, but this can fail.
     /// It it still the responsibility of the caller to typecheck the resulting expression.
-    pub fn as_ir_expression(
+    pub fn as_hardware_value(
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
@@ -365,7 +397,7 @@ impl Value {
         ty: &HardwareType,
     ) -> Result<HardwareValue, ErrorGuaranteed> {
         match self {
-            Value::Compile(v) => v.as_ir_expression(diags, large, span, ty),
+            Value::Compile(v) => v.as_hardware_value(diags, large, span, ty),
             Value::Hardware(v) => Ok(v.clone().soft_expand_to_type(large, ty)),
         }
     }

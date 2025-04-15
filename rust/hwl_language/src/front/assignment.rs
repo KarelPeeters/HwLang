@@ -3,7 +3,7 @@ use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
-use crate::front::expression::{eval_binary_expression, ExpressionWithImplications};
+use crate::front::expression::{eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::Signal;
 use crate::front::steps::ArraySteps;
@@ -135,10 +135,10 @@ impl CompileItemContext<'_, '_> {
                     &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
-                    Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
-                    right_eval.map_inner(ExpressionWithImplications::simple),
+                    Spanned::new(target.span, ValueWithImplications::simple(target_eval)),
+                    right_eval.map_inner(ValueWithImplications::simple),
                 )?
-                .value;
+                .value();
                 let value_eval = match value_eval {
                     Value::Compile(_) => {
                         return Err(diags.report_internal_error(
@@ -160,20 +160,20 @@ impl CompileItemContext<'_, '_> {
         check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref(), true, false)?;
 
         // convert value to hardware
-        let value_ir = value
+        let value_hw = value
             .inner
-            .as_ir_expression(diags, &mut self.large, value.span, &target_ty)?;
+            .as_hardware_value(diags, &mut self.large, value.span, &target_ty)?;
 
         // check domains
         let value_domain = Spanned {
             span: value.span,
-            inner: &value_ir.domain,
+            inner: value_hw.domain,
         };
         self.check_assignment_domains(
             ctx.block_domain(),
             ctx.condition_domains(),
             op.span,
-            target_base_signal.domain(self).as_ref(),
+            target_base_signal.domain(self),
             target_steps,
             value_domain,
         )?;
@@ -185,7 +185,7 @@ impl CompileItemContext<'_, '_> {
         };
 
         // push ir statement
-        let stmt_ir = IrStatement::Assign(target_ir, value_ir.expr);
+        let stmt_ir = IrStatement::Assign(target_ir, value_hw.expr);
         ctx.push_ir_statement(
             diags,
             ctx_block,
@@ -237,7 +237,7 @@ impl CompileItemContext<'_, '_> {
                     // TODO apply implications
                     let target_eval = Spanned::new(
                         target.span,
-                        ExpressionWithImplications::simple(vars.var_get(diags, target.span, var)?.value()),
+                        ValueWithImplications::simple(vars.var_get(diags, target.span, var)?.value()),
                     );
                     let value_eval = eval_binary_expression(
                         diags,
@@ -245,9 +245,9 @@ impl CompileItemContext<'_, '_> {
                         stmt_span,
                         Spanned::new(op.span, op_inner),
                         target_eval,
-                        right_eval.map_inner(ExpressionWithImplications::simple),
+                        right_eval.map_inner(ValueWithImplications::simple),
                     )?
-                    .value;
+                    .value();
                     Spanned::new(stmt_span, value_eval)
                 }
             };
@@ -302,10 +302,10 @@ impl CompileItemContext<'_, '_> {
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, ExpressionWithImplications::simple(target_eval)),
-                        right_eval.map_inner(ExpressionWithImplications::simple),
+                        Spanned::new(target.span, ValueWithImplications::simple(target_eval)),
+                        right_eval.map_inner(ValueWithImplications::simple),
                     )?
-                    .value;
+                    .value();
                     Spanned::new(stmt_span, value_eval)
                 }
             };
@@ -336,7 +336,7 @@ impl CompileItemContext<'_, '_> {
             // do the current assignment
             let value_ir = value
                 .inner
-                .as_ir_expression(diags, &mut self.large, value.span, &target_inner_ty)?;
+                .as_hardware_value(diags, &mut self.large, value.span, &target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
                 base: IrAssignmentTargetBase::Variable(target_base_ir_var),
                 steps: target_steps_ir,
@@ -371,13 +371,10 @@ impl CompileItemContext<'_, '_> {
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(
-                            target.span,
-                            ExpressionWithImplications::simple(Value::Compile(target_eval)),
-                        ),
-                        right_eval.map_inner(|e| ExpressionWithImplications::simple(Value::Compile(e))),
+                        Spanned::new(target.span, ValueWithImplications::simple(Value::Compile(target_eval))),
+                        right_eval.map_inner(ValueWithImplications::Compile),
                     )?
-                    .value;
+                    .value();
                     let value = match value {
                         Value::Compile(value) => value,
                         Value::Hardware(_) => {
@@ -448,7 +445,7 @@ impl CompileItemContext<'_, '_> {
         })?;
 
         let target_base_ir_expr =
-            target_base_eval.as_ir_expression(diags, &mut self.large, target_base_span, &target_base_ty_hw)?;
+            target_base_eval.as_hardware_value(diags, &mut self.large, target_base_span, &target_base_ty_hw)?;
         let result = store_ir_expression_in_new_variable(
             diags,
             ctx,
@@ -469,15 +466,15 @@ impl CompileItemContext<'_, '_> {
         block_domain: BlockDomain,
         condition_domains: &[Spanned<ValueDomain>],
         op_span: Span,
-        target_base_domain: Spanned<&ValueDomain>,
+        target_base_domain: Spanned<ValueDomain>,
         steps: &ArraySteps,
-        value_domain: Spanned<&ValueDomain>,
+        value_domain: Spanned<ValueDomain>,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.refs.diags;
         match block_domain {
             BlockDomain::CompileTime => {
-                for d in [&target_base_domain, &value_domain] {
-                    if d.inner != &ValueDomain::CompileTime {
+                for d in [target_base_domain, value_domain] {
+                    if d.inner != ValueDomain::CompileTime {
                         return Err(
                             diags.report_internal_error(d.span, "non-compile-time domain in compile-time context")
                         );
@@ -503,11 +500,11 @@ impl CompileItemContext<'_, '_> {
                     check = check.and(c);
                 });
 
-                for condition_domain in condition_domains {
+                for &condition_domain in condition_domains {
                     let c = self.check_valid_domain_crossing(
                         op_span,
                         target_base_domain,
-                        condition_domain.as_ref(),
+                        condition_domain,
                         "condition to target in combinatorial block",
                     );
                     check = check.and(c);
@@ -516,27 +513,21 @@ impl CompileItemContext<'_, '_> {
                 check
             }
             BlockDomain::Clocked(block_domain) => {
-                let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
+                let block_domain = block_domain.map_inner(|d| ValueDomain::Sync(d));
 
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
                     target_base_domain,
-                    block_domain.as_ref(),
+                    block_domain,
                     "clocked block to target",
                 );
 
                 steps.for_each_domain(|d| {
-                    let c =
-                        self.check_valid_domain_crossing(op_span, block_domain.as_ref(), d, "step to clocked block");
+                    let c = self.check_valid_domain_crossing(op_span, block_domain, d, "step to clocked block");
                     check = check.and(c);
                 });
 
-                let c = self.check_valid_domain_crossing(
-                    op_span,
-                    block_domain.as_ref(),
-                    value_domain,
-                    "value to clocked block",
-                );
+                let c = self.check_valid_domain_crossing(op_span, block_domain, value_domain, "value to clocked block");
                 check = check.and(c);
 
                 check

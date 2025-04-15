@@ -867,12 +867,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                 ResetKind::Sync => {
                     let target = clock.map_inner(|s| ValueDomain::Sync(SyncDomain { clock: s, reset: None }));
                     let source = Spanned::new(reset.span, signal.inner.signal.domain(self.ctx).inner);
-                    self.ctx.check_valid_domain_crossing(
-                        span_domain,
-                        target.as_ref(),
-                        source.as_ref(),
-                        "sync reset",
-                    )?;
+                    self.ctx
+                        .check_valid_domain_crossing(span_domain, target, source, "sync reset")?;
                 }
             }
         };
@@ -1274,7 +1270,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // check domain
                 let target_domain = Spanned {
                     span: connection_id.span,
-                    inner: &port_domain.as_ref_ok()?.inner,
+                    inner: port_domain.as_ref_ok()?.inner,
                 };
                 let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
                 let check_domain = self.ctx.check_valid_domain_crossing(
@@ -1292,7 +1288,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     .as_ref()
                     .map_inner(|v| {
                         Ok(
-                            v.as_ir_expression(diags, &mut self.ctx.large, connection_expr.span, &port_ty_hw.inner)?
+                            v.as_hardware_value(diags, &mut self.ctx.large, connection_expr.span, &port_ty_hw.inner)?
                                 .expr,
                         )
                     })
@@ -1348,7 +1344,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     ExpressionKind::Id(id) => {
                         let named = self.ctx.eval_id(scope, id)?;
 
-                        let (signal_ir, signal_target, signal_ty, signal_domain) = match named.inner {
+                        let (signal_ir, signal_target, signal_ty, &signal_domain) = match named.inner {
                             EvaluatedId::Named(NamedValue::Wire(wire)) => {
                                 let wire_info = &self.ctx.wires[wire];
                                 (
@@ -1390,10 +1386,10 @@ impl BodyElaborationContext<'_, '_, '_> {
                         // check domain
                         any_err = any_err.and(self.ctx.check_valid_domain_crossing(
                             connection.span,
-                            signal_domain.as_ref(),
+                            signal_domain,
                             Spanned {
                                 span: connection_id.span,
-                                inner: &port_domain.as_ref_ok()?.inner,
+                                inner: port_domain.as_ref_ok()?.inner,
                             },
                             "output port connection",
                         ));
@@ -1638,7 +1634,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     inner: value_domain,
                 };
                 let check_domain =
-                    ctx.check_valid_domain_crossing(decl.span, domain.as_ref(), value_domain_spanned, "value to wire");
+                    ctx.check_valid_domain_crossing(decl.span, domain, value_domain_spanned, "value to wire");
 
                 check_ty?;
                 check_domain?;
@@ -1646,7 +1642,9 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // convert to IR
                 let value_ir = value
                     .as_ref()
-                    .map_inner(|value_inner| value_inner.as_ir_expression(diags, &mut ctx.large, value.span, &ty.inner))
+                    .map_inner(|value_inner| {
+                        value_inner.as_hardware_value(diags, &mut ctx.large, value.span, &ty.inner)
+                    })
                     .transpose()?;
                 Ok((value_ir, process_locals, process_block))
             })
@@ -1968,7 +1966,7 @@ fn pull_register_init_into_process(
             if let Child::Clocked(process) = &mut children[process_index].as_ref_mut_ok()? {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
-                    let init_ir = init.inner.as_hardware_value_or_undefined(
+                    let init_ir = init.inner.as_ir_expression_or_undefined(
                         diags,
                         &mut ctx.large,
                         init.span,

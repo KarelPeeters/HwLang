@@ -12,8 +12,8 @@ impl CompileItemContext<'_, '_> {
     pub fn check_valid_domain_crossing(
         &self,
         crossing_span: Span,
-        target: Spanned<&ValueDomain>,
-        source: Spanned<&ValueDomain>,
+        target: Spanned<ValueDomain>,
+        source: Spanned<ValueDomain>,
         required_reason: &str,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.refs.diags;

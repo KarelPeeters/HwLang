@@ -81,9 +81,9 @@ impl ArraySteps<ArrayStep> {
         Ok((result_ty_hw, steps))
     }
 
-    pub fn for_each_domain(&self, mut f: impl FnMut(Spanned<&ValueDomain>)) {
+    pub fn for_each_domain(&self, mut f: impl FnMut(Spanned<ValueDomain>)) {
         for step in &self.steps {
-            let d = match &step.inner {
+            let &d = match &step.inner {
                 ArrayStep::Compile(_) => &ValueDomain::CompileTime,
                 ArrayStep::Hardware(step) => match step {
                     ArrayStepHardware::ArrayIndex(index) => &index.domain,
@@ -230,7 +230,7 @@ impl ArraySteps<ArrayStep> {
                             .finish();
                         diags.report(diag)
                     })?;
-                    let curr_inner = curr_inner.as_ir_expression(diags, large, curr.span, &ty)?;
+                    let curr_inner = curr_inner.as_hardware_value(diags, large, curr.span, &ty)?;
                     let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
                         HardwareType::Array(curr_array_inner_ty, curr_array_len) => {
                             (curr_array_inner_ty, curr_array_len)
@@ -319,7 +319,7 @@ impl ArraySteps<ArrayStep> {
                     };
                     Value::Hardware(HardwareValue {
                         ty: next_ty,
-                        domain: curr_inner.domain.join(&step_domain),
+                        domain: curr_inner.domain.join(step_domain),
                         expr: result_expr,
                     })
                 }

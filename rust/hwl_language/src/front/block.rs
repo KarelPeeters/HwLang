@@ -4,7 +4,7 @@ use crate::front::compile::{CompileItemContext, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
-use crate::front::expression::ForIterator;
+use crate::front::expression::{ForIterator, ValueWithImplications};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::Type;
@@ -357,12 +357,12 @@ impl CompileItemContext<'_, '_> {
             diags,
             reason,
             &Type::Bool,
-            cond.as_ref().map_inner(|cond| &cond.value),
+            cond.as_ref().map_inner(ValueWithImplications::value_cloned).as_ref(),
             false,
             true,
         )?;
 
-        match cond.inner.value {
+        match cond.inner {
             // evaluate the if at compile-time
             Value::Compile(cond_eval) => {
                 let cond_eval = match cond_eval {
@@ -384,8 +384,12 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             // evaluate the if at runtime, generating IR
-            Value::Hardware(cond_eval) => {
+            Value::Hardware(cond_value) => {
                 // check condition domain
+                let cond_domain = Spanned {
+                    span: cond.span,
+                    inner: cond_value.value.domain,
+                };
                 // TODO extract this to a common function?
                 match ctx.block_domain() {
                     BlockDomain::CompileTime => {
@@ -394,14 +398,10 @@ impl CompileItemContext<'_, '_> {
                     }
                     BlockDomain::Combinatorial => {}
                     BlockDomain::Clocked(block_domain) => {
-                        let cond_domain = Spanned {
-                            span: cond.span,
-                            inner: &cond_eval.domain,
-                        };
-                        let block_domain = block_domain.as_ref().map_inner(|&d| ValueDomain::Sync(d));
+                        let block_domain = block_domain.map_inner(|d| ValueDomain::Sync(d));
                         self.check_valid_domain_crossing(
                             cond.span,
-                            block_domain.as_ref(),
+                            block_domain,
                             cond_domain,
                             "condition used in clocked block",
                         )?;
@@ -409,24 +409,19 @@ impl CompileItemContext<'_, '_> {
                 };
 
                 // record condition domain
-                let cond_domain = Spanned {
-                    span: cond.span,
-                    inner: cond_eval.domain,
-                };
-
                 let (mut then_ir, then_vars, then_end, mut else_ir, else_vars, else_end) =
                     ctx.with_condition_domain(diags, cond_domain, |ctx| {
                         // lower then
                         let mut then_vars = VariableValues::new_child(vars);
                         let (then_ir, then_end) =
-                            ctx.with_implications(diags, cond.inner.implications.if_true, |ctx_inner| {
+                            ctx.with_implications(diags, cond_value.implications.if_true, |ctx_inner| {
                                 self.elaborate_block(ctx_inner, scope, &mut then_vars, block)
                             })?;
 
                         // lower else
                         let mut else_ir = ctx.new_ir_block();
                         let mut else_vars = VariableValues::new_child(vars);
-                        let else_end = ctx.with_implications(diags, cond.inner.implications.if_false, |ctx_inner| {
+                        let else_end = ctx.with_implications(diags, cond_value.implications.if_false, |ctx_inner| {
                             self.elaborate_if_statement(
                                 ctx_inner,
                                 &mut else_ir,
@@ -460,7 +455,7 @@ impl CompileItemContext<'_, '_> {
 
                 // actually record the if statement
                 let ir_if = IrStatement::If(IrIfStatement {
-                    condition: cond_eval.expr,
+                    condition: cond_value.value.expr,
                     then_block: ctx.unwrap_ir_block(diags, span_if, then_ir)?,
                     else_block: Some(ctx.unwrap_ir_block(diags, span_if, else_ir)?),
                 });

@@ -472,7 +472,7 @@ pub struct RegisterInfo {
 }
 
 impl PortInfo {
-    pub fn typed_ir_expr(&self) -> HardwareValue {
+    pub fn as_hardware_value(&self) -> HardwareValue {
         HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_port_domain(self.domain.inner),
@@ -482,7 +482,7 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn typed_ir_expr(&self) -> HardwareValue {
+    pub fn as_hardware_value(&self) -> HardwareValue {
         HardwareValue {
             ty: self.ty.inner.clone(),
             domain: self.domain.inner.clone(),
@@ -492,7 +492,7 @@ impl WireInfo {
 }
 
 impl RegisterInfo {
-    pub fn typed_ir_expr(&self) -> HardwareValue {
+    pub fn as_hardware_value(&self) -> HardwareValue {
         HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner)),

@@ -514,8 +514,8 @@ fn merge_values<C: ExpressionContext>(
     })?;
 
     // convert values to common type
-    let value_0 = value_0.inner.as_ir_expression(diags, large, value_0.span, &ty);
-    let value_1 = value_1.inner.as_ir_expression(diags, large, value_1.span, &ty);
+    let value_0 = value_0.inner.as_hardware_value(diags, large, value_0.span, &ty);
+    let value_1 = value_1.inner.as_hardware_value(diags, large, value_1.span, &ty);
     let (value_0, value_1) = result_pair(value_0, value_1)?;
 
     // create result variable
@@ -534,7 +534,7 @@ fn merge_values<C: ExpressionContext>(
         store_1: Spanned::new(span_merge, store_1),
         value: HardwareValue {
             ty,
-            domain: value_0.domain.join(&value_1.domain),
+            domain: value_0.domain.join(value_1.domain),
             expr: var_ir,
         },
     })
