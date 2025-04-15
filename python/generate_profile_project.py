@@ -26,7 +26,7 @@ module passthrough_{i} generics(w: int) ports(
         if i == 0:
             result += f"""
     reg out data_out = undef;
-    clocked(clk, rst) {{
+    clocked(clk, async rst) {{
         data_out = select_{i}([w]bool, select, data_a, data_b);
     }}
 """
