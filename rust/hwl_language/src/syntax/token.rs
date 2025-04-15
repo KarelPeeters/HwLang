@@ -73,12 +73,14 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn peek(&self) -> Option<char> {
-        self.left.clone().next()
+        self.peek_n(0)
     }
 
-    fn peek_second(&self) -> Option<char> {
+    fn peek_n(&self, n: usize) -> Option<char> {
         let mut iter = self.left.clone();
-        iter.next()?;
+        for _ in 0..n {
+            iter.next()?;
+        }
         iter.next()
     }
 
@@ -119,10 +121,14 @@ impl<'s> Tokenizer<'s> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
-        let peek = [
-            self.left.clone().nth(0).unwrap_or('\0'),
-            self.left.clone().nth(1).unwrap_or('\0'),
-        ];
+        let peek = {
+            let mut iter = self.left.clone();
+            [
+                iter.next().unwrap_or('\0'),
+                iter.next().unwrap_or('\0'),
+                iter.next().unwrap_or('\0'),
+            ]
+        };
 
         let mut skip_fixed = |n: usize, ty: TokenType<&'static str>| {
             self.skip(n);
@@ -130,15 +136,15 @@ impl<'s> Tokenizer<'s> {
         };
 
         let ty = match peek {
-            ['\0', _] => return Ok(None),
+            ['\0', _, _] => return Ok(None),
 
             // custom
-            [pattern_whitespace!(), _] => {
+            [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
                 TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
             }
-            [pattern_id_start!(), _] => {
+            [pattern_id_start!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_id_continue!()));
                 let id = &start_left_str[..self.curr_byte - start.byte];
@@ -153,7 +159,7 @@ impl<'s> Tokenizer<'s> {
                 }
             }
 
-            [pattern_decimal_digit!(), _] => {
+            [pattern_decimal_digit!(), _, _] => {
                 self.skip(1);
                 #[allow(clippy::manual_is_ascii_check)]
                 self.skip_while(|c| matches!(c, pattern_decimal_digit!() | '_' | 'b' | 'x' | 'a'..='f'));
@@ -167,7 +173,7 @@ impl<'s> Tokenizer<'s> {
 
                 let f_not_dummy = |c| c != '_';
                 match peek {
-                    ['0', 'b'] => {
+                    ['0', 'b', _] => {
                         let tail = &token_str[2..];
                         let f = |c| matches!(c, '_' | '0' | '1');
                         if !tail.chars().any(f_not_dummy) || !tail.chars().all(f) {
@@ -176,7 +182,7 @@ impl<'s> Tokenizer<'s> {
 
                         TokenType::IntLiteralBinary(token_str)
                     }
-                    ['0', 'x'] => {
+                    ['0', 'x', _] => {
                         let tail = &token_str[2..];
                         let f = |c| matches!(c, pattern_decimal_digit!() | '_' | 'a'..='f');
                         if !tail.chars().any(f_not_dummy) || !tail.chars().all(f) {
@@ -195,7 +201,7 @@ impl<'s> Tokenizer<'s> {
                 }
             }
 
-            ['"', _] => {
+            ['"', _, _] => {
                 self.skip(1);
                 self.skip_while(|c| c != '"');
                 match self.peek() {
@@ -212,12 +218,12 @@ impl<'s> Tokenizer<'s> {
                     _ => unreachable!(),
                 }
             }
-            ['/', '*'] => {
+            ['/', '*', _] => {
                 // block comments are allowed to nest
                 self.skip(2);
                 let mut depth: usize = 1;
                 while depth > 0 {
-                    match (self.peek(), self.peek_second()) {
+                    match (self.peek(), self.peek_n(1)) {
                         (Some('/'), Some('*')) => {
                             depth += 1;
                             self.skip(2);
@@ -242,73 +248,62 @@ impl<'s> Tokenizer<'s> {
                 // end of comment, depth is 0 again
                 TokenType::BlockComment(&start_left_str[..self.curr_byte - start.byte])
             }
-            ['/', '/'] => {
+            ['/', '/', _] => {
                 self.skip(2);
                 self.skip_while(|c| c != '\n' && c != '\r');
                 TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
             }
 
             // trigram
-            ['.', '.'] => {
-                self.skip(2);
-                match self.peek() {
-                    Some('=') => {
-                        self.skip(1);
-                        TokenType::DotsEq
-                    }
-                    Some('+') => {
-                        self.skip(1);
-                        TokenType::DotsPlus
-                    }
-                    _ => TokenType::Dots,
-                }
-            }
+            ['.', '.', '='] => skip_fixed(3, TokenType::DotsEq),
+            ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDots),
+            ['.', '.', _] => skip_fixed(2, TokenType::Dots),
 
             // simple fixed
-            ['=', '='] => skip_fixed(2, TokenType::EqEq),
-            ['=', _] => skip_fixed(1, TokenType::Eq),
-            ['!', '='] => skip_fixed(2, TokenType::Neq),
-            ['%', '='] => skip_fixed(2, TokenType::PercentEq),
-            ['%', _] => skip_fixed(1, TokenType::Percent),
-            ['!', _] => skip_fixed(1, TokenType::Bang),
-            ['>', '='] => skip_fixed(2, TokenType::Gte),
-            ['>', '>'] => skip_fixed(2, TokenType::GtGt),
-            ['>', _] => skip_fixed(1, TokenType::Gt),
-            ['<', '='] => skip_fixed(2, TokenType::Lte),
-            ['<', '<'] => skip_fixed(2, TokenType::LtLt),
-            ['<', _] => skip_fixed(1, TokenType::Lt),
-            ['&', '&'] => skip_fixed(2, TokenType::AmperAmper),
-            ['&', '='] => skip_fixed(2, TokenType::AmperEq),
-            ['&', _] => skip_fixed(1, TokenType::Amper),
-            ['|', '|'] => skip_fixed(2, TokenType::PipePipe),
-            ['|', '='] => skip_fixed(2, TokenType::BarEq),
-            ['|', _] => skip_fixed(1, TokenType::Pipe),
-            ['^', '^'] => skip_fixed(2, TokenType::CircumflexCircumflex),
-            ['^', '='] => skip_fixed(2, TokenType::CircumflexEq),
-            ['^', _] => skip_fixed(1, TokenType::Circumflex),
-            ['+', '='] => skip_fixed(2, TokenType::PlusEq),
-            ['+', _] => skip_fixed(1, TokenType::Plus),
-            ['-', '='] => skip_fixed(2, TokenType::MinusEq),
-            ['-', '>'] => skip_fixed(2, TokenType::Arrow),
-            ['-', _] => skip_fixed(1, TokenType::Minus),
-            ['*', '='] => skip_fixed(2, TokenType::StarEq),
-            ['*', '*'] => skip_fixed(2, TokenType::StarStar),
-            ['*', _] => skip_fixed(1, TokenType::Star),
-            ['/', '='] => skip_fixed(2, TokenType::SlashEq),
-            ['/', _] => skip_fixed(1, TokenType::Slash),
-            ['.', _] => skip_fixed(1, TokenType::Dot),
-            [';', _] => skip_fixed(1, TokenType::Semi),
-            [':', ':'] => skip_fixed(2, TokenType::ColonColon),
-            [':', _] => skip_fixed(1, TokenType::Colon),
-            [',', _] => skip_fixed(1, TokenType::Comma),
-            ['(', _] => skip_fixed(1, TokenType::OpenR),
-            [')', _] => skip_fixed(1, TokenType::CloseR),
-            ['{', _] => skip_fixed(1, TokenType::OpenC),
-            ['}', _] => skip_fixed(1, TokenType::CloseC),
-            ['[', _] => skip_fixed(1, TokenType::OpenS),
-            [']', _] => skip_fixed(1, TokenType::CloseS),
+            ['=', '=', _] => skip_fixed(2, TokenType::EqEq),
+            ['=', _, _] => skip_fixed(1, TokenType::Eq),
+            ['!', '=', _] => skip_fixed(2, TokenType::Neq),
+            ['%', '=', _] => skip_fixed(2, TokenType::PercentEq),
+            ['%', _, _] => skip_fixed(1, TokenType::Percent),
+            ['!', _, _] => skip_fixed(1, TokenType::Bang),
+            ['>', '=', _] => skip_fixed(2, TokenType::Gte),
+            ['>', '>', _] => skip_fixed(2, TokenType::GtGt),
+            ['>', _, _] => skip_fixed(1, TokenType::Gt),
+            ['<', '=', _] => skip_fixed(2, TokenType::Lte),
+            ['<', '<', _] => skip_fixed(2, TokenType::LtLt),
+            ['<', _, _] => skip_fixed(1, TokenType::Lt),
+            ['&', '&', _] => skip_fixed(2, TokenType::AmperAmper),
+            ['&', '=', _] => skip_fixed(2, TokenType::AmperEq),
+            ['&', _, _] => skip_fixed(1, TokenType::Amper),
+            ['|', '|', _] => skip_fixed(2, TokenType::PipePipe),
+            ['|', '=', _] => skip_fixed(2, TokenType::BarEq),
+            ['|', _, _] => skip_fixed(1, TokenType::Pipe),
+            ['^', '^', _] => skip_fixed(2, TokenType::CircumflexCircumflex),
+            ['^', '=', _] => skip_fixed(2, TokenType::CircumflexEq),
+            ['^', _, _] => skip_fixed(1, TokenType::Circumflex),
+            ['+', '=', _] => skip_fixed(2, TokenType::PlusEq),
+            ['+', _, _] => skip_fixed(1, TokenType::Plus),
+            ['-', '=', _] => skip_fixed(2, TokenType::MinusEq),
+            ['-', '>', _] => skip_fixed(2, TokenType::Arrow),
+            ['-', _, _] => skip_fixed(1, TokenType::Minus),
+            ['*', '=', _] => skip_fixed(2, TokenType::StarEq),
+            ['*', '*', _] => skip_fixed(2, TokenType::StarStar),
+            ['*', _, _] => skip_fixed(1, TokenType::Star),
+            ['/', '=', _] => skip_fixed(2, TokenType::SlashEq),
+            ['/', _, _] => skip_fixed(1, TokenType::Slash),
+            ['.', _, _] => skip_fixed(1, TokenType::Dot),
+            [';', _, _] => skip_fixed(1, TokenType::Semi),
+            [':', ':', _] => skip_fixed(2, TokenType::ColonColon),
+            [':', _, _] => skip_fixed(1, TokenType::Colon),
+            [',', _, _] => skip_fixed(1, TokenType::Comma),
+            ['(', _, _] => skip_fixed(1, TokenType::OpenR),
+            [')', _, _] => skip_fixed(1, TokenType::CloseR),
+            ['{', _, _] => skip_fixed(1, TokenType::OpenC),
+            ['}', _, _] => skip_fixed(1, TokenType::CloseC),
+            ['[', _, _] => skip_fixed(1, TokenType::OpenS),
+            [']', _, _] => skip_fixed(1, TokenType::CloseS),
 
-            [_, _] => return Err(TokenError::InvalidToken { pos: start }),
+            _ => return Err(TokenError::InvalidToken { pos: start }),
         };
 
         let span = Span::new(start, self.curr_pos());
@@ -490,7 +485,7 @@ declare_tokens! {
         Dot(".", TC::Symbol),
         Dots("..", TC::Symbol),
         DotsEq("..=", TC::Symbol),
-        DotsPlus("..+", TC::Symbol),
+        PlusDots("+..", TC::Symbol),
         AmperAmper("&&", TC::Symbol),
         PipePipe("||", TC::Symbol),
         CircumflexCircumflex("^^", TC::Symbol),

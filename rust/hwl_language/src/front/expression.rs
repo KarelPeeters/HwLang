@@ -349,6 +349,16 @@ impl CompileItemContext<'_, '_> {
             }
 
             ExpressionKind::UnaryOp(op, operand) => match op.inner {
+                UnaryOp::Plus => {
+                    let operand =
+                        self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
+                    let _ = check_type_is_int(
+                        diags,
+                        TypeContainsReason::Operator(op.span),
+                        Spanned::new(operand.span, operand.inner.value.clone()),
+                    )?;
+                    return Ok(operand.inner);
+                }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
                     let operand = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;

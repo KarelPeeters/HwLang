@@ -70,7 +70,7 @@ extern {
         "." => TokenType::Dot,
         ".." => TokenType::Dots,
         "..=" => TokenType::DotsEq,
-        "..+" => TokenType::DotsPlus,
+        "+.." => TokenType::PlusDots,
         "&&" => TokenType::AmperAmper,
         "||" => TokenType::PipePipe,
         "^^" => TokenType::CircumflexCircumflex,
@@ -415,7 +415,7 @@ ExprLevelRange: ExpressionKind = {
         => ExpressionKind::RangeLiteral(RangeLiteral::ExclusiveEnd { op_span, start, end }),
     <start:BoxSpanned<ExprLevelLogical>?> <op_span:Span<"..=">> <end:BoxSpanned<ExprLevelLogical>>
         => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end }),
-    <start:BoxSpanned<ExprLevelLogical>> <op_span:Span<"..+">> <len:BoxSpanned<ExprLevelLogical>>
+    <start:BoxSpanned<ExprLevelLogical>> <op_span:Span<"+..">> <len:BoxSpanned<ExprLevelLogical>>
         => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, len }),
     ExprLevelLogical,
 }
@@ -520,10 +520,12 @@ ExprLevelMul: ExpressionKind = {
 }
 
 ExprLevelUnary: ExpressionKind = {
-    <op:Span<"!">> <inner:BoxSpanned<ExprLevelPower>> =>
-        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
+    <op:Span<"+">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Plus }, inner),
     <op:Span<"-">> <inner:BoxSpanned<ExprLevelPower>> =>
         ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Neg }, inner),
+    <op:Span<"!">> <inner:BoxSpanned<ExprLevelPower>> =>
+        ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
     ExprLevelPower,
 }
 
