@@ -1,18 +1,18 @@
-use crate::front::block::{BlockDomain, TypedIrExpression};
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{eval_binary_expression, ExpressionWithImplications};
-use crate::front::ir::{
-    IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
-};
-use crate::front::misc::{Signal, ValueDomain};
 use crate::front::scope::Scope;
+use crate::front::signal::Signal;
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::MaybeCompile;
+use crate::front::value::{HardwareValue, Value};
 use crate::front::variables::VariableValues;
+use crate::mid::ir::{
+    IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
+};
 use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 
@@ -127,7 +127,7 @@ impl CompileItemContext<'_, '_> {
                 let target_eval = target_steps.apply_to_value(
                     diags,
                     &mut self.large,
-                    Spanned::new(target.span, MaybeCompile::Other(target_base_eval)),
+                    Spanned::new(target.span, Value::Hardware(target_base_eval)),
                 )?;
 
                 let value_eval = eval_binary_expression(
@@ -140,15 +140,15 @@ impl CompileItemContext<'_, '_> {
                 )?
                 .value;
                 let value_eval = match value_eval {
-                    MaybeCompile::Compile(_) => {
+                    Value::Compile(_) => {
                         return Err(diags.report_internal_error(
                             stmt.span,
                             "binary op on compile values should result in compile value again",
                         ))
                     }
-                    MaybeCompile::Other(value) => value,
+                    Value::Hardware(value) => value,
                 };
-                Spanned::new(stmt.span, MaybeCompile::Other(value_eval))
+                Spanned::new(stmt.span, Value::Hardware(value_eval))
             }
         };
 
@@ -208,7 +208,7 @@ impl CompileItemContext<'_, '_> {
         var: Variable,
         target_expected_ty: Type,
         op: Spanned<Option<BinaryOp>>,
-        right_eval: Spanned<MaybeCompile<TypedIrExpression>>,
+        right_eval: Spanned<Value>,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.refs.diags;
         let AssignmentTarget {
@@ -263,8 +263,8 @@ impl CompileItemContext<'_, '_> {
 
             // store hardware expression in IR variable, to avoid generating duplicate code if we end up using it multiple times
             let value_stored = match value_eval.inner {
-                MaybeCompile::Compile(value_inner) => MaybeCompile::Compile(value_inner),
-                MaybeCompile::Other(value_inner) => MaybeCompile::Other(
+                Value::Compile(value_inner) => Value::Compile(value_inner),
+                Value::Hardware(value_inner) => Value::Hardware(
                     store_ir_expression_in_new_variable(
                         diags,
                         ctx,
@@ -287,9 +287,9 @@ impl CompileItemContext<'_, '_> {
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;
-        any_hardware |= matches!(target_base_eval.inner, MaybeCompile::Other(_));
+        any_hardware |= matches!(target_base_eval.inner, Value::Hardware(_));
         any_hardware |= target_steps.any_hardware();
-        any_hardware |= matches!(right_eval.inner, MaybeCompile::Other(_));
+        any_hardware |= matches!(right_eval.inner, Value::Hardware(_));
 
         let result = if any_hardware {
             // figure out the assigned value
@@ -311,7 +311,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             // create a corresponding ir variable
-            let TypedIrExpression {
+            let HardwareValue {
                 ty: target_base_ty,
                 domain: target_base_domain,
                 expr: target_base_ir_var,
@@ -348,17 +348,17 @@ impl CompileItemContext<'_, '_> {
             let mut combined_domain = target_base_domain.join(value.inner.domain());
             target_steps.for_each_domain(|d| combined_domain = combined_domain.join(d.inner));
 
-            let value_assigned = TypedIrExpression {
+            let value_assigned = HardwareValue {
                 ty: target_base_ty.inner,
                 domain: combined_domain,
                 expr: IrExpression::Variable(target_base_ir_var),
             };
-            MaybeCompile::Other(value_assigned)
+            Value::Hardware(value_assigned)
         } else {
             // everything is compile-time, do assignment at compile-time
             let target_base_eval = target_base_eval.map_inner(|m| m.unwrap_compile());
             let target_steps = target_steps.unwrap_compile();
-            let right_eval = right_eval.map_inner(MaybeCompile::unwrap_compile);
+            let right_eval = right_eval.map_inner(Value::unwrap_compile);
 
             // handle op
             let value_eval = match op.inner {
@@ -373,14 +373,14 @@ impl CompileItemContext<'_, '_> {
                         Spanned::new(op.span, op_inner),
                         Spanned::new(
                             target.span,
-                            ExpressionWithImplications::simple(MaybeCompile::Compile(target_eval)),
+                            ExpressionWithImplications::simple(Value::Compile(target_eval)),
                         ),
-                        right_eval.map_inner(|e| ExpressionWithImplications::simple(MaybeCompile::Compile(e))),
+                        right_eval.map_inner(|e| ExpressionWithImplications::simple(Value::Compile(e))),
                     )?
                     .value;
                     let value = match value {
-                        MaybeCompile::Compile(value) => value,
-                        MaybeCompile::Other(_) => {
+                        Value::Compile(value) => value,
+                        Value::Hardware(_) => {
                             return Err(diags.report_internal_error(
                                 stmt_span,
                                 "binary op on compile values should result in compile value again",
@@ -403,7 +403,7 @@ impl CompileItemContext<'_, '_> {
 
             // do assignment
             let result_value = target_steps.set_compile_value(diags, target_base_eval, op.span, value_eval)?;
-            MaybeCompile::Compile(result_value)
+            Value::Compile(result_value)
         };
 
         vars.var_set(diags, var, stmt_span, result)?;
@@ -417,8 +417,8 @@ impl CompileItemContext<'_, '_> {
         target_span: Span,
         target_base_span: Span,
         var: Variable,
-        target_base_eval: &MaybeCompile<TypedIrExpression<HardwareType>>,
-    ) -> Result<TypedIrExpression<Spanned<HardwareType>, IrVariable>, ErrorGuaranteed> {
+        target_base_eval: &Value,
+    ) -> Result<HardwareValue<Spanned<HardwareType>, IrVariable>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         // pick a type and convert the current base value to hardware
@@ -457,7 +457,7 @@ impl CompileItemContext<'_, '_> {
             target_base_ir_expr,
         )?;
 
-        Ok(TypedIrExpression {
+        Ok(HardwareValue {
             ty: Spanned::new(target_base_ty.span, result.ty),
             domain: result.domain,
             expr: result.expr,
@@ -551,8 +551,8 @@ pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
     ctx: &mut C,
     ctx_block: &mut C::Block,
     debug_info_id: MaybeIdentifier,
-    expr: TypedIrExpression,
-) -> Result<TypedIrExpression<HardwareType, IrVariable>, ErrorGuaranteed> {
+    expr: HardwareValue,
+) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed> {
     let span = debug_info_id.span();
     let var_ir_info = IrVariableInfo {
         ty: expr.ty.as_ir(),
@@ -563,7 +563,7 @@ pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
     let stmt_store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), expr.expr);
     ctx.push_ir_statement(diags, ctx_block, Spanned::new(span, stmt_store))?;
 
-    Ok(TypedIrExpression {
+    Ok(HardwareValue {
         ty: expr.ty,
         domain: expr.domain,
         expr: var_ir,

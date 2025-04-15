@@ -4,10 +4,10 @@ use crate::server::document::abs_path_to_uri;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState};
 use annotate_snippets::Level;
+use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
 use hwl_language::front::compile::{compile, ElaborationSet, NoPrintHandler};
 use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
-use hwl_language::front::lower_verilog::lower;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{
     BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder, SourceSetError,
@@ -50,7 +50,7 @@ impl ServerState {
                 &|| false,
                 NON_ZERO_USIZE_ONE,
             );
-            let _ = compiled.and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
+            let _ = compiled.and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, c.top_module));
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI

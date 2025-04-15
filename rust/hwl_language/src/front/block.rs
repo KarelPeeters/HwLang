@@ -3,71 +3,21 @@ use crate::front::check::{check_type_contains_compile_value, check_type_contains
 use crate::front::compile::{CompileItemContext, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::ForIterator;
-use crate::front::ir::{IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement, IrVariable};
-use crate::front::misc::{DomainSignal, ScopedEntry, ValueDomain};
-use crate::front::scope::Scope;
-use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::scope::ScopedEntry;
+use crate::front::scope::{NamedValue, Scope};
+use crate::front::types::Type;
+use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{merge_variable_branches, VariableValues};
+use crate::mid::ir::{IrIfStatement, IrStatement};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement, Spanned,
-    SyncDomain, VariableDeclaration, WhileStatement,
+    VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::{result_pair, ResultExt};
-
-// TODO move
-// TODO rename to HardwareValue
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TypedIrExpression<T = HardwareType, E = IrExpression> {
-    pub ty: T,
-    pub domain: ValueDomain,
-    pub expr: E,
-}
-
-impl<E> Typed for TypedIrExpression<HardwareType, E> {
-    fn ty(&self) -> Type {
-        self.ty.as_type()
-    }
-}
-
-impl<T> TypedIrExpression<T, IrVariable> {
-    pub fn to_general_expression(self) -> TypedIrExpression<T, IrExpression> {
-        TypedIrExpression {
-            ty: self.ty,
-            domain: self.domain,
-            expr: IrExpression::Variable(self.expr),
-        }
-    }
-}
-
-impl TypedIrExpression {
-    pub fn soft_expand_to_type(self, large: &mut IrLargeArena, ty: &HardwareType) -> Self {
-        match (&self.ty, ty) {
-            (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
-                if target != expr_ty && target.contains_range(expr_ty) {
-                    TypedIrExpression {
-                        ty: HardwareType::Int(target.clone()),
-                        domain: self.domain,
-                        expr: large.push_expr(IrExpressionLarge::ExpandIntRange(target.clone(), self.expr)),
-                    }
-                } else {
-                    self
-                }
-            }
-            _ => self,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum BlockDomain {
-    CompileTime,
-    Combinatorial,
-    Clocked(Spanned<SyncDomain<DomainSignal>>),
-}
 
 #[derive(Debug)]
 pub enum BlockEnd<S = BlockEndStopping> {
@@ -85,7 +35,7 @@ pub enum BlockEndStopping {
 #[derive(Debug)]
 pub struct BlockEndReturn {
     pub span_keyword: Span,
-    pub value: Option<Spanned<MaybeCompile<TypedIrExpression>>>,
+    pub value: Option<Spanned<Value>>,
 }
 
 impl BlockEnd<BlockEndStopping> {
@@ -221,7 +171,7 @@ impl CompileItemContext<'_, '_> {
                         if let Some(init) = init {
                             let init = init.inner.try_map_other(|init| {
                                 store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), init)
-                                    .map(TypedIrExpression::to_general_expression)
+                                    .map(HardwareValue::to_general_expression)
                             })?;
                             vars.var_set(diags, var, decl.span, init)?;
                         }
@@ -235,7 +185,7 @@ impl CompileItemContext<'_, '_> {
                     self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
                 }
                 BlockStatementKind::Expression(expr) => {
-                    let _: Spanned<MaybeCompile<TypedIrExpression>> =
+                    let _: Spanned<Value> =
                         self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Type, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
@@ -414,7 +364,7 @@ impl CompileItemContext<'_, '_> {
 
         match cond.inner.value {
             // evaluate the if at compile-time
-            MaybeCompile::Compile(cond_eval) => {
+            Value::Compile(cond_eval) => {
                 let cond_eval = match cond_eval {
                     CompileValue::Bool(b) => b,
                     _ => throw!(diags.report_internal_error(cond.span, "expected bool value")),
@@ -434,7 +384,7 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             // evaluate the if at runtime, generating IR
-            MaybeCompile::Other(cond_eval) => {
+            Value::Hardware(cond_eval) => {
                 // check condition domain
                 // TODO extract this to a common function?
                 match ctx.block_domain() {

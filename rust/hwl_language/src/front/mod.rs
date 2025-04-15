@@ -1,21 +1,18 @@
-pub mod ir;
-pub mod lower_verilog;
-pub mod misc;
-pub mod types;
-pub mod value;
-
 pub mod assignment;
 pub mod block;
 pub mod check;
 pub mod compile;
 pub mod context;
 pub mod diagnostic;
+pub mod domain;
 pub mod expression;
 pub mod function;
 pub mod implication;
-pub mod ir_validate;
 pub mod item;
 pub mod module;
 pub mod scope;
+pub mod signal;
 pub mod steps;
+pub mod types;
+pub mod value;
 pub mod variables;

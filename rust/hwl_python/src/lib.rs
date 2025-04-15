@@ -1,20 +1,20 @@
 use check::{check_diags, convert_diag_error, unwrap_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
+use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{
     ArenaPorts, ArenaVariables, CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler,
 };
+use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
+use hwl_language::mid::ir::IrModule;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
         context::CompileTimeExpressionContext,
         diagnostic::Diagnostics,
         function::FunctionValue,
-        ir::IrModule,
-        lower_verilog::lower,
-        misc::ScopedEntry,
         types::{IncRange as RustIncRange, Type as RustType},
-        value::MaybeCompile,
+        value::Value,
     },
     syntax::{
         ast::Spanned,
@@ -307,7 +307,7 @@ impl Function {
             let dummy_span = self.function_value.decl_span;
 
             // convert args
-            let f_arg = |v| Spanned::new(dummy_span, MaybeCompile::Compile(v));
+            let f_arg = |v| Spanned::new(dummy_span, Value::Compile(v));
             let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
 
             // call function
@@ -332,8 +332,8 @@ impl Function {
 
             // unwrap compile
             match returned {
-                MaybeCompile::Compile(returned) => returned,
-                MaybeCompile::Other(_) => {
+                Value::Compile(returned) => returned,
+                Value::Hardware(_) => {
                     let err = diags.report_internal_error(
                         dummy_span,
                         "function called with only compile-time args should return compile-time value",
@@ -425,7 +425,7 @@ impl ModuleInstance {
         let ir_modules = unwrap_diag_error(source, &diags, ir_modules)?;
 
         // actual lowering
-        let lowered = lower(&diags, source, parsed, &ir_modules, self.ir_module);
+        let lowered = lower_to_verilog(&diags, source, parsed, &ir_modules, self.ir_module);
         let lowered = unwrap_diag_error(source, &diags, lowered)?;
         Ok(ModuleVerilog {
             module_name: lowered.top_module_name,

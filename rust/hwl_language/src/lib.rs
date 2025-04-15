@@ -1,6 +1,7 @@
 pub mod constants;
-
-pub mod front;
-pub mod simulator;
-pub mod syntax;
 pub mod util;
+
+pub mod back;
+pub mod front;
+pub mod mid;
+pub mod syntax;

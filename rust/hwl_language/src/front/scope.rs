@@ -1,8 +1,9 @@
+use crate::front::compile::{Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
-use crate::front::misc::ScopedEntry;
 use crate::syntax::ast;
 use crate::syntax::ast::Identifier;
+use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::arena::RandomCheck;
@@ -17,6 +18,24 @@ pub struct Scope<'p> {
     span: Span,
     parent: ScopeParent<'p>,
     content: ScopeContent,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScopedEntry {
+    /// Indirection though an item, the item should be evaluated.
+    Item(AstRefItem),
+    /// A named value: port, register, wire, variable.
+    /// These are not fully evaluated immediately, they might be used symbolically
+    ///   as assignment targets or in domain expressions.
+    Named(NamedValue),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum NamedValue {
+    Variable(Variable),
+    Port(Port),
+    Wire(Wire),
+    Register(Register),
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -1,16 +1,16 @@
-use crate::front::block::BlockDomain;
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
 use crate::front::implication::Implication;
-use crate::front::ir::{
-    IrBlock, IrExpression, IrRegister, IrRegisterInfo, IrRegisters, IrStatement, IrVariable, IrVariableInfo,
-    IrVariables,
-};
-use crate::front::misc::{DomainSignal, Signal, ValueDomain};
 use crate::front::module::ExtraRegisterInit;
+use crate::front::signal::Signal;
 use crate::front::types::HardwareType;
 use crate::front::value::MaybeUndefined;
 use crate::front::variables::{ValueVersioned, VariableValues};
+use crate::mid::ir::{
+    IrBlock, IrExpression, IrRegister, IrRegisterInfo, IrRegisters, IrStatement, IrVariable, IrVariableInfo,
+    IrVariables,
+};
 use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;

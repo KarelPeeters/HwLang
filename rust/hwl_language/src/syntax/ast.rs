@@ -1,4 +1,4 @@
-use crate::front::value::MaybeCompile;
+use crate::front::value::Value;
 use crate::syntax::pos::Span;
 use crate::util::iter::IterExt;
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
@@ -766,14 +766,14 @@ impl<T> Spanned<Option<T>> {
     }
 }
 
-impl<T, C> Spanned<MaybeCompile<T, C>> {
-    pub fn transpose(self) -> MaybeCompile<Spanned<T>, Spanned<C>> {
+impl<T, C> Spanned<Value<T, C>> {
+    pub fn transpose(self) -> Value<Spanned<T>, Spanned<C>> {
         match self.inner {
-            MaybeCompile::Compile(value) => MaybeCompile::Compile(Spanned {
+            Value::Compile(value) => Value::Compile(Spanned {
                 span: self.span,
                 inner: value,
             }),
-            MaybeCompile::Other(value) => MaybeCompile::Other(Spanned {
+            Value::Hardware(value) => Value::Hardware(Spanned {
                 span: self.span,
                 inner: value,
             }),

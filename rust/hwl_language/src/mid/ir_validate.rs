@@ -1,5 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{
+use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrClockedProcess, IrDatabase,
     IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo,
     IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,

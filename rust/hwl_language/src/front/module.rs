@@ -9,17 +9,19 @@ use crate::front::context::{
     BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
 };
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::EvaluatedId;
-use crate::front::ir::{
+use crate::front::scope::{DeclaredValueSingle, NamedValue, Scope, ScopedEntry};
+use crate::front::signal::Polarized;
+use crate::front::signal::Signal;
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{CompileValue, MaybeUndefined, Value};
+use crate::front::variables::VariableValues;
+use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrModule,
     IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo,
     IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::front::scope::{DeclaredValueSingle, Scope};
-use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, NamedValue};
-use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     self, ClockedBlockReset, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind,
     ResetKind,
@@ -405,7 +407,7 @@ fn rebuild_params_scope<'p>(
                 variables,
                 MaybeIdentifier::Identifier(id.clone()),
                 id.span,
-                MaybeCompile::Compile(value.clone()),
+                Value::Compile(value.clone()),
             );
             let declared = DeclaredValueSingle::Value {
                 span: id.span,

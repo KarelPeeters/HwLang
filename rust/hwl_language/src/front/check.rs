@@ -1,9 +1,8 @@
-use crate::front::block::TypedIrExpression;
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
-use crate::front::misc::ValueDomain;
+use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, MaybeCompile};
+use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
@@ -178,19 +177,19 @@ pub fn check_type_contains_value(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     target_ty: &Type,
-    value: Spanned<&MaybeCompile<TypedIrExpression>>,
+    value: Spanned<&Value>,
     accept_undefined: bool,
     allow_compound_subtype: bool,
 ) -> Result<(), ErrorGuaranteed> {
     match value.inner {
-        MaybeCompile::Compile(value_inner) => {
+        Value::Compile(value_inner) => {
             let value = Spanned {
                 span: value.span,
                 inner: value_inner,
             };
             check_type_contains_compile_value(diags, reason, target_ty, value, accept_undefined)
         }
-        MaybeCompile::Other(value_inner) => {
+        Value::Hardware(value_inner) => {
             let value_ty = Spanned {
                 span: value.span,
                 inner: &value_inner.ty.as_type(),
@@ -264,22 +263,22 @@ pub fn check_type_contains_type(
 pub fn check_type_is_int(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<MaybeCompile<TypedIrExpression>>,
-) -> Result<Spanned<MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt>>, ErrorGuaranteed> {
+    value: Spanned<Value>,
+) -> Result<Spanned<Value<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>, ErrorGuaranteed> {
     check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false, true)?;
 
     match value.inner {
-        MaybeCompile::Compile(value_inner) => match value_inner {
+        Value::Compile(value_inner) => match value_inner {
             CompileValue::Int(value_inner) => Ok(Spanned {
                 span: value.span,
-                inner: MaybeCompile::Compile(value_inner),
+                inner: Value::Compile(value_inner),
             }),
             _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
         },
-        MaybeCompile::Other(value_inner) => match value_inner.ty {
+        Value::Hardware(value_inner) => match value_inner.ty {
             HardwareType::Int(ty) => Ok(Spanned {
                 span: value.span,
-                inner: MaybeCompile::Other(TypedIrExpression {
+                inner: Value::Hardware(HardwareValue {
                     ty,
                     domain: value_inner.domain,
                     expr: value_inner.expr,
@@ -306,15 +305,15 @@ pub fn check_type_is_int_compile(
 pub fn check_type_is_int_hardware(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<TypedIrExpression>,
-) -> Result<Spanned<TypedIrExpression<ClosedIncRange<BigInt>>>, ErrorGuaranteed> {
+    value: Spanned<HardwareValue>,
+) -> Result<Spanned<HardwareValue<ClosedIncRange<BigInt>>>, ErrorGuaranteed> {
     let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
     check_type_contains_type(diags, reason, &Type::Int(IncRange::OPEN), value_ty.as_ref(), false)?;
 
     match value.inner.ty {
         HardwareType::Int(ty) => Ok(Spanned {
             span: value.span,
-            inner: TypedIrExpression {
+            inner: HardwareValue {
                 ty,
                 domain: value.inner.domain,
                 expr: value.inner.expr,
@@ -344,22 +343,22 @@ pub fn check_type_is_uint_compile(
 pub fn check_type_is_bool(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<MaybeCompile<TypedIrExpression>>,
-) -> Result<Spanned<MaybeCompile<TypedIrExpression<()>, bool>>, ErrorGuaranteed> {
+    value: Spanned<Value>,
+) -> Result<Spanned<Value<bool, HardwareValue<()>>>, ErrorGuaranteed> {
     check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false)?;
 
     match value.inner {
-        MaybeCompile::Compile(value_inner) => match value_inner {
+        Value::Compile(value_inner) => match value_inner {
             CompileValue::Bool(value_inner) => Ok(Spanned {
                 span: value.span,
-                inner: MaybeCompile::Compile(value_inner),
+                inner: Value::Compile(value_inner),
             }),
             _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
         },
-        MaybeCompile::Other(value_inner) => match value_inner.ty {
+        Value::Hardware(value_inner) => match value_inner.ty {
             HardwareType::Bool => Ok(Spanned {
                 span: value.span,
-                inner: MaybeCompile::Other(TypedIrExpression {
+                inner: Value::Hardware(HardwareValue {
                     ty: (),
                     domain: value_inner.domain,
                     expr: value_inner.expr,

@@ -1,12 +1,12 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{
+use crate::front::types::ClosedIncRange;
+use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
     IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::front::types::ClosedIncRange;
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -21,11 +21,7 @@ use unwrap_match::unwrap_match;
 //   only one for each signal, maybe also a separate one for each array element?
 //   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
 //   skip operations on undefined values, we don't want to cause undefined C++ behavior!
-pub fn simulator_codegen(
-    diags: &Diagnostics,
-    modules: &IrModules,
-    top_module: IrModule,
-) -> Result<String, ErrorGuaranteed> {
+pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModule) -> Result<String, ErrorGuaranteed> {
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup

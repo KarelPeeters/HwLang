@@ -2,9 +2,9 @@ use crate::front::check::{check_type_contains_compile_value, TypeContainsReason}
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
-use crate::front::misc::ScopedEntry;
-use crate::front::scope::Scope;
-use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::scope::ScopedEntry;
+use crate::front::scope::{NamedValue, Scope};
+use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
@@ -157,7 +157,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let (decl_span, id) = decl.info();
         let entry = self.eval_declaration(scope, vars, decl).map(|v| {
-            let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, MaybeCompile::Compile(v));
+            let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, Value::Compile(v));
             ScopedEntry::Named(NamedValue::Variable(var))
         });
         scope.maybe_declare(diags, id.as_ref(), entry);

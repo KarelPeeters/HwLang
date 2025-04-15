@@ -1,32 +1,19 @@
-use crate::front::block::TypedIrExpression;
-use crate::front::compile::{Port, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
-use crate::front::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
-use crate::front::misc::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrVariable};
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::enumerate;
 use std::convert::identity;
 
-// TODO rename
-// TODO just provide both as default args, by now it's pretty clear that this uses TypedIrExpression almost always
+// TODO just provide both as default args, by now it's pretty clear that this uses HardwareValue almost always
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MaybeCompile<T, C = CompileValue> {
+pub enum Value<C = CompileValue, T = HardwareValue> {
     Compile(C),
-    // TODO rename
-    Other(T),
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum NamedValue {
-    Variable(Variable),
-
-    Port(Port),
-    Wire(Wire),
-    Register(Register),
+    Hardware(T),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -43,6 +30,13 @@ pub enum CompileValue {
     Module(AstRefModule),
     Function(FunctionValue),
     // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct HardwareValue<T = HardwareType, E = IrExpression> {
+    pub ty: T,
+    pub domain: ValueDomain,
+    pub expr: E,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -232,9 +226,9 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<MaybeUndefined<TypedIrExpression>, ErrorGuaranteed> {
+    ) -> Result<MaybeUndefined<HardwareValue>, ErrorGuaranteed> {
         let hw_value = self.as_hardware_value_or_undefined(diags, large, span, ty_hw)?;
-        let typed_expr = hw_value.map_inner(|expr| TypedIrExpression {
+        let typed_expr = hw_value.map_inner(|expr| HardwareValue {
             ty: ty_hw.clone(),
             domain: ValueDomain::CompileTime,
             expr,
@@ -248,7 +242,7 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    ) -> Result<HardwareValue, ErrorGuaranteed> {
         match self.as_ir_expression_or_undefined(diags, large, span, ty_hw)? {
             MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
             MaybeUndefined::Undefined => Err(diags.report_simple(
@@ -291,39 +285,74 @@ impl CompileValue {
     }
 }
 
-impl<T, C> MaybeCompile<T, C> {
+impl<E> Typed for HardwareValue<HardwareType, E> {
+    fn ty(&self) -> Type {
+        self.ty.as_type()
+    }
+}
+
+impl<T> HardwareValue<T, IrVariable> {
+    pub fn to_general_expression(self) -> HardwareValue<T, IrExpression> {
+        HardwareValue {
+            ty: self.ty,
+            domain: self.domain,
+            expr: IrExpression::Variable(self.expr),
+        }
+    }
+}
+
+impl HardwareValue {
+    pub fn soft_expand_to_type(self, large: &mut IrLargeArena, ty: &HardwareType) -> Self {
+        match (&self.ty, ty) {
+            (HardwareType::Int(expr_ty), HardwareType::Int(target)) => {
+                if target != expr_ty && target.contains_range(expr_ty) {
+                    HardwareValue {
+                        ty: HardwareType::Int(target.clone()),
+                        domain: self.domain,
+                        expr: large.push_expr(IrExpressionLarge::ExpandIntRange(target.clone(), self.expr)),
+                    }
+                } else {
+                    self
+                }
+            }
+            _ => self,
+        }
+    }
+}
+
+impl<C, T> Value<C, T> {
     pub fn unwrap_compile(self) -> C {
         match self {
-            MaybeCompile::Compile(v) => v,
-            MaybeCompile::Other(_) => panic!("expected compile value"),
+            Value::Compile(v) => v,
+            Value::Hardware(_) => panic!("expected compile value"),
         }
     }
 
-    pub fn as_ref(&self) -> MaybeCompile<&T, &C> {
+    pub fn as_ref(&self) -> Value<&C, &T> {
         match self {
-            MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
-            MaybeCompile::Other(v) => MaybeCompile::Other(v),
+            Value::Compile(v) => Value::Compile(v),
+            Value::Hardware(v) => Value::Hardware(v),
         }
     }
 
-    pub fn try_map_other<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<MaybeCompile<U, C>, E> {
+    pub fn try_map_other<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<Value<C, U>, E> {
         match self {
-            MaybeCompile::Compile(v) => Ok(MaybeCompile::Compile(v)),
-            MaybeCompile::Other(v) => Ok(MaybeCompile::Other(f(v)?)),
+            Value::Compile(v) => Ok(Value::Compile(v)),
+            Value::Hardware(v) => Ok(Value::Hardware(f(v)?)),
         }
     }
 }
 
-impl<T, E> MaybeCompile<TypedIrExpression<T, E>> {
+impl<T, E> Value<CompileValue, HardwareValue<T, E>> {
     pub fn domain(&self) -> &ValueDomain {
         match self {
-            MaybeCompile::Compile(_) => &ValueDomain::CompileTime,
-            MaybeCompile::Other(value) => &value.domain,
+            Value::Compile(_) => &ValueDomain::CompileTime,
+            Value::Hardware(value) => &value.domain,
         }
     }
 }
 
-impl MaybeCompile<TypedIrExpression> {
+impl Value {
     /// Turn this expression into an [IrExpression].
     ///
     /// Also tries to expand the expression to the given type, but this can fail.
@@ -334,19 +363,19 @@ impl MaybeCompile<TypedIrExpression> {
         large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
-    ) -> Result<TypedIrExpression, ErrorGuaranteed> {
+    ) -> Result<HardwareValue, ErrorGuaranteed> {
         match self {
-            MaybeCompile::Compile(v) => v.as_ir_expression(diags, large, span, ty),
-            MaybeCompile::Other(v) => Ok(v.clone().soft_expand_to_type(large, ty)),
+            Value::Compile(v) => v.as_ir_expression(diags, large, span, ty),
+            Value::Hardware(v) => Ok(v.clone().soft_expand_to_type(large, ty)),
         }
     }
 }
 
-impl MaybeCompile<TypedIrExpression<HardwareType, IrExpressionLarge>> {
-    pub fn to_maybe_compile(self, large: &mut IrLargeArena) -> MaybeCompile<TypedIrExpression> {
+impl Value<CompileValue, HardwareValue<HardwareType, IrExpressionLarge>> {
+    pub fn to_maybe_compile(self, large: &mut IrLargeArena) -> Value {
         match self {
-            MaybeCompile::Compile(v) => MaybeCompile::Compile(v),
-            MaybeCompile::Other(v) => MaybeCompile::Other(TypedIrExpression {
+            Value::Compile(v) => Value::Compile(v),
+            Value::Hardware(v) => Value::Hardware(HardwareValue {
                 ty: v.ty,
                 domain: v.domain,
                 expr: large.push_expr(v.expr),
@@ -355,27 +384,27 @@ impl MaybeCompile<TypedIrExpression<HardwareType, IrExpressionLarge>> {
     }
 }
 
-impl MaybeCompile<TypedIrExpression<ClosedIncRange<BigInt>>, BigInt> {
+impl Value<BigInt, HardwareValue<ClosedIncRange<BigInt>>> {
     pub fn range(&self) -> ClosedIncRange<&BigInt> {
         match self {
-            MaybeCompile::Compile(v) => ClosedIncRange::single(v),
-            MaybeCompile::Other(v) => v.ty.as_ref(),
+            Value::Compile(v) => ClosedIncRange::single(v),
+            Value::Hardware(v) => v.ty.as_ref(),
         }
     }
 }
 
-impl<T: Typed, C: Typed> Typed for MaybeCompile<T, C> {
+impl<C: Typed, T: Typed> Typed for Value<C, T> {
     fn ty(&self) -> Type {
         match self {
-            MaybeCompile::Compile(v) => v.ty(),
-            MaybeCompile::Other(v) => v.ty(),
+            Value::Compile(v) => v.ty(),
+            Value::Hardware(v) => v.ty(),
         }
     }
 }
 
-impl<T> From<CompileValue> for MaybeCompile<T, CompileValue> {
+impl<T> From<CompileValue> for Value<CompileValue, T> {
     fn from(value: CompileValue) -> Self {
-        MaybeCompile::Compile(value)
+        Value::Compile(value)
     }
 }
 

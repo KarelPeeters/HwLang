@@ -1,12 +1,12 @@
-use crate::front::block::{BlockEnd, BlockEndReturn, TypedIrExpression};
+use crate::front::block::{BlockEnd, BlockEndReturn};
 use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::misc::ScopedEntry;
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
+use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::Type;
-use crate::front::value::{CompileValue, MaybeCompile, NamedValue};
+use crate::front::value::{CompileValue, Value};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
@@ -83,7 +83,7 @@ pub enum FailedCaptureReason {
 }
 
 impl CompileItemContext<'_, '_> {
-    pub fn match_args_to_params_and_typecheck<'p, I, V: Clone + Into<MaybeCompile<TypedIrExpression>>>(
+    pub fn match_args_to_params_and_typecheck<'p, I, V: Clone + Into<Value>>(
         &mut self,
         vars: &mut VariableValues,
         scope_outer: &'p Scope,
@@ -246,8 +246,8 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         vars: &mut VariableValues,
         function: &FunctionValue,
-        args: Args<Option<Identifier>, Spanned<MaybeCompile<TypedIrExpression>>>,
-    ) -> Result<(C::Block, MaybeCompile<TypedIrExpression>), ErrorGuaranteed> {
+        args: Args<Option<Identifier>, Spanned<Value>>,
+    ) -> Result<(C::Block, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
         self.refs.check_should_stop(function.decl_span)?;
 
@@ -266,7 +266,7 @@ impl CompileItemContext<'_, '_> {
             match &function.body.inner {
                 FunctionBody::TypeAliasExpr(expr) => {
                     let result = s.eval_expression_as_ty(&scope, vars, expr)?.inner;
-                    let result = MaybeCompile::Compile(CompileValue::Type(result));
+                    let result = Value::Compile(CompileValue::Type(result));
 
                     let empty_block = ctx.new_ir_block();
                     Ok((empty_block, result))
@@ -298,15 +298,15 @@ fn check_function_return_value(
     body_span: Span,
     ret_ty: &Option<Spanned<Type>>,
     end: BlockEnd,
-) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+) -> Result<Value, ErrorGuaranteed> {
     match end.unwrap_normal_or_return_in_function(diags)? {
         BlockEnd::Normal => {
             // no return, only allowed for unit-returning functions
             match ret_ty {
-                None => Ok(MaybeCompile::Compile(CompileValue::UNIT)),
+                None => Ok(Value::Compile(CompileValue::UNIT)),
                 Some(ret_ty) => {
                     if ret_ty.inner == Type::UNIT {
-                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                        Ok(Value::Compile(CompileValue::UNIT))
                     } else {
                         let diag = Diagnostic::new("control flow reaches end of function with return type")
                             .add_error(Span::single_at(body_span.end), "end of function is reached here")
@@ -323,10 +323,10 @@ fn check_function_return_value(
         BlockEnd::Stopping(BlockEndReturn { span_keyword, value }) => {
             // return, check type
             match (ret_ty, value) {
-                (None, None) => Ok(MaybeCompile::Compile(CompileValue::UNIT)),
+                (None, None) => Ok(Value::Compile(CompileValue::UNIT)),
                 (Some(ret_ty), None) => {
                     if ret_ty.inner == Type::UNIT {
-                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                        Ok(Value::Compile(CompileValue::UNIT))
                     } else {
                         let diag = Diagnostic::new("missing return value in function with return type")
                             .add_error(span_keyword, "return here without value")
@@ -342,9 +342,10 @@ fn check_function_return_value(
                     }
                 }
                 (None, Some(ret_value)) => {
-                    let is_unit = matches!(&ret_value.inner, MaybeCompile::Compile(CompileValue::Tuple(tuple)) if tuple.is_empty());
+                    let is_unit =
+                        matches!(&ret_value.inner, Value::Compile(CompileValue::Tuple(tuple)) if tuple.is_empty());
                     if is_unit {
-                        Ok(MaybeCompile::Compile(CompileValue::UNIT))
+                        Ok(Value::Compile(CompileValue::UNIT))
                     } else {
                         let diag = Diagnostic::new("return value in function without return type")
                             .add_error(ret_value.span, "return value here")
@@ -464,7 +465,7 @@ impl CapturedScope {
                                 variables,
                                 id_recreated,
                                 span,
-                                MaybeCompile::Compile(value.clone()),
+                                Value::Compile(value.clone()),
                             );
 
                             DeclaredValueSingle::Value {
@@ -487,8 +488,8 @@ impl CapturedScope {
 fn maybe_assigned_to_captured(maybe: &MaybeAssignedValue) -> Result<CapturedValue, ErrorGuaranteed> {
     match maybe {
         MaybeAssignedValue::Assigned(assigned) => match &assigned.value_and_version {
-            MaybeCompile::Compile(value) => Ok(CapturedValue::Value(value.clone())),
-            MaybeCompile::Other(_) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
+            Value::Compile(value) => Ok(CapturedValue::Value(value.clone())),
+            Value::Hardware(_) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
         },
         MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned => {
             Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))

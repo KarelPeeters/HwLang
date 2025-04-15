@@ -1,9 +1,9 @@
 use clap::Parser;
+use hwl_language::back::lower_cpp::lower_to_cpp;
+use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::constants::THREAD_STACK_SIZE;
 use hwl_language::front::compile::{compile, ElaborationSet, StdoutPrintHandler};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::front::lower_verilog::lower;
-use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabaseBuilder;
 use hwl_language::syntax::token::Tokenizer;
@@ -125,13 +125,13 @@ fn main_inner(args: Args) -> ExitCode {
         let start_lower = Instant::now();
         let lowered = compiled
             .as_ref_ok()
-            .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
+            .and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, c.top_module));
         let time_lower = start_lower.elapsed();
 
         let start_simulator = Instant::now();
         let simulator_code = compiled
             .as_ref_ok()
-            .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
+            .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
         let time_simulator = start_simulator.elapsed();
 
         Some((time_lower, time_simulator, lowered, simulator_code))

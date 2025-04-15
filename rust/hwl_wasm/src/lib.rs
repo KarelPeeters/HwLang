@@ -1,7 +1,7 @@
+use hwl_language::back::lower_cpp::lower_to_cpp;
+use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, CollectPrintHandler, ElaborationSet};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::front::lower_verilog::lower;
-use hwl_language::simulator::simulator_codegen;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
@@ -49,10 +49,10 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
 
     let lowered = compiled
         .as_ref_ok()
-        .and_then(|c| lower(&diags, &source, &parsed, &c.modules, c.top_module));
+        .and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, c.top_module));
     let sim = compiled
         .as_ref_ok()
-        .and_then(|c| simulator_codegen(&diags, &c.modules, c.top_module));
+        .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
 
     // TODO lower directly to html?
     let diag_settings = DiagnosticStringSettings::default();

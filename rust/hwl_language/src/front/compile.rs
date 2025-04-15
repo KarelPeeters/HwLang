@@ -1,15 +1,16 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
-use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{
+use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
+use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
+use crate::front::scope::{Scope, ScopedEntry};
+use crate::front::signal::Polarized;
+use crate::front::signal::Signal;
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
     IrWire,
 };
-use crate::front::misc::{DomainSignal, Polarized, PortDomain, ScopedEntry, Signal, ValueDomain};
-use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
-use crate::front::scope::Scope;
-use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, MaybeCompile};
 use crate::syntax::ast::{self, Visibility};
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
 use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
@@ -423,7 +424,7 @@ fn stack_overflow_diagnostic(parsed: &ParsedDatabase, stack: &Vec<StackEntry>) -
 pub enum CompileStackEntry {
     Item(AstRefItem),
     FunctionCall(Span),
-    FunctionRun(AstRefItem, Vec<MaybeCompile<TypedIrExpression>>),
+    FunctionRun(AstRefItem, Vec<Value>),
 }
 
 // TODO move these somewhere else
@@ -471,8 +472,8 @@ pub struct RegisterInfo {
 }
 
 impl PortInfo {
-    pub fn typed_ir_expr(&self) -> TypedIrExpression {
-        TypedIrExpression {
+    pub fn typed_ir_expr(&self) -> HardwareValue {
+        HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_port_domain(self.domain.inner),
             expr: IrExpression::Port(self.ir),
@@ -481,8 +482,8 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn typed_ir_expr(&self) -> TypedIrExpression {
-        TypedIrExpression {
+    pub fn typed_ir_expr(&self) -> HardwareValue {
+        HardwareValue {
             ty: self.ty.inner.clone(),
             domain: self.domain.inner.clone(),
             expr: IrExpression::Wire(self.ir),
@@ -491,8 +492,8 @@ impl WireInfo {
 }
 
 impl RegisterInfo {
-    pub fn typed_ir_expr(&self) -> TypedIrExpression {
-        TypedIrExpression {
+    pub fn typed_ir_expr(&self) -> HardwareValue {
+        HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner)),
             expr: IrExpression::Register(self.ir),

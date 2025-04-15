@@ -1,12 +1,12 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{
+use crate::front::types::HardwareType;
+use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
     IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance,
     IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType,
     IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::front::types::HardwareType;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::parsed::ParsedDatabase;
 use crate::syntax::pos::Span;
@@ -35,7 +35,7 @@ pub struct LoweredVerilog {
 // TODO make backend configurable between verilog and VHDL?
 // TODO ban keywords
 // TODO should we still be doing diagnostics here, or should lowering just never start?
-pub fn lower(
+pub fn lower_to_verilog(
     diags: &Diagnostics,
     source: &SourceDatabase,
     parsed: &ParsedDatabase,

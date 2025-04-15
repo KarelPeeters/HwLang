@@ -1,9 +1,8 @@
-use crate::front::block::TypedIrExpression;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
-use crate::front::misc::ValueDomain;
+use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeCompile};
+use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
 use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
@@ -14,7 +13,7 @@ pub struct ArraySteps<S = ArrayStep> {
     steps: Vec<Spanned<S>>,
 }
 
-pub type ArrayStep = MaybeCompile<ArrayStepHardware, ArrayStepCompile>;
+pub type ArrayStep = Value<ArrayStepCompile, ArrayStepHardware>;
 
 #[derive(Debug, Clone)]
 pub enum ArrayStepCompile {
@@ -24,9 +23,9 @@ pub enum ArrayStepCompile {
 
 #[derive(Debug, Clone)]
 pub enum ArrayStepHardware {
-    ArrayIndex(TypedIrExpression<ClosedIncRange<BigInt>>),
+    ArrayIndex(HardwareValue<ClosedIncRange<BigInt>>),
     ArraySlice {
-        start: TypedIrExpression<ClosedIncRange<BigInt>>,
+        start: HardwareValue<ClosedIncRange<BigInt>>,
         len: BigUint,
     },
 }
@@ -46,9 +45,7 @@ struct EncounteredAny;
 
 impl ArraySteps<ArrayStep> {
     pub fn any_hardware(&self) -> bool {
-        self.steps
-            .iter()
-            .any(|step| matches!(step.inner, MaybeCompile::Other(_)))
+        self.steps.iter().any(|step| matches!(step.inner, Value::Hardware(_)))
     }
 
     pub fn unwrap_compile(&self) -> ArraySteps<&ArrayStepCompile> {
@@ -88,7 +85,7 @@ impl ArraySteps<ArrayStep> {
         for step in &self.steps {
             let d = match &step.inner {
                 ArrayStep::Compile(_) => &ValueDomain::CompileTime,
-                ArrayStep::Other(step) => match step {
+                ArrayStep::Hardware(step) => match step {
                     ArrayStepHardware::ArrayIndex(index) => &index.domain,
                     ArrayStepHardware::ArraySlice { start, len: _ } => &start.domain,
                 },
@@ -139,7 +136,7 @@ impl ArraySteps<ArrayStep> {
                         (step_ir, Some(len))
                     }
                 },
-                ArrayStep::Other(step_inner) => match step_inner {
+                ArrayStep::Hardware(step_inner) => match step_inner {
                     ArrayStepHardware::ArrayIndex(index) => {
                         check_range_index(diags, Spanned::new(step.span, index.ty.as_ref()), ty_array_len)?;
                         let step_ir = IrTargetStep::ArrayIndex(index.expr.clone());
@@ -178,15 +175,15 @@ impl ArraySteps<ArrayStep> {
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
-        value: Spanned<MaybeCompile<TypedIrExpression>>,
-    ) -> Result<MaybeCompile<TypedIrExpression>, ErrorGuaranteed> {
+        value: Spanned<Value>,
+    ) -> Result<Value, ErrorGuaranteed> {
         let ArraySteps { steps } = self;
 
         let mut curr = value;
 
         for step in steps {
             let next_inner = match (&step.inner, curr.inner) {
-                (MaybeCompile::Compile(step_inner), MaybeCompile::Compile(curr_inner)) => match curr_inner {
+                (Value::Compile(step_inner), Value::Compile(curr_inner)) => match curr_inner {
                     CompileValue::Array(curr_inner) => {
                         // index into array
                         let value_len = Spanned::new(curr.span, curr_inner.len());
@@ -195,7 +192,7 @@ impl ArraySteps<ArrayStep> {
                                 let index =
                                     check_range_index_compile(diags, Spanned::new(step.span, index), value_len)?;
                                 let mut curr_inner = curr_inner;
-                                MaybeCompile::Compile(curr_inner.swap_remove(index))
+                                Value::Compile(curr_inner.swap_remove(index))
                             }
                             ArrayStepCompile::ArraySlice { start, len } => {
                                 let SliceInfo { start, len } = check_range_slice_compile(
@@ -206,7 +203,7 @@ impl ArraySteps<ArrayStep> {
                                 )?;
                                 let mut curr_inner = curr_inner;
                                 let slice = curr_inner.drain(start..start + len).collect();
-                                MaybeCompile::Compile(CompileValue::Array(slice))
+                                Value::Compile(CompileValue::Array(slice))
                             }
                         }
                     }
@@ -249,7 +246,7 @@ impl ArraySteps<ArrayStep> {
 
                     // convert step to hardware
                     let (result_expr, step_domain, slice_len) = match step_inner {
-                        MaybeCompile::Compile(ArrayStepCompile::ArrayIndex(index)) => {
+                        Value::Compile(ArrayStepCompile::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
                                 Spanned::new(step.span, ClosedIncRange::single(index)),
@@ -264,7 +261,7 @@ impl ArraySteps<ArrayStep> {
                                 None,
                             )
                         }
-                        MaybeCompile::Compile(ArrayStepCompile::ArraySlice { start, len }) => {
+                        Value::Compile(ArrayStepCompile::ArraySlice { start, len }) => {
                             let len = check_range_slice(
                                 diags,
                                 Spanned::new(step.span, ClosedIncRange::single(start)),
@@ -281,7 +278,7 @@ impl ArraySteps<ArrayStep> {
                                 Some(len),
                             )
                         }
-                        MaybeCompile::Other(ArrayStepHardware::ArrayIndex(index)) => {
+                        Value::Hardware(ArrayStepHardware::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
                                 Spanned::new(step.span, index.ty.as_ref()),
@@ -296,7 +293,7 @@ impl ArraySteps<ArrayStep> {
                                 None,
                             )
                         }
-                        MaybeCompile::Other(ArrayStepHardware::ArraySlice { start, len }) => {
+                        Value::Hardware(ArrayStepHardware::ArraySlice { start, len }) => {
                             let len = check_range_slice(
                                 diags,
                                 Spanned::new(step.span, start.ty.as_ref()),
@@ -320,7 +317,7 @@ impl ArraySteps<ArrayStep> {
                         None => *curr_array_inner_ty.clone(),
                         Some(slice_len) => HardwareType::Array(curr_array_inner_ty.clone(), slice_len),
                     };
-                    MaybeCompile::Other(TypedIrExpression {
+                    Value::Hardware(HardwareValue {
                         ty: next_ty,
                         domain: curr_inner.domain.join(&step_domain),
                         expr: result_expr,
@@ -437,10 +434,10 @@ impl ArraySteps<&ArrayStepCompile> {
         };
         let value_span = value.span;
 
-        let result = self_mapped.apply_to_value(diags, large, value.map_inner(MaybeCompile::Compile))?;
+        let result = self_mapped.apply_to_value(diags, large, value.map_inner(Value::Compile))?;
         match result {
-            MaybeCompile::Compile(result) => Ok(result),
-            MaybeCompile::Other(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),
+            Value::Compile(result) => Ok(result),
+            Value::Hardware(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),
         }
     }
 }

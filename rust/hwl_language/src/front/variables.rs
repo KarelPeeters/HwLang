@@ -1,11 +1,10 @@
-use crate::front::block::TypedIrExpression;
 use crate::front::compile::{ArenaVariables, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
-use crate::front::misc::{Signal, SignalOrVariable};
+use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Typed};
-use crate::front::value::MaybeCompile;
+use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::mid::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::{IndexType, RandomCheck};
@@ -45,14 +44,14 @@ pub enum MaybeAssignedValue {
 #[derive(Debug, Clone)]
 pub struct AssignedValue {
     pub last_assignment_span: Span,
-    pub value_and_version: MaybeCompile<(TypedIrExpression, ValueVersion)>,
+    pub value_and_version: Value<CompileValue, (HardwareValue, ValueVersion)>,
 }
 
 impl AssignedValue {
-    pub fn value(&self) -> MaybeCompile<TypedIrExpression> {
+    pub fn value(&self) -> Value {
         match &self.value_and_version {
-            MaybeCompile::Compile(value) => MaybeCompile::Compile(value.clone()),
-            MaybeCompile::Other((value, _)) => MaybeCompile::Other(value.clone()),
+            Value::Compile(value) => Value::Compile(value.clone()),
+            Value::Hardware((value, _)) => Value::Hardware(value.clone()),
         }
     }
 }
@@ -157,7 +156,7 @@ impl<'p> VariableValues<'p> {
         variables: &mut ArenaVariables,
         id: MaybeIdentifier,
         assign_span: Span,
-        value: MaybeCompile<TypedIrExpression>,
+        value: Value,
     ) -> Variable {
         let info = VariableInfo {
             id,
@@ -168,8 +167,8 @@ impl<'p> VariableValues<'p> {
         let assigned = AssignedValue {
             last_assignment_span: assign_span,
             value_and_version: match value {
-                MaybeCompile::Compile(value) => MaybeCompile::Compile(value),
-                MaybeCompile::Other(value) => MaybeCompile::Other((value, self.kind.increment_version())),
+                Value::Compile(value) => Value::Compile(value),
+                Value::Hardware(value) => Value::Hardware((value, self.kind.increment_version())),
             },
         };
         self.var_values.insert(var, MaybeAssignedValue::Assigned(assigned));
@@ -181,7 +180,7 @@ impl<'p> VariableValues<'p> {
         diags: &Diagnostics,
         var: Variable,
         assignment_span: Span,
-        value: MaybeCompile<TypedIrExpression>,
+        value: Value,
     ) -> Result<(), ErrorGuaranteed> {
         assert_eq!(self.check, var.inner().check());
         let known_var = self.iter_up().any(|curr| curr.var_values.contains_key(&var));
@@ -190,8 +189,8 @@ impl<'p> VariableValues<'p> {
         }
 
         let value_and_version = match value {
-            MaybeCompile::Compile(value) => MaybeCompile::Compile(value),
-            MaybeCompile::Other(value) => MaybeCompile::Other((value, self.kind.increment_version())),
+            Value::Compile(value) => Value::Compile(value),
+            Value::Hardware(value) => Value::Hardware((value, self.kind.increment_version())),
         };
 
         let assigned = MaybeAssignedValue::Assigned(AssignedValue {
@@ -365,10 +364,8 @@ pub fn merge_variable_branches<C: ExpressionContext>(
         let value_combined = match (value_0, value_1) {
             (MaybeAssignedValue::Assigned(value_0), MaybeAssignedValue::Assigned(value_1)) => {
                 let same_value_and_version = match (&value_0.value_and_version, &value_1.value_and_version) {
-                    (MaybeCompile::Compile(value_0), MaybeCompile::Compile(value_1)) => value_0 == value_1,
-                    (MaybeCompile::Other((_, version_0)), MaybeCompile::Other((_, version_1))) => {
-                        version_0 == version_1
-                    }
+                    (Value::Compile(value_0), Value::Compile(value_1)) => value_0 == value_1,
+                    (Value::Hardware((_, version_0)), Value::Hardware((_, version_1))) => version_0 == version_1,
                     _ => false,
                 };
 
@@ -411,7 +408,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
                             let version = parent.kind.increment_version();
                             MaybeAssignedValue::Assigned(AssignedValue {
                                 last_assignment_span: span_merge,
-                                value_and_version: MaybeCompile::Other((value.to_general_expression(), version)),
+                                value_and_version: Value::Hardware((value.to_general_expression(), version)),
                             })
                         }
                         Err(e) => MaybeAssignedValue::Error(e),
@@ -457,7 +454,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
 }
 
 struct MergedValue {
-    value: TypedIrExpression<HardwareType, IrVariable>,
+    value: HardwareValue<HardwareType, IrVariable>,
     store_0: Spanned<IrStatement>,
     store_1: Spanned<IrStatement>,
 }
@@ -468,12 +465,12 @@ fn merge_values<C: ExpressionContext>(
     large: &mut IrLargeArena,
     span_merge: Span,
     debug_info_id: &MaybeIdentifier,
-    value_0: Spanned<&MaybeCompile<TypedIrExpression>>,
-    value_1: Spanned<&MaybeCompile<TypedIrExpression>>,
+    value_0: Spanned<&Value>,
+    value_1: Spanned<&Value>,
 ) -> Result<MergedValue, ErrorGuaranteed> {
     // check that both types are hardware
     // (we do this before finding the common type to get nicer error messages)
-    let value_ty_hw = |value: Spanned<&MaybeCompile<TypedIrExpression>>| {
+    let value_ty_hw = |value: Spanned<&Value>| {
         value.inner.ty().as_hardware_type().ok_or_else(|| {
             let ty_str = value.inner.ty().to_diagnostic_string();
             let diag = Diagnostic::new("merging if assignments needs hardware type")
@@ -535,7 +532,7 @@ fn merge_values<C: ExpressionContext>(
     Ok(MergedValue {
         store_0: Spanned::new(span_merge, store_0),
         store_1: Spanned::new(span_merge, store_1),
-        value: TypedIrExpression {
+        value: HardwareValue {
             ty,
             domain: value_0.domain.join(&value_1.domain),
             expr: var_ir,
