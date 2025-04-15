@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -ue
+
+cd "$(dirname "$0")"/..
+
+cd rust
+cargo build --bin hwl_language --release
+
+COMMAND="target/release/hwl_language ../design/project/ --skip-lower --profile"
+
+valgrind --tool=cachegrind --cachegrind-out-file=cachegrind.out \
+  --cache-sim=yes --branch-sim=yes \
+  $COMMAND
+
+valgrind --tool=callgrind --callgrind-out-file=callgrind.out \
+  $COMMAND
