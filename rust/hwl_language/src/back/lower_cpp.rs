@@ -464,8 +464,8 @@ impl CodegenBlockContext<'_> {
                     Evaluated::Temporary(tmp_result)
                 }
 
-                IrExpressionLarge::IntToBits(_, _) => return Err(todo("IntToBits")),
-                IrExpressionLarge::IntFromBits(_, _) => return Err(todo("IntFromBits")),
+                IrExpressionLarge::ToBits(_, _) => return Err(todo("ToBits")),
+                IrExpressionLarge::FromBits(_, _) => return Err(todo("FromBits")),
                 IrExpressionLarge::ExpandIntRange(range, inner) => {
                     // check that result is still representable
                     let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;

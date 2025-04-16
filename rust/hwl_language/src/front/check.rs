@@ -7,6 +7,8 @@ use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
+use itertools::Itertools;
+use unwrap_match::unwrap_match;
 
 impl CompileItemContext<'_, '_> {
     pub fn check_valid_domain_crossing(
@@ -380,4 +382,62 @@ pub fn check_type_is_bool_compile(
         CompileValue::Bool(value_inner) => Ok(value_inner),
         _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
     }
+}
+
+pub fn check_type_is_bool_array(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<Value>,
+    expected_len: Option<&BigUint>,
+) -> Result<Value<Vec<bool>, HardwareValue<BigUint>>, ErrorGuaranteed> {
+    if let Type::Array(ty_inner, ty_len) = value.inner.ty() {
+        if expected_len.map_or(true, |expected_len| expected_len == &ty_len) {
+            if let Type::Bool = *ty_inner {
+                return match value.inner {
+                    Value::Compile(c) => {
+                        let c = unwrap_match!(c, CompileValue::Array(c) => c);
+                        let result = c
+                            .into_iter()
+                            .map(|c| unwrap_match!(c, CompileValue::Bool(c) => c))
+                            .collect_vec();
+                        Ok(Value::Compile(result))
+                    }
+                    Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
+                        ty: ty_len,
+                        domain: c.domain,
+                        expr: c.expr,
+                    })),
+                };
+            }
+        }
+    }
+
+    let expected_ty_str = match expected_len {
+        None => Type::Array(Box::new(Type::Bool), BigUint::ZERO)
+            .to_diagnostic_string()
+            .replace("0", "_"),
+        Some(expected_len) => Type::Array(Box::new(Type::Bool), expected_len.clone()).to_diagnostic_string(),
+    };
+    let value_ty_str = value.inner.ty().to_diagnostic_string();
+    let mut diag = Diagnostic::new("value does not fit in type").add_error(
+        value.span,
+        format!("expected `{}`, got type `{}`", expected_ty_str, value_ty_str),
+    );
+
+    diag = reason.add_diag_info(diag, &Type::Array(Box::new(Type::Bool), BigUint::ZERO));
+    Err(diags.report(diag.finish()))
+}
+
+pub fn check_hardware_type_for_bit_operation(
+    diags: &Diagnostics,
+    ty: Spanned<&Type>,
+) -> Result<HardwareType, ErrorGuaranteed> {
+    if let Some(ty_hw) = ty.inner.as_hardware_type() {
+        return Ok(ty_hw);
+    }
+
+    let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
+        .add_error(ty.span, format!("actual type `{}`", ty.inner.to_diagnostic_string()))
+        .finish();
+    Err(diags.report(diag))
 }

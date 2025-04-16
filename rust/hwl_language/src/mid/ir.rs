@@ -294,12 +294,11 @@ pub enum IrExpressionLarge {
     },
 
     // casting
-    // TODO these first two should be any type, not just int
     // to-bits can never fail
-    IntToBits(ClosedIncRange<BigInt>, IrExpression),
-    // from-bits can fail (eg. if the resulting value if out of range), if it fails the resulting value is undefined
-    IntFromBits(ClosedIncRange<BigInt>, IrExpression),
-
+    ToBits(IrType, IrExpression),
+    // from-bits can fail (eg. for an int, if the resulting value if out of range),
+    //   if so the result is undefined
+    FromBits(IrType, IrExpression),
     // expand can never fail, this is just a re-encoding
     ExpandIntRange(ClosedIncRange<BigInt>, IrExpression),
     // constrain can fail, if it fails the resulting value is undefined
@@ -379,12 +378,12 @@ impl IrType {
         }
     }
 
-    pub fn bit_width(&self) -> BigUint {
+    pub fn size_bits(&self) -> BigUint {
         match self {
             IrType::Bool => BigUint::ONE,
-            IrType::Int(range) => IntRepresentation::for_range(range).width,
-            IrType::Tuple(inner) => inner.iter().map(IrType::bit_width).sum(),
-            IrType::Array(inner, len) => inner.bit_width() * len,
+            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range).size_bits()),
+            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
+            IrType::Array(inner, len) => inner.size_bits() * len,
         }
     }
 
@@ -428,10 +427,8 @@ impl IrExpression {
                         IrType::Array(inner, len.clone())
                     }
 
-                    IrExpressionLarge::IntToBits(ty, _) => {
-                        IrType::Array(Box::new(IrType::Bool), IntRepresentation::for_range(ty).width)
-                    }
-                    IrExpressionLarge::IntFromBits(ty, _) => IrType::Int(ty.clone()),
+                    IrExpressionLarge::ToBits(ty, _) => IrType::Array(Box::new(IrType::Bool), ty.size_bits()),
+                    IrExpressionLarge::FromBits(ty, _) => ty.clone(),
                     IrExpressionLarge::ExpandIntRange(ty, _) => IrType::Int(ty.clone()),
                     IrExpressionLarge::ConstrainIntRange(ty, _) => IrType::Int(ty.clone()),
                 }
@@ -535,11 +532,19 @@ impl IrExpression {
                         len
                     )
                 }
-                IrExpressionLarge::IntToBits(ty, x) => {
-                    format!("int_to_bits({}, {})", ty, x.to_diagnostic_string(module))
+                IrExpressionLarge::ToBits(ty, x) => {
+                    format!(
+                        "to_bits({}, {})",
+                        ty.to_diagnostic_string(),
+                        x.to_diagnostic_string(module)
+                    )
                 }
-                IrExpressionLarge::IntFromBits(ty, x) => {
-                    format!("int_from_bits({}, {})", ty, x.to_diagnostic_string(module))
+                IrExpressionLarge::FromBits(ty, x) => {
+                    format!(
+                        "from_bits({}, {})",
+                        ty.to_diagnostic_string(),
+                        x.to_diagnostic_string(module)
+                    )
                 }
                 IrExpressionLarge::ExpandIntRange(ty, x) => {
                     format!("expand_int_range({}, {})", ty, x.to_diagnostic_string(module))
@@ -586,7 +591,7 @@ impl IrExpression {
                     f(base);
                     f(start);
                 }
-                IrExpressionLarge::IntToBits(_ty, x) | IrExpressionLarge::IntFromBits(_ty, x) => f(x),
+                IrExpressionLarge::ToBits(_ty, x) | IrExpressionLarge::FromBits(_ty, x) => f(x),
                 IrExpressionLarge::ExpandIntRange(_ty, x) => f(x),
                 IrExpressionLarge::ConstrainIntRange(_ty, x) => f(x),
             },

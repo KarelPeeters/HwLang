@@ -8,14 +8,14 @@ pub enum Signed {
     Unsigned,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct IntRepresentation {
-    /// Signedness, whether the number can be negative.
-    /// If [Signed::Signed], [width] is at least 1.
-    pub signed: Signed,
-    /// Total width including the signed bit if any.
-    pub width: BigUint,
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IntRepresentation {
+    Unsigned { width: u64 },
+    Signed { width_1: u64 },
 }
+
+#[derive(Debug)]
+pub struct InvalidRange;
 
 impl IntRepresentation {
     pub fn for_range(range: &ClosedIncRange<BigInt>) -> Self {
@@ -27,6 +27,101 @@ impl IntRepresentation {
         Self::for_range_impl(value, value)
     }
 
+    pub fn signed(self) -> Signed {
+        match self {
+            IntRepresentation::Unsigned { .. } => Signed::Unsigned,
+            IntRepresentation::Signed { .. } => Signed::Signed,
+        }
+    }
+
+    pub fn size_bits(self) -> u64 {
+        match self {
+            IntRepresentation::Unsigned { width } => width,
+            IntRepresentation::Signed { width_1 } => width_1 + 1,
+        }
+    }
+
+    pub fn range(self) -> ClosedIncRange<BigInt> {
+        match self {
+            IntRepresentation::Unsigned { width } => ClosedIncRange {
+                start_inc: BigInt::ZERO,
+                end_inc: BigUint::pow_2_to(&BigUint::from(width)) - 1u8,
+            },
+            IntRepresentation::Signed { width_1 } => ClosedIncRange {
+                start_inc: -BigUint::pow_2_to(&BigUint::from(width_1)),
+                end_inc: BigUint::pow_2_to(&BigUint::from(width_1)) - 1u8,
+            },
+        }
+    }
+
+    pub fn value_to_bits(self, value: &BigInt, bits: &mut Vec<bool>) -> Result<(), InvalidRange> {
+        let range = self.range();
+        if !range.contains(value) {
+            return Err(InvalidRange);
+        }
+        let len_start = bits.len();
+
+        match self {
+            IntRepresentation::Unsigned { width } => {
+                let value = BigUint::try_from(value).unwrap();
+                for i in 0..width {
+                    bits.push(value.get_bit(i));
+                }
+            }
+            IntRepresentation::Signed { width_1 } => {
+                let (sign, value) = value.clone().into_neg_abs();
+                for i in 0..width_1 {
+                    bits.push(value.get_bit(i));
+                }
+                bits.push(sign);
+            }
+        }
+
+        assert_eq!(BigUint::from(bits.len()), BigUint::from(len_start) + self.size_bits());
+        Ok(())
+    }
+
+    pub fn value_from_bits(self, bits: &[bool]) -> Result<BigInt, InvalidRange> {
+        if bits.len() as u64 != self.size_bits() {
+            return Err(InvalidRange);
+        }
+
+        // TODO this is really inefficient, just construct from bits directly
+        match self {
+            IntRepresentation::Unsigned { width } => {
+                let mut result = BigUint::ZERO;
+
+                let width = usize::try_from(width).unwrap();
+                for i in 0..width {
+                    if bits[i] {
+                        result += BigUint::pow_2_to(&BigUint::from(i));
+                    }
+                }
+
+                let result = BigInt::from(result);
+                assert!(self.range().contains(&result));
+                Ok(result)
+            }
+            IntRepresentation::Signed { width_1 } => {
+                let mut result = BigInt::ZERO;
+
+                let width_1 = usize::try_from(width_1).unwrap();
+                for i in 0..width_1 {
+                    if bits[i] {
+                        result += BigUint::pow_2_to(&BigUint::from(i));
+                    }
+                }
+
+                if bits[width_1] {
+                    result -= BigUint::pow_2_to(&BigUint::from(width_1));
+                }
+
+                assert!(self.range().contains(&result));
+                Ok(result)
+            }
+        }
+    }
+
     fn for_range_impl(start: &BigInt, end: &BigInt) -> Self {
         assert!(start <= end, "Range must be valid, got {start}..={end}");
 
@@ -34,21 +129,21 @@ impl IntRepresentation {
         //    this is a bit tricky for signed, and also only a partial optimization
         //    (we could minimize bits even for non-single-value ranges too)
 
-        let (signed, bits) = if start < &BigInt::ZERO {
-            // signed
-            // prevent max value underflow
-            let max_value = if end < &BigInt::ZERO { &BigInt::ZERO } else { end };
-            let max_bits = max(1 + (start + 1u8).bits(), 1 + max_value.bits());
-
-            (Signed::Signed, max_bits)
-        } else {
-            // unsigned
-            (Signed::Unsigned, end.bits())
-        };
-
-        IntRepresentation {
-            signed,
-            width: BigUint::from(bits),
+        match BigUint::try_from(start) {
+            Ok(_) => {
+                // non-negative start => unsigned
+                let end = BigUint::try_from(end).unwrap();
+                IntRepresentation::Unsigned { width: end.size_bits() }
+            }
+            Err(_) => {
+                // negative start => signed
+                let end_non_neg = BigUint::try_from(end).unwrap_or(BigUint::ZERO);
+                let width_1 = max(
+                    BigUint::try_from(-start - 1u8).unwrap().size_bits(),
+                    end_non_neg.size_bits(),
+                );
+                IntRepresentation::Signed { width_1 }
+            }
         }
     }
 }
@@ -62,9 +157,13 @@ mod test {
 
     #[track_caller]
     fn test_case(range: Range<i64>, signed: Signed, width: u32) {
-        let expected = IntRepresentation {
-            signed,
-            width: width.into(),
+        let width = width as u64;
+        let expected = match signed {
+            Signed::Signed => {
+                assert!(width > 0);
+                IntRepresentation::Signed { width_1: width - 1 }
+            }
+            Signed::Unsigned => IntRepresentation::Unsigned { width },
         };
         let range = ClosedIncRange {
             start_inc: BigInt::from(range.start),

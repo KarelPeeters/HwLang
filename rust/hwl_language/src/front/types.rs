@@ -1,6 +1,8 @@
+use crate::front::value::CompileValue;
 use crate::mid::ir::IrType;
 use crate::swrite;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use itertools::{zip_eq, Itertools};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
@@ -224,6 +226,9 @@ impl Type {
     }
 }
 
+#[derive(Debug)]
+pub struct FailedBitConversion;
+
 impl HardwareType {
     pub fn as_type(&self) -> Type {
         match self {
@@ -242,6 +247,108 @@ impl HardwareType {
             HardwareType::Int(range) => IrType::Int(range.clone()),
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::as_ir).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir()), len.clone()),
+        }
+    }
+
+    pub fn size_bits(&self) -> BigUint {
+        self.as_ir().size_bits()
+    }
+
+    pub fn every_bit_pattern_is_valid(&self) -> bool {
+        match self {
+            HardwareType::Clock => true,
+            HardwareType::Bool => true,
+            HardwareType::Int(range) => {
+                let repr = IntRepresentation::for_range(range);
+                &repr.range() == range
+            }
+            HardwareType::Tuple(inner) => inner.iter().all(|e| e.every_bit_pattern_is_valid()),
+            HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(),
+        }
+    }
+
+    pub fn value_to_bits(&self, value: &CompileValue) -> Result<Vec<bool>, FailedBitConversion> {
+        let mut result = Vec::new();
+        self.value_to_bits_impl(value, &mut result)?;
+        Ok(result)
+    }
+
+    fn value_to_bits_impl(&self, value: &CompileValue, result: &mut Vec<bool>) -> Result<(), FailedBitConversion> {
+        match (self, value) {
+            (HardwareType::Bool, &CompileValue::Bool(v)) => {
+                result.push(v);
+                Ok(())
+            }
+            (HardwareType::Int(range), CompileValue::Int(v)) => {
+                let repr = IntRepresentation::for_range(range);
+                repr.value_to_bits(v, result).map_err(|_| FailedBitConversion)
+            }
+            (HardwareType::Tuple(ty_inners), CompileValue::Tuple(v_inners)) => {
+                if ty_inners.len() == v_inners.len() {
+                    for (ty_inner, v_inner) in zip_eq(ty_inners, v_inners) {
+                        ty_inner.value_to_bits_impl(v_inner, result)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(FailedBitConversion)
+                }
+            }
+            (HardwareType::Array(ty_inner, ty_len), CompileValue::Array(v_inner)) => {
+                if ty_len == &BigUint::from(v_inner.len()) {
+                    for v_inner in v_inner {
+                        ty_inner.value_to_bits_impl(v_inner, result)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(FailedBitConversion)
+                }
+            }
+            _ => Err(FailedBitConversion),
+        }
+    }
+
+    pub fn value_from_bits(&self, bits: &[bool]) -> Result<CompileValue, FailedBitConversion> {
+        let mut iter = bits.iter().copied();
+        let result = self.value_from_bits_impl(&mut iter)?;
+        match iter.next() {
+            None => Ok(result),
+            Some(_) => Err(FailedBitConversion),
+        }
+    }
+
+    pub fn value_from_bits_impl(
+        &self,
+        bits: &mut impl Iterator<Item = bool>,
+    ) -> Result<CompileValue, FailedBitConversion> {
+        match self {
+            HardwareType::Clock => Err(FailedBitConversion),
+            HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(FailedBitConversion)?)),
+            HardwareType::Int(range) => {
+                let repr = IntRepresentation::for_range(range);
+                let bits: Vec<bool> = (0..repr.size_bits())
+                    .map(|_| bits.next().ok_or(FailedBitConversion))
+                    .try_collect()?;
+
+                let result = repr.value_from_bits(&bits).map_err(|_| FailedBitConversion)?;
+
+                if range.contains(&result) {
+                    Ok(CompileValue::Int(result))
+                } else {
+                    Err(FailedBitConversion)
+                }
+            }
+            HardwareType::Tuple(inners) => Ok(CompileValue::Array(
+                inners
+                    .iter()
+                    .map(|inner| inner.value_from_bits_impl(bits))
+                    .try_collect()?,
+            )),
+            HardwareType::Array(inner, len) => {
+                let len = usize::try_from(len).map_err(|_| FailedBitConversion)?;
+                Ok(CompileValue::Array(
+                    (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?,
+                ))
+            }
         }
     }
 
@@ -406,5 +513,62 @@ impl<T> RangeBounds<T> for ClosedIncRange<T> {
 
     fn end_bound(&self) -> Bound<&T> {
         Bound::Included(&self.end_inc)
+    }
+}
+
+pub struct ClosedIncRangeIterator<T> {
+    next: T,
+    end_inc: T,
+}
+
+impl IntoIterator for ClosedIncRange<BigUint> {
+    type Item = BigUint;
+    type IntoIter = ClosedIncRangeIterator<BigUint>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ClosedIncRangeIterator {
+            next: self.start_inc,
+            end_inc: self.end_inc,
+        }
+    }
+}
+
+impl Iterator for ClosedIncRangeIterator<BigUint> {
+    type Item = BigUint;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next <= self.end_inc {
+            let curr = self.next.clone();
+            self.next += 1u8;
+            Some(curr)
+        } else {
+            None
+        }
+    }
+}
+
+impl std::iter::IntoIterator for ClosedIncRange<BigInt> {
+    type Item = BigInt;
+    type IntoIter = ClosedIncRangeIterator<BigInt>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ClosedIncRangeIterator {
+            next: self.start_inc,
+            end_inc: self.end_inc,
+        }
+    }
+}
+
+impl Iterator for ClosedIncRangeIterator<BigInt> {
+    type Item = BigInt;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next <= self.end_inc {
+            let curr = self.next.clone();
+            self.next += 1u8;
+            Some(curr)
+        } else {
+            None
+        }
     }
 }

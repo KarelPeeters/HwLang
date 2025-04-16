@@ -13,6 +13,7 @@ pub struct BigInt(Storage, PhantomData<()>);
 impl BigUint {
     pub const ZERO: Self = BigUint(Storage::ZERO, PhantomData);
     pub const ONE: Self = BigUint(Storage::ONE, PhantomData);
+    pub const TWO: Self = BigUint(Storage::TWO, PhantomData);
 
     fn new(storage: Storage) -> Self {
         storage.debug_assert_valid();
@@ -66,6 +67,7 @@ enum Storage {
 impl Storage {
     const ZERO: Self = Storage::Small(0);
     const ONE: Self = Storage::Small(1);
+    const TWO: Self = Storage::Small(2);
 
     fn from_maybe_big(value: num_bigint::BigInt) -> Self {
         match IStorage::try_from(&value) {
@@ -116,6 +118,49 @@ impl BigUint {
     pub fn from_str_radix(s: &str, radix: u32) -> Result<BigUint, num_bigint::ParseBigIntError> {
         let big = num_bigint::BigUint::from_str_radix(s, radix)?;
         Ok(BigUint::new(Storage::from_maybe_big(big.into())))
+    }
+
+    pub fn pow_2_to(index: &BigUint) -> BigUint {
+        if let &Storage::Small(index) = index.storage() {
+            if let Ok(index) = u32::try_from(index) {
+                if let Some(result) = (1 as IStorage).checked_shl(index) {
+                    return BigUint::new(Storage::Small(result));
+                }
+            }
+        }
+
+        BigUint::TWO.pow(index)
+    }
+
+    pub fn pow(&self, exp: &BigUint) -> BigUint {
+        if let (&Storage::Small(base), &Storage::Small(exp)) = (self.storage(), exp.storage()) {
+            if let Ok(exp) = u32::try_from(exp) {
+                if let Some(result) = base.checked_pow(exp) {
+                    return BigUint::new(Storage::Small(result));
+                }
+            }
+        }
+
+        BigUint::new(Storage::from_maybe_big(
+            self.clone()
+                .into_num_biguint()
+                .pow(&exp.clone().into_num_biguint())
+                .into(),
+        ))
+    }
+
+    pub fn get_bit(&self, index: u64) -> bool {
+        match self.storage() {
+            Storage::Small(storage) => storage >> index & 1 != 0,
+            Storage::Big(storage) => storage.bit(index),
+        }
+    }
+
+    pub fn size_bits(&self) -> u64 {
+        match self.storage() {
+            Storage::Small(storage) => (IStorage::BITS - storage.leading_zeros()).into(),
+            Storage::Big(storage) => storage.bits(),
+        }
     }
 }
 
@@ -177,6 +222,14 @@ impl BigInt {
         BigUint::new(Storage::from_maybe_big(self.clone().into_num_bigint().abs()))
     }
 
+    pub fn into_neg_abs(self) -> (bool, BigUint) {
+        if self < BigInt::ZERO {
+            (true, self.abs())
+        } else {
+            (false, BigUint::try_from(self).unwrap())
+        }
+    }
+
     pub fn div_floor(&self, rhs: &BigInt) -> Result<BigInt, DivideByZero> {
         // TODO small fast path
         if rhs == &BigInt::ZERO {
@@ -211,10 +264,25 @@ impl BigInt {
             self.clone().into_num_bigint().pow(&exp.clone().into_num_biguint()),
         ))
     }
+}
 
-    pub fn bits(&self) -> u64 {
-        // TODO fast small path
-        self.clone().into_num_bigint().bits()
+impl std::ops::Neg for &BigUint {
+    type Output = BigInt;
+    fn neg(self) -> Self::Output {
+        -BigInt::from(self)
+    }
+}
+
+impl std::ops::Neg for &BigInt {
+    type Output = BigInt;
+    fn neg(self) -> Self::Output {
+        if let Storage::Small(inner) = self.storage() {
+            if let Some(result) = inner.checked_neg() {
+                BigInt::new(Storage::Small(result));
+            }
+        }
+
+        BigInt::new(Storage::from_maybe_big(-self.clone().into_num_bigint()))
     }
 }
 
@@ -228,13 +296,7 @@ impl std::ops::Neg for BigUint {
 impl std::ops::Neg for BigInt {
     type Output = BigInt;
     fn neg(self) -> Self::Output {
-        if let Storage::Small(inner) = self.storage() {
-            if let Some(result) = inner.checked_neg() {
-                BigInt::new(Storage::Small(result));
-            }
-        }
-
-        BigInt::new(Storage::from_maybe_big(self.into_num_bigint().neg()))
+        -&self
     }
 }
 
@@ -259,6 +321,8 @@ impl std::iter::Sum for BigUint {
         iter.fold(BigUint::ZERO, |a, x| a + x)
     }
 }
+
+// impl std::iter::Step
 
 impl std::iter::Sum for BigInt {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
@@ -317,12 +381,32 @@ macro_rules! impl_primitive {
                 BigInt::new(self.storage() + Storage::from(*rhs))
             }
         }
+
+        impl std::ops::Sub<&$unsigned> for &BigUint {
+            type Output = BigInt;
+            fn sub(self, rhs: &$unsigned) -> Self::Output {
+                BigInt::new(self.storage() - Storage::from(*rhs))
+            }
+        }
+        impl std::ops::Sub<&$signed> for &BigUint {
+            type Output = BigInt;
+            fn sub(self, rhs: &$signed) -> Self::Output {
+                BigInt::new(self.storage() - Storage::from(*rhs))
+            }
+        }
+        impl std::ops::Sub<&$unsigned> for &BigInt {
+            type Output = BigInt;
+            fn sub(self, rhs: &$unsigned) -> Self::Output {
+                BigInt::new(self.storage() - Storage::from(*rhs))
+            }
+        }
         impl std::ops::Sub<&$signed> for &BigInt {
             type Output = BigInt;
             fn sub(self, rhs: &$signed) -> Self::Output {
                 BigInt::new(self.storage() - Storage::from(*rhs))
             }
         }
+
         impl std::ops::Mul<&$unsigned> for &BigUint {
             type Output = BigUint;
             fn mul(self, rhs: &$unsigned) -> Self::Output {
@@ -339,7 +423,12 @@ macro_rules! impl_primitive {
         impl_op_owned!(Add, add, (BigUint, $unsigned) -> BigUint);
         impl_op_owned!(Add, add, (BigInt, $unsigned) -> BigInt);
         impl_op_owned!(Add, add, (BigInt, $signed) -> BigInt);
+
         impl_op_owned!(Sub, sub, (BigInt, $signed) -> BigInt);
+        impl_op_owned!(Sub, sub, (BigInt, $unsigned) -> BigInt);
+        impl_op_owned!(Sub, sub, (BigUint, $signed) -> BigInt);
+        impl_op_owned!(Sub, sub, (BigUint, $unsigned) -> BigInt);
+
         impl_op_owned!(Mul, mul, (BigUint, $unsigned) -> BigUint);
         impl_op_owned!(Mul, mul, (BigInt, $signed) -> BigInt);
 
@@ -508,5 +597,11 @@ impl<T: Into<BigUint>> std::ops::AddAssign<T> for BigUint {
 impl<T: Into<BigInt>> std::ops::AddAssign<T> for BigInt {
     fn add_assign(&mut self, rhs: T) {
         *self = &*self + rhs.into();
+    }
+}
+
+impl<T: Into<BigInt>> std::ops::SubAssign<T> for BigInt {
+    fn sub_assign(&mut self, rhs: T) {
+        *self = &*self - rhs.into();
     }
 }

@@ -35,6 +35,8 @@ pub struct LoweredVerilog {
 // TODO make backend configurable between verilog and VHDL?
 // TODO ban keywords
 // TODO should we still be doing diagnostics here, or should lowering just never start?
+// TODO identifier ID: prefix _all_ signals with something: wire, reg, local, ...,
+//   so nothing can conflict with ports/module names. Not fully right yet, but maybe a good idea.
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     source: &SourceDatabase,
@@ -946,13 +948,14 @@ fn lower_expression(
                     swrite!(f, "+:{}])", lower_uint_str(len));
                 }
 
-                IrExpressionLarge::IntToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
-                IrExpressionLarge::IntFromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
+                IrExpressionLarge::ToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
+                IrExpressionLarge::FromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
                 IrExpressionLarge::ExpandIntRange(target, value) => {
                     // just add zero of the right width to expand the range
                     // TODO skip if unnecessary?
+                    // TODO this is probably wrong for signed values, and definitely for zero-width values
                     let target_repr = IntRepresentation::for_range(target);
-                    swrite!(f, "({}'d0 + ", target_repr.width);
+                    swrite!(f, "({}'d0 + ", target_repr.size_bits());
                     lower_expression(diags, large, name_map, span, value, f)?;
                     swrite!(f, ")");
                 }
@@ -977,7 +980,7 @@ fn lower_int_str(x: &BigInt) -> String {
         Sign::Negative => "-",
     };
     let repr = IntRepresentation::for_single(x);
-    format!("{}{}'d{}", sign, repr.width, x.abs())
+    format!("{}{}'d{}", sign, repr.size_bits(), x.abs())
 }
 
 fn lower_uint_str(x: &BigUint) -> String {
@@ -985,7 +988,7 @@ fn lower_uint_str(x: &BigUint) -> String {
     // TODO double-check integer bit-width promotion rules
     // TODO avoid clone
     let repr = IntRepresentation::for_single(&x.into());
-    format!("{}'d{}", repr.width, x)
+    format!("{}'d{}", repr.size_bits(), x)
 }
 
 #[derive(Debug)]
@@ -1065,7 +1068,7 @@ impl VerilogType {
     pub fn from_ir_ty(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<VerilogType, ErrorGuaranteed> {
         match ty {
             IrType::Bool => Ok(VerilogType::Bit),
-            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::array(diags, span, ty.bit_width()),
+            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::array(diags, span, ty.size_bits()),
         }
     }
 

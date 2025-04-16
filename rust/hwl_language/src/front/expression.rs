@@ -1,7 +1,8 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
-    check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
+    check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool, check_type_is_bool_array,
+    check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_uint_compile,
+    TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, Port, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
@@ -28,7 +29,8 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
-use itertools::{enumerate, Either};
+use annotate_snippets::Level;
+use itertools::{enumerate, Either, Itertools};
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
@@ -44,7 +46,7 @@ pub struct HardwareValueWithImplications {
 
 impl ValueWithImplications {
     pub fn simple(value: Value) -> Self {
-        value.map_hardware(|v| HardwareValueWithImplications::simple(v))
+        value.map_hardware(HardwareValueWithImplications::simple)
     }
 
     pub fn value(self) -> Value {
@@ -869,6 +871,7 @@ impl CompileItemContext<'_, '_> {
                 ("type", "bool", []) => return Ok(Value::Compile(CompileValue::Type(Type::Bool))),
                 ("type", "str", []) => return Ok(Value::Compile(CompileValue::Type(Type::String))),
                 ("type", "Range", []) => return Ok(Value::Compile(CompileValue::Type(Type::Range))),
+                // TODO maybe int/uint should just bit builtins
                 ("type", "int_range", [Value::Compile(CompileValue::IntRange(range))]) => {
                     return Ok(Value::Compile(CompileValue::Type(Type::Int(range.clone()))));
                 }
@@ -900,6 +903,54 @@ impl CompileItemContext<'_, '_> {
                     }
                     _ => {}
                 },
+                ("fn", "size_bits", [Value::Compile(CompileValue::Type(ty))]) => {
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
+                    let width = ty_hw.as_ir().size_bits();
+                    return Ok(Value::Compile(CompileValue::Int(width.into())));
+                }
+                ("fn", "to_bits", [Value::Compile(CompileValue::Type(ty)), v]) => {
+                    check_type_contains_value(
+                        diags,
+                        TypeContainsReason::Operator(expr_span),
+                        ty,
+                        Spanned::new(expr_span, v),
+                        false,
+                        false,
+                    )?;
+
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
+                    let ty_ir = ty_hw.as_ir();
+                    let width = ty_ir.size_bits();
+
+                    let result = match v {
+                        Value::Compile(v) => {
+                            // TODO dedicated compile-time bits value that's faster than a boxed array of bools
+                            let bits = ty_hw
+                                .value_to_bits(v)
+                                .map_err(|_| diags.report_internal_error(expr_span, "to_bits failed"))?;
+                            Value::Compile(CompileValue::Array(
+                                bits.into_iter().map(CompileValue::Bool).collect_vec(),
+                            ))
+                        }
+                        Value::Hardware(v) => {
+                            let expr = self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, v.expr.clone()));
+                            let ty_bits = HardwareType::Array(Box::new(HardwareType::Bool), width);
+
+                            Value::Hardware(HardwareValue {
+                                ty: ty_bits,
+                                domain: v.domain,
+                                expr,
+                            })
+                        }
+                    };
+                    return Ok(result);
+                }
+                ("fn", "from_bits", [Value::Compile(CompileValue::Type(ty)), v]) => {
+                    return self.eval_builtin_from_bits(expr_span, ty, v, false);
+                }
+                ("fn", "from_bits_unsafe", [Value::Compile(CompileValue::Type(ty)), v]) => {
+                    return self.eval_builtin_from_bits(expr_span, ty, v, true);
+                }
                 // TODO add assert_com/assert_sim, error_com/error_sim
                 // TODO is there an elegant general way to have both variants of a bunch of similar functions?
                 // fallthrough into err
@@ -914,6 +965,73 @@ impl CompileItemContext<'_, '_> {
             .finish()
             .finish();
         Err(diags.report(diag))
+    }
+
+    fn eval_builtin_from_bits(
+        &mut self,
+        expr_span: Span,
+        ty: &Type,
+        v: &Value,
+        un_safe: bool,
+    ) -> Result<Value, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
+
+        // TODO this is really strange, maybe clock should not actually be a hardware type, only a domain?
+        if let HardwareType::Clock = ty_hw {
+            return Err(diags.report_todo(expr_span, "ban from_bits for clock type"));
+        }
+
+        if !un_safe && !ty_hw.every_bit_pattern_is_valid() {
+            let diag = Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
+                .add_error(
+                    expr_span,
+                    format!("got type `{}` with invalid bit patterns", ty_hw.to_diagnostic_string()),
+                )
+                .footer(
+                    Level::Help,
+                    "consider using use target type where every bit pattern is valid",
+                )
+                .footer(
+                    Level::Help,
+                    "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+
+        let ty_ir = ty_hw.as_ir();
+        let width = ty_ir.size_bits();
+
+        let v = check_type_is_bool_array(
+            diags,
+            TypeContainsReason::Operator(expr_span),
+            Spanned::new(expr_span, v.clone()),
+            Some(&width),
+        )?;
+
+        let result = match v {
+            Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(&v).map_err(|_| {
+                diags.report_simple(
+                    "`from_bits` failed",
+                    expr_span,
+                    format!(
+                        "while converting value `{:?}` into type `{}`",
+                        v,
+                        ty.to_diagnostic_string()
+                    ),
+                )
+            })?),
+            Value::Hardware(v) => {
+                let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
+                Value::Hardware(HardwareValue {
+                    ty: ty_hw,
+                    domain: v.domain,
+                    expr,
+                })
+            }
+        };
+        Ok(result)
     }
 
     pub fn eval_expression_as_compile(
@@ -983,7 +1101,7 @@ impl CompileItemContext<'_, '_> {
             diags.report_simple(
                 format!("{} type must be representable in hardware", reason),
                 expr.span,
-                format!("got `{}`", ty.to_diagnostic_string()),
+                format!("got type `{}`", ty.to_diagnostic_string()),
             )
         })?;
         Ok(Spanned {
@@ -1297,7 +1415,7 @@ impl Iterator for ForIterator {
                 };
                 Some(Value::Hardware(HardwareValue {
                     ty: (*ty_inner).clone(),
-                    domain: domain.clone(),
+                    domain: *domain,
                     expr: element_expr,
                 }))
             }

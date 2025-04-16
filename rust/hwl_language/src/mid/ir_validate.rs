@@ -226,6 +226,21 @@ impl IrExpression {
                         return Err(diags.report_internal_error(span, msg));
                     }
                 }
+                IrExpressionLarge::ToBits(ty, expr) => {
+                    if ty != &expr.ty(module, locals) {
+                        return Err(diags.report_internal_error(span, "ToBits type mismatch"));
+                    }
+                }
+                IrExpressionLarge::FromBits(ty, expr) => {
+                    if let IrType::Array(element, len) = expr.ty(module, locals) {
+                        if let IrType::Bool = *element {
+                            if len == ty.size_bits() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    return Err(diags.report_internal_error(span, "FromInt width mismatch"));
+                }
                 // TODO expand
                 _ => {}
             },
