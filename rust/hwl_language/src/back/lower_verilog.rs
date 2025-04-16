@@ -948,8 +948,14 @@ fn lower_expression(
                     swrite!(f, "+:{}])", lower_uint_str(len));
                 }
 
-                IrExpressionLarge::ToBits(_, _) => throw!(diags.report_todo(span, "lower int to bits")),
-                IrExpressionLarge::FromBits(_, _) => throw!(diags.report_todo(span, "lower bits to int")),
+                IrExpressionLarge::ToBits(_ty, value) => {
+                    // in verilog everything is just a bit vector, so we don't need to do anything
+                    lower_expression(diags, large, name_map, span, value, f)?;
+                }
+                IrExpressionLarge::FromBits(_ty, value) => {
+                    // in verilog everything is just a bit vector, so we don't need to do anything
+                    lower_expression(diags, large, name_map, span, value, f)?;
+                }
                 IrExpressionLarge::ExpandIntRange(target, value) => {
                     // just add zero of the right width to expand the range
                     // TODO skip if unnecessary?

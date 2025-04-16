@@ -11,6 +11,7 @@ use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use crate::util::Indent;
 use crate::{swrite, swriteln};
 use itertools::enumerate;
@@ -117,6 +118,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
     swriteln!(f_step_all, "void module_{module_index}_all({step_params}) {{");
 
     for (child_index, child) in enumerate(children) {
+        let indent = Indent::new(1);
+
         match child {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
@@ -137,19 +140,18 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                         module_info,
                         locals,
                         f: &mut f_step,
-                        indent: Indent::new(1),
                         next_temporary_index: 0,
                     };
 
                     // TODO this might not be correct, think about which prev/reset combination reset needs to look at
-                    let reset_eval = ctx.eval(reset_signal.span, &reset_signal.inner, Stage::Next)?;
+                    let reset_eval = ctx.eval(indent, reset_signal.span, &reset_signal.inner, Stage::Next)?;
                     swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
                     swriteln!(ctx.f, "{I}{I}return;");
                     swriteln!(ctx.f, "{I}}}");
                     swriteln!(ctx.f);
 
                     //   reset doesn't need locals
-                    ctx.generate_block(reset_block, Stage::Next)?;
+                    ctx.generate_block(indent, reset_block, Stage::Next)?;
 
                     swriteln!(f_step, "}}");
                     swriteln!(f_step);
@@ -165,11 +167,10 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     module_info,
                     locals,
                     f: &mut f_step,
-                    indent: Indent::new(1),
                     next_temporary_index: 0,
                 };
-                let clock_prev_eval = ctx.eval(clock_signal.span, &clock_signal.inner, Stage::Prev)?;
-                let clock_next_eval = ctx.eval(clock_signal.span, &clock_signal.inner, Stage::Next)?;
+                let clock_prev_eval = ctx.eval(indent, clock_signal.span, &clock_signal.inner, Stage::Prev)?;
+                let clock_next_eval = ctx.eval(indent, clock_signal.span, &clock_signal.inner, Stage::Next)?;
                 // TODO also skip if reset is active
                 // TODO maybe switch to a single function for both?
                 //   or maybe that just mixes sensitivities for no good reason
@@ -184,7 +185,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
-                ctx.generate_block(clock_block, Stage::Prev)?;
+                ctx.generate_block(indent, clock_block, Stage::Prev)?;
 
                 swriteln!(f_step, "}}");
                 swriteln!(f_step);
@@ -201,7 +202,6 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     module_info,
                     locals,
                     f: &mut f_step,
-                    indent: Indent::new(1),
                     next_temporary_index: 0,
                 };
                 for (var, var_info) in locals {
@@ -209,7 +209,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
-                ctx.generate_block(block, Stage::Next)?;
+                ctx.generate_block(indent, block, Stage::Next)?;
 
                 swriteln!(f_step, "}}");
                 swriteln!(f_step);
@@ -346,13 +346,35 @@ struct CodegenBlockContext<'a> {
     module_info: &'a IrModuleInfo,
     locals: &'a IrVariables,
     f: &'a mut String,
-    indent: Indent,
     next_temporary_index: usize,
 }
 
 impl CodegenBlockContext<'_> {
-    fn eval(&mut self, span: Span, expr: &IrExpression, stage_read: Stage) -> Result<Evaluated, ErrorGuaranteed> {
-        let indent = self.indent;
+    fn eval_to_temporary(
+        &mut self,
+        indent: Indent,
+        span: Span,
+        expr: &IrExpression,
+        stage_read: Stage,
+    ) -> Result<Temporary, ErrorGuaranteed> {
+        match self.eval(indent, span, expr, stage_read)? {
+            Evaluated::Temporary(v) => Ok(v),
+            Evaluated::Inline(v) => {
+                let tmp = self.new_temporary();
+                let ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+                swriteln!(self.f, "{indent}{ty_str} {tmp} = {v};");
+                Ok(tmp)
+            }
+        }
+    }
+
+    fn eval(
+        &mut self,
+        indent: Indent,
+        span: Span,
+        expr: &IrExpression,
+        stage_read: Stage,
+    ) -> Result<Evaluated, ErrorGuaranteed> {
         let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
 
         let result = match expr {
@@ -374,7 +396,7 @@ impl CodegenBlockContext<'_> {
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
             &IrExpression::Large(expr_large) => match &self.module_info.large[expr_large] {
                 IrExpressionLarge::BoolNot(inner) => {
-                    let inner_eval = self.eval(span, inner, stage_read)?;
+                    let inner_eval = self.eval(indent, span, inner, stage_read)?;
                     Evaluated::Inline(format!("!({inner_eval})"))
                 }
                 IrExpressionLarge::BoolBinary(op, left, right) => {
@@ -383,8 +405,8 @@ impl CodegenBlockContext<'_> {
                         IrBoolBinaryOp::Or => "|",
                         IrBoolBinaryOp::Xor => "^",
                     };
-                    let left_eval = self.eval(span, left, stage_read)?;
-                    let right_eval = self.eval(span, right, stage_read)?;
+                    let left_eval = self.eval(indent, span, left, stage_read)?;
+                    let right_eval = self.eval(indent, span, right, stage_read)?;
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
                 IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
@@ -397,8 +419,8 @@ impl CodegenBlockContext<'_> {
                         IrIntArithmeticOp::Mod => "%",
                         IrIntArithmeticOp::Pow => return Err(todo("codegen power operator")),
                     };
-                    let left_eval = self.eval(span, left, stage_read)?;
-                    let right_eval = self.eval(span, right, stage_read)?;
+                    let left_eval = self.eval(indent, span, left, stage_read)?;
+                    let right_eval = self.eval(indent, span, right, stage_read)?;
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
                 IrExpressionLarge::IntCompare(op, left, right) => {
@@ -411,8 +433,8 @@ impl CodegenBlockContext<'_> {
                         IrIntCompareOp::Gt => ">",
                         IrIntCompareOp::Gte => ">=",
                     };
-                    let left_eval = self.eval(span, left, stage_read)?;
-                    let right_eval = self.eval(span, right, stage_read)?;
+                    let left_eval = self.eval(indent, span, left, stage_read)?;
+                    let right_eval = self.eval(indent, span, right, stage_read)?;
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
 
@@ -427,12 +449,12 @@ impl CodegenBlockContext<'_> {
                     for element in elements {
                         match element {
                             IrArrayLiteralElement::Single(value) => {
-                                let value_eval = self.eval(span, value, stage_read)?;
+                                let value_eval = self.eval(indent, span, value, stage_read)?;
                                 swriteln!(self.f, "{indent}{tmp_result}[{offset}] = {value_eval};");
                                 offset += 1u32;
                             }
                             IrArrayLiteralElement::Spread(value) => {
-                                let value_eval = self.eval(span, value, stage_read)?;
+                                let value_eval = self.eval(indent, span, value, stage_read)?;
                                 let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
                                 swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
                                 offset += element_len;
@@ -444,13 +466,13 @@ impl CodegenBlockContext<'_> {
                 }
 
                 IrExpressionLarge::ArrayIndex { base, index } => {
-                    let base_eval = self.eval(span, base, stage_read)?;
-                    let index_eval = self.eval(span, index, stage_read)?;
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    let index_eval = self.eval(indent, span, index, stage_read)?;
                     Evaluated::Inline(format!("{base_eval}[{index_eval}]"))
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
-                    let base_eval = self.eval(span, base, stage_read)?;
-                    let start_eval = self.eval(span, start, stage_read)?;
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    let start_eval = self.eval(indent, span, start, stage_read)?;
 
                     let tmp_result = self.new_temporary();
                     let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
@@ -464,36 +486,165 @@ impl CodegenBlockContext<'_> {
                     Evaluated::Temporary(tmp_result)
                 }
 
-                IrExpressionLarge::ToBits(_, _) => return Err(todo("ToBits")),
-                IrExpressionLarge::FromBits(_, _) => return Err(todo("FromBits")),
+                IrExpressionLarge::ToBits(ty, value) => {
+                    let value = self.eval_to_temporary(indent, span, value, Stage::Next)?;
+
+                    let size_bits = ty.size_bits();
+                    let tmp_result = self.new_temporary();
+                    swriteln!(self.f, "{indent}std::array<bool, {size_bits}> {tmp_result};");
+
+                    self.impl_to_bits(indent, span, ty, tmp_result, "0", &value.to_string())?;
+
+                    Evaluated::Temporary(tmp_result)
+                }
+                IrExpressionLarge::FromBits(ty, value) => {
+                    let value = self.eval_to_temporary(indent, span, value, stage_read)?;
+
+                    let result_ty_str = type_to_cpp(self.diags, span, ty)?;
+                    let tmp_result = self.new_temporary();
+                    swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
+
+                    self.impl_from_bits(indent, span, ty, &tmp_result.to_string(), value, "0")?;
+
+                    Evaluated::Temporary(tmp_result)
+                }
+
                 IrExpressionLarge::ExpandIntRange(range, inner) => {
                     // check that result is still representable
                     let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
-                    self.eval(span, inner, stage_read)?
+                    self.eval(indent, span, inner, stage_read)?
                 }
                 IrExpressionLarge::ConstrainIntRange(range, inner) => {
                     // check that result is still representable
                     let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
-                    self.eval(span, inner, stage_read)?
+                    self.eval(indent, span, inner, stage_read)?
                 }
             },
         };
         Ok(result)
     }
 
-    fn generate_nested_block(&mut self, block: &IrBlock, stage_read: Stage) -> Result<(), ErrorGuaranteed> {
+    fn impl_to_bits(
+        &mut self,
+        indent: Indent,
+        span: Span,
+        ty: &IrType,
+        result: Temporary,
+        result_offset: &str,
+        value: &str,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+        // TODO maybe it's better to switch to just storing bits for everything in C++ too?
+        match ty {
+            IrType::Bool => {
+                swriteln!(self.f, "{indent}{result}[{result_offset}] = {value}",);
+            }
+            IrType::Int(range) => {
+                // TODO this this pretty inefficient
+                // TODO this is probably not correct for signed values
+                let tmp_i = self.new_temporary();
+                let size_bits = IntRepresentation::for_range(range).size_bits();
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {size_bits}; {tmp_i}++) {{"
+                );
+                swriteln!(
+                    self.f,
+                    "{indent}{I}{result}[{result_offset} + {tmp_i}] = ({value} >> {tmp_i}) & 1;"
+                );
+                swriteln!(self.f, "{indent}}}");
+            }
+            IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type tuple")),
+            IrType::Array(ty_inner, ty_len) => {
+                let ty_inner_size = ty_inner.size_bits();
+                let tmp_i = self.new_temporary();
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
+                );
+                self.impl_to_bits(
+                    indent.nest(),
+                    span,
+                    ty_inner,
+                    result,
+                    &format!("{result_offset} + {tmp_i} * {ty_inner_size}"),
+                    &format!("{value}[{tmp_i}]"),
+                )?;
+                swriteln!(self.f, "{indent}}}");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn impl_from_bits(
+        &mut self,
+        indent: Indent,
+        span: Span,
+        ty: &IrType,
+        result: &str,
+        value: Temporary,
+        value_offset: &str,
+    ) -> Result<(), ErrorGuaranteed> {
+        let diags = self.diags;
+        match ty {
+            IrType::Bool => {
+                swriteln!(self.f, "{indent}{result}= {value}",);
+            }
+            IrType::Int(range) => {
+                // TODO this this pretty inefficient
+                // TODO this is probably not correct for signed values
+                let tmp_i = self.new_temporary();
+                let size_bits = IntRepresentation::for_range(range).size_bits();
+
+                swriteln!(self.f, "{indent}{result} = 0;");
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {size_bits}; {tmp_i}++) {{"
+                );
+                swriteln!(
+                    self.f,
+                    "{indent}{I}{result} |= ({value}[{value_offset} + {tmp_i}] << {tmp_i});"
+                );
+                swriteln!(self.f, "{indent}}}");
+            }
+            IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type tuple")),
+            IrType::Array(ty_inner, ty_len) => {
+                let ty_inner_size = ty_inner.size_bits();
+                let tmp_i = self.new_temporary();
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
+                );
+                self.impl_from_bits(
+                    indent.nest(),
+                    span,
+                    ty_inner,
+                    &format!("{result}[{tmp_i}]"),
+                    value,
+                    &format!("{value_offset} + {tmp_i} * {ty_inner_size}"),
+                )?;
+                swriteln!(self.f, "{indent}}}");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn generate_nested_block(
+        &mut self,
+        indent: Indent,
+        block: &IrBlock,
+        stage_read: Stage,
+    ) -> Result<(), ErrorGuaranteed> {
         swriteln!(self.f, "{{");
-        let indent = self.indent;
-        self.indent = self.indent.nest();
-        self.generate_block(block, stage_read)?;
-        self.indent = indent;
+        self.generate_block(indent.nest(), block, stage_read)?;
         swrite!(self.f, "{indent}}}");
         Ok(())
     }
 
-    fn generate_block(&mut self, block: &IrBlock, stage_read: Stage) -> Result<(), ErrorGuaranteed> {
+    fn generate_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> Result<(), ErrorGuaranteed> {
         let IrBlock { statements } = block;
-        let indent = self.indent;
 
         for stmt in statements {
             match &stmt.inner {
@@ -501,8 +652,8 @@ impl CodegenBlockContext<'_> {
                     let Target {
                         loops: target_loops,
                         inner: target_inner,
-                    } = self.eval_assignment_target(stmt.span, target, stage_read)?;
-                    let value_eval = self.eval(stmt.span, expr, stage_read)?;
+                    } = self.eval_assignment_target(indent, stmt.span, target, stage_read)?;
+                    let value_eval = self.eval(indent, stmt.span, expr, stage_read)?;
 
                     for (i, (tmp_i, start, len)) in enumerate(&target_loops) {
                         let indent_i = indent.nest_n(i);
@@ -526,7 +677,7 @@ impl CodegenBlockContext<'_> {
                 }
                 IrStatement::Block(inner) => {
                     swrite!(self.f, "{indent}");
-                    self.generate_nested_block(inner, stage_read)?;
+                    self.generate_nested_block(indent, inner, stage_read)?;
                     swriteln!(self.f);
                 }
                 IrStatement::If(if_stmt) => {
@@ -536,14 +687,14 @@ impl CodegenBlockContext<'_> {
                         else_block,
                     } = if_stmt;
 
-                    let cond_eval = self.eval(stmt.span, condition, stage_read)?;
+                    let cond_eval = self.eval(indent, stmt.span, condition, stage_read)?;
 
                     swrite!(self.f, "{indent}if ({cond_eval})");
-                    self.generate_nested_block(then_block, stage_read)?;
+                    self.generate_nested_block(indent, then_block, stage_read)?;
 
                     if let Some(else_block) = else_block {
                         swrite!(self.f, " else ");
-                        self.generate_nested_block(else_block, stage_read)?;
+                        self.generate_nested_block(indent, else_block, stage_read)?;
                     }
 
                     swriteln!(self.f);
@@ -562,6 +713,7 @@ impl CodegenBlockContext<'_> {
 
     fn eval_assignment_target(
         &mut self,
+        indent: Indent,
         span: Span,
         target: &IrAssignmentTarget,
         stage_read: Stage,
@@ -591,12 +743,12 @@ impl CodegenBlockContext<'_> {
         for step in steps {
             match step {
                 IrTargetStep::ArrayIndex(index) => {
-                    let index = self.eval(span, index, stage_read)?;
+                    let index = self.eval(indent, span, index, stage_read)?;
                     swrite!(&mut curr_str, "[{index}]")
                 }
 
                 IrTargetStep::ArraySlice(start, len) => {
-                    let start = self.eval(span, start, stage_read)?;
+                    let start = self.eval(indent, span, start, stage_read)?;
 
                     let tmp_index = self.new_temporary();
                     loops.push((tmp_index, start, len.clone()));

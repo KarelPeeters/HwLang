@@ -162,11 +162,7 @@ fn main_inner(args: Args) -> ExitCode {
         .unwrap();
 
         // save simulator code
-        std::fs::write(
-            "ignored/simulator.cpp",
-            simulator_code.as_ref().unwrap_or(&String::new()),
-        )
-        .unwrap();
+        std::fs::write("ignored/lowered.cpp", simulator_code.as_ref().unwrap_or(&String::new())).unwrap();
     }
 
     // print profiling info
