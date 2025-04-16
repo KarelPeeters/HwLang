@@ -40,12 +40,14 @@ use crate::util::{result_pair, result_pair_split, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Either, Itertools};
+use itertools::{zip_eq, Either};
 use std::hash::Hash;
 
 type SignalsInScope = Vec<Spanned<Signal>>;
 
 // TODO rename, this should really be "module ports, viewed from the outside"
+// TODO split this file into module_header and module_body?
+
 new_index_type!(pub InstancePort);
 pub type InstancePorts = Arena<InstancePort, PortInfo<InstancePort>>;
 
@@ -329,15 +331,14 @@ impl CompileRefs<'_, '_> {
             pass_1_next_statement_index: 0,
             clocked_block_statement_index_to_process_index: IndexMap::new(),
             children: vec![],
+            delayed_error: Ok(()),
         };
 
         // process declarations
-        ctx.elaborate_block(scope_header, vars, &mut signals_in_scope, body);
+        ctx.elaborate_block(scope_header, vars, &mut signals_in_scope, body, true);
 
         // stop if any errors have happened so far, we don't want spurious errors about drivers
-        for p in &ctx.children {
-            p.as_ref_ok()?;
-        }
+        ctx.delayed_error?;
 
         // check driver validness
         // TODO more checking: combinatorial blocks can't read values they will later write,
@@ -366,20 +367,19 @@ impl CompileRefs<'_, '_> {
                 block: IrBlock { statements },
             };
             ctx.children
-                .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
+                .push(Child::Finished(IrModuleChild::CombinatorialProcess(process)));
         }
 
         // return result
+        ctx.delayed_error?;
         let processes = ctx
             .children
             .into_iter()
-            .map(|c| {
-                c.map(|c| match c {
-                    Child::Finished(c) => c,
-                    Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
-                })
+            .map(|c| match c {
+                Child::Finished(c) => c,
+                Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
             })
-            .try_collect()?;
+            .collect();
 
         Ok(IrModuleInfo {
             ports: ctx.ir_ports,
@@ -529,7 +529,8 @@ struct BodyElaborationContext<'c, 'a, 's> {
 
     pass_1_next_statement_index: usize,
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    children: Vec<Result<Child, ErrorGuaranteed>>,
+    children: Vec<Child>,
+    delayed_error: Result<(), ErrorGuaranteed>,
 }
 
 enum Child {
@@ -628,6 +629,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         vars: &VariableValues,
         signals: &mut SignalsInScope,
         block: &Block<ModuleStatement>,
+        is_root_block: bool,
     ) {
         // TODO fully implement graph-ness,
         //   in the current implementation eg. types and initializes still can't refer to future declarations
@@ -635,7 +637,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let mut vars_inner = VariableValues::new_child(vars);
 
         let signals_len_before = signals.len();
-        self.pass_0_declarations(&mut scope_inner, &mut vars_inner, signals, block);
+        self.pass_0_declarations(&mut scope_inner, &mut vars_inner, signals, block, is_root_block);
         let signals_len_after = signals.len();
 
         self.pass_1_processes(&scope_inner, &vars_inner, signals, block);
@@ -649,6 +651,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         vars: &mut VariableValues,
         signals: &mut SignalsInScope,
         body: &Block<ModuleStatement>,
+        is_root_block: bool,
     ) {
         let diags = self.ctx.refs.diags;
 
@@ -692,8 +695,12 @@ impl BodyElaborationContext<'_, '_, '_> {
                     }
 
                     if let Some(process) = process {
-                        self.children
-                            .push(process.map(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
+                        match process {
+                            Ok(process) => self
+                                .children
+                                .push(Child::Finished(IrModuleChild::CombinatorialProcess(process))),
+                            Err(e) => self.delayed_error = Err(e),
+                        }
                     }
 
                     let entry = wire.map(|wire| ScopedEntry::Named(NamedValue::Wire(wire)));
@@ -706,7 +713,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
                     //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(scope, vars, decl) {
+                    match self.elaborate_module_declaration_reg_out_port(scope, vars, decl, is_root_block) {
                         Ok((port, reg_init)) => {
                             let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
                             assert!(port_drivers.is_empty());
@@ -720,10 +727,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             scope.declare(diags, &decl.id, entry);
                             signals.push(Spanned::new(decl.id.span, Signal::Register(reg_init.reg)));
                         }
-                        Err(e) => {
-                            // don't do anything, as if the marker is not there
-                            let _: ErrorGuaranteed = e;
-                        }
+                        Err(e) => self.delayed_error = Err(e),
                     }
                 }
             }
@@ -746,17 +750,17 @@ impl BodyElaborationContext<'_, '_, '_> {
             match &stmt.inner {
                 // control flow
                 ModuleStatementKind::Block(block) => {
-                    self.elaborate_block(scope, vars, signals, block);
+                    self.elaborate_block(scope, vars, signals, block, false);
                 }
                 ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, vars, signals, if_stmt) {
                     Ok(()) => {}
-                    Err(e) => self.children.push(Err(e)),
+                    Err(e) => self.delayed_error = Err(e),
                 },
                 ModuleStatementKind::For(for_stmt) => {
                     let for_stmt = Spanned::new(stmt.span, for_stmt);
                     match self.elaborate_for(scope, vars, signals, for_stmt) {
                         Ok(()) => {}
-                        Err(e) => self.children.push(Err(e)),
+                        Err(e) => self.delayed_error = Err(e),
                     }
                 }
                 // declarations, already handled
@@ -769,23 +773,38 @@ impl BodyElaborationContext<'_, '_, '_> {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
 
                     let ir_process = self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block);
-                    self.children
-                        .push(ir_process.map(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
+                    match ir_process {
+                        Ok(ir_process) => self
+                            .children
+                            .push(Child::Finished(IrModuleChild::CombinatorialProcess(ir_process))),
+                        Err(e) => self.delayed_error = Err(e),
+                    }
                 }
                 ModuleStatementKind::ClockedBlock(block) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
                     let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block);
 
-                    let child_index = self.children.len();
-                    self.children.push(ir_process.map(Child::Clocked));
-                    self.clocked_block_statement_index_to_process_index
-                        .insert_first(stmt_index, child_index);
+                    match ir_process {
+                        Ok(ir_process) => {
+                            let child_index = self.children.len();
+                            self.children.push(Child::Clocked(ir_process));
+                            self.clocked_block_statement_index_to_process_index
+                                .insert_first(stmt_index, child_index);
+                        }
+                        Err(e) => self.delayed_error = Err(e),
+                    }
                 }
                 ModuleStatementKind::Instance(instance) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
                     let instance_ir = self.elaborate_instance(scope, &mut vars_inner, stmt_index, instance);
-                    self.children
-                        .push(instance_ir.map(|c| Child::Finished(IrModuleChild::ModuleInstance(c))));
+
+                    match instance_ir {
+                        Ok(instance_ir) => {
+                            self.children
+                                .push(Child::Finished(IrModuleChild::ModuleInstance(instance_ir)));
+                        }
+                        Err(e) => self.delayed_error = Err(e),
+                    }
                 }
             }
         }
@@ -964,7 +983,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             }
         }
         if let Some(final_else) = final_else {
-            self.elaborate_block(scope, vars, signals, final_else);
+            self.elaborate_block(scope, vars, signals, final_else, false);
         }
 
         Ok(())
@@ -994,7 +1013,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let cond = check_type_is_bool_compile(diags, reason, cond)?;
 
         if cond {
-            self.elaborate_block(scope, &vars_inner, signals, block)
+            self.elaborate_block(scope, &vars_inner, signals, block, false)
         }
 
         Ok(cond)
@@ -1055,7 +1074,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 vars_inner.var_new_immutable_init(&mut self.ctx.variables, index.clone(), span_keyword, index_value);
             scope_inner.maybe_declare(diags, index.as_ref(), Ok(ScopedEntry::Named(NamedValue::Variable(var))));
 
-            self.elaborate_block(&scope_inner, &vars_inner, signals, body);
+            self.elaborate_block(&scope_inner, &vars_inner, signals, body, false);
         }
 
         Ok(())
@@ -1317,7 +1336,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         block: ctx_block,
                     };
                     self.children
-                        .push(Ok(Child::Finished(IrModuleChild::CombinatorialProcess(process))));
+                        .push(Child::Finished(IrModuleChild::CombinatorialProcess(process)));
 
                     IrExpression::Wire(extra_ir_wire)
                 } else {
@@ -1748,10 +1767,19 @@ impl BodyElaborationContext<'_, '_, '_> {
         scope_body: &Scope,
         vars_body: &VariableValues,
         decl: &RegOutPortMarker,
+        is_root_block: bool,
     ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
         let RegOutPortMarker { span: _, id, init } = decl;
+
+        if !is_root_block {
+            return Err(diags.report_simple(
+                "register output markers are only allowed at the top level of a module",
+                decl.span,
+                "register output in child block",
+            ));
+        }
 
         // find port
         let port = scope_body.find(diags, id).and_then(|port| match port.value {
@@ -1952,7 +1980,7 @@ fn report_assignment_internal_error<'a>(
 fn pull_register_init_into_process(
     ctx: &mut CompileItemContext,
     clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
-    children: &mut Vec<Result<Child, ErrorGuaranteed>>,
+    children: &mut Vec<Child>,
     register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     reg: Register,
     driver: Driver,
@@ -1963,7 +1991,7 @@ fn pull_register_init_into_process(
 
     if let Driver::ClockedBlock(stmt_index) = driver {
         if let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index) {
-            if let Child::Clocked(process) = &mut children[process_index].as_ref_mut_ok()? {
+            if let Child::Clocked(process) = &mut children[process_index] {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
                     let init_ir = init.inner.as_ir_expression_or_undefined(
