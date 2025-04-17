@@ -88,6 +88,12 @@ macro_rules! impl_ast_ref_alias {
             }
         }
 
+        impl From<$ref_name> for AstRefItem {
+            fn from(item: $ref_name) -> Self {
+                item.item
+            }
+        }
+
         impl std::ops::Index<$ref_name> for ParsedDatabase {
             type Output = $ast_path;
             fn index(&self, item: $ref_name) -> &Self::Output {

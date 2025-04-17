@@ -11,6 +11,7 @@ use crate::front::context::{
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::EvaluatedId;
+use crate::front::item::ElaboratedItemParams;
 use crate::front::scope::{DeclaredValueSingle, NamedValue, Scope, ScopedEntry};
 use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
@@ -27,9 +28,9 @@ use crate::syntax::ast::{
     ModuleStatement, ModuleStatementKind, PortDirection, ResetKind,
 };
 use crate::syntax::ast::{
-    Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
-    ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, RegDeclaration,
-    RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
+    Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier, ModulePortBlock,
+    ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, RegDeclaration, RegOutPortMarker, Spanned,
+    SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
@@ -51,36 +52,11 @@ type SignalsInScope = Vec<Spanned<Signal>>;
 new_index_type!(pub InstancePort);
 pub type InstancePorts = Arena<InstancePort, PortInfo<InstancePort>>;
 
-pub struct ElaboratedModuleParams {
-    module: AstRefModule,
-    params: Option<Vec<(Identifier, CompileValue)>>,
-}
-
 pub struct ElaboratedModuleHeader {
     module: AstRefModule,
     params: Option<Vec<(Identifier, CompileValue)>>,
     ports: Arena<Port, PortInfo>,
     ports_ir: Arena<IrPort, IrPortInfo>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ModuleElaborationCacheKey {
-    module: AstRefModule,
-    params: Option<Vec<CompileValue>>,
-}
-
-impl ElaboratedModuleParams {
-    // TODO these are equivalent, maybe we can remove the layer of redundancy
-    pub fn cache_key(&self) -> ModuleElaborationCacheKey {
-        let &ElaboratedModuleParams { module, ref params } = self;
-        let param_values = params
-            .as_ref()
-            .map(|params| params.iter().map(|(_, v)| v.clone()).collect());
-        ModuleElaborationCacheKey {
-            module,
-            params: param_values,
-        }
-    }
 }
 
 pub struct ElaboratedModule {
@@ -90,50 +66,11 @@ pub struct ElaboratedModule {
 }
 
 impl CompileRefs<'_, '_> {
-    pub fn elaborate_module_params(
-        &self,
-        module: AstRefModule,
-        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
-    ) -> Result<ElaboratedModuleParams, ErrorGuaranteed> {
-        let diags = self.diags;
-        let &ast::ItemDefModule {
-            span: def_span,
-            vis: _,
-            id: _,
-            ref params,
-            ports: _,
-            body: _,
-        } = &self.fixed.parsed[module];
-
-        // create header scope
-        let scope_file = self.shared.file_scope(module.file())?;
-
-        let mut ctx = CompileItemContext::new(*self, None, ArenaVariables::new(), ArenaPorts::new());
-
-        // evaluate params/args
-        let param_values = match (params, args) {
-            (None, None) => None,
-            (Some(params), Some(args)) => {
-                // We can't use the scope returned here, since it is only valid for the current variables arena,
-                //   which will be different during body elaboration. Instead, we'll recreate the scope from the returned parameter values.
-                let mut vars = VariableValues::new_root(&ctx.variables);
-                let (_, param_values) = ctx.match_args_to_params_and_typecheck(&mut vars, scope_file, params, &args)?;
-                Some(param_values)
-            }
-            _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
-        };
-
-        Ok(ElaboratedModuleParams {
-            module,
-            params: param_values,
-        })
-    }
-
     pub fn elaborate_module_ports_new(
         self,
-        params: ElaboratedModuleParams,
+        params: ElaboratedItemParams<AstRefModule>,
     ) -> Result<(InstancePorts, ElaboratedModuleHeader), ErrorGuaranteed> {
-        let ElaboratedModuleParams { module, params } = params;
+        let ElaboratedItemParams { item: module, params } = params;
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,

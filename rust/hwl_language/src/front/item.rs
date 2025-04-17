@@ -1,5 +1,5 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs};
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
 use crate::front::scope::ScopedEntry;
@@ -7,9 +7,68 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
+    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, Parameter,
+    Spanned, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefItem, AstRefModule};
+use crate::throw;
+
+pub struct ElaboratedItemParams<I> {
+    pub item: I,
+    pub params: Option<Vec<(Identifier, CompileValue)>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedItemKey<I> {
+    item: I,
+    params: Option<Vec<CompileValue>>,
+}
+
+impl<I: Copy> ElaboratedItemParams<I> {
+    pub fn cache_key(&self) -> ElaboratedItemKey<I> {
+        let &ElaboratedItemParams { item, ref params } = self;
+        let param_values = params
+            .as_ref()
+            .map(|params| params.iter().map(|(_, v)| v.clone()).collect());
+        ElaboratedItemKey {
+            item,
+            params: param_values,
+        }
+    }
+}
+
+impl CompileRefs<'_, '_> {
+    pub fn elaborate_item_params<I: Copy + Into<AstRefItem>>(
+        &self,
+        item: I,
+        params: &Option<Spanned<Vec<Parameter>>>,
+        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
+    ) -> Result<ElaboratedItemParams<I>, ErrorGuaranteed> {
+        let diags = self.diags;
+
+        let def_span = self.fixed.parsed[item.into()].common_info().span_short;
+        let scope_file = self.shared.file_scope(item.into().file())?;
+        let mut ctx = CompileItemContext::new(*self, None, ArenaVariables::new(), ArenaPorts::new());
+
+        let param_values = match (params, args) {
+            (None, None) => None,
+            (Some(params), Some(args)) => {
+                // We can't use the scope returned here, since it is only valid for the current variables arena,
+                //   which will be different during body elaboration.
+                //   Instead, we'll recreate the scope from the returned parameter values.
+                let mut vars = VariableValues::new_root(&ctx.variables);
+                let (_, param_values) = ctx.match_args_to_params_and_typecheck(&mut vars, scope_file, params, &args)?;
+                Some(param_values)
+            }
+            _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
+        };
+
+        Ok(ElaboratedItemParams {
+            item,
+            params: param_values,
+        })
+    }
+}
 
 impl CompileItemContext<'_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {

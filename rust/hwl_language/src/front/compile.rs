@@ -1,7 +1,8 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
-use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
+use crate::front::item::ElaboratedItemKey;
+use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader};
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
@@ -193,7 +194,7 @@ impl<'s> CompileRefs<'_, 's> {
         let shared = self.shared;
 
         // elaborate params
-        let params = self.elaborate_module_params(module_ast, args)?;
+        let params = self.elaborate_item_params(module_ast, &self.fixed.parsed[module_ast].params, args)?;
         let key = params.cache_key();
 
         // if necessary, elaborate header and queue body
@@ -247,7 +248,8 @@ pub struct CompileShared {
 
     pub work_queue: SharedQueue<WorkItem>,
     pub item_values: ComputeOnceArena<AstRefItem, Result<CompileValue, ErrorGuaranteed>, StackEntry>,
-    pub elaborated_modules: ComputeOnceMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+
+    pub elaborated_modules: ComputeOnceMap<ElaboratedItemKey<AstRefModule>, Result<ElaboratedModule, ErrorGuaranteed>>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     pub ir_modules: Mutex<Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
@@ -256,7 +258,7 @@ pub struct CompileShared {
 pub type FileScopes = IndexMap<FileId, Result<Scope<'static>, ErrorGuaranteed>>;
 
 pub struct CompileSharedModules {
-    pub elaborations: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+    pub elaborations: IndexMap<ElaboratedItemKey<AstRefModule>, Result<ElaboratedModule, ErrorGuaranteed>>,
     pub ir_modules: Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
 }
 
