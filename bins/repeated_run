@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -ue
+
+cd "$(dirname "$0")"/..
+cd rust
+
+# Useful for debugging concurrency issues
+# TODO add CPU load to trigger more edges
+# TODO use loom/... instead to more thoroughly fuzz or exhaustively check for concurrency bugs
+# TODO try both debug and release
+
+cargo build --bin hwl_language
+
+for i in {0..1024}
+do
+  echo "$i"
+  ./target/debug/hwl_language -j4 -- ../design/project
+done
+
+
+#MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri run -- ../design/project/

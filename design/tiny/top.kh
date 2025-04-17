@@ -1,0 +1,14 @@
+module top ports() body{}
+
+pub type any = __builtin("type", "any");
+
+fn fib() {
+
+}
+
+//const a = ([b, fib()])[1];
+//const b = ([a, fib()])[0];
+
+
+const a = fib();
+const b = fib();
