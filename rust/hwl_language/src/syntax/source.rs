@@ -200,6 +200,8 @@ impl SourceDatabaseBuilder {
             throw!(SourceSetError::EmptyPath);
         }
 
+        // TODO reject invalid characters in filenames
+        //   (they have to match identifier tokens)
         let directory = self.get_directory(&path);
         let slot = &mut self.directories[directory].file;
         if slot.is_some() {

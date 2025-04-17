@@ -1,6 +1,7 @@
 use crate::front::value::Value;
 use crate::syntax::pos::Span;
 use crate::util::iter::IterExt;
+
 // TODO remove "clone" from everything, and use ast lifetimes everywhere
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ pub enum Item {
     // declarations that are only allowed top-level
     // TODO maybe we should also just allow module declarations anywhere?
     Module(ItemDefModule),
+    Interface(ItemDefInterface),
 }
 
 #[derive(Debug, Clone)]
@@ -119,11 +121,19 @@ pub struct ItemDefModule {
 }
 
 #[derive(Debug, Clone)]
-pub struct InterfaceField {
+pub struct ItemDefInterface {
     pub span: Span,
-    pub id: Identifier,
-    pub dir: InterfaceDirection,
-    pub ty: Expression,
+    pub vis: Visibility<Span>,
+    pub id: MaybeIdentifier,
+    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub port_types: Vec<(Identifier, Box<Expression>)>,
+    pub views: Vec<InterfaceView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceView {
+    pub id: MaybeIdentifier,
+    pub port_dirs: Vec<(Identifier, Spanned<PortDirection>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,7 +154,7 @@ pub enum ModulePortItem {
 pub struct ModulePortSingle {
     pub span: Span,
     pub id: Identifier,
-    pub direction: Spanned<PortDirection>,
+    pub direction: Spanned<PortDirectionOrInterface>,
     pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
 }
 
@@ -159,7 +169,7 @@ pub struct ModulePortBlock {
 pub struct ModulePortInBlock {
     pub span: Span,
     pub id: Identifier,
-    pub direction: Spanned<PortDirection>,
+    pub direction: Spanned<PortDirectionOrInterface>,
     pub ty: Box<Expression>,
 }
 
@@ -222,6 +232,13 @@ impl<S> SyncDomain<S> {
 pub enum PortDirection {
     Input,
     Output,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum PortDirectionOrInterface {
+    Input,
+    Output,
+    Interface,
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +460,8 @@ pub struct PortConnection {
     pub expr: Expression,
 }
 
+// TODO we're using Box<Spanned<ExpressionKind>> a lot, but maybe
+//   Spanned<Box<ExpressionKind>> is better?
 pub type Expression = Spanned<ExpressionKind>;
 
 #[derive(Debug, Clone)]
@@ -709,13 +728,6 @@ pub enum UnaryOp {
     Not,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum InterfaceDirection {
-    None,
-    In,
-    Out,
-}
-
 // TODO move to pos?
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Spanned<T> {
@@ -842,6 +854,7 @@ pub struct ItemDeclarationInfo<'s> {
     pub id: MaybeIdentifier<&'s Identifier>,
 }
 
+// TODO reorganize the item struct so all of these just become common fields
 impl Item {
     pub fn common_info(&self) -> ItemCommonInfo {
         self.info().0
@@ -881,6 +894,16 @@ impl Item {
                 )
             }
             Item::Module(item) => (
+                ItemCommonInfo {
+                    span_full: item.span,
+                    span_short: item.id.span(),
+                },
+                Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: item.id.as_ref(),
+                }),
+            ),
+            Item::Interface(item) => (
                 ItemCommonInfo {
                     span_full: item.span,
                     span_short: item.id.span(),

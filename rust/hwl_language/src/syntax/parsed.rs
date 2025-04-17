@@ -167,7 +167,7 @@ impl<'a> ModulePort<'a> {
         }
     }
 
-    pub fn direction(self) -> &'a Spanned<ast::PortDirection> {
+    pub fn direction(self) -> &'a Spanned<ast::PortDirectionOrInterface> {
         match self {
             ModulePort::Single(port) => &port.direction,
             ModulePort::InBlock(port) => &port.direction,

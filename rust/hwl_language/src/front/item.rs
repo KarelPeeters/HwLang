@@ -57,6 +57,7 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Module(ast_ref))
             }
+            Item::Interface(x) => Err(diags.report_todo(x.span, "interface item")),
         }
     }
 

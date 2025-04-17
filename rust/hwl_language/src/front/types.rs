@@ -51,6 +51,8 @@ pub struct IncRange<T> {
 // TODO switch to exclusive ranges, much more intuitive to program with, especially for arrays and loops
 //   match code becomes harder, but that's fine
 // TODO transition this to multi-range as the int type
+// TODO make sure that people can only construct non-decreasing ranges,
+//   there are still some panics in the compiler because of this
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ClosedIncRange<T> {
     pub start_inc: T,

@@ -436,6 +436,7 @@ declare_tokens! {
         Ports("ports", TC::Keyword),
         Body("body", TC::Keyword),
         Module("module", TC::Keyword),
+        Interface("interface", TC::Keyword),
         Instance("instance", TC::Keyword),
         Function("fn", TC::Keyword),
         Combinatorial("comb", TC::Keyword),

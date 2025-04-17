@@ -11,8 +11,8 @@ use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
     IrWire,
 };
-use crate::syntax::ast::{self, Visibility};
-use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
+use crate::syntax::ast::{self, PortDirection, Visibility};
+use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -446,6 +446,7 @@ pub struct VariableInfo {
     pub ty: Option<Spanned<Type>>,
 }
 
+// TODO include interface this is a part of if any
 #[derive(Debug)]
 pub struct PortInfo<P = Port> {
     pub id: Identifier,

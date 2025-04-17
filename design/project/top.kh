@@ -6,67 +6,34 @@ import std.math.[gcd, min, max];
 import std.util.[print, print_compile, unsafe_cast_clock];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
 
-const input_width = 16;
-const output_width = 8;
+interface axi_stream(T: type) {
+    data: T,
+    valid: bool,
+    ready: bool,
+
+    interface input {
+        data: in,
+        valid: in,
+        ready: out,
+    }
+
+    interface output {
+        data: in,
+        valid: in,
+        ready: out,
+    }
+}
 
 pub module top ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
-        input_data: in [input_width]bool,
-        input_valid: in bool,
-        input_ready: out bool,
-
-        output_data: out [output_width]bool,
-        output_valid: out bool,
-        output_ready: in bool,
-    }
+    input: interface sync(clk, rst) axi_stream(bool).input,
+    output: interface sync(clk, rst) axi_stream(bool).output,
 ) body {
-    reg clk_div_reg: sync(clk, rst) bool = false;
-    wire clk_div: clock = unsafe_cast_clock(clk_div_reg);
-
-    clocked(clk, async rst) {
-        print("clk tick");
-        clk_div_reg = !clk_div_reg;
+    comb {
+        output.data = input.data;
+        output.valid = input.valid;
+        input.ready = output.ready;
     }
-
-    clocked(clk_div, async rst) {
-        print("clk_div tick");
-    }
-
-    instance axi_gearbox_v2 generics(
-        input_width=input_width,
-        output_width=output_width,
-    ) ports(
-        .clk(clk),
-        .rst(rst),
-        .input_data(input_data),
-        .input_valid(input_valid),
-        .input_ready(input_ready),
-        .output_data(output_data),
-        .output_valid(output_valid),
-        .output_ready(output_ready),
-    );
-
-    wire w: sync(clk, rst) bool = false;
-    instance axi_gearbox_v2 generics(
-        input_width=input_width,
-        output_width=output_width,
-    ) ports(
-        .clk(clk),
-        .rst(rst),
-        .input_data(input_data),
-        .input_valid(input_valid),
-        .input_ready(_),
-        .output_data(_),
-        .output_valid(_),
-        .output_ready(w),
-    );
 }
-
-pub fn foo_function(a: int, b: int) -> int {
-    return a + b;
-}
-
-pub module foo_module generics(T: type) ports() body{}

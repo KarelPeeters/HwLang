@@ -24,12 +24,12 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     self, ClockedBlockReset, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind,
-    ResetKind,
+    PortDirection, PortDirectionOrInterface, ResetKind,
 };
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
-    ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, PortDirection,
-    RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
+    ModulePortBlock, ModulePortInBlock, ModulePortItem, ModulePortSingle, PortConnection, RegDeclaration,
+    RegOutPortMarker, Spanned, SyncDomain, WireDeclaration, WireKind,
 };
 use crate::syntax::parsed::AstRefModule;
 use crate::syntax::pos::Span;
@@ -152,7 +152,7 @@ impl CompileRefs<'_, '_> {
 
         // TODO we actually need a full context here?
         let (ports_external, ports_ir) =
-            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span);
+            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
         let ports_internal = ctx.ports;
 
         let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
@@ -193,6 +193,7 @@ impl CompileRefs<'_, '_> {
         self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, params.clone(), ports_ir, body)
     }
 
+    // TODO don't return Vec<Port>, return Vec<PortOrInterface>
     fn elaborate_module_ports_impl<'p>(
         &self,
         ctx: &mut CompileItemContext,
@@ -200,7 +201,7 @@ impl CompileRefs<'_, '_> {
         vars: &mut VariableValues,
         ports: &Spanned<Vec<ModulePortItem>>,
         module_def_span: Span,
-    ) -> (InstancePorts, Arena<IrPort, IrPortInfo>) {
+    ) -> Result<(InstancePorts, Arena<IrPort, IrPortInfo>), ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut scope_ports = Scope::new_child(ports.span.join(Span::single_at(module_def_span.end)), scope_params);
@@ -218,6 +219,14 @@ impl CompileRefs<'_, '_> {
                         direction,
                         ref kind,
                     } = port_item;
+
+                    let direction = match direction.inner {
+                        PortDirectionOrInterface::Input => Spanned::new(direction.span, PortDirection::Input),
+                        PortDirectionOrInterface::Output => Spanned::new(direction.span, PortDirection::Output),
+                        PortDirectionOrInterface::Interface => {
+                            return Err(diags.report_todo(direction.span, "interface ports"));
+                        }
+                    };
 
                     // eval kind
                     let (domain, ty) = match &kind.inner {
@@ -271,6 +280,14 @@ impl CompileRefs<'_, '_> {
                             ref ty,
                         } = port;
 
+                        let direction = match direction.inner {
+                            PortDirectionOrInterface::Input => Spanned::new(direction.span, PortDirection::Input),
+                            PortDirectionOrInterface::Output => Spanned::new(direction.span, PortDirection::Output),
+                            PortDirectionOrInterface::Interface => {
+                                return Err(diags.report_todo(direction.span, "interface ports"));
+                            }
+                        };
+
                         // eval ty
                         let ty = ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port");
 
@@ -298,7 +315,7 @@ impl CompileRefs<'_, '_> {
         assert_eq!(ctx.ports.len(), ports_external.len());
         assert_eq!(ctx.ports.len(), ports_ir.len());
 
-        (ports_external, ports_ir)
+        Ok((ports_external, ports_ir))
     }
 
     fn elaborate_module_body_impl(
