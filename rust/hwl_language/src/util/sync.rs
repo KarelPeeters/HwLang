@@ -1,6 +1,6 @@
 use crate::util::Never;
+use dashmap::{DashMap, Entry};
 use indexmap::IndexMap;
-use once_map::OnceMap;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
@@ -264,16 +264,31 @@ fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S: Debug>(
 }
 
 pub struct ComputeOnceMap<K, V> {
-    inner: OnceMap<K, Box<V>>,
+    inner: DashMap<K, Box<UnsafeCell<V>>>,
 }
+
+unsafe impl<K: Send + Sync, V: Send + Sync> Sync for ComputeOnceMap<K, V> {}
 
 impl<K: Debug + Hash + Eq, V> ComputeOnceMap<K, V> {
     pub fn new() -> Self {
-        Self { inner: OnceMap::new() }
+        Self { inner: DashMap::new() }
     }
 
     pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V {
-        self.inner.insert(k, |k| Box::new(f(k)))
+        let _ = f;
+        let ptr = match self.inner.entry(k) {
+            Entry::Occupied(entry) => entry.get().get(),
+            Entry::Vacant(entry) => {
+                let value = f(entry.key());
+                let boxed = Box::new(UnsafeCell::new(value));
+                let entry = entry.insert(boxed);
+                entry.get()
+            }
+        };
+
+        // safety: at this point we know the value has been initialized, and that it will never be changed again
+        //   it will also never move because it is inside a Box
+        unsafe { &*ptr }
     }
 }
 

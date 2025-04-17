@@ -23,6 +23,7 @@ anyhow = "1.0.86"
 clap = { version = "4.5.7", features = ["derive"] }
 console_error_panic_hook = "0.1.7"
 crossbeam-channel = "0.5.13"
+dashmap = "6.1.0"
 derivative = "2.2.0"
 derive_more = { version = "1.0.0", features = ["from"] }
 fluent-uri = "0.1.4"
