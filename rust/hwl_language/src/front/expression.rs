@@ -932,7 +932,9 @@ impl CompileItemContext<'_, '_> {
                                 bits.into_iter().map(CompileValue::Bool).collect_vec(),
                             ))
                         }
-                        Value::Hardware(v) => {
+                        Value::Hardware(v_raw) => {
+                            let v = v_raw.clone().soft_expand_to_type(&mut self.large, &ty_hw);
+
                             let expr = self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, v.expr.clone()));
                             let ty_bits = HardwareType::Array(Box::new(HardwareType::Bool), width);
 
