@@ -23,8 +23,8 @@ use crate::mid::ir::{
     IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ForStatement, IfCondBlockPair, IfStatement, ModuleStatement, ModuleStatementKind,
-    PortDirection, PortDirectionOrInterface, ResetKind,
+    self, ClockedBlockReset, ForStatement, IfCondBlockPair, IfStatement, ModulePortInBlockKind, ModulePortSingleKind,
+    ModuleStatement, ModuleStatementKind, PortDirection, ResetKind,
 };
 use crate::syntax::ast::{
     Args, Block, ClockedBlock, CombinatorialBlock, DomainKind, ExpressionKind, Identifier, MaybeIdentifier,
@@ -213,18 +213,12 @@ impl CompileRefs<'_, '_> {
         for port_item in &ports.inner {
             match port_item {
                 ModulePortItem::Single(port_item) => {
-                    let &ModulePortSingle {
-                        span: _,
-                        ref id,
-                        direction,
-                        ref kind,
-                    } = port_item;
+                    let ModulePortSingle { span: _, id, kind } = port_item;
 
-                    let direction = match direction.inner {
-                        PortDirectionOrInterface::Input => Spanned::new(direction.span, PortDirection::Input),
-                        PortDirectionOrInterface::Output => Spanned::new(direction.span, PortDirection::Output),
-                        PortDirectionOrInterface::Interface => {
-                            return Err(diags.report_todo(direction.span, "interface ports"));
+                    let (direction, kind) = match kind {
+                        ModulePortSingleKind::Port { direction, kind } => (*direction, kind),
+                        ModulePortSingleKind::Interface { span_keyword, .. } => {
+                            return Err(diags.report_todo(*span_keyword, "interface ports"));
                         }
                     };
 
@@ -273,18 +267,12 @@ impl CompileRefs<'_, '_> {
                         .map(|d| d.map_inner(PortDomain::Kind));
 
                     for port in ports {
-                        let &ModulePortInBlock {
-                            span: _,
-                            ref id,
-                            direction,
-                            ref ty,
-                        } = port;
+                        let ModulePortInBlock { span: _, id, kind } = port;
 
-                        let direction = match direction.inner {
-                            PortDirectionOrInterface::Input => Spanned::new(direction.span, PortDirection::Input),
-                            PortDirectionOrInterface::Output => Spanned::new(direction.span, PortDirection::Output),
-                            PortDirectionOrInterface::Interface => {
-                                return Err(diags.report_todo(direction.span, "interface ports"));
+                        let (direction, ty) = match kind {
+                            ModulePortInBlockKind::Port { direction, ty } => (*direction, ty),
+                            ModulePortInBlockKind::Interface { span_keyword, .. } => {
+                                return Err(diags.report_todo(*span_keyword, "interface ports"));
                             }
                         };
 

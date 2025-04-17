@@ -1,6 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::syntax::ast::{FileContent, Identifier, ModulePortInBlock, ModulePortSingle, Spanned, WireKind};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::{FileContent, ModulePortInBlock, ModulePortSingle};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::IndexType;
@@ -146,31 +145,5 @@ impl std::ops::Index<AstRefItem> for ParsedDatabase {
             .as_ref()
             .expect("the item existing implies that the auxiliary info exists too");
         &aux.items[file_item_index]
-    }
-}
-
-impl<'a> ModulePort<'a> {
-    pub fn id(self) -> &'a Identifier {
-        match self {
-            ModulePort::Single(port) => &port.id,
-            ModulePort::InBlock(port) => &port.id,
-        }
-    }
-
-    pub fn ty_span(self) -> Span {
-        match self {
-            ModulePort::Single(port) => match &port.kind.inner {
-                WireKind::Clock => port.kind.span,
-                WireKind::Normal { domain: _, ty } => ty.span,
-            },
-            ModulePort::InBlock(port) => port.ty.span,
-        }
-    }
-
-    pub fn direction(self) -> &'a Spanned<ast::PortDirectionOrInterface> {
-        match self {
-            ModulePort::Single(port) => &port.direction,
-            ModulePort::InBlock(port) => &port.direction,
-        }
     }
 }

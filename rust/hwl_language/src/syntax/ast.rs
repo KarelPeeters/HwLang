@@ -154,8 +154,7 @@ pub enum ModulePortItem {
 pub struct ModulePortSingle {
     pub span: Span,
     pub id: Identifier,
-    pub direction: Spanned<PortDirectionOrInterface>,
-    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
+    pub kind: ModulePortSingleKind,
 }
 
 #[derive(Debug, Clone)]
@@ -169,8 +168,32 @@ pub struct ModulePortBlock {
 pub struct ModulePortInBlock {
     pub span: Span,
     pub id: Identifier,
-    pub direction: Spanned<PortDirectionOrInterface>,
-    pub ty: Box<Expression>,
+    pub kind: ModulePortInBlockKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModulePortSingleKind {
+    Port {
+        direction: Spanned<PortDirection>,
+        kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
+    },
+    Interface {
+        span_keyword: Span,
+        domain: Spanned<DomainKind<Box<Expression>>>,
+        interface: Box<Expression>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ModulePortInBlockKind {
+    Port {
+        direction: Spanned<PortDirection>,
+        ty: Box<Expression>,
+    },
+    Interface {
+        span_keyword: Span,
+        interface: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -232,13 +255,6 @@ impl<S> SyncDomain<S> {
 pub enum PortDirection {
     Input,
     Output,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum PortDirectionOrInterface {
-    Input,
-    Output,
-    Interface,
 }
 
 #[derive(Debug, Clone)]

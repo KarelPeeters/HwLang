@@ -392,15 +392,29 @@ Parameter: Parameter = {
 ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
 
 ModulePortItem: ModulePortItem = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirectionOrInterface>> <kind:Spanned<WireKind>> <end:@R>
-            => ModulePortItem::Single(ModulePortSingle { id, direction, kind, span: loc.span(start, end) }),
+    <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
+            => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
     <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
 ModulePortInBlock: ModulePortInBlock = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirectionOrInterface>> <ty:BoxExpr> <end:@R>
-        => ModulePortInBlock { id, direction, ty, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <kind:ModulePortInBlockKind> <end:@R>
+        => ModulePortInBlock { id, kind, span: loc.span(start, end) },
+}
+
+ModulePortSingleKind: ModulePortSingleKind = {
+    <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>>
+        => ModulePortSingleKind::Port { direction, kind },
+    <span_keyword:Span<"interface">> <domain:Spanned<DomainKind>> <interface:BoxExpr>
+        => ModulePortSingleKind::Interface { span_keyword, domain, interface },
+}
+
+ModulePortInBlockKind: ModulePortInBlockKind = {
+    <direction:Spanned<PortDirection>> <ty:BoxExpr>
+        => ModulePortInBlockKind::Port { direction, ty },
+    <span_keyword:Span<"interface">> <interface:BoxExpr>
+        => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
 WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
@@ -411,12 +425,6 @@ WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
 PortDirection: PortDirection = {
     "in" => PortDirection::Input,
     "out" => PortDirection::Output,
-}
-
-PortDirectionOrInterface: PortDirectionOrInterface = {
-    "in" => PortDirectionOrInterface::Input,
-    "out" => PortDirectionOrInterface::Output,
-    "interface" => PortDirectionOrInterface::Interface,
 }
 
 DomainKind: DomainKind<Box<Expression>> = {
