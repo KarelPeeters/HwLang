@@ -193,7 +193,7 @@ impl<'s> CompileRefs<'_, 's> {
         let shared = self.shared;
 
         // elaborate params
-        let params = self.elaborate_module_params_new(module_ast, args)?;
+        let params = self.elaborate_module_params(module_ast, args)?;
         let key = params.cache_key();
 
         // if necessary, elaborate header and queue body

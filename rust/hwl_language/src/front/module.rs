@@ -90,7 +90,7 @@ pub struct ElaboratedModule {
 }
 
 impl CompileRefs<'_, '_> {
-    pub fn elaborate_module_params_new(
+    pub fn elaborate_module_params(
         &self,
         module: AstRefModule,
         args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
