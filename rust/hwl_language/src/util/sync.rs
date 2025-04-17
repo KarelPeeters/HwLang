@@ -149,10 +149,14 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
             check_cycle(&guard, &self.map, item, origin_item, &origin_path).map_err(f_cycle)?;
 
             // set dependency of origin item to current item
-            let state = unsafe { &mut *state_ptr };
-            match state {
-                ItemState::Progress(prev_dependency) => {
-                    *prev_dependency = Some(Dependency {
+            // safety: we are the thread that is computing the origin item, so no one else will be modifying its state
+            let origin_state = self.map.get(&origin_item).unwrap().state.get();
+            let origin_state = unsafe { &mut *origin_state };
+
+            match origin_state {
+                ItemState::Progress(dep) => {
+                    // assert_eq!(dep.as_ref().map(|d| &d.next), Some(&item));
+                    *dep = Some(Dependency {
                         next: item,
                         path: origin_path,
                     })
@@ -227,23 +231,23 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
     }
 }
 
-fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S>(
-    _: &MutexGuard<()>,
+fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S: Debug>(
+    _guard: &MutexGuard<()>,
     map: &'a IndexMap<K, ItemInfo<K, V, S>>,
-    start: K,
+    item: K,
     origin_item: K,
     origin_path: &'a Vec<S>,
 ) -> Result<(), Vec<&'a S>> {
-    if start == origin_item {
-        return Err(origin_path.iter().collect());
-    }
-
     // TODO avoid allocating this vec if there is no cycle?
-    // TODO avoid duplicate initial map lookup?
+    let mut curr = item;
     let mut full_path = vec![];
 
-    let mut curr = start;
     loop {
+        if curr == origin_item {
+            full_path.extend(origin_path);
+            return Err(full_path);
+        }
+
         let state = &map.get(&curr).unwrap().state;
         curr = match unsafe { &*state.get() } {
             ItemState::Unvisited => unreachable!(),
@@ -251,13 +255,6 @@ fn check_cycle<'a, K: Debug + Eq + Hash + Copy, V, S>(
             ItemState::Progress(Some(dependency)) => {
                 let &Dependency { next, ref path } = dependency;
                 full_path.extend(path);
-
-                if next == origin_item {
-                    // TODO where to put this?
-                    full_path.extend(origin_path);
-                    return Err(full_path);
-                }
-
                 next
             }
         };
