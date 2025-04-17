@@ -3,9 +3,8 @@ import std.types.[
     bool, int_range, int, uint, natural,
     int_bits, uint_bits, any,
 ];
-import std.util.[typeof, print, print_compile];
+import std.util.[typeof, print, print_compile, to_bits];
 import std.math.[gcd, min, max, clog2];
-import std.convert.[uint_to_bits, uint_from_bits];
 
 pub module axi_gearbox_v2 generics(
     input_width: natural,
@@ -55,7 +54,7 @@ pub module axi_gearbox_v2 generics(
             data[..input_width] = input_data;
             mask[..input_width / step] = [true] * (input_width / step);
 
-            var shift = uint_to_bits(shift_bits, level);
+            var shift = to_bits(uint_bits(shift_bits), level);
             for (i in 0..shift_bits) {
                 if (shift[i]) {
                     // note: the range `..` we use here and the `downto` in the original have opposite directions!
