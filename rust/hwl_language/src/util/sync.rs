@@ -269,13 +269,30 @@ pub struct ComputeOnceMap<K, V> {
 
 unsafe impl<K: Send + Sync, V: Send + Sync> Sync for ComputeOnceMap<K, V> {}
 
+#[derive(Debug)]
+pub struct KeyAlreadyPresent;
+
 impl<K: Debug + Hash + Eq, V> ComputeOnceMap<K, V> {
     pub fn new() -> Self {
         Self { inner: DashMap::new() }
     }
 
+    pub fn get(&self, k: &K) -> Option<&V> {
+        let ptr = self.inner.get(&k)?.get();
+        Some(unsafe { &*ptr })
+    }
+
+    pub fn set(&self, k: K, v: V) -> Result<&V, KeyAlreadyPresent> {
+        match self.inner.entry(k) {
+            Entry::Occupied(_) => Err(KeyAlreadyPresent),
+            Entry::Vacant(entry) => {
+                let ptr = entry.insert(Box::new(UnsafeCell::new(v))).get();
+                Ok(unsafe { &*ptr })
+            }
+        }
+    }
+
     pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V {
-        let _ = f;
         let ptr = match self.inner.entry(k) {
             Entry::Occupied(entry) => entry.get().get(),
             Entry::Vacant(entry) => {
@@ -285,9 +302,6 @@ impl<K: Debug + Hash + Eq, V> ComputeOnceMap<K, V> {
                 entry.get()
             }
         };
-
-        // safety: at this point we know the value has been initialized, and that it will never be changed again
-        //   it will also never move because it is inside a Box
         unsafe { &*ptr }
     }
 }

@@ -3,6 +3,7 @@ use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::item::ElaboratedItemParams;
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::Type;
@@ -11,13 +12,14 @@ use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
 };
-use crate::syntax::parsed::AstRefItem;
+use crate::syntax::parsed::{AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::map::Entry as IndexMapEntry;
 use indexmap::IndexMap;
+use itertools::Itertools;
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
@@ -42,21 +44,23 @@ impl FunctionValue {
 
 #[derive(Debug, Clone)]
 pub enum FunctionBody {
-    TypeAliasExpr(Box<Expression>),
     FunctionBodyBlock {
-        // TODO avoid ast clones?
+        // TODO avoid ast clones, just refer to the ast item here
         body: Block<BlockStatement>,
         ret_ty: Option<Box<Expression>>,
     },
-    // TODO Enum, Struct
-    // TODO should generic modules are be implemented here?
+
+    TypeAliasExpr(Box<Expression>),
+    ModulePortsAndBody(AstRefModule),
+    // TODO add interface, struct, enum
 }
 
 impl FunctionBody {
     pub fn params_must_be_compile(&self) -> bool {
         match self {
-            FunctionBody::TypeAliasExpr(_) => true,
+            // TODO add optional marker to functions that can only be used with compare args
             FunctionBody::FunctionBodyBlock { .. } => false,
+            FunctionBody::TypeAliasExpr(_) | FunctionBody::ModulePortsAndBody(_) => true,
         }
     }
 }
@@ -271,7 +275,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         function: &FunctionValue,
         args: Args<Option<Identifier>, Spanned<Value>>,
-    ) -> Result<(C::Block, Value), ErrorGuaranteed> {
+    ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
         self.refs.check_should_stop(function.decl_span)?;
 
@@ -282,7 +286,7 @@ impl CompileItemContext<'_, '_> {
             .to_scope(&mut self.variables, vars, self.refs, span_scope)?;
 
         // map params into scope
-        let (scope, _) = self.match_args_to_params_and_typecheck(
+        let (scope, param_values) = self.match_args_to_params_and_typecheck(
             vars,
             &scope_captured,
             &function.params,
@@ -294,13 +298,6 @@ impl CompileItemContext<'_, '_> {
         let entry = StackEntry::FunctionRun(function.decl_span);
         self.recurse(entry, |s| {
             match &function.body.inner {
-                FunctionBody::TypeAliasExpr(expr) => {
-                    let result = s.eval_expression_as_ty(&scope, vars, expr)?.inner;
-                    let result = Value::Compile(CompileValue::Type(result));
-
-                    let empty_block = ctx.new_ir_block();
-                    Ok((empty_block, result))
-                }
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                     // evaluate return type
                     let ret_ty = ret_ty
@@ -315,7 +312,26 @@ impl CompileItemContext<'_, '_> {
                     let ret_ty = ret_ty?;
                     let ret_value = check_function_return_value(diags, body.span, &ret_ty, end)?;
 
-                    Ok((ir_block, ret_value))
+                    Ok((Some(ir_block), ret_value))
+                }
+                FunctionBody::TypeAliasExpr(expr) => {
+                    let result_ty = s.eval_expression_as_ty(&scope, vars, expr)?.inner;
+                    let result_value = Value::Compile(CompileValue::Type(result_ty));
+                    Ok((None, result_value))
+                }
+                &FunctionBody::ModulePortsAndBody(item) => {
+                    let param_values = param_values
+                        .into_iter()
+                        .map(|(id, v)| (id, v.unwrap_compile()))
+                        .collect_vec();
+
+                    let item_params = ElaboratedItemParams {
+                        item,
+                        params: Some(param_values),
+                    };
+                    let (result_id, _) = s.refs.elaborate_module(item_params)?;
+                    let result_value = Value::Compile(CompileValue::Module(result_id));
+                    Ok((None, result_value))
                 }
             }
         })
@@ -397,6 +413,13 @@ fn check_function_return_value(
 }
 
 impl CapturedScope {
+    pub fn from_file_scope(scope: FileId) -> CapturedScope {
+        CapturedScope {
+            parent_file: scope,
+            child_values: BTreeMap::new(),
+        }
+    }
+
     pub fn from_scope(
         diags: &Diagnostics,
         scope: &Scope,

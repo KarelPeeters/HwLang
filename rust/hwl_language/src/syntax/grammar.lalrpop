@@ -128,13 +128,11 @@ Item: Item = {
     },
 
     <start:@L>
-        "instance" <instance_end:@R> <module:BoxExpr>
-        <generic_args:("generics" "(" <Args> ")")?> ";"
+        "instance" <instance_end:@R> <module:BoxExpr>";"
     <end:@R> => {
         let span = loc.span(start, end);
         let span_keyword = loc.span(start, instance_end);
-        let instance = ModuleInstanceHeader { span, span_keyword, module, generic_args };
-        Item::Instance(instance)
+        Item::Instance(ModuleInstanceItem { span, span_keyword, module })
     },
 
     <start:@L>
@@ -249,18 +247,13 @@ ModuleStatementKind: ModuleStatementKind = {
     // TODO allow strings as instance names? necessary for modules instantiated in loops
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        <generic_args:("generics" "(" <Args> ")")?>
         "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
-            header: ModuleInstanceHeader {
-                span_keyword: loc.span(start, instance_end),
-                span: loc.span(start, end),
-                module,
-                generic_args,
-            },
+            span_keyword: loc.span(start, instance_end),
             name,
+            module,
             port_connections,
         };
         ModuleStatementKind::Instance(instance)

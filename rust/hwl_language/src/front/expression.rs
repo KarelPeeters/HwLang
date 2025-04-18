@@ -1,14 +1,15 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool, check_type_is_bool_array,
-    check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_uint_compile,
-    TypeContainsReason,
+    check_hardware_type_for_bit_operation, check_type_contains_compile_value, check_type_contains_value,
+    check_type_is_bool, check_type_is_bool_array, check_type_is_int, check_type_is_int_compile,
+    check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, Port, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
+use crate::front::module::ElaboratedModuleInfo;
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
@@ -81,7 +82,7 @@ pub enum EvaluatedId {
     Value(Value),
 }
 
-impl CompileItemContext<'_, '_> {
+impl<'s> CompileItemContext<'_, 's> {
     pub fn eval_id(&mut self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -511,11 +512,13 @@ impl CompileItemContext<'_, '_> {
                     .recurse(entry, |s| s.call_function(ctx, vars, &target, args))
                     .flatten_err()?;
 
-                let result_block_spanned = Spanned {
-                    span: expr.span,
-                    inner: result_block,
-                };
-                ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+                if let Some(result_block) = result_block {
+                    let result_block_spanned = Spanned {
+                        span: expr.span,
+                        inner: result_block,
+                    };
+                    ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+                }
 
                 result_value
             }
@@ -1366,6 +1369,36 @@ impl CompileItemContext<'_, '_> {
         };
 
         Ok(result)
+    }
+
+    pub fn eval_expression_as_module(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        span_keyword: Span,
+        expr: &Expression,
+    ) -> Result<&'s ElaboratedModuleInfo, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        // eval module
+        let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
+            self.eval_expression_as_compile(scope, vars, expr, "module instance");
+
+        // check that module is indeed a module
+        let module = module?;
+        let reason = TypeContainsReason::InstanceModule(span_keyword);
+        check_type_contains_compile_value(diags, reason, &Type::Module, module.as_ref(), false)?;
+        let module_elab = match module.inner {
+            CompileValue::Module(module_eval) => module_eval,
+            _ => {
+                return Err(
+                    diags.report_internal_error(module.span, "expected module, should have already been checked")
+                )
+            }
+        };
+
+        // elaborate module header, and queue the body for elaboration later
+        self.refs.elaborated_module_info(module_elab)
     }
 }
 

@@ -22,7 +22,7 @@ pub enum Visibility<S> {
 pub enum Item {
     // non-declaring items
     Import(ItemImport),
-    Instance(ModuleInstanceHeader),
+    Instance(ModuleInstanceItem),
     // common declarations that are allowed anywhere
     CommonDeclaration(ItemDeclaration),
     // declarations that are only allowed top-level
@@ -457,18 +457,18 @@ pub enum ResetKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleInstance {
-    pub name: Option<Identifier>,
-    pub header: ModuleInstanceHeader,
-    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModuleInstanceHeader {
+pub struct ModuleInstanceItem {
     pub span: Span,
     pub span_keyword: Span,
     pub module: Box<Expression>,
-    pub generic_args: Option<Args>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleInstance {
+    pub name: Option<Identifier>,
+    pub span_keyword: Span,
+    pub module: Box<Expression>,
+    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
 #[derive(Debug, Clone)]

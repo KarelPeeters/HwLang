@@ -59,7 +59,7 @@ pub struct ElaboratedModuleHeader {
     ports_ir: Arena<IrPort, IrPortInfo>,
 }
 
-pub struct ElaboratedModule {
+pub struct ElaboratedModuleInfo {
     pub module_ast: AstRefModule,
     pub module_ir: IrModule,
     pub ports: InstancePorts,
@@ -384,51 +384,6 @@ fn push_port(
     port_to_external.insert_first(port, port_external);
 
     port
-}
-
-impl<'s> CompileItemContext<'_, 's> {
-    pub fn elaborate_module_header(
-        &mut self,
-        scope: &Scope,
-        vars: &mut VariableValues,
-        header: &ast::ModuleInstanceHeader,
-    ) -> Result<&'s ElaboratedModule, ErrorGuaranteed> {
-        let diags = self.refs.diags;
-        let ast::ModuleInstanceHeader {
-            span: _,
-            span_keyword,
-            module,
-            generic_args,
-        } = header;
-
-        // eval module and generics
-        let module: Result<Spanned<CompileValue>, ErrorGuaranteed> =
-            self.eval_expression_as_compile(scope, vars, module, "module instance");
-        let generic_args = generic_args
-            .as_ref()
-            .map(|generic_args| {
-                generic_args.try_map_inner_all(|a| self.eval_expression_as_compile(scope, vars, a, "generic arg"))
-            })
-            .transpose();
-
-        // check that module is indeed a module
-        let module = module?;
-        let reason = TypeContainsReason::InstanceModule(*span_keyword);
-        check_type_contains_compile_value(diags, reason, &Type::Module, module.as_ref(), false)?;
-        let module_ast_ref = match module.inner {
-            CompileValue::Module(module_eval) => module_eval,
-            _ => {
-                return Err(
-                    diags.report_internal_error(module.span, "expected module, should have already been checked")
-                )
-            }
-        };
-
-        // elaborate module
-        // TODO split module header and body elaboration, so we can delay and parallelize body elaboration
-        let generic_args = generic_args?;
-        self.refs.elaborate_module(module_ast_ref, generic_args)
-    }
 }
 
 struct BodyElaborationContext<'c, 'a, 's> {
@@ -1008,15 +963,16 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let ast::ModuleInstance {
             name,
-            header,
+            span_keyword,
+            module,
             port_connections,
         } = instance;
 
-        let &ElaboratedModule {
+        let &ElaboratedModuleInfo {
             module_ast,
             module_ir,
             ref ports,
-        } = ctx.elaborate_module_header(scope, vars, header)?;
+        } = self.ctx.eval_expression_as_module(scope, vars, *span_keyword, module)?;
         let module_ast = &refs.fixed.parsed[module_ast];
 
         // eval and check port connections

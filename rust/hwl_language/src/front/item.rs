@@ -1,18 +1,17 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs};
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
+use crate::front::module::ElaboratedModuleInfo;
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, MaybeIdentifier,
-    Parameter, Spanned, TypeDeclaration,
+    CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefModule,
+    MaybeIdentifier, ModuleInstanceItem, Spanned, TypeDeclaration,
 };
-use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
-use crate::syntax::pos::Span;
-use crate::throw;
+use crate::syntax::parsed::{AstRefItem, AstRefModule};
 
 pub struct ElaboratedItemParams<I> {
     pub item: I,
@@ -38,40 +37,6 @@ impl<I: Copy> ElaboratedItemParams<I> {
     }
 }
 
-impl CompileRefs<'_, '_> {
-    pub fn elaborate_item_params<I: Copy + Into<AstRefItem>>(
-        &self,
-        item: I,
-        params: &Option<Spanned<Vec<Parameter>>>,
-        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
-    ) -> Result<ElaboratedItemParams<I>, ErrorGuaranteed> {
-        let diags = self.diags;
-
-        let def_span = self.fixed.parsed[item.into()].common_info().span_short;
-        let scope_file = self.shared.file_scope(item.into().file())?;
-        let mut ctx = CompileItemContext::new(*self, None, ArenaVariables::new(), ArenaPorts::new());
-
-        let param_values = match (params, args) {
-            (None, None) => None,
-            (Some(params), Some(args)) => {
-                // We can't use the scope returned here, since it is only valid for the current variables arena,
-                //   which will be different during body elaboration.
-                //   Instead, we'll recreate the scope from the returned parameter values.
-                let mut vars = VariableValues::new_root(&ctx.variables);
-                let (_, param_values) =
-                    ctx.match_args_to_params_and_typecheck(&mut vars, scope_file, params, &args, true)?;
-                Some(param_values)
-            }
-            _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
-        };
-
-        Ok(ElaboratedItemParams {
-            item,
-            params: param_values,
-        })
-    }
-}
-
 impl<'s> CompileItemContext<'_, 's> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -87,9 +52,14 @@ impl<'s> CompileItemContext<'_, 's> {
                 Err(diags.report_internal_error(item_inner.span, reason))
             }
             Item::Instance(instance) => {
-                // TODO this is a bit weird, we're not actually evaluating the item
+                let &ModuleInstanceItem {
+                    span: _,
+                    span_keyword,
+                    ref module,
+                } = instance;
                 let mut vars = VariableValues::new_root(&self.variables);
-                self.elaborate_module_header(file_scope, &mut vars, instance)?;
+                let _: &ElaboratedModuleInfo =
+                    self.eval_expression_as_module(file_scope, &mut vars, span_keyword, module)?;
                 Ok(CompileValue::UNIT)
             }
             Item::CommonDeclaration(decl) => {
@@ -98,25 +68,38 @@ impl<'s> CompileItemContext<'_, 's> {
                 self.eval_declaration(file_scope, &mut vars, decl)
             }
             Item::Module(module) => {
-                let ast_ref = AstRefModule::new_unchecked(item, module);
+                let ItemDefModule {
+                    span: _,
+                    vis: _,
+                    id,
+                    params,
+                    ports,
+                    body,
+                } = module;
+                let item = AstRefModule::new_unchecked(item, module);
 
-                // elaborate modules without params immediately, for earlier error messages
-                // TODO this is a strange place to do this, modules don't _really_ participate in item evaluation
-                // TODO this should respect the elaboration set settings
-                if let Some(args) = args_if_empty_params(span_short, module.params.as_ref()) {
-                    let _ = self.refs.elaborate_module(ast_ref, args);
+                match params {
+                    None => {
+                        let item_params = ElaboratedItemParams { item, params: None };
+                        let (elab_id, _) = self.refs.elaborate_module(item_params)?;
+                        Ok(CompileValue::Module(elab_id))
+                    }
+                    Some(params) => {
+                        let func = FunctionValue {
+                            decl_span: id.span(),
+                            scope_captured: CapturedScope::from_file_scope(item.file()),
+                            params: params.clone(),
+                            body: Spanned {
+                                span: ports.span.join(body.span),
+                                inner: FunctionBody::ModulePortsAndBody(item),
+                            },
+                        };
+                        Ok(CompileValue::Function(func))
+                    }
                 }
-
-                Ok(CompileValue::Module(ast_ref))
             }
-            Item::Interface(interface) => {
-                let ast_ref = AstRefInterface::new_unchecked(item, interface);
-
-                if let Some(args) = args_if_empty_params(span_short, interface.params.as_ref()) {
-                    let _ = self.refs.elaborate_interface(ast_ref, args);
-                }
-
-                Ok(CompileValue::Interface(ast_ref))
+            Item::Interface(_) => {
+                todo!("impl again, similar to module")
             }
         }
     }
@@ -250,25 +233,5 @@ impl<'s> CompileItemContext<'_, 's> {
             ScopedEntry::Named(NamedValue::Variable(var))
         });
         scope.maybe_declare(diags, id.as_ref(), entry);
-    }
-}
-
-fn args_if_empty_params(
-    span_short: Span,
-    params: Option<&Spanned<Vec<Parameter>>>,
-) -> Option<Option<Args<Option<Identifier>, Spanned<CompileValue>>>> {
-    match params {
-        None => Some(None),
-        Some(params) => {
-            if params.inner.is_empty() {
-                let args = Args {
-                    span: span_short,
-                    inner: vec![],
-                };
-                Some(Some(args))
-            } else {
-                None
-            }
-        }
     }
 }
