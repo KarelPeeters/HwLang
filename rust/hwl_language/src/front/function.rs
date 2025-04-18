@@ -52,6 +52,15 @@ pub enum FunctionBody {
     // TODO should generic modules are be implemented here?
 }
 
+impl FunctionBody {
+    pub fn params_must_be_compile(&self) -> bool {
+        match self {
+            FunctionBody::TypeAliasExpr(_) => true,
+            FunctionBody::FunctionBodyBlock { .. } => false,
+        }
+    }
+}
+
 // TODO maybe move this into the variables module
 // TODO avoid repeated hashing of this potentially large type
 // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
@@ -89,6 +98,7 @@ impl CompileItemContext<'_, '_> {
         scope_outer: &'p Scope,
         params: &Spanned<Vec<AstParameter>>,
         args: &Args<I, Spanned<V>>,
+        args_must_be_compile: bool,
     ) -> Result<(Scope<'p>, Vec<(Identifier, V)>), ErrorGuaranteed>
     where
         for<'i> &'i I: Into<Option<&'i Identifier>>,
@@ -219,6 +229,20 @@ impl CompileItemContext<'_, '_> {
             let arg_value_maybe = arg_value.as_ref().map_inner(|arg_value| arg_value.clone().into());
             check_type_contains_value(diags, reason, &param_ty.inner, arg_value_maybe.as_ref(), true, true)?;
 
+            // check compile-time
+            if args_must_be_compile {
+                match arg_value_maybe.inner {
+                    Value::Compile(_) => {}
+                    Value::Hardware(_) => {
+                        let diag = Diagnostic::new("arguments must be compile-time constants")
+                            .add_info(param_id.span, "param declared here needs to be compile-time constant")
+                            .add_error(arg_value.span, "hardware value passed here")
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                }
+            }
+
             // record value into vec
             param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
 
@@ -258,7 +282,13 @@ impl CompileItemContext<'_, '_> {
             .to_scope(&mut self.variables, vars, self.refs, span_scope)?;
 
         // map params into scope
-        let (scope, _) = self.match_args_to_params_and_typecheck(vars, &scope_captured, &function.params, &args)?;
+        let (scope, _) = self.match_args_to_params_and_typecheck(
+            vars,
+            &scope_captured,
+            &function.params,
+            &args,
+            function.body.inner.params_must_be_compile(),
+        )?;
 
         // run the body
         let entry = StackEntry::FunctionRun(function.decl_span);

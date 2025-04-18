@@ -58,7 +58,8 @@ impl CompileRefs<'_, '_> {
                 //   which will be different during body elaboration.
                 //   Instead, we'll recreate the scope from the returned parameter values.
                 let mut vars = VariableValues::new_root(&ctx.variables);
-                let (_, param_values) = ctx.match_args_to_params_and_typecheck(&mut vars, scope_file, params, &args)?;
+                let (_, param_values) =
+                    ctx.match_args_to_params_and_typecheck(&mut vars, scope_file, params, &args, true)?;
                 Some(param_values)
             }
             _ => throw!(diags.report_internal_error(def_span, "mismatched generic arguments presence")),
