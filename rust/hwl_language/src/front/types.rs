@@ -24,10 +24,10 @@ pub enum Type {
     Tuple(Vec<Type>),
     Array(Box<Type>, BigUint),
     Range,
-    // TODO maybe maybe this (optionally) more specific, with ports and implemented interfaces?
-    Module,
-    // TODO make this (optionally) more specific, with arg and return types
+    // TODO maybe maybe these (optionally) more specific
     Function,
+    Module,
+    Interface,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -77,9 +77,11 @@ impl Type {
             (Type::Clock, Type::Clock) => Type::Clock,
             (Type::Bool, Type::Bool) => Type::Bool,
             (Type::String, Type::String) => Type::String,
+            // TODO should we even allow unions for these?
             (Type::Range, Type::Range) => Type::Range,
-            (Type::Module, Type::Module) => Type::Module,
             (Type::Function, Type::Function) => Type::Function,
+            (Type::Module, Type::Module) => Type::Module,
+            (Type::Interface, Type::Interface) => Type::Interface,
 
             // integer
             (Type::Int(a), Type::Int(b)) => {
@@ -152,8 +154,9 @@ impl Type {
                 | Type::Bool
                 | Type::String
                 | Type::Range
-                | Type::Module
                 | Type::Function
+                | Type::Module
+                | Type::Interface
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _),
@@ -162,8 +165,9 @@ impl Type {
                 | Type::Bool
                 | Type::String
                 | Type::Range
-                | Type::Module
                 | Type::Function
+                | Type::Module
+                | Type::Interface
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _),
@@ -190,7 +194,7 @@ impl Type {
                 .as_hardware_type()
                 .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
             Type::Type | Type::Any | Type::Undefined => None,
-            Type::String | Type::Range | Type::Module | Type::Function => None,
+            Type::String | Type::Range | Type::Function | Type::Module | Type::Interface => None,
         }
     }
 
@@ -222,8 +226,9 @@ impl Type {
                 format!("{inner_str}[{dims}]")
             }
             Type::Range => "range".to_string(),
-            Type::Module => "module".to_string(),
             Type::Function => "function".to_string(),
+            Type::Module => "module".to_string(),
+            Type::Interface => "interface".to_string(),
         }
     }
 }

@@ -79,7 +79,9 @@ macro_rules! impl_ast_ref_alias {
         }
 
         impl $ref_name {
-            pub fn new_unchecked(item: AstRefItem) -> Self {
+            pub fn new_unchecked(item: AstRefItem, item_ref: &$ast_path) -> Self {
+                // just for some soft extra checking
+                let _ = item_ref;
                 Self { item }
             }
 
@@ -105,6 +107,7 @@ macro_rules! impl_ast_ref_alias {
 }
 
 impl_ast_ref_alias!(AstRefModule, ast::Item::Module, ast::ItemDefModule);
+impl_ast_ref_alias!(AstRefInterface, ast::Item::Interface, ast::ItemDefInterface);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {

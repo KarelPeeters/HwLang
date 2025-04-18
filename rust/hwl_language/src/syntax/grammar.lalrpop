@@ -138,12 +138,15 @@ Item: Item = {
     },
 
     <start:@L>
-        <vis:Vis> "interface" <id:MaybeId> <params:Parameters<Parameter>?> "{"
+        <vis:Vis> "interface" <id:MaybeId> <params:Parameters<Parameter>?> <start_body:@L> "{"
             <port_types:Separated<InterfacePortType, ",">>
             <views:InterfaceView*>
         "}"
     <end:@R> => {
-        let inter = ItemDefInterface { vis, id, params, port_types, views, span: loc.span(start, end) };
+        let inter = ItemDefInterface {
+            vis, id, params, port_types, views,
+            span_body: loc.span(start_body, end), span: loc.span(start, end)
+        };
         Item::Interface(inter)
     }
 }

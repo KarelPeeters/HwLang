@@ -126,6 +126,7 @@ pub struct ItemDefInterface {
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
     pub params: Option<Spanned<Vec<Parameter>>>,
+    pub span_body: Span,
     pub port_types: Vec<(Identifier, Box<Expression>)>,
     pub views: Vec<InterfaceView>,
 }

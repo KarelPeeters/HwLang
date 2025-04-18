@@ -16,7 +16,7 @@ use crate::front::scope::{DeclaredValueSingle, NamedValue, Scope, ScopedEntry};
 use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, MaybeUndefined, Value};
+use crate::front::value::{CompileValue, MaybeUndefined};
 use crate::front::variables::VariableValues;
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrModule,
@@ -53,7 +53,7 @@ new_index_type!(pub InstancePort);
 pub type InstancePorts = Arena<InstancePort, PortInfo<InstancePort>>;
 
 pub struct ElaboratedModuleHeader {
-    module: AstRefModule,
+    item: AstRefModule,
     params: Option<Vec<(Identifier, CompileValue)>>,
     ports: Arena<Port, PortInfo>,
     ports_ir: Arena<IrPort, IrPortInfo>,
@@ -70,7 +70,7 @@ impl CompileRefs<'_, '_> {
         self,
         params: ElaboratedItemParams<AstRefModule>,
     ) -> Result<(InstancePorts, ElaboratedModuleHeader), ErrorGuaranteed> {
-        let ElaboratedItemParams { item: module, params } = params;
+        let ElaboratedItemParams { item, params } = params;
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
@@ -78,22 +78,21 @@ impl CompileRefs<'_, '_> {
             params: _,
             ref ports,
             body: _,
-        } = &self.fixed.parsed[module];
+        } = &self.fixed.parsed[item];
 
         // reconstruct header scope
         let mut ctx = CompileItemContext::new(self, None, ArenaVariables::new(), ArenaPorts::new());
         let mut vars = VariableValues::new_root(&ctx.variables);
+        let scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
 
-        let file_scope = self.shared.file_scope(module.file())?;
-        let scope_params = rebuild_params_scope(&mut ctx.variables, &mut vars, file_scope, def_span, &params);
-
+        // elaborate ports
         // TODO we actually need a full context here?
         let (ports_external, ports_ir) =
             self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
         let ports_internal = ctx.ports;
 
         let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
-            module,
+            item,
             params,
             ports: ports_internal,
             ports_ir,
@@ -103,7 +102,7 @@ impl CompileRefs<'_, '_> {
 
     pub fn elaborate_module_body_new(&self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ElaboratedModuleHeader {
-            module,
+            item,
             params,
             ports,
             ports_ir,
@@ -115,18 +114,18 @@ impl CompileRefs<'_, '_> {
             params: _,
             ports: _,
             ref body,
-        } = &self.fixed.parsed[module];
+        } = &self.fixed.parsed[item];
 
         self.check_should_stop(id.span())?;
 
+        // rebuild scopes
         let mut ctx = CompileItemContext::new(*self, None, ArenaVariables::new(), ports);
         let mut vars = VariableValues::new_root(&ctx.variables);
 
-        // rebuild scopes
-        let file_scope = self.shared.file_scope(module.file())?;
-        let scope_params = rebuild_params_scope(&mut ctx.variables, &mut vars, file_scope, def_span, &params);
+        let scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
         let scope_ports = rebuild_ports_scope(&scope_params, def_span, &ctx.ports);
 
+        // elaborate the body
         self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, params.clone(), ports_ir, body)
     }
 
@@ -333,32 +332,6 @@ impl CompileRefs<'_, '_> {
             debug_info_generic_args: params,
         })
     }
-}
-
-fn rebuild_params_scope<'p>(
-    variables: &mut ArenaVariables,
-    vars: &mut VariableValues,
-    file_scope: &'p Scope<'p>,
-    span: Span,
-    params: &Option<Vec<(Identifier, CompileValue)>>,
-) -> Scope<'p> {
-    let mut scope_params = Scope::new_child(span, file_scope);
-    if let Some(params) = params {
-        for (id, value) in params {
-            let var = vars.var_new_immutable_init(
-                variables,
-                MaybeIdentifier::Identifier(id.clone()),
-                id.span,
-                Value::Compile(value.clone()),
-            );
-            let declared = DeclaredValueSingle::Value {
-                span: id.span,
-                value: ScopedEntry::Named(NamedValue::Variable(var)),
-            };
-            scope_params.declare_already_checked(id.string.clone(), declared);
-        }
-    }
-    scope_params
 }
 
 fn rebuild_ports_scope<'p>(params_scope: &'p Scope<'p>, span: Span, ports: &ArenaPorts) -> Scope<'p> {

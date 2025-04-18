@@ -1,6 +1,7 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
+use crate::front::interface::ElaboratedInterface;
 use crate::front::item::ElaboratedItemKey;
 use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader};
 use crate::front::scope::{Scope, ScopedEntry};
@@ -14,7 +15,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{self, PortDirection, Visibility};
 use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
-use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
@@ -193,12 +194,10 @@ impl<'s> CompileRefs<'_, 's> {
     ) -> Result<&'s ElaboratedModule, ErrorGuaranteed> {
         let shared = self.shared;
 
-        // elaborate params
         let params = self.elaborate_item_params(module_ast, &self.fixed.parsed[module_ast].params, args)?;
         let key = params.cache_key();
 
-        // if necessary, elaborate header and queue body
-        let elaborated = shared
+        shared
             .elaborated_modules
             .get_or_compute(key, |_| {
                 // elaborate ports, immediately pushing and returning error if that fails
@@ -224,9 +223,23 @@ impl<'s> CompileRefs<'_, 's> {
                     ports,
                 })
             })
-            .as_ref_ok();
+            .as_ref_ok()
+    }
 
-        elaborated
+    pub fn elaborate_interface(
+        &self,
+        interface_ast: AstRefInterface,
+        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
+    ) -> Result<&'s ElaboratedInterface, ErrorGuaranteed> {
+        let shared = self.shared;
+
+        let params = self.elaborate_item_params(interface_ast, &self.fixed.parsed[interface_ast].params, args)?;
+        let key = params.cache_key();
+
+        shared
+            .elaborated_interfaces
+            .get_or_compute(key, |_| self.elaborate_interface_new(params))
+            .as_ref_ok()
     }
 }
 
@@ -249,7 +262,9 @@ pub struct CompileShared {
     pub work_queue: SharedQueue<WorkItem>,
     pub item_values: ComputeOnceArena<AstRefItem, Result<CompileValue, ErrorGuaranteed>, StackEntry>,
 
-    pub elaborated_modules: ComputeOnceMap<ElaboratedItemKey<AstRefModule>, Result<ElaboratedModule, ErrorGuaranteed>>,
+    elaborated_modules: ComputeOnceMap<ElaboratedItemKey<AstRefModule>, Result<ElaboratedModule, ErrorGuaranteed>>,
+    elaborated_interfaces:
+        ComputeOnceMap<ElaboratedItemKey<AstRefInterface>, Result<ElaboratedInterface, ErrorGuaranteed>>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     pub ir_modules: Mutex<Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
@@ -660,7 +675,7 @@ fn find_top_module(
     match top_entry.value {
         &ScopedEntry::Item(item) => match &fixed.parsed[item] {
             ast::Item::Module(module) => match &module.params {
-                None => Ok(AstRefModule::new_unchecked(item)),
+                None => Ok(AstRefModule::new_unchecked(item, module)),
                 Some(_) => {
                     Err(diags.report_simple("`top` cannot have generic parameters", module.id.span(), "defined here"))
                 }
@@ -713,6 +728,7 @@ impl CompileShared {
             work_queue,
             item_values,
             elaborated_modules: ComputeOnceMap::new(),
+            elaborated_interfaces: ComputeOnceMap::new(),
             ir_modules: Mutex::new(Arena::new()),
         }
     }

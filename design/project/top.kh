@@ -6,6 +6,14 @@ import std.math.[gcd, min, max];
 import std.util.[print, print_compile, unsafe_cast_clock];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
 
+interface axi_handshake {
+    valid: bool,
+    ready: bool,
+
+    interface input { valid: in, ready: out }
+    interface output { valid: in, ready: out }
+}
+
 interface axi_stream(T: type) {
     data: T,
     valid: bool,
