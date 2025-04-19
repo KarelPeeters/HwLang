@@ -8,10 +8,10 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefModule,
-    MaybeIdentifier, ModuleInstanceItem, Spanned, TypeDeclaration,
+    CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefInterface,
+    ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Spanned, TypeDeclaration,
 };
-use crate::syntax::parsed::{AstRefItem, AstRefModule};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 
 pub struct ElaboratedItemParams<I> {
     pub item: I,
@@ -98,8 +98,37 @@ impl<'s> CompileItemContext<'_, 's> {
                     }
                 }
             }
-            Item::Interface(_) => {
-                todo!("impl again, similar to module")
+            Item::Interface(interface) => {
+                let ItemDefInterface {
+                    span: _,
+                    vis: _,
+                    id,
+                    params,
+                    span_body,
+                    port_types: _,
+                    views: _,
+                } = interface;
+                let item = AstRefInterface::new_unchecked(item, interface);
+
+                match params {
+                    None => {
+                        let item_params = ElaboratedItemParams { item, params: None };
+                        let (elab_id, _) = self.refs.elaborate_interface(item_params)?;
+                        Ok(CompileValue::Interface(elab_id))
+                    }
+                    Some(params) => {
+                        let func = FunctionValue {
+                            decl_span: id.span(),
+                            scope_captured: CapturedScope::from_file_scope(item.file()),
+                            params: params.clone(),
+                            body: Spanned {
+                                span: *span_body,
+                                inner: FunctionBody::Interface(item),
+                            },
+                        };
+                        Ok(CompileValue::Function(func))
+                    }
+                }
             }
         }
     }

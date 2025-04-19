@@ -12,7 +12,7 @@ use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
 };
-use crate::syntax::parsed::{AstRefItem, AstRefModule};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::IndexMapExt;
@@ -52,7 +52,8 @@ pub enum FunctionBody {
 
     TypeAliasExpr(Box<Expression>),
     ModulePortsAndBody(AstRefModule),
-    // TODO add interface, struct, enum
+    Interface(AstRefInterface),
+    // TODO add struct, enum
 }
 
 impl FunctionBody {
@@ -60,7 +61,7 @@ impl FunctionBody {
         match self {
             // TODO add optional marker to functions that can only be used with compare args
             FunctionBody::FunctionBodyBlock { .. } => false,
-            FunctionBody::TypeAliasExpr(_) | FunctionBody::ModulePortsAndBody(_) => true,
+            FunctionBody::TypeAliasExpr(_) | FunctionBody::ModulePortsAndBody(_) | FunctionBody::Interface(_) => true,
         }
     }
 }
@@ -331,6 +332,20 @@ impl CompileItemContext<'_, '_> {
                     };
                     let (result_id, _) = s.refs.elaborate_module(item_params)?;
                     let result_value = Value::Compile(CompileValue::Module(result_id));
+                    Ok((None, result_value))
+                }
+                &FunctionBody::Interface(item) => {
+                    let param_values = param_values
+                        .into_iter()
+                        .map(|(id, v)| (id, v.unwrap_compile()))
+                        .collect_vec();
+
+                    let item_params = ElaboratedItemParams {
+                        item,
+                        params: Some(param_values),
+                    };
+                    let (result_id, _) = s.refs.elaborate_interface(item_params)?;
+                    let result_value = Value::Compile(CompileValue::Interface(result_id));
                     Ok((None, result_value))
                 }
             }

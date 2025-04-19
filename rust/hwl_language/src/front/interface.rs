@@ -12,7 +12,7 @@ use indexmap::map::Entry;
 use indexmap::IndexMap;
 
 #[derive(Debug)]
-pub struct ElaboratedInterface {
+pub struct ElaboratedInterfaceInfo {
     id: MaybeIdentifier,
     ports: IndexMap<String, ElaboratedInterfacePort>,
     views: IndexMap<String, ElaboratedInterfaceView>,
@@ -34,7 +34,7 @@ impl CompileRefs<'_, '_> {
     pub fn elaborate_interface_new(
         self,
         params: ElaboratedItemParams<AstRefInterface>,
-    ) -> Result<ElaboratedInterface, ErrorGuaranteed> {
+    ) -> Result<ElaboratedInterfaceInfo, ErrorGuaranteed> {
         let ElaboratedItemParams { item, params } = params;
         let ItemDefInterface {
             span: _,
@@ -166,7 +166,7 @@ impl CompileRefs<'_, '_> {
             }
         }
 
-        Ok(ElaboratedInterface {
+        Ok(ElaboratedInterfaceInfo {
             id: interface_id.clone(),
             ports: port_map,
             views: view_map,

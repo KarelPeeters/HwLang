@@ -1,9 +1,10 @@
-use crate::front::compile::{ElaboratedInterfaceId, ElaboratedModuleId};
+use crate::front::compile::ElaboratedItem;
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrVariable};
+use crate::syntax::parsed::{AstRefInterface, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::enumerate;
@@ -29,8 +30,8 @@ pub enum CompileValue {
     IntRange(IncRange<BigInt>),
 
     Function(FunctionValue),
-    Module(ElaboratedModuleId),
-    Interface(ElaboratedInterfaceId),
+    Module(ElaboratedItem<AstRefModule>),
+    Interface(ElaboratedItem<AstRefInterface>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
