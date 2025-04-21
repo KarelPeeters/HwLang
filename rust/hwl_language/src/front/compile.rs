@@ -1,19 +1,21 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
-use crate::front::module::{ElaboratedModule, ElaboratedModuleHeader, ModuleElaborationCacheKey};
+use crate::front::interface::ElaboratedInterfaceInfo;
+use crate::front::item::{ElaboratedItemKey, ElaboratedItemParams};
+use crate::front::module::{ElaboratedModuleHeader, ElaboratedModuleInfo};
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
 use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
     IrWire,
 };
-use crate::syntax::ast::{self, Visibility};
-use crate::syntax::ast::{Args, DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
-use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
+use crate::syntax::ast::{self, PortDirection, Visibility};
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
@@ -25,7 +27,10 @@ use annotate_snippets::Level;
 use indexmap::IndexMap;
 use itertools::{enumerate, zip_eq, Itertools};
 use rand::seq::SliceRandom;
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 // TODO keep this file for the core compile loop and multithreading, move everything else out
 
@@ -55,6 +60,7 @@ pub fn compile(
 
     // get the top module
     // TODO we don't really need to do this any more, all non-generic modules are elaborated anyway
+    // TODO change this once we're not hardcoding a single top item any more
     let top_item_and_ir_module = {
         let refs = CompileRefs {
             fixed,
@@ -64,12 +70,12 @@ pub fn compile(
             should_stop,
         };
         find_top_module(diags, fixed, &shared).and_then(|top_item| {
-            let &ElaboratedModule {
-                module_ast: _,
-                module_ir,
-                ports: _,
-            } = refs.elaborate_module(top_item, None)?;
-            Ok((top_item, module_ir))
+            let item_params = ElaboratedItemParams {
+                item: top_item,
+                params: None,
+            };
+            let (_, elab_info) = refs.elaborate_module(item_params)?;
+            Ok((top_item, elab_info.module_ir))
         })
     };
 
@@ -168,11 +174,11 @@ impl<'s> CompileRefs<'_, 's> {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
-                        let mut ctx = CompileItemContext::new(self, Some(item), ArenaVariables::new(), Arena::new());
+                        let mut ctx = CompileItemContext::new_empty(self, Some(item));
                         ctx.eval_item_new(item)
                     });
                 }
-                WorkItem::ElaborateModule(header, ir_module) => {
+                WorkItem::ElaborateModuleBody(header, ir_module) => {
                     // do elaboration
                     let ir_module_info = self.elaborate_module_body_new(header);
 
@@ -187,45 +193,37 @@ impl<'s> CompileRefs<'_, 's> {
 
     pub fn elaborate_module(
         &self,
-        module_ast: AstRefModule,
-        args: Option<Args<Option<Identifier>, Spanned<CompileValue>>>,
-    ) -> Result<&'s ElaboratedModule, ErrorGuaranteed> {
-        let shared = self.shared;
+        item_params: ElaboratedItemParams<AstRefModule>,
+    ) -> Result<(ElaboratedModule, &'s ElaboratedModuleInfo), ErrorGuaranteed> {
+        self.shared.elaborated_modules.elaborate(item_params, |item_params| {
+            // elaborate ports
+            let item = item_params.item;
+            let (connectors, header) = self.elaborate_module_ports_new(item_params)?;
 
-        // elaborate params
-        let params = self.elaborate_module_params_new(module_ast, args)?;
-        let key = params.cache_key();
+            // reserve ir module key, will be filled in later during body elaboration
+            let ir_module = { self.shared.ir_modules.lock().unwrap().push(None) };
 
-        // if necessary, elaborate header and queue body
-        let elaborated = shared
-            .elaborated_modules
-            .get_or_compute(key, |_| {
-                // elaborate ports, immediately pushing and returning error if that fails
-                let (ports, header) = match self.elaborate_module_ports_new(params) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        shared.ir_modules.lock().unwrap().push(Some(Err(e)));
-                        return Err(e);
-                    }
-                };
+            // queue body elaboration
+            self.shared
+                .work_queue
+                .push(WorkItem::ElaborateModuleBody(header, ir_module));
 
-                // reserve ir module key, will be filled in later during body elaboration
-                let ir_module = { shared.ir_modules.lock().unwrap().push(None) };
-
-                // queue body elaboration
-                self.shared
-                    .work_queue
-                    .push(WorkItem::ElaborateModule(header, ir_module));
-
-                Ok(ElaboratedModule {
-                    module_ast,
-                    module_ir: ir_module,
-                    ports,
-                })
+            // store the info
+            Ok(ElaboratedModuleInfo {
+                module_ast: item,
+                module_ir: ir_module,
+                connectors,
             })
-            .as_ref_ok();
+        })
+    }
 
-        elaborated
+    pub fn elaborate_interface(
+        &self,
+        item_params: ElaboratedItemParams<AstRefInterface>,
+    ) -> Result<(ElaboratedInterface, &'s ElaboratedInterfaceInfo), ErrorGuaranteed> {
+        self.shared
+            .elaborated_interfaces
+            .elaborate(item_params, |item_params| self.elaborate_interface_new(item_params))
     }
 }
 
@@ -238,8 +236,17 @@ pub struct CompileFixed<'a> {
 
 pub enum WorkItem {
     EvaluateItem(AstRefItem),
-    ElaborateModule(ElaboratedModuleHeader, IrModule),
+    ElaborateModuleBody(ElaboratedModuleHeader, IrModule),
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedItem<I> {
+    index: usize,
+    pub item: I,
+}
+
+pub type ElaboratedModule = ElaboratedItem<AstRefModule>;
+pub type ElaboratedInterface = ElaboratedItem<AstRefInterface>;
 
 /// long-term shared between threads
 pub struct CompileShared {
@@ -247,16 +254,64 @@ pub struct CompileShared {
 
     pub work_queue: SharedQueue<WorkItem>,
     pub item_values: ComputeOnceArena<AstRefItem, Result<CompileValue, ErrorGuaranteed>, StackEntry>,
-    pub elaborated_modules: ComputeOnceMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+
+    elaborated_modules: ElaborateItemArena<AstRefModule, ElaboratedModuleInfo>,
+    elaborated_interfaces: ElaborateItemArena<AstRefInterface, ElaboratedInterfaceInfo>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
+    //   or maybe just another sharded DashMap
     pub ir_modules: Mutex<Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
+}
+
+// TODO generalize and move to sync module?
+// TODO should this support cycle detection too?
+struct ElaborateItemArena<I, F> {
+    next_id: AtomicUsize,
+    key_to_id: ComputeOnceMap<ElaboratedItemKey<I>, ElaboratedItem<I>>,
+    id_to_info: ComputeOnceMap<ElaboratedItem<I>, Result<F, ErrorGuaranteed>>,
+}
+
+impl<I: Debug + Eq + Hash + Copy, F> ElaborateItemArena<I, F> {
+    pub fn new() -> Self {
+        ElaborateItemArena {
+            next_id: AtomicUsize::new(0),
+            key_to_id: ComputeOnceMap::new(),
+            id_to_info: ComputeOnceMap::new(),
+        }
+    }
+
+    pub fn get(&self, id: ElaboratedItem<I>) -> Result<&F, ErrorGuaranteed> {
+        self.id_to_info.get(&id).unwrap().as_ref_ok()
+    }
+
+    pub fn elaborate(
+        &self,
+        params: ElaboratedItemParams<I>,
+        f: impl FnOnce(ElaboratedItemParams<I>) -> Result<F, ErrorGuaranteed>,
+    ) -> Result<(ElaboratedItem<I>, &F), ErrorGuaranteed> {
+        let key = params.cache_key();
+
+        let &id = self.key_to_id.get_or_compute(key, |_| {
+            let id = ElaboratedItem {
+                index: self.next_id.fetch_add(1, Ordering::Relaxed),
+                item: params.item,
+            };
+
+            let info = f(params);
+
+            self.id_to_info.set(id, info).unwrap();
+            id
+        });
+
+        let info = self.get(id)?;
+        Ok((id, info))
+    }
 }
 
 pub type FileScopes = IndexMap<FileId, Result<Scope<'static>, ErrorGuaranteed>>;
 
 pub struct CompileSharedModules {
-    pub elaborations: IndexMap<ModuleElaborationCacheKey, Result<ElaboratedModule, ErrorGuaranteed>>,
+    pub elaborations: IndexMap<ElaboratedItemKey<AstRefModule>, Result<ElaboratedModuleInfo, ErrorGuaranteed>>,
     pub ir_modules: Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
 }
 
@@ -273,6 +328,7 @@ pub struct CompileRefs<'a, 's> {
 
 pub type ArenaVariables = Arena<Variable, VariableInfo>;
 pub type ArenaPorts = Arena<Port, PortInfo>;
+pub type ArenaPortInterfaces = Arena<PortInterface, PortInterfaceInfo>;
 
 pub struct CompileItemContext<'a, 's> {
     // TODO maybe inline this
@@ -280,6 +336,7 @@ pub struct CompileItemContext<'a, 's> {
 
     pub variables: ArenaVariables,
     pub ports: ArenaPorts,
+    pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
     pub large: IrLargeArena,
@@ -311,17 +368,21 @@ impl StackEntry {
 }
 
 impl<'a, 's> CompileItemContext<'a, 's> {
-    // TODO check that this is actually ever used with existing arenas, if not simplify again
-    pub fn new(
+    pub fn new_empty(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
+        Self::new_restore(refs, origin, Arena::new(), Arena::new())
+    }
+
+    pub fn new_restore(
         refs: CompileRefs<'a, 's>,
         origin: Option<AstRefItem>,
-        variables: ArenaVariables,
-        ports: Arena<Port, PortInfo>,
+        ports: ArenaPorts,
+        port_interfaces: ArenaPortInterfaces,
     ) -> Self {
         CompileItemContext {
             refs,
-            variables,
+            variables: Arena::new(),
             ports,
+            port_interfaces,
             wires: Arena::new(),
             registers: Arena::new(),
             large: IrLargeArena::new(),
@@ -353,7 +414,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         self.recurse(StackEntry::ItemEvaluation(item), |s| {
             let origin = s.origin.map(|origin| (origin, s.stack.clone()));
             let f_compute = || {
-                let mut ctx = CompileItemContext::new(s.refs, Some(item), ArenaVariables::new(), ArenaPorts::new());
+                let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
                 ctx.eval_item_new(item)
             };
             let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(s.refs.fixed.parsed, stack));
@@ -430,6 +491,7 @@ pub enum CompileStackEntry {
 // TODO move these somewhere else
 new_index_type!(pub Variable);
 new_index_type!(pub Port);
+new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
 new_index_type!(pub Register);
 
@@ -447,12 +509,22 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug)]
-pub struct PortInfo<P = Port> {
-    pub id: Identifier,
+pub struct PortInfo {
+    pub span: Span,
+    pub name: String,
     pub direction: Spanned<PortDirection>,
-    pub domain: Spanned<PortDomain<P>>,
+    pub domain: Spanned<PortDomain<Port>>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrPort,
+    // TODO include interface this is a part of if any?
+}
+
+#[derive(Debug)]
+pub struct PortInterfaceInfo {
+    pub id: Identifier,
+    pub view: ElaboratedInterfaceView,
+    pub domain: Spanned<DomainKind<Polarized<Port>>>,
+    pub ports: Vec<Port>,
 }
 
 #[derive(Debug)]
@@ -657,7 +729,7 @@ fn find_top_module(
     match top_entry.value {
         &ScopedEntry::Item(item) => match &fixed.parsed[item] {
             ast::Item::Module(module) => match &module.params {
-                None => Ok(AstRefModule::new_unchecked(item)),
+                None => Ok(AstRefModule::new_unchecked(item, module)),
                 Some(_) => {
                     Err(diags.report_simple("`top` cannot have generic parameters", module.id.span(), "defined here"))
                 }
@@ -709,7 +781,8 @@ impl CompileShared {
             file_scopes,
             work_queue,
             item_values,
-            elaborated_modules: ComputeOnceMap::new(),
+            elaborated_modules: ElaborateItemArena::new(),
+            elaborated_interfaces: ElaborateItemArena::new(),
             ir_modules: Mutex::new(Arena::new()),
         }
     }
@@ -719,12 +792,27 @@ impl CompileShared {
     }
 
     pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
+        if self.work_queue.pop().is_some() {
+            diags.report_internal_error(dummy_span, "not all work items have been processed");
+        }
+
         let ir_modules = self.ir_modules.into_inner().unwrap();
         ir_modules.try_map_values(|_, v| match v {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
             None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
         })
+    }
+
+    pub fn elaborated_module_info(&self, elab: ElaboratedModule) -> Result<&ElaboratedModuleInfo, ErrorGuaranteed> {
+        self.elaborated_modules.get(elab)
+    }
+
+    pub fn elaborated_interface_info(
+        &self,
+        elab: ElaboratedInterface,
+    ) -> Result<&ElaboratedInterfaceInfo, ErrorGuaranteed> {
+        self.elaborated_interfaces.get(elab)
     }
 }
 

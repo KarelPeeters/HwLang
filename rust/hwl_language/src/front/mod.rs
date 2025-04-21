@@ -8,6 +8,7 @@ pub mod domain;
 pub mod expression;
 pub mod function;
 pub mod implication;
+pub mod interface;
 pub mod item;
 pub mod module;
 pub mod scope;

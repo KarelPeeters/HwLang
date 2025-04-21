@@ -99,6 +99,7 @@ pub enum TypeContainsReason {
         span_connection_signal_id: Span,
         span_signal_ty: Span,
     },
+    Interface(Span),
     Return {
         span_keyword: Span,
         span_return_ty: Span,
@@ -129,7 +130,10 @@ impl TypeContainsReason {
                 diag.add_info(span, format!("operator requires type `{}`", target_ty_str))
             }
             TypeContainsReason::InstanceModule(span) => {
-                diag.add_info(span, format!("module instance requires `{}`", target_ty_str))
+                diag.add_info(span, format!("module instance requires type `{}`", target_ty_str))
+            }
+            TypeContainsReason::Interface(span) => {
+                diag.add_info(span, format!("interface requires type `{}`", target_ty_str))
             }
             TypeContainsReason::InstancePortInput {
                 span_connection_port_id,

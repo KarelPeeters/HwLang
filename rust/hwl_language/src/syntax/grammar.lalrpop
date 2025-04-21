@@ -24,10 +24,10 @@ extern {
         "type" => TokenType::Type,
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
-        "generics" => TokenType::Generics,
         "ports" => TokenType::Ports,
         "body" => TokenType::Body,
         "module" => TokenType::Module,
+        "interface" => TokenType::Interface,
         "instance" => TokenType::Instance,
         "fn" => TokenType::Function,
         "comb" => TokenType::Combinatorial,
@@ -118,7 +118,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
-        <params:("generics" <Parameters<Parameter>>)?>
+        <params:(<Parameters<Parameter>>)?>
         <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
@@ -127,14 +127,39 @@ Item: Item = {
     },
 
     <start:@L>
-        "instance" <instance_end:@R> <module:BoxExpr>
-        <generic_args:("generics" "(" <Args> ")")?> ";"
+        "instance" <instance_end:@R> <module:BoxExpr>";"
     <end:@R> => {
         let span = loc.span(start, end);
         let span_keyword = loc.span(start, instance_end);
-        let instance = ModuleInstanceHeader { span, span_keyword, module, generic_args };
-        Item::Instance(instance)
+        Item::Instance(ModuleInstanceItem { span, span_keyword, module })
     },
+
+    <start:@L>
+        <vis:Vis> "interface" <id:MaybeId> <params:Parameters<Parameter>?> <start_body:@L> "{"
+            <port_types:Separated<InterfacePortType, ",">>
+            <views:InterfaceView*>
+        "}"
+    <end:@R> => {
+        let inter = ItemDefInterface {
+            vis, id, params, port_types, views,
+            span_body: loc.span(start_body, end), span: loc.span(start, end)
+        };
+        Item::Interface(inter)
+    }
+}
+
+InterfaceView: InterfaceView  = {
+    "interface" <id:MaybeId> "{" <port_dirs:Separated<InterfacePortDir, ",">> "}" => {
+        InterfaceView { id, port_dirs }
+    }
+}
+
+InterfacePortType: (Identifier, Box<Expression>) = {
+    <id:Id> ":" <ty:BoxExpr> => (id, ty),
+}
+
+InterfacePortDir: (Identifier, Spanned<PortDirection>) = {
+    <id:Id> ":" <dir:Spanned<PortDirection>> => (id, dir),
 }
 
 ImportFinalKind: ImportFinalKind = {
@@ -217,22 +242,16 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::ClockedBlock(inner)
     },
     // module instance
-    // TODO this is ugly syntax: why are generics and ports different
     // TODO allow strings as instance names? necessary for modules instantiated in loops
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        <generic_args:("generics" "(" <Args> ")")?>
         "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
-            header: ModuleInstanceHeader {
-                span_keyword: loc.span(start, instance_end),
-                span: loc.span(start, end),
-                module,
-                generic_args,
-            },
+            span_keyword: loc.span(start, instance_end),
             name,
+            module,
             port_connections,
         };
         ModuleStatementKind::Instance(instance)
@@ -353,6 +372,7 @@ VariableMutable: bool = {
 }
 
 // parameters
+// TODO allow "if" here
 Parameters<P>: Spanned<Vec<P>> = {
     <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
@@ -366,15 +386,29 @@ Parameter: Parameter = {
 ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
 
 ModulePortItem: ModulePortItem = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>> <end:@R>
-            => ModulePortItem::Single(ModulePortSingle { id, direction, kind, span: loc.span(start, end) }),
+    <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
+            => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
     <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
 ModulePortInBlock: ModulePortInBlock = {
-    <start:@L> <id:Id> ":" <direction:Spanned<PortDirection>> <ty:BoxExpr> <end:@R>
-        => ModulePortInBlock { id, direction, ty, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <kind:ModulePortInBlockKind> <end:@R>
+        => ModulePortInBlock { id, kind, span: loc.span(start, end) },
+}
+
+ModulePortSingleKind: ModulePortSingleKind = {
+    <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>>
+        => ModulePortSingleKind::Port { direction, kind },
+    <span_keyword:Span<"interface">> <domain:Spanned<DomainKind>> <interface:BoxExpr>
+        => ModulePortSingleKind::Interface { span_keyword, domain, interface },
+}
+
+ModulePortInBlockKind: ModulePortInBlockKind = {
+    <direction:Spanned<PortDirection>> <ty:BoxExpr>
+        => ModulePortInBlockKind::Port { direction, ty },
+    <span_keyword:Span<"interface">> <interface:BoxExpr>
+        => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
 WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
@@ -541,11 +575,13 @@ ExprLevelArray = ExprLevelArrayImpl<"true">;
 ExprLevelArrayNoStruct = ExprLevelArrayImpl<"no">;
 
 ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
+    // TODO find better array type syntax
+    // TODO we can expand this one to allow `[4][3][2]ty` without causing ambiguity, maybe even remove `[2,3]ty`
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCallReal<allow_struct>>>
+    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCall<allow_struct>>>
         => ExpressionKind::ArrayType(args, target),
     // array index
-    <target:BoxSpanned<ExprLevelCallReal<allow_struct>>> "[" <args:Spanned<Separated<Expr, ",">>> "]"
+    <target:BoxSpanned<ExprLevelCall<allow_struct>>> "[" <args:Spanned<Separated<Expr, ",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
@@ -559,10 +595,16 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
-    ExprLevelCallReal<allow_struct>,
+    // dot indexing
+    <target:BoxSpanned<ExprLevelArrayImpl<allow_struct>>> "." <index: Id>
+        => ExpressionKind::DotIdIndex(target, index),
+    <target:BoxSpanned<ExprLevelArrayImpl<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
+        => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_owned())),
+
+    ExprLevelCall<allow_struct>,
 }
 
-ExprLevelCallReal<allow_struct>: ExpressionKind = {
+ExprLevelCall<allow_struct>: ExpressionKind = {
     "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")"
         => ExpressionKind::Builtin(args),
     <target:BoxSpanned<ExprLevelAtomic<allow_struct>>> "(" <args:Args> ")"
@@ -570,9 +612,10 @@ ExprLevelCallReal<allow_struct>: ExpressionKind = {
     <span_keyword:Span<"reg">> "(" <value:BoxExpr> "," <init:BoxExpr> ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 
-    ExprLevelDotIndex<allow_struct>,
+    ExprLevelAtomic<allow_struct>,
 }
 
+// TODO allow "if" here
 Args: Args = {
     <start:@L> <inner:Separated<Arg, ",">> <end:@L> =>
         Args { inner, span: loc.span(start, end) },
@@ -581,15 +624,6 @@ Args: Args = {
 Arg: Arg = {
     <start:@L> <name:(<Id> "=")?> <value:Expr> <end:@L> =>
         Arg { name, value, span: loc.span(start, end) },
-}
-
-ExprLevelDotIndex<allow_struct>: ExpressionKind = {
-    // assoc left
-    <target: BoxSpanned<ExprLevelDotIndex<allow_struct>>> "." <index: Id>
-        => ExpressionKind::DotIdIndex(target, index),
-    <target: BoxSpanned<ExprLevelDotIndex<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
-        => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_string())),
-    ExprLevelAtomic<allow_struct>,
 }
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
@@ -612,16 +646,13 @@ StructLiteralField: StructLiteralField = {
 }
 
 ExprLevelAtomic<allow_struct>: ExpressionKind = {
-    // parentheses
+    // parentheses grouping
     "(" <expr:BoxExpr> ")" => ExpressionKind::Wrapped(expr),
-    // TODO actual block expression
+    // block expression
     "{" <statements:BlockStatement*> <expression:BoxExpr> "}" if allow_struct == "true"
         => ExpressionKind::Block(BlockExpression { statements, expression }),
-
-    // TODO allow paths as expressions
-    // id
+    // misc
     <id:Id> => ExpressionKind::Id(id),
-    // type
     "type" => ExpressionKind::Type,
     "fn" => ExpressionKind::TypeFunction,
     "_" => ExpressionKind::Dummy,

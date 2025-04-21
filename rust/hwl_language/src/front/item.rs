@@ -1,23 +1,49 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, ElaboratedModule};
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
-use crate::front::scope::ScopedEntry;
+use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    Args, CommonDeclaration, ConstDeclaration, FunctionDeclaration, Item, ItemDeclaration, Spanned, TypeDeclaration,
+    CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefInterface,
+    ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Spanned, TypeDeclaration,
 };
-use crate::syntax::parsed::{AstRefItem, AstRefModule};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 
-impl CompileItemContext<'_, '_> {
+pub struct ElaboratedItemParams<I> {
+    pub item: I,
+    pub params: Option<Vec<(Identifier, CompileValue)>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedItemKey<I> {
+    item: I,
+    params: Option<Vec<CompileValue>>,
+}
+
+impl<I: Copy> ElaboratedItemParams<I> {
+    pub fn cache_key(&self) -> ElaboratedItemKey<I> {
+        let &ElaboratedItemParams { item, ref params } = self;
+        let param_values = params
+            .as_ref()
+            .map(|params| params.iter().map(|(_, v)| v.clone()).collect());
+        ElaboratedItemKey {
+            item,
+            params: param_values,
+        }
+    }
+}
+
+impl<'s> CompileItemContext<'_, 's> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let file_scope = self.refs.shared.file_scope(item.file())?;
 
         let item_ast = &self.refs.fixed.parsed[item];
-        self.refs.check_should_stop(item_ast.common_info().span_short)?;
+        let span_short = item_ast.common_info().span_short;
+        self.refs.check_should_stop(span_short)?;
 
         match item_ast {
             Item::Import(item_inner) => {
@@ -25,9 +51,14 @@ impl CompileItemContext<'_, '_> {
                 Err(diags.report_internal_error(item_inner.span, reason))
             }
             Item::Instance(instance) => {
-                // TODO this is a bit weird, we're not actually evaluating the item
+                let &ModuleInstanceItem {
+                    span: _,
+                    span_keyword,
+                    ref module,
+                } = instance;
                 let mut vars = VariableValues::new_root(&self.variables);
-                self.elaborate_module_header(file_scope, &mut vars, instance)?;
+                let _: ElaboratedModule =
+                    self.eval_expression_as_module(file_scope, &mut vars, span_keyword, module)?;
                 Ok(CompileValue::UNIT)
             }
             Item::CommonDeclaration(decl) => {
@@ -36,28 +67,97 @@ impl CompileItemContext<'_, '_> {
                 self.eval_declaration(file_scope, &mut vars, decl)
             }
             Item::Module(module) => {
-                let ast_ref = AstRefModule::new_unchecked(item);
+                let ItemDefModule {
+                    span: _,
+                    vis: _,
+                    id,
+                    params,
+                    ports,
+                    body,
+                } = module;
+                let item = AstRefModule::new_unchecked(item, module);
 
-                // elaborate modules without params immediately, for earlier error messages
-                // TODO this is a strange place to do this, modules don't _really_ participate in item evaluation
-                match &module.params {
+                match params {
                     None => {
-                        let _ = self.refs.elaborate_module(ast_ref, None);
+                        let item_params = ElaboratedItemParams { item, params: None };
+                        let (elab_id, _) = self.refs.elaborate_module(item_params)?;
+                        Ok(CompileValue::Module(elab_id))
                     }
                     Some(params) => {
-                        if params.inner.is_empty() {
-                            let args = Args {
-                                span: module.id.span(),
-                                inner: vec![],
-                            };
-                            let _ = self.refs.elaborate_module(ast_ref, Some(args));
-                        }
+                        let func = FunctionValue {
+                            decl_span: id.span(),
+                            scope_captured: CapturedScope::from_file_scope(item.file()),
+                            params: params.clone(),
+                            body: Spanned {
+                                span: ports.span.join(body.span),
+                                inner: FunctionBody::ModulePortsAndBody(item),
+                            },
+                        };
+                        Ok(CompileValue::Function(func))
                     }
                 }
+            }
+            Item::Interface(interface) => {
+                let ItemDefInterface {
+                    span: _,
+                    vis: _,
+                    id,
+                    params,
+                    span_body,
+                    port_types: _,
+                    views: _,
+                } = interface;
+                let item = AstRefInterface::new_unchecked(item, interface);
 
-                Ok(CompileValue::Module(ast_ref))
+                match params {
+                    None => {
+                        let item_params = ElaboratedItemParams { item, params: None };
+                        let (elab_id, _) = self.refs.elaborate_interface(item_params)?;
+                        Ok(CompileValue::Interface(elab_id))
+                    }
+                    Some(params) => {
+                        let func = FunctionValue {
+                            decl_span: id.span(),
+                            scope_captured: CapturedScope::from_file_scope(item.file()),
+                            params: params.clone(),
+                            body: Spanned {
+                                span: *span_body,
+                                inner: FunctionBody::Interface(item),
+                            },
+                        };
+                        Ok(CompileValue::Function(func))
+                    }
+                }
             }
         }
+    }
+
+    pub fn rebuild_params_scope(
+        &mut self,
+        item: AstRefItem,
+        vars: &mut VariableValues,
+        params: &Option<Vec<(Identifier, CompileValue)>>,
+    ) -> Result<Scope<'s>, ErrorGuaranteed> {
+        let file_scope = self.refs.shared.file_scope(item.file())?;
+        let full_span = self.refs.fixed.parsed[item].common_info().span_full;
+
+        let mut scope_params = Scope::new_child(full_span, file_scope);
+        if let Some(params) = &params {
+            for (id, value) in params {
+                let var = vars.var_new_immutable_init(
+                    &mut self.variables,
+                    MaybeIdentifier::Identifier(id.clone()),
+                    id.span,
+                    Value::Compile(value.clone()),
+                );
+                let declared = DeclaredValueSingle::Value {
+                    span: id.span,
+                    value: ScopedEntry::Named(NamedValue::Variable(var)),
+                };
+                scope_params.declare_already_checked(id.string.clone(), declared);
+            }
+        }
+        Ok(scope_params)
     }
 
     pub fn eval_declaration(

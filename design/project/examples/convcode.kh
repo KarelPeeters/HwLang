@@ -9,7 +9,7 @@ import std.util.[typeof, print, print_compile, to_bits, from_bits];
 //     generator_1: [length]bool,
 // }
 
-pub module convcode_encoder generics (
+pub module convcode_encoder(
     length: natural,
     generator_0: [length]bool,
     generator_1: [length]bool,
@@ -53,7 +53,7 @@ pub module convcode_encoder generics (
     }
 }
 
-pub module convcode_decoder generics (
+pub module convcode_decoder(
     length: natural,
     generator_0: [length]bool,
     generator_1: [length]bool,
@@ -176,10 +176,10 @@ const example_generator_1 = [true, false, true];
 const example_analog_bits = 8;
 const example_depth = 4;
 
-instance convcode_encoder generics(
+instance convcode_encoder(
     length=example_length, generator_0=example_generator_0, generator_1=example_generator_1
 );
-instance convcode_decoder generics(
+instance convcode_decoder(
     length=example_length, generator_0=example_generator_0, generator_1=example_generator_1,
     analog_bits=example_analog_bits, depth=example_depth
 );

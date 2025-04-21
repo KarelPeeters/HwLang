@@ -84,7 +84,7 @@ pub enum SignalOrVariable {
 impl Signal {
     pub fn to_diagnostic_string(self, s: &CompileItemContext) -> String {
         match self {
-            Signal::Port(port) => s.ports[port].id.string.clone(),
+            Signal::Port(port) => s.ports[port].name.clone(),
             Signal::Wire(wire) => s.wires[wire].id.string().to_owned(),
             Signal::Register(reg) => s.registers[reg].id.string().to_owned(),
         }

@@ -1,9 +1,10 @@
+use crate::front::compile::ElaboratedItem;
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrVariable};
-use crate::syntax::parsed::AstRefModule;
+use crate::syntax::parsed::{AstRefInterface, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::enumerate;
@@ -27,9 +28,17 @@ pub enum CompileValue {
     Tuple(Vec<CompileValue>),
     Array(Vec<CompileValue>),
     IntRange(IncRange<BigInt>),
-    Module(AstRefModule),
+
     Function(FunctionValue),
-    // TODO list, tuple, struct, function, module (once we allow passing modules as generics)
+    Module(ElaboratedItem<AstRefModule>),
+    Interface(ElaboratedItem<AstRefInterface>),
+    InterfaceView(ElaboratedInterfaceView),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedInterfaceView {
+    pub interface: ElaboratedItem<AstRefInterface>,
+    pub view: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -85,8 +94,10 @@ impl Typed for CompileValue {
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
             }
             CompileValue::IntRange(_) => Type::Range,
-            CompileValue::Module(_) => Type::Module,
             CompileValue::Function(_) => Type::Function,
+            CompileValue::Module(_) => Type::Module,
+            CompileValue::Interface(_) => Type::Interface,
+            CompileValue::InterfaceView(_) => Type::InterfaceView,
         }
     }
 }
@@ -104,8 +115,10 @@ impl CompileValue {
             | CompileValue::Int(_)
             | CompileValue::String(_)
             | CompileValue::IntRange(_)
+            | CompileValue::Function(_)
             | CompileValue::Module(_)
-            | CompileValue::Function(_) => false,
+            | CompileValue::Interface(_)
+            | CompileValue::InterfaceView(_) => false,
         }
     }
 
@@ -184,8 +197,10 @@ impl CompileValue {
             CompileValue::Type(_)
             | CompileValue::String(_)
             | CompileValue::IntRange(_)
+            | CompileValue::Function(_)
             | CompileValue::Module(_)
-            | CompileValue::Function(_) => HardwareValueResult::Unrepresentable,
+            | CompileValue::Interface(_)
+            | CompileValue::InterfaceView(_) => HardwareValueResult::Unrepresentable,
         }
     }
 
@@ -278,9 +293,11 @@ impl CompileValue {
                 format!("[{}]", values)
             }
             CompileValue::IntRange(range) => format!("({})", range),
-            // TODO module item name and generic args?
-            CompileValue::Module(_) => "module".to_string(),
+            // TODO include item name and generic args?
             CompileValue::Function(_) => "function".to_string(),
+            CompileValue::Module(_) => "module".to_string(),
+            CompileValue::Interface(_) => "interface".to_string(),
+            CompileValue::InterfaceView(_) => "interface_view".to_string(),
         }
     }
 }

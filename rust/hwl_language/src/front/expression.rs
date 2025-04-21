@@ -1,10 +1,10 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool, check_type_is_bool_array,
-    check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_uint_compile,
-    TypeContainsReason,
+    check_hardware_type_for_bit_operation, check_type_contains_compile_value, check_type_contains_value,
+    check_type_is_bool, check_type_is_bool_array, check_type_is_int, check_type_is_int_compile,
+    check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, Port, StackEntry};
+use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -13,7 +13,7 @@ use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
 use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
@@ -34,6 +34,13 @@ use itertools::{enumerate, Either, Itertools};
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
+
+// TODO better name
+#[derive(Debug)]
+pub enum ValueInner {
+    Value(ValueWithImplications),
+    PortInterface(PortInterface),
+}
 
 pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
 
@@ -81,7 +88,7 @@ pub enum EvaluatedId {
     Value(Value),
 }
 
-impl CompileItemContext<'_, '_> {
+impl<'s> CompileItemContext<'_, 's> {
     pub fn eval_id(&mut self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -127,9 +134,16 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<Spanned<Value<CompileValue, HardwareValueWithImplications>>, ErrorGuaranteed> {
+    ) -> Result<Spanned<ValueWithImplications>, ErrorGuaranteed> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
-        Ok(Spanned::new(expr.span, value))
+        match value {
+            ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
+            ValueInner::PortInterface(_) => Err(self.refs.diags.report_simple(
+                "interface instance expression not allowed here",
+                expr.span,
+                "this expression evaluates to an interface instance",
+            )),
+        }
     }
 
     // TODO return COW to save some allocations?
@@ -137,7 +151,7 @@ impl CompileItemContext<'_, '_> {
     //   that can then be written (as target), read (as value), typeof-ed, gotten implications, ...
     //   that's awkward for expressions that create statements though, eg. calls
     //   maybe those should push their statements to virtual blocks, and only actually add them once read?
-    fn eval_expression_inner<C: ExpressionContext>(
+    pub fn eval_expression_inner<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut C::Block,
@@ -145,7 +159,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: &Expression,
-    ) -> Result<ValueWithImplications, ErrorGuaranteed> {
+    ) -> Result<ValueInner, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         let result_simple: Value = match &expr.inner {
@@ -160,9 +174,7 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::Undefined => Value::Compile(CompileValue::Undefined),
             ExpressionKind::Type => Value::Compile(CompileValue::Type(Type::Type)),
             ExpressionKind::Wrapped(inner) => {
-                return Ok(self
-                    .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, inner)?
-                    .inner)
+                return self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, inner);
             }
             ExpressionKind::Block(block_expr) => {
                 let BlockExpression { statements, expression } = block_expr;
@@ -176,8 +188,8 @@ impl CompileItemContext<'_, '_> {
                     .inner
             }
             ExpressionKind::Id(id) => {
-                match self.eval_id(scope, id)?.inner {
-                    EvaluatedId::Value(value) => value,
+                let result = match self.eval_id(scope, id)?.inner {
+                    EvaluatedId::Value(value) => ValueWithImplications::simple(value),
                     EvaluatedId::Named(value) => match value {
                         // TODO report error when combinatorial block
                         //   reads something it has not written yet but will later write to
@@ -191,28 +203,16 @@ impl CompileItemContext<'_, '_> {
                                 };
                                 let with_implications =
                                     apply_implications(ctx, &mut self.large, Some(versioned), value.clone());
-                                return Ok(Value::Hardware(with_implications));
+                                Value::Hardware(with_implications)
                             }
                         },
                         NamedValue::Port(port) => {
                             ctx.check_ir_context(diags, expr.span, "port")?;
-                            let port_info = &self.ports[port];
-
-                            return match port_info.direction.inner {
-                                PortDirection::Input => {
-                                    let versioned = vars.signal_versioned(Signal::Port(port));
-                                    let with_implications = apply_implications(
-                                        ctx,
-                                        &mut self.large,
-                                        versioned,
-                                        port_info.as_hardware_value(),
-                                    );
-                                    return Ok(Value::Hardware(with_implications));
-                                }
-                                PortDirection::Output => {
-                                    Err(diags.report_todo(expr.span, "read back from output port"))
-                                }
-                            };
+                            return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
+                        }
+                        NamedValue::PortInterface(interface) => {
+                            ctx.check_ir_context(diags, expr.span, "port")?;
+                            return Ok(ValueInner::PortInterface(interface));
                         }
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
@@ -221,7 +221,7 @@ impl CompileItemContext<'_, '_> {
                             let versioned = vars.signal_versioned(Signal::Wire(wire));
                             let with_implications =
                                 apply_implications(ctx, &mut self.large, versioned, wire_info.as_hardware_value());
-                            return Ok(Value::Hardware(with_implications));
+                            Value::Hardware(with_implications)
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
@@ -230,10 +230,12 @@ impl CompileItemContext<'_, '_> {
                             let versioned = vars.signal_versioned(Signal::Register(reg));
                             let with_implications =
                                 apply_implications(ctx, &mut self.large, versioned, reg_info.as_hardware_value());
-                            return Ok(Value::Hardware(with_implications));
+                            Value::Hardware(with_implications)
                         }
                     },
-                }
+                };
+
+                return Ok(ValueInner::Value(result));
             }
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::IntLiteral(ref pattern) => {
@@ -379,7 +381,7 @@ impl CompileItemContext<'_, '_> {
                         TypeContainsReason::Operator(op.span),
                         operand.as_ref().map_inner(ValueWithImplications::value_cloned),
                     )?;
-                    return Ok(operand.inner);
+                    return Ok(ValueInner::Value(operand.inner));
                 }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
@@ -433,11 +435,12 @@ impl CompileItemContext<'_, '_> {
                                 domain: v.value.domain,
                                 expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
                             };
-                            return Ok(Value::Hardware(HardwareValueWithImplications {
+                            let result_with_implications = HardwareValueWithImplications {
                                 value: result,
                                 value_versioned: None,
                                 implications: v.implications.invert(),
-                            }));
+                            };
+                            return Ok(ValueInner::Value(Value::Hardware(result_with_implications)));
                         }
                     }
                 }
@@ -445,7 +448,8 @@ impl CompileItemContext<'_, '_> {
             &ExpressionKind::BinaryOp(op, ref left, ref right) => {
                 let left = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, left);
                 let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
-                return eval_binary_expression(diags, &mut self.large, expr.span, op, left?, right?);
+                let result = eval_binary_expression(diags, &mut self.large, expr.span, op, left?, right?)?;
+                return Ok(ValueInner::Value(result));
             }
             ExpressionKind::TernarySelect(_, _, _) => {
                 return Err(diags.report_todo(expr.span, "expr kind TernarySelect"))
@@ -481,7 +485,47 @@ impl CompileItemContext<'_, '_> {
                     .fold(base.inner, |acc, len| Type::Array(Box::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
-            ExpressionKind::DotIdIndex(_, _) => return Err(diags.report_todo(expr.span, "expr kind DotIdIndex")),
+            ExpressionKind::DotIdIndex(base, index) => {
+                let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+
+                match base_eval {
+                    ValueInner::PortInterface(port_interface) => {
+                        // get the port
+                        let port_interface_info = &self.port_interfaces[port_interface];
+                        let interface_info = self
+                            .refs
+                            .shared
+                            .elaborated_interface_info(port_interface_info.view.interface)?;
+                        let port_index = interface_info.ports.get_index_of(&index.string).ok_or_else(|| {
+                            let diag = Diagnostic::new(format!("port `{}` not found on interface", index.string))
+                                .add_error(index.span, "attempt to access port here")
+                                .add_info(interface_info.id.span(), "interface declared here")
+                                .finish();
+                            diags.report(diag)
+                        })?;
+                        let port = port_interface_info.ports[port_index];
+
+                        return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
+                    }
+                    ValueInner::Value(Value::Compile(CompileValue::Interface(base_interface))) => {
+                        let info = self.refs.shared.elaborated_interface_info(base_interface)?;
+                        let _ = info.get_view(diags, index)?;
+
+                        let interface_view = ElaboratedInterfaceView {
+                            interface: base_interface,
+                            view: index.string.clone(),
+                        };
+                        Value::Compile(CompileValue::InterfaceView(interface_view))
+                    }
+                    _ => {
+                        return Err(diags.report_simple(
+                            "dot index base should be an interface",
+                            base.span,
+                            "got other expression",
+                        ));
+                    }
+                }
+            }
             ExpressionKind::DotIntIndex(_, _) => return Err(diags.report_todo(expr.span, "expr kind DotIntIndex")),
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
@@ -511,11 +555,13 @@ impl CompileItemContext<'_, '_> {
                     .recurse(entry, |s| s.call_function(ctx, vars, &target, args))
                     .flatten_err()?;
 
-                let result_block_spanned = Spanned {
-                    span: expr.span,
-                    inner: result_block,
-                };
-                ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+                if let Some(result_block) = result_block {
+                    let result_block_spanned = Spanned {
+                        span: expr.span,
+                        inner: result_block,
+                    };
+                    ctx.push_ir_statement_block(ctx_block, result_block_spanned);
+                }
 
                 result_value
             }
@@ -588,7 +634,27 @@ impl CompileItemContext<'_, '_> {
             }
         };
 
-        Ok(ValueWithImplications::simple(result_simple))
+        Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
+    }
+
+    fn eval_port<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        vars: &VariableValues,
+        port: Spanned<Port>,
+    ) -> Result<ValueInner, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let port_info = &self.ports[port.inner];
+
+        match port_info.direction.inner {
+            PortDirection::Input => {
+                let versioned = vars.signal_versioned(Signal::Port(port.inner));
+                let with_implications =
+                    apply_implications(ctx, &mut self.large, versioned, port_info.as_hardware_value());
+                Ok(ValueInner::Value(Value::Hardware(with_implications)))
+            }
+            PortDirection::Output => Err(diags.report_todo(port.span, "read back from output port")),
+        }
     }
 
     fn eval_array_literal<C: ExpressionContext>(
@@ -1122,8 +1188,10 @@ impl CompileItemContext<'_, '_> {
         expr: &Expression,
     ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
         let diags = self.refs.diags;
+
+        // TODO include definition site (at least for named values)
         let build_err =
-            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got `{}`", actual));
+            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {}", actual));
 
         let result = match &expr.inner {
             ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
@@ -1132,15 +1200,17 @@ impl CompileItemContext<'_, '_> {
                     NamedValue::Variable(v) => {
                         AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
                     }
-                    NamedValue::Port(p) => {
-                        let direction = self.ports[p].direction;
+                    NamedValue::Port(port) => {
+                        // check direction
+                        let direction = self.ports[port].direction;
                         match direction.inner {
                             PortDirection::Input => return Err(build_err("input port")),
-                            PortDirection::Output => {
-                                AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(p)))
-                            }
+                            PortDirection::Output => {}
                         }
+
+                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
                     }
+                    NamedValue::PortInterface(_) => return Err(build_err("port interface")),
                     NamedValue::Wire(w) => {
                         AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
                     }
@@ -1173,9 +1243,43 @@ impl CompileItemContext<'_, '_> {
                     array_steps,
                 }
             }
-            ExpressionKind::DotIdIndex(_, _) => {
-                return Err(diags.report_todo(expr.span, "assignment target dot id index"))?
-            }
+            ExpressionKind::DotIdIndex(base, index) => match &base.inner {
+                ExpressionKind::Id(base) => match self.eval_id(scope, base)?.inner {
+                    EvaluatedId::Named(NamedValue::PortInterface(base)) => {
+                        // get port
+                        let port_interface_info = &self.port_interfaces[base];
+                        let interface_info = self
+                            .refs
+                            .shared
+                            .elaborated_interface_info(port_interface_info.view.interface)?;
+                        let (port_index, _) = interface_info.get_port(diags, index)?;
+                        let port = port_interface_info.ports[port_index];
+
+                        // check direction
+                        let direction = self.ports[port].direction;
+                        match direction.inner {
+                            PortDirection::Input => return Err(build_err("input port")),
+                            PortDirection::Output => {}
+                        }
+
+                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
+                    }
+                    _ => {
+                        return Err(diags.report_simple(
+                            "dot index only supported on interface ports",
+                            base.span,
+                            "got other named value here",
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(diags.report_simple(
+                        "dot index only supported on interface ports",
+                        base.span,
+                        "got other expression here",
+                    ))
+                }
+            },
             ExpressionKind::DotIntIndex(_, _) => {
                 return Err(diags.report_todo(expr.span, "assignment target dot int index"))?
             }
@@ -1228,6 +1332,7 @@ impl CompileItemContext<'_, '_> {
                     EvaluatedId::Named(s) => match s {
                         NamedValue::Variable(_) => Err(build_err("variable")),
                         NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
+                        NamedValue::PortInterface(_) => Err(build_err("port interface")),
                         NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
                         NamedValue::Register(r) => Ok(Polarized::new(Signal::Register(r))),
                     },
@@ -1366,6 +1471,26 @@ impl CompileItemContext<'_, '_> {
         };
 
         Ok(result)
+    }
+
+    pub fn eval_expression_as_module(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        span_keyword: Span,
+        expr: &Expression,
+    ) -> Result<ElaboratedModule, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let eval = self.eval_expression_as_compile(scope, vars, expr, "module")?;
+
+        let reason = TypeContainsReason::InstanceModule(span_keyword);
+        check_type_contains_compile_value(diags, reason, &Type::Module, eval.as_ref(), false)?;
+
+        match eval.inner {
+            CompileValue::Module(elab) => Ok(elab),
+            _ => Err(diags.report_internal_error(eval.span, "expected module, should have already been checked")),
+        }
     }
 }
 

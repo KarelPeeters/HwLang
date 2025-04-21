@@ -24,7 +24,7 @@ print(foo_function(4, b=5))
 
 # TODO instantiate module into generated verilog
 ty_bool = compile.resolve("std.types.bool")
-foo_inst = foo_module.instance(T=ty_bool)
+foo_inst = foo_module(T=ty_bool)
 
 foo_verilog = foo_inst.generate_verilog()
 print(foo_verilog.source)
