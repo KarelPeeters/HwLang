@@ -942,10 +942,6 @@ impl<'s> CompileItemContext<'_, 's> {
                     return Ok(Value::Compile(CompileValue::Type(Type::Int(range.clone()))));
                 }
                 ("fn", "typeof", [value]) => return Ok(Value::Compile(CompileValue::Type(value.ty()))),
-                ("fn", "print_compile", [value]) => {
-                    print_compile(value);
-                    return Ok(Value::Compile(CompileValue::Tuple(vec![])));
-                }
                 ("fn", "print", [value]) => {
                     if ctx.is_ir_context() {
                         if let Value::Compile(CompileValue::String(value)) = value {

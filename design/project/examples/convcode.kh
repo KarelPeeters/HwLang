@@ -1,6 +1,6 @@
 import std.types.[bool, int_range, int, natural, uint, uint_bits];
 import std.math.[clog2];
-import std.util.[typeof, print, print_compile, to_bits, from_bits];
+import std.util.[typeof, print, to_bits, from_bits];
 
 // TODO implement structs
 // TODO allow fields to depend on previous fields (only for compile-time structs ofc)

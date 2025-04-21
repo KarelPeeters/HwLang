@@ -9,12 +9,6 @@ pub fn print(value: any) {
     __builtin("fn", "print", value);
 }
 
-// TODO instead of this print/print_compile separation, just provide "const {}" statements and have
-//   print/assert/etc in those run at compile-time
-pub fn print_compile(value: any) {
-    __builtin("fn", "print_compile", value);
-}
-
 // TODO parse "clock" as return type here?
 pub fn unsafe_cast_clock(value: bool) -> any {
     return __builtin("fn", "unsafe_cast_clock", value);
