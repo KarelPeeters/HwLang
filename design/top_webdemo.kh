@@ -28,7 +28,7 @@ pub module top ports(
         t = select(bool, enable, false, true);
     }
 
-    instance child generics(
+    instance child(
         T=int_range(0..256)
     ) ports(
         .clk(clk),
@@ -48,7 +48,7 @@ fn select(T: type, c: bool, a: T, b: T) -> bool {
     return result;
 }
 
-module child generics(T: type) ports(
+module child(T: type) ports(
     clk: in clock,
     rst: in async bool,
 
