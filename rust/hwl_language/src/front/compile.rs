@@ -29,7 +29,6 @@ use itertools::{enumerate, zip_eq, Itertools};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -192,17 +191,6 @@ impl<'s> CompileRefs<'_, 's> {
         }
     }
 
-    pub fn elaborated_module_info(&self, elab: ElaboratedModule) -> Result<&'s ElaboratedModuleInfo, ErrorGuaranteed> {
-        self.shared.elaborated_modules.get(elab)
-    }
-
-    pub fn elaborated_interface_info(
-        &self,
-        elab: ElaboratedInterface,
-    ) -> Result<&'s ElaboratedInterfaceInfo, ErrorGuaranteed> {
-        self.shared.elaborated_interfaces.get(elab)
-    }
-
     pub fn elaborate_module(
         &self,
         item_params: ElaboratedItemParams<AstRefModule>,
@@ -254,7 +242,7 @@ pub enum WorkItem {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedItem<I> {
     index: usize,
-    ph: PhantomData<I>,
+    pub item: I,
 }
 
 pub type ElaboratedModule = ElaboratedItem<AstRefModule>;
@@ -306,7 +294,7 @@ impl<I: Debug + Eq + Hash + Copy, F> ElaborateItemArena<I, F> {
         let &id = self.key_to_id.get_or_compute(key, |_| {
             let id = ElaboratedItem {
                 index: self.next_id.fetch_add(1, Ordering::Relaxed),
-                ph: PhantomData,
+                item: params.item,
             };
 
             let info = f(params);
@@ -804,12 +792,27 @@ impl CompileShared {
     }
 
     pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
+        if self.work_queue.pop().is_some() {
+            diags.report_internal_error(dummy_span, "not all work items have been processed");
+        }
+
         let ir_modules = self.ir_modules.into_inner().unwrap();
         ir_modules.try_map_values(|_, v| match v {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
             None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
         })
+    }
+
+    pub fn elaborated_module_info(&self, elab: ElaboratedModule) -> Result<&ElaboratedModuleInfo, ErrorGuaranteed> {
+        self.elaborated_modules.get(elab)
+    }
+
+    pub fn elaborated_interface_info(
+        &self,
+        elab: ElaboratedInterface,
+    ) -> Result<&ElaboratedInterfaceInfo, ErrorGuaranteed> {
+        self.elaborated_interfaces.get(elab)
     }
 }
 

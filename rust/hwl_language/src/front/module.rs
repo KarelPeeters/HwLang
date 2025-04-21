@@ -471,7 +471,7 @@ fn push_connector_interface(
         interface,
         view: view_name,
     } = &view;
-    let interface = ctx.refs.elaborated_interface_info(*interface)?;
+    let interface = ctx.refs.shared.elaborated_interface_info(*interface)?;
     let view_info = interface.views.get(view_name).unwrap();
 
     let port_dirs = view_info.port_dirs.as_ref_ok()?;
@@ -1115,7 +1115,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             module_ast,
             module_ir,
             ref connectors,
-        } = self.ctx.refs.elaborated_module_info(elaborated_module)?;
+        } = self.ctx.refs.shared.elaborated_module_info(elaborated_module)?;
 
         let module_ast = &refs.fixed.parsed[module_ast];
 
@@ -1516,7 +1516,11 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
 
                 // check directions and build connections
-                let interface_info = self.ctx.refs.elaborated_interface_info(connector_view.interface)?;
+                let interface_info = self
+                    .ctx
+                    .refs
+                    .shared
+                    .elaborated_interface_info(connector_view.interface)?;
                 let view_info = interface_info.views.get(&connector_view.view).unwrap();
                 let value_view_info = interface_info.views.get(&value_info.view.view).unwrap();
 

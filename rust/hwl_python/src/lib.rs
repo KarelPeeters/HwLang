@@ -1,12 +1,11 @@
-use check::{check_diags, convert_diag_error, unwrap_diag_error};
+use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{
-    ArenaPorts, ArenaVariables, CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler,
+    CompileFixed, CompileItemContext, CompileRefs, CompileShared, ElaboratedModule, StdoutPrintHandler,
 };
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
-use hwl_language::mid::ir::IrModule;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
@@ -18,8 +17,7 @@ use hwl_language::{
     },
     syntax::{
         ast::Spanned,
-        parsed::{AstRefModule, ParsedDatabase as RustParsedDatabase},
-        pos::Span,
+        parsed::ParsedDatabase as RustParsedDatabase,
         source::{
             SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
             SourceSetOrIoError,
@@ -57,6 +55,16 @@ struct Compile {
 }
 
 #[pyclass]
+struct UnsupportedValue(String);
+
+#[pymethods]
+impl UnsupportedValue {
+    fn __repr__(&self) -> String {
+        format!("Unsupported({})", self.0)
+    }
+}
+
+#[pyclass]
 struct Undefined;
 
 #[pyclass]
@@ -79,14 +87,7 @@ struct Function {
 #[pyclass]
 struct Module {
     compile: Py<Compile>,
-    module: AstRefModule,
-}
-
-#[pyclass]
-struct ModuleInstance {
-    compile: Py<Compile>,
-    ir_module: IrModule,
-    dummy_span: Span,
+    module: ElaboratedModule,
 }
 
 #[pyclass]
@@ -104,26 +105,24 @@ create_exception!(hwl, HwlException, PyException);
 create_exception!(hwl, SourceSetException, HwlException);
 create_exception!(hwl, DiagnosticException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
-create_exception!(hwl, ValueException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
+    m.add_class::<UnsupportedValue>()?;
     m.add_class::<Undefined>()?;
     m.add_class::<Type>()?;
     m.add_class::<IncRange>()?;
     m.add_class::<Function>()?;
     m.add_class::<Module>()?;
-    m.add_class::<ModuleInstance>()?;
     m.add_class::<ModuleVerilog>()?;
     m.add_class::<Simulator>()?;
     m.add("HwlException", py.get_type::<HwlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
     m.add("ResolveException", py.get_type::<ResolveException>())?;
-    m.add("ValueException", py.get_type::<ValueException>())?;
     Ok(())
 }
 
@@ -232,7 +231,7 @@ impl Compile {
 
             // look up the item
             let diags = Diagnostics::new();
-            let found = unwrap_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
+            let found = map_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
             let item = match found.value {
                 &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
                 ScopedEntry::Named(_) => {
@@ -252,10 +251,10 @@ impl Compile {
                 print_handler: &StdoutPrintHandler,
                 should_stop: &|| false,
             };
-            let mut item_ctx = CompileItemContext::new(refs, None, ArenaVariables::new(), ArenaPorts::new());
+            let mut item_ctx = CompileItemContext::new_empty(refs, None);
 
             let value = item_ctx.eval_item(item);
-            let value = unwrap_diag_error(source, &diags, value)?;
+            let value = map_diag_error(source, &diags, value)?;
             value.clone()
         };
 
@@ -319,7 +318,7 @@ impl Function {
                 should_stop: &|| false,
             };
 
-            let mut item_ctx = CompileItemContext::new(refs, None, ArenaVariables::new(), ArenaPorts::new());
+            let mut item_ctx = CompileItemContext::new_empty(refs, None);
             let mut vars = VariableValues::new_root(&item_ctx.variables);
 
             let mut ctx = CompileTimeExpressionContext {
@@ -327,8 +326,14 @@ impl Function {
                 reason: "external call".to_owned(),
             };
 
+            println!("call_function");
             let returned = item_ctx.call_function(&mut ctx, &mut vars, &self.function_value, args);
-            let ((), returned) = unwrap_diag_error(source, &diags, returned)?;
+            let (_block, returned) = map_diag_error(source, &diags, returned)?;
+
+            // run any downstream elaboration
+            println!("run elaboration loop");
+            refs.run_elaboration_loop();
+            check_diags(source, &diags)?;
 
             // unwrap compile
             match returned {
@@ -349,60 +354,6 @@ impl Function {
 
 #[pymethods]
 impl Module {
-    #[pyo3(signature = (*args, **kwargs))]
-    fn instance(
-        &self,
-        py: Python,
-        args: &Bound<'_, PyTuple>,
-        kwargs: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<ModuleInstance> {
-        // borrow self
-        let compile_ref = &mut *self.compile.borrow_mut(py);
-        let state = &mut compile_ref.state;
-        let parsed_ref = compile_ref.parsed.borrow(py);
-        let parsed = &parsed_ref.parsed;
-        let source = &parsed_ref.source.borrow(py).source;
-        let dummy_span = parsed[self.module].id.span();
-
-        // evaluate args
-        let f_arg = |v| Spanned::new(dummy_span, v);
-        let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
-        // TODO this is really hacky, maybe the Some/None distinction should not exist for generics?
-        let args = if args.inner.is_empty() && parsed[self.module].params.is_none() {
-            None
-        } else {
-            Some(args)
-        };
-
-        // create context
-        let diags = Diagnostics::new();
-        let refs = CompileRefs {
-            fixed: CompileFixed { source, parsed },
-            shared: state,
-            diags: &diags,
-            print_handler: &StdoutPrintHandler,
-            should_stop: &|| false,
-        };
-
-        // start module elaboration
-        let elab = refs.elaborate_module(self.module, args);
-        let elab = unwrap_diag_error(source, &diags, elab)?;
-
-        // finish elaboration
-        refs.run_elaboration_loop();
-        check_diags(source, &diags)?;
-
-        let module_instance = ModuleInstance {
-            compile: self.compile.clone_ref(py),
-            ir_module: elab.module_ir,
-            dummy_span,
-        };
-        Ok(module_instance)
-    }
-}
-
-#[pymethods]
-impl ModuleInstance {
     fn generate_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
         // borrow self
         let compile = &mut *self.compile.borrow_mut(py);
@@ -419,14 +370,17 @@ impl ModuleInstance {
             std::mem::replace(&mut compile.state, replacement_state)
         };
 
-        // check that all modules are resolved
+        // get the right ir module
         let diags = Diagnostics::new();
-        let ir_modules = state.finish_ir_modules(&diags, self.dummy_span);
-        let ir_modules = unwrap_diag_error(source, &diags, ir_modules)?;
+        let ir_module = map_diag_error(source, &diags, state.elaborated_module_info(self.module))?.module_ir;
+
+        // check that all modules are resolved
+        let ir_modules = state.finish_ir_modules(&diags, parsed[self.module.item].id.span());
+        let ir_modules = map_diag_error(source, &diags, ir_modules)?;
 
         // actual lowering
-        let lowered = lower_to_verilog(&diags, source, parsed, &ir_modules, self.ir_module);
-        let lowered = unwrap_diag_error(source, &diags, lowered)?;
+        let lowered = lower_to_verilog(&diags, source, parsed, &ir_modules, ir_module);
+        let lowered = map_diag_error(source, &diags, lowered)?;
         Ok(ModuleVerilog {
             module_name: lowered.top_module_name,
             source: lowered.verilog_source,

@@ -1,3 +1,5 @@
+use crate::DiagnosticException;
+use hwl_language::util::Never;
 use hwl_language::{
     front::diagnostic::{DiagnosticStringSettings, Diagnostics, ErrorGuaranteed},
     syntax::source::SourceDatabase as RustSourceDatabase,
@@ -5,10 +7,6 @@ use hwl_language::{
 use itertools::Itertools;
 use pyo3::prelude::*;
 
-use crate::DiagnosticException;
-
-// TODO general issue with this approach: we might encounter an error and report it, but the python caller could catch that and re-call the same thing,
-//   immediately resulting in the same (cached) error value, with a corresponding diagnostic message, which would cause this to panic
 pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
     if diags.len() == 0 {
         Ok(())
@@ -20,16 +18,22 @@ pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(
     }
 }
 
-pub fn unwrap_diag_error<T>(
+pub fn map_diag_error<T>(
     source: &RustSourceDatabase,
     diags: &Diagnostics,
     value: Result<T, ErrorGuaranteed>,
 ) -> Result<T, PyErr> {
     check_diags(source, diags)?;
-    Ok(value.unwrap())
+    unwrap_diag_result(value)
+}
+
+pub fn unwrap_diag_result<T>(result: Result<T, ErrorGuaranteed>) -> Result<T, PyErr> {
+    result.map_err(|_| DiagnosticException::new_err("diagnostic already reported previously"))
 }
 
 pub fn convert_diag_error(source: &RustSourceDatabase, diags: &Diagnostics, err: ErrorGuaranteed) -> PyErr {
-    let _ = err;
-    check_diags(source, diags).unwrap_err()
+    match map_diag_error::<Never>(source, diags, Err(err)) {
+        Ok(never) => never.unreachable(),
+        Err(e) => e,
+    }
 }

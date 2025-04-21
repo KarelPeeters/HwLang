@@ -278,7 +278,7 @@ impl<K: Debug + Hash + Eq, V> ComputeOnceMap<K, V> {
     }
 
     pub fn get(&self, k: &K) -> Option<&V> {
-        let ptr = self.inner.get(&k)?.get();
+        let ptr = self.inner.get(k)?.get();
         Some(unsafe { &*ptr })
     }
 
@@ -333,16 +333,28 @@ impl<T> SharedQueue<T> {
     }
 
     pub fn push(&self, item: T) {
-        self.mutex.lock().queue.push_back(item);
+        {
+            let mut inner = self.mutex.lock();
+            inner.queue.push_back(item);
+
+            // TODO this weird behavior was created for the python API, think about a more correct solution
+            if inner.done {
+                inner.done = false;
+                inner.waiting_count = 0;
+            }
+        }
+
         self.cond.notify_one();
     }
 
     pub fn push_batch(&self, items: impl IntoIterator<Item = T>) {
-        let mut inner = self.mutex.lock();
+        let delta = {
+            let mut inner = self.mutex.lock();
 
-        let len_before = inner.queue.len();
-        inner.queue.extend(items);
-        let delta = inner.queue.len() - len_before;
+            let len_before = inner.queue.len();
+            inner.queue.extend(items);
+            inner.queue.len() - len_before
+        };
 
         match delta {
             0 => {}

@@ -1,4 +1,4 @@
-use crate::{Compile, Function, IncRange, Module, Type, Undefined};
+use crate::{Compile, Function, IncRange, Module, Type, Undefined, UnsupportedValue};
 use hwl_language::util::big_int::BigInt;
 use hwl_language::{
     front::{types::IncRange as RustIncRange, value::CompileValue},
@@ -58,6 +58,9 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: CompileValue)
             };
             f.into_py_any(py)
         }
+        // TODO actually expose these to python
+        CompileValue::Interface(_) => UnsupportedValue("interface".to_owned()).into_py_any(py),
+        CompileValue::InterfaceView(_) => UnsupportedValue("interface view".to_owned()).into_py_any(py),
     }
 }
 

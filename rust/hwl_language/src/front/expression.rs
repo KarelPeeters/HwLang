@@ -494,6 +494,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         let port_interface_info = &self.port_interfaces[port_interface];
                         let interface_info = self
                             .refs
+                            .shared
                             .elaborated_interface_info(port_interface_info.view.interface)?;
                         let port_index = interface_info.ports.get_index_of(&index.string).ok_or_else(|| {
                             let diag = Diagnostic::new(format!("port `{}` not found on interface", index.string))
@@ -507,7 +508,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
                     }
                     ValueInner::Value(Value::Compile(CompileValue::Interface(base_interface))) => {
-                        let info = self.refs.elaborated_interface_info(base_interface)?;
+                        let info = self.refs.shared.elaborated_interface_info(base_interface)?;
                         let _ = info.get_view(diags, index)?;
 
                         let interface_view = ElaboratedInterfaceView {
@@ -1249,6 +1250,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         let port_interface_info = &self.port_interfaces[base];
                         let interface_info = self
                             .refs
+                            .shared
                             .elaborated_interface_info(port_interface_info.view.interface)?;
                         let (port_index, _) = interface_info.get_port(diags, index)?;
                         let port = port_interface_info.ports[port_index];
