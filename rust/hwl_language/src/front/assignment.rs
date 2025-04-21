@@ -140,13 +140,13 @@ impl CompileItemContext<'_, '_> {
                 )?
                 .value();
                 let value_eval = match value_eval {
-                    Value::Compile(_) => {
+                    Value::Hardware(value) => value,
+                    _ => {
                         return Err(diags.report_internal_error(
                             stmt.span,
-                            "binary op on compile values should result in compile value again",
+                            "binary op on hardware values should result in hardware value again",
                         ))
                     }
-                    Value::Hardware(value) => value,
                 };
                 Spanned::new(stmt.span, Value::Hardware(value_eval))
             }
@@ -377,7 +377,7 @@ impl CompileItemContext<'_, '_> {
                     .value();
                     let value = match value {
                         Value::Compile(value) => value,
-                        Value::Hardware(_) => {
+                        _ => {
                             return Err(diags.report_internal_error(
                                 stmt_span,
                                 "binary op on compile values should result in compile value again",

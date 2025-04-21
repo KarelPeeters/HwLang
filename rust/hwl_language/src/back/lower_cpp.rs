@@ -75,7 +75,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
     swriteln!(f_structs_to_ptr, "{I}{I}return {struct_ports_ptr} {{");
 
     for (port_i, (port, port_info)) in enumerate(ports) {
-        let ty_str = type_to_cpp(diags, port_info.debug_info_id.span, &port_info.ty)?;
+        let ty_str = type_to_cpp(diags, port_info.debug_span, &port_info.ty)?;
         let name = port_str(port, port_info);
         swriteln!(f_structs_ptr, "{I}{ty_str} *{name};");
         swriteln!(f_structs_val, "{I}{ty_str} {name};");
@@ -801,7 +801,10 @@ fn port_str(port: IrPort, port_info: &IrPortInfo) -> String {
     name_str(
         "port",
         port.inner(),
-        MaybeIdentifier::Identifier(&port_info.debug_info_id),
+        MaybeIdentifier::Identifier(&Identifier {
+            span: port_info.debug_span,
+            string: port_info.name.clone(),
+        }),
     )
 }
 

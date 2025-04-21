@@ -5,6 +5,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, ResetKind, Spanned};
+use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
@@ -83,11 +84,12 @@ pub struct IrModuleInfo {
 
 #[derive(Debug)]
 pub struct IrPortInfo {
+    pub name: String,
     pub direction: PortDirection,
     pub ty: IrType,
 
-    pub debug_info_id: Identifier,
-    pub debug_info_ty: HardwareType,
+    pub debug_span: Span,
+    pub debug_info_ty: String,
     pub debug_info_domain: String,
 }
 
@@ -441,7 +443,7 @@ impl IrExpression {
             IrExpression::Bool(x) => x.to_string(),
             IrExpression::Int(x) => x.to_string(),
 
-            &IrExpression::Port(x) => module.ports[x].debug_info_id.string.clone(),
+            &IrExpression::Port(x) => module.ports[x].name.clone(),
             &IrExpression::Wire(x) => module.wires[x].debug_info_id.string().to_owned(),
             &IrExpression::Register(x) => module.registers[x].debug_info_id.string().to_owned(),
             // TODO support printing variables with their real names if in a context where they exist

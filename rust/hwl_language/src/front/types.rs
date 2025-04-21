@@ -28,6 +28,7 @@ pub enum Type {
     Function,
     Module,
     Interface,
+    InterfaceView,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -82,6 +83,7 @@ impl Type {
             (Type::Function, Type::Function) => Type::Function,
             (Type::Module, Type::Module) => Type::Module,
             (Type::Interface, Type::Interface) => Type::Interface,
+            (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
 
             // integer
             (Type::Int(a), Type::Int(b)) => {
@@ -157,6 +159,7 @@ impl Type {
                 | Type::Function
                 | Type::Module
                 | Type::Interface
+                | Type::InterfaceView
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _),
@@ -168,6 +171,7 @@ impl Type {
                 | Type::Function
                 | Type::Module
                 | Type::Interface
+                | Type::InterfaceView
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _),
@@ -194,7 +198,7 @@ impl Type {
                 .as_hardware_type()
                 .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
             Type::Type | Type::Any | Type::Undefined => None,
-            Type::String | Type::Range | Type::Function | Type::Module | Type::Interface => None,
+            Type::String | Type::Range | Type::Function | Type::Module | Type::Interface | Type::InterfaceView => None,
         }
     }
 
@@ -229,6 +233,7 @@ impl Type {
             Type::Function => "function".to_string(),
             Type::Module => "module".to_string(),
             Type::Interface => "interface".to_string(),
+            Type::InterfaceView => "interface_view".to_string(),
         }
     }
 }

@@ -43,6 +43,12 @@ impl DomainKind<Polarized<Signal>> {
     }
 }
 
+impl DomainKind<Polarized<Port>> {
+    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
+        self.map_signal(|s| s.map_inner(Signal::Port)).to_diagnostic_string(s)
+    }
+}
+
 impl SyncDomain<Polarized<Signal>> {
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
         let SyncDomain { clock, reset } = self;

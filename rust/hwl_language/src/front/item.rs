@@ -1,8 +1,7 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, ElaboratedModule};
 use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
-use crate::front::module::ElaboratedModuleInfo;
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
@@ -58,7 +57,7 @@ impl<'s> CompileItemContext<'_, 's> {
                     ref module,
                 } = instance;
                 let mut vars = VariableValues::new_root(&self.variables);
-                let _: &ElaboratedModuleInfo =
+                let _: ElaboratedModule =
                     self.eval_expression_as_module(file_scope, &mut vars, span_keyword, module)?;
                 Ok(CompileValue::UNIT)
             }

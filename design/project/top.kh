@@ -6,12 +6,17 @@ import std.math.[gcd, min, max];
 import std.util.[print, print_compile, unsafe_cast_clock];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
 
-interface axi_handshake {
-    valid: bool,
-    ready: bool,
-
-    interface input { valid: in, ready: out }
-    interface output { valid: in, ready: out }
+module axi_passthrough generics(T: type) ports (
+    clk: in clock,
+    rst: in async bool,
+    input: interface sync(clk, rst) axi_stream(T).input,
+    output: interface sync(clk, rst) axi_stream(T).output,
+) body {
+    comb {
+        output.data = input.data;
+        output.valid = input.valid;
+        input.ready = output.ready;
+    }
 }
 
 interface axi_stream(T: type) {
@@ -26,9 +31,9 @@ interface axi_stream(T: type) {
     }
 
     interface output {
-        data: in,
-        valid: in,
-        ready: out,
+        data: out,
+        valid: out,
+        ready: in,
     }
 }
 
@@ -39,9 +44,10 @@ pub module top ports(
     input: interface sync(clk, rst) axi_stream(bool).input,
     output: interface sync(clk, rst) axi_stream(bool).output,
 ) body {
-    comb {
-        output.data = input.data;
-        output.valid = input.valid;
-        input.ready = output.ready;
-    }
+    instance axi_passthrough(bool) ports (
+        .clk(clk),
+        .rst(rst),
+        .input(input),
+        .output(output),
+    );
 }

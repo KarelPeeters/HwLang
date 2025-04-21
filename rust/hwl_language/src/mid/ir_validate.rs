@@ -67,9 +67,10 @@ impl IrModuleInfo {
 
                     for ((_, port_info), connection) in zip_eq(&child_module_info.ports, &instance.port_connections) {
                         let IrPortInfo {
+                            name: _,
                             direction,
                             ref ty,
-                            debug_info_id: _,
+                            debug_span: _,
                             debug_info_ty: _,
                             debug_info_domain: _,
                         } = *port_info;

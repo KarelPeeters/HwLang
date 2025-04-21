@@ -67,7 +67,7 @@ impl Diagnostics {
 
     #[track_caller]
     pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
-        self.report(Diagnostic::new_todo(span, feature).finish())
+        self.report(Diagnostic::new_todo(feature).add_error(span, "used here").finish())
     }
 
     // TODO rename to "report_bug"
@@ -158,9 +158,9 @@ impl Diagnostic {
 
     /// Utility diagnostic constructor for features that are not yet implemented.
     #[track_caller]
-    pub fn new_todo(span: Span, feature: impl Into<String>) -> DiagnosticBuilder {
+    pub fn new_todo(feature: impl Into<String>) -> DiagnosticBuilder {
         let message = format!("feature not yet implemented: '{}'", feature.into());
-        let mut diag = Diagnostic::new(&message).add_error(span, "used here");
+        let mut diag = Diagnostic::new(&message);
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
         diag
     }

@@ -1,4 +1,4 @@
-use crate::front::compile::{Port, Register, Variable, Wire};
+use crate::front::compile::{Port, PortInterface, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
 use crate::syntax::ast;
@@ -6,7 +6,6 @@ use crate::syntax::ast::Identifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
-use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
@@ -34,6 +33,7 @@ pub enum ScopedEntry {
 pub enum NamedValue {
     Variable(Variable),
     Port(Port),
+    PortInterface(PortInterface),
     Wire(Wire),
     Register(Register),
 }
@@ -48,9 +48,7 @@ pub enum ScopeParent<'p> {
 
 #[derive(Debug)]
 pub struct ScopeContent {
-    check: RandomCheck,
     values: IndexMap<String, DeclaredValue>,
-    parent_check: Option<RandomCheck>,
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
@@ -88,9 +86,7 @@ impl<'p> Scope<'p> {
             span,
             parent: ScopeParent::None(file),
             content: ScopeContent {
-                check: RandomCheck::new(),
                 values: IndexMap::new(),
-                parent_check: None,
             },
         }
     }
@@ -100,15 +96,13 @@ impl<'p> Scope<'p> {
             span,
             parent: ScopeParent::Some(parent),
             content: ScopeContent {
-                check: RandomCheck::new(),
                 values: IndexMap::new(),
-                parent_check: Some(parent.content.check),
             },
         }
     }
 
     pub fn restore_child_from_content(span: Span, parent: &'p Scope<'p>, values: ScopeContent) -> Self {
-        assert_eq!(Some(parent.content.check), values.parent_check);
+        // assert_eq!(Some(parent.content.check), values.parent_check);
         Scope {
             span,
             parent: ScopeParent::Some(parent),

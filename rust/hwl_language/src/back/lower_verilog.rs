@@ -95,23 +95,17 @@ struct LoweredNameScope {
 }
 
 impl LoweredNameScope {
-    pub fn exact_for_new_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
-        check_identifier_valid(
-            diags,
-            Spanned {
-                span: id.span,
-                inner: &id.string,
-            },
-        )?;
-
-        if !self.used.insert(id.string.clone()) {
-            throw!(diags.report_internal_error(
-                id.span,
-                format!("lowered identifier `{}` already used its scope", id.string)
-            ))
+    pub fn exact_for_new_id(
+        &mut self,
+        diags: &Diagnostics,
+        span: Span,
+        id: &str,
+    ) -> Result<LoweredName, ErrorGuaranteed> {
+        check_identifier_valid(diags, Spanned { span, inner: id })?;
+        if !self.used.insert(id.to_owned()) {
+            throw!(diags.report_internal_error(span, format!("lowered identifier `{id}` already used its scope")))
         }
-
-        Ok(LoweredName(id.string.clone()))
+        Ok(LoweredName(id.to_owned()))
     }
 
     pub fn make_unique_maybe_id(
@@ -284,16 +278,17 @@ fn lower_module_ports(
 
     for (port_index, (port, port_info)) in enumerate(ports) {
         let IrPortInfo {
-            debug_info_id,
-            debug_info_ty,
-            debug_info_domain,
+            name,
             direction,
             ty,
+            debug_span,
+            debug_info_ty,
+            debug_info_domain,
         } = port_info;
 
         // TODO check that port names are valid and unique
-        let lower_name = module_name_scope.exact_for_new_id(diags, debug_info_id)?;
-        let port_ty = VerilogType::from_ir_ty(diags, debug_info_id.span, ty)?;
+        let lower_name = module_name_scope.exact_for_new_id(diags, *debug_span, name)?;
+        let port_ty = VerilogType::from_ir_ty(diags, *debug_span, ty)?;
 
         let ty_prefix_str = port_ty.to_prefix_str();
         let (is_actual_port, ty_str) = match ty_prefix_str.as_ref().map(|s| s.as_str()) {
@@ -304,7 +299,6 @@ fn lower_module_ports(
             PortDirection::Input => "input",
             PortDirection::Output => "output",
         };
-        let ty_debug_str = debug_info_ty.to_diagnostic_string();
 
         if is_actual_port {
             last_actual_port_index = Some(port_index);
@@ -312,7 +306,7 @@ fn lower_module_ports(
         port_lines.push((
             is_actual_port,
             format!("{dir_str} wire {ty_str}{lower_name}"),
-            format!("{debug_info_domain} {ty_debug_str}"),
+            format!("{debug_info_domain} {debug_info_ty}"),
         ));
 
         port_name_map.insert_first(port, lower_name);

@@ -258,6 +258,15 @@ pub enum PortDirection {
     Output,
 }
 
+impl PortDirection {
+    pub fn diagnostic_string(self) -> &'static str {
+        match self {
+            PortDirection::Input => "input",
+            PortDirection::Output => "output",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Block<S> {
     pub span: Span,

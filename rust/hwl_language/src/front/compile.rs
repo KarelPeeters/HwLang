@@ -8,7 +8,7 @@ use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
 use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
     IrWire,
@@ -175,7 +175,7 @@ impl<'s> CompileRefs<'_, 's> {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
-                        let mut ctx = CompileItemContext::new(self, Some(item), ArenaVariables::new(), Arena::new());
+                        let mut ctx = CompileItemContext::new_empty(self, Some(item));
                         ctx.eval_item_new(item)
                     });
                 }
@@ -192,8 +192,15 @@ impl<'s> CompileRefs<'_, 's> {
         }
     }
 
-    pub fn elaborated_module_info(&self, id: ElaboratedModule) -> Result<&'s ElaboratedModuleInfo, ErrorGuaranteed> {
-        self.shared.elaborated_modules.get(id)
+    pub fn elaborated_module_info(&self, elab: ElaboratedModule) -> Result<&'s ElaboratedModuleInfo, ErrorGuaranteed> {
+        self.shared.elaborated_modules.get(elab)
+    }
+
+    pub fn elaborated_interface_info(
+        &self,
+        elab: ElaboratedInterface,
+    ) -> Result<&'s ElaboratedInterfaceInfo, ErrorGuaranteed> {
+        self.shared.elaborated_interfaces.get(elab)
     }
 
     pub fn elaborate_module(
@@ -203,7 +210,7 @@ impl<'s> CompileRefs<'_, 's> {
         self.shared.elaborated_modules.elaborate(item_params, |item_params| {
             // elaborate ports
             let item = item_params.item;
-            let (ports, header) = self.elaborate_module_ports_new(item_params)?;
+            let (connectors, header) = self.elaborate_module_ports_new(item_params)?;
 
             // reserve ir module key, will be filled in later during body elaboration
             let ir_module = { self.shared.ir_modules.lock().unwrap().push(None) };
@@ -217,7 +224,7 @@ impl<'s> CompileRefs<'_, 's> {
             Ok(ElaboratedModuleInfo {
                 module_ast: item,
                 module_ir: ir_module,
-                ports,
+                connectors,
             })
         })
     }
@@ -333,6 +340,7 @@ pub struct CompileRefs<'a, 's> {
 
 pub type ArenaVariables = Arena<Variable, VariableInfo>;
 pub type ArenaPorts = Arena<Port, PortInfo>;
+pub type ArenaPortInterfaces = Arena<PortInterface, PortInterfaceInfo>;
 
 pub struct CompileItemContext<'a, 's> {
     // TODO maybe inline this
@@ -340,6 +348,7 @@ pub struct CompileItemContext<'a, 's> {
 
     pub variables: ArenaVariables,
     pub ports: ArenaPorts,
+    pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub registers: Arena<Register, RegisterInfo>,
     pub large: IrLargeArena,
@@ -371,17 +380,21 @@ impl StackEntry {
 }
 
 impl<'a, 's> CompileItemContext<'a, 's> {
-    // TODO check that this is actually ever used with existing arenas, if not simplify again
-    pub fn new(
+    pub fn new_empty(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
+        Self::new_restore(refs, origin, Arena::new(), Arena::new())
+    }
+
+    pub fn new_restore(
         refs: CompileRefs<'a, 's>,
         origin: Option<AstRefItem>,
-        variables: ArenaVariables,
-        ports: Arena<Port, PortInfo>,
+        ports: ArenaPorts,
+        port_interfaces: ArenaPortInterfaces,
     ) -> Self {
         CompileItemContext {
             refs,
-            variables,
+            variables: Arena::new(),
             ports,
+            port_interfaces,
             wires: Arena::new(),
             registers: Arena::new(),
             large: IrLargeArena::new(),
@@ -413,7 +426,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         self.recurse(StackEntry::ItemEvaluation(item), |s| {
             let origin = s.origin.map(|origin| (origin, s.stack.clone()));
             let f_compute = || {
-                let mut ctx = CompileItemContext::new(s.refs, Some(item), ArenaVariables::new(), ArenaPorts::new());
+                let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
                 ctx.eval_item_new(item)
             };
             let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(s.refs.fixed.parsed, stack));
@@ -490,6 +503,7 @@ pub enum CompileStackEntry {
 // TODO move these somewhere else
 new_index_type!(pub Variable);
 new_index_type!(pub Port);
+new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
 new_index_type!(pub Register);
 
@@ -506,14 +520,23 @@ pub struct VariableInfo {
     pub ty: Option<Spanned<Type>>,
 }
 
-// TODO include interface this is a part of if any
 #[derive(Debug)]
-pub struct PortInfo<P = Port> {
-    pub id: Identifier,
+pub struct PortInfo {
+    pub span: Span,
+    pub name: String,
     pub direction: Spanned<PortDirection>,
-    pub domain: Spanned<PortDomain<P>>,
+    pub domain: Spanned<PortDomain<Port>>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrPort,
+    // TODO include interface this is a part of if any?
+}
+
+#[derive(Debug)]
+pub struct PortInterfaceInfo {
+    pub id: Identifier,
+    pub view: ElaboratedInterfaceView,
+    pub domain: Spanned<DomainKind<Polarized<Port>>>,
+    pub ports: Vec<Port>,
 }
 
 #[derive(Debug)]

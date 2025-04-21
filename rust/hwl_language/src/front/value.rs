@@ -32,6 +32,13 @@ pub enum CompileValue {
     Function(FunctionValue),
     Module(ElaboratedItem<AstRefModule>),
     Interface(ElaboratedItem<AstRefInterface>),
+    InterfaceView(ElaboratedInterfaceView),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedInterfaceView {
+    pub interface: ElaboratedItem<AstRefInterface>,
+    pub view: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -90,6 +97,7 @@ impl Typed for CompileValue {
             CompileValue::Function(_) => Type::Function,
             CompileValue::Module(_) => Type::Module,
             CompileValue::Interface(_) => Type::Interface,
+            CompileValue::InterfaceView(_) => Type::InterfaceView,
         }
     }
 }
@@ -109,7 +117,8 @@ impl CompileValue {
             | CompileValue::IntRange(_)
             | CompileValue::Function(_)
             | CompileValue::Module(_)
-            | CompileValue::Interface(_) => false,
+            | CompileValue::Interface(_)
+            | CompileValue::InterfaceView(_) => false,
         }
     }
 
@@ -190,7 +199,8 @@ impl CompileValue {
             | CompileValue::IntRange(_)
             | CompileValue::Function(_)
             | CompileValue::Module(_)
-            | CompileValue::Interface(_) => HardwareValueResult::Unrepresentable,
+            | CompileValue::Interface(_)
+            | CompileValue::InterfaceView(_) => HardwareValueResult::Unrepresentable,
         }
     }
 
@@ -287,6 +297,7 @@ impl CompileValue {
             CompileValue::Function(_) => "function".to_string(),
             CompileValue::Module(_) => "module".to_string(),
             CompileValue::Interface(_) => "interface".to_string(),
+            CompileValue::InterfaceView(_) => "interface_view".to_string(),
         }
     }
 }

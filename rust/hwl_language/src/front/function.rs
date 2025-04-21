@@ -468,7 +468,10 @@ impl CapturedScope {
                                             let maybe = vars.var_get_maybe(diags, span, var)?;
                                             maybe_assigned_to_captured(maybe)
                                         }
-                                        NamedValue::Port(_) | NamedValue::Wire(_) | NamedValue::Register(_) => {
+                                        NamedValue::Port(_)
+                                        | NamedValue::Wire(_)
+                                        | NamedValue::Register(_)
+                                        | NamedValue::PortInterface(_) => {
                                             Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
                                         }
                                     },
