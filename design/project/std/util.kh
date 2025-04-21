@@ -9,6 +9,10 @@ pub fn print(value: any) {
     __builtin("fn", "print", value);
 }
 
+pub fn assert(cond: bool, msg: str) {
+    __builtin("fn", "assert", cond, msg);
+}
+
 // TODO parse "clock" as return type here?
 pub fn unsafe_cast_clock(value: bool) -> any {
     return __builtin("fn", "unsafe_cast_clock", value);

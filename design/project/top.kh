@@ -3,7 +3,7 @@ import std.types.[
     int_bits, uint_bits, any,
 ];
 import std.math.[gcd, min, max];
-import std.util.[print, unsafe_cast_clock];
+import std.util.[print, assert, unsafe_cast_clock];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
 
 module axi_passthrough(T: type) ports (

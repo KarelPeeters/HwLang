@@ -947,13 +947,31 @@ impl<'s> CompileItemContext<'_, 's> {
                         if let Value::Compile(CompileValue::String(value)) = value {
                             let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
                             ctx.push_ir_statement(diags, ctx_block, stmt)?;
-                            return Ok(Value::Compile(CompileValue::Tuple(vec![])));
+                            return Ok(Value::Compile(CompileValue::UNIT));
                         }
                         // fallthough
                     } else {
                         print_compile(value);
-                        return Ok(Value::Compile(CompileValue::Tuple(vec![])));
+                        return Ok(Value::Compile(CompileValue::UNIT));
                     }
+                }
+                (
+                    "fn",
+                    "assert",
+                    &[Value::Compile(CompileValue::Bool(cond)), Value::Compile(CompileValue::String(ref msg))],
+                ) => {
+                    if cond {
+                        return Ok(Value::Compile(CompileValue::UNIT));
+                    } else {
+                        return Err(diags.report_simple(
+                            format!("assertion failed with message {:?}", msg),
+                            expr_span,
+                            "failed here",
+                        ));
+                    }
+                }
+                ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {
+                    return Err(diags.report_todo(expr_span, "runtime assert"));
                 }
                 ("fn", "unsafe_cast_clock", [Value::Hardware(v)]) => match v.ty {
                     HardwareType::Bool => {
@@ -1015,8 +1033,6 @@ impl<'s> CompileItemContext<'_, 's> {
                 ("fn", "from_bits_unsafe", [Value::Compile(CompileValue::Type(ty)), v]) => {
                     return self.eval_builtin_from_bits(expr_span, ty, v, true);
                 }
-                // TODO add assert_com/assert_sim, error_com/error_sim
-                // TODO is there an elegant general way to have both variants of a bunch of similar functions?
                 // fallthrough into err
                 _ => {}
             }
