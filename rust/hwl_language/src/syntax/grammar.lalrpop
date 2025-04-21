@@ -24,7 +24,6 @@ extern {
         "type" => TokenType::Type,
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
-        "generics" => TokenType::Generics,
         "ports" => TokenType::Ports,
         "body" => TokenType::Body,
         "module" => TokenType::Module,
@@ -119,7 +118,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
-        <params:("generics" <Parameters<Parameter>>)?>
+        <params:(<Parameters<Parameter>>)?>
         <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
@@ -243,7 +242,6 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::ClockedBlock(inner)
     },
     // module instance
-    // TODO this is ugly syntax: why are generics and ports different
     // TODO allow strings as instance names? necessary for modules instantiated in loops
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>

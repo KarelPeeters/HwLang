@@ -432,7 +432,6 @@ declare_tokens! {
         Type("type", TC::Keyword),
         Struct("struct", TC::Keyword),
         Enum("enum", TC::Keyword),
-        Generics("generics", TC::Keyword),
         Ports("ports", TC::Keyword),
         Body("body", TC::Keyword),
         Module("module", TC::Keyword),
