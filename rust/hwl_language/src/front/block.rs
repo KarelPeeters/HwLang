@@ -1,7 +1,7 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, VariableInfo};
-use crate::front::context::ExpressionContext;
+use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{ForIterator, ValueWithImplications};
@@ -202,6 +202,14 @@ impl CompileItemContext<'_, '_> {
                         BlockEnd::Normal => {}
                         BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
                     }
+                }
+                BlockStatementKind::ConstBlock(inner_block) => {
+                    let mut ctx_inner = CompileTimeExpressionContext {
+                        span: inner_block.span,
+                        reason: "const block".to_owned(),
+                    };
+                    let ((), block_end) = self.elaborate_block(&mut ctx_inner, scope, vars, inner_block)?;
+                    block_end.unwrap_outside_function_and_loop(diags)?;
                 }
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement {

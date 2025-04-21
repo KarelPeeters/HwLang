@@ -196,6 +196,7 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 ModuleStatementKind: ModuleStatementKind = {
     // control flow
     Block<ModuleStatement> => ModuleStatementKind::Block(<>),
+    "const" <Block<BlockStatement>> => ModuleStatementKind::ConstBlock(<>),
     IfStatement<ModuleStatement> => ModuleStatementKind::If(<>),
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
@@ -289,6 +290,7 @@ BlockStatementKind: BlockStatementKind = {
     },
     // block
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
+    "const" <Block<BlockStatement>> => BlockStatementKind::ConstBlock(<>),
     // control flow
     IfStatement<BlockStatement>
         => BlockStatementKind::If(<>),

@@ -286,6 +286,7 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 pub enum ModuleStatementKind {
     // control flow
     Block(Block<ModuleStatement>),
+    ConstBlock(Block<BlockStatement>),
     If(IfStatement<ModuleStatement>),
     For(ForStatement<ModuleStatement>),
     // declarations
@@ -294,7 +295,7 @@ pub enum ModuleStatementKind {
     WireDeclaration(WireDeclaration),
     // marker
     RegOutPortMarker(RegOutPortMarker),
-    // blocks
+    // children
     CombinatorialBlock(CombinatorialBlock),
     ClockedBlock(ClockedBlock),
     Instance(ModuleInstance),
@@ -313,6 +314,7 @@ pub enum BlockStatementKind {
 
     // control flow
     Block(Block<BlockStatement>),
+    ConstBlock(Block<BlockStatement>),
     If(IfStatement<BlockStatement>),
     For(ForStatement<BlockStatement>),
     While(WhileStatement),
