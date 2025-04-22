@@ -20,22 +20,5 @@ pub fn unsafe_cast_clock(value: bool) -> any {
 
 // TODO make this `b.to_int()` instead of `bool_to_int(b)`?
 pub fn bool_to_int(b: bool) -> int_range(0..=1) {
-    return from_bits(int_range(0..=1), [b]);
-}
-
-// TODO make all of these functions defined on the type instead of freestanding?
-pub fn size_bits(T: type) -> uint {
-    return __builtin("fn",  "size_bits", T);
-}
-
-pub fn to_bits(T: type, value: T) -> [size_bits(T)]bool {
-    return __builtin("fn", "to_bits", T, value);
-}
-
-pub fn from_bits(T: type, value: [size_bits(T)]bool) -> T {
-    return __builtin("fn", "from_bits", T, value);
-}
-
-pub fn from_bits_unsafe(T: type, value: [size_bits(T)]bool) -> T {
-    return __builtin("fn", "from_bits_unsafe", T, value);
+    return int_range(0..=1).from_bits([b]);
 }

@@ -179,6 +179,7 @@ impl TypeContainsReason {
     }
 }
 
+// TODO go over this again and see if/how users are using `accept_undefined` and `allow_compound_subtype`
 pub fn check_type_contains_value(
     diags: &Diagnostics,
     reason: TypeContainsReason,
@@ -437,6 +438,11 @@ pub fn check_hardware_type_for_bit_operation(
     ty: Spanned<&Type>,
 ) -> Result<HardwareType, ErrorGuaranteed> {
     if let Some(ty_hw) = ty.inner.as_hardware_type() {
+        // TODO this feels strange, maybe clock should not actually be a hardware type, only a domain?
+        if let HardwareType::Clock = ty_hw {
+            return Err(diags.report_todo(ty.span, "interaction between to/from bits and clocks"));
+        }
+
         return Ok(ty_hw);
     }
 

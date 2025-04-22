@@ -1,13 +1,14 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
     check_hardware_type_for_bit_operation, check_type_contains_compile_value, check_type_contains_value,
-    check_type_is_bool, check_type_is_bool_array, check_type_is_int, check_type_is_int_compile,
-    check_type_is_int_hardware, check_type_is_uint_compile, TypeContainsReason,
+    check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware,
+    check_type_is_uint_compile, TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Signal, SignalOrVariable};
@@ -30,7 +31,7 @@ use crate::util::data::vec_concat;
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use annotate_snippets::Level;
-use itertools::{enumerate, Either, Itertools};
+use itertools::{enumerate, Either};
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
@@ -489,6 +490,72 @@ impl<'s> CompileItemContext<'_, 's> {
                 let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
 
                 match base_eval {
+                    ValueInner::Value(Value::Compile(CompileValue::Type(ty))) => {
+                        match index.string.as_str() {
+                            "size_bits" => {
+                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
+                                let width = ty_hw.as_ir().size_bits();
+                                Value::Compile(CompileValue::Int(width.into()))
+                            }
+                            // TODO all of these should return functions with a single params,
+                            //   without the need for scope capturing
+                            "to_bits" => {
+                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
+                                let func = FunctionBits {
+                                    ty_hw,
+                                    kind: FunctionBitsKind::ToBits,
+                                };
+                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
+                            }
+                            "from_bits" => {
+                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
+
+                                if !ty_hw.every_bit_pattern_is_valid() {
+                                    let diag = Diagnostic::new(
+                                        "from_bits is only allowed for types where every bit pattern is valid",
+                                    )
+                                    .add_error(
+                                        base.span,
+                                        format!(
+                                            "got type `{}` with invalid bit patterns",
+                                            ty_hw.to_diagnostic_string()
+                                        ),
+                                    )
+                                    .footer(
+                                        Level::Help,
+                                        "consider using use target type where every bit pattern is valid",
+                                    )
+                                    .footer(
+                                        Level::Help,
+                                        "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
+                                    )
+                                    .finish();
+                                    return Err(diags.report(diag));
+                                }
+
+                                let func = FunctionBits {
+                                    ty_hw,
+                                    kind: FunctionBitsKind::FromBits,
+                                };
+                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
+                            }
+                            "from_bits_unsafe" => {
+                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
+                                let func = FunctionBits {
+                                    ty_hw,
+                                    kind: FunctionBitsKind::FromBits,
+                                };
+                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
+                            }
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "unknown property for type",
+                                    index.span,
+                                    "unknown property here",
+                                ));
+                            }
+                        }
+                    }
                     ValueInner::PortInterface(port_interface) => {
                         // get the port
                         let port_interface_info = &self.port_interfaces[port_interface];
@@ -519,9 +586,9 @@ impl<'s> CompileItemContext<'_, 's> {
                     }
                     _ => {
                         return Err(diags.report_simple(
-                            "dot index base should be an interface",
+                            "invalid base for dot id index expression",
                             base.span,
-                            "got other expression",
+                            "got unexpected value",
                         ));
                     }
                 }
@@ -552,7 +619,7 @@ impl<'s> CompileItemContext<'_, 's> {
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
                 let (result_block, result_value) = self
-                    .recurse(entry, |s| s.call_function(ctx, vars, &target, args))
+                    .recurse(entry, |s| s.call_function(ctx, vars, expr.span, &target, args))
                     .flatten_err()?;
 
                 if let Some(result_block) = result_block {
@@ -983,56 +1050,6 @@ impl<'s> CompileItemContext<'_, 's> {
                     }
                     _ => {}
                 },
-                ("fn", "size_bits", [Value::Compile(CompileValue::Type(ty))]) => {
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
-                    let width = ty_hw.as_ir().size_bits();
-                    return Ok(Value::Compile(CompileValue::Int(width.into())));
-                }
-                ("fn", "to_bits", [Value::Compile(CompileValue::Type(ty)), v]) => {
-                    check_type_contains_value(
-                        diags,
-                        TypeContainsReason::Operator(expr_span),
-                        ty,
-                        Spanned::new(expr_span, v),
-                        false,
-                        false,
-                    )?;
-
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
-                    let ty_ir = ty_hw.as_ir();
-                    let width = ty_ir.size_bits();
-
-                    let result = match v {
-                        Value::Compile(v) => {
-                            // TODO dedicated compile-time bits value that's faster than a boxed array of bools
-                            let bits = ty_hw
-                                .value_to_bits(v)
-                                .map_err(|_| diags.report_internal_error(expr_span, "to_bits failed"))?;
-                            Value::Compile(CompileValue::Array(
-                                bits.into_iter().map(CompileValue::Bool).collect_vec(),
-                            ))
-                        }
-                        Value::Hardware(v_raw) => {
-                            let v = v_raw.clone().soft_expand_to_type(&mut self.large, &ty_hw);
-
-                            let expr = self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, v.expr.clone()));
-                            let ty_bits = HardwareType::Array(Box::new(HardwareType::Bool), width);
-
-                            Value::Hardware(HardwareValue {
-                                ty: ty_bits,
-                                domain: v.domain,
-                                expr,
-                            })
-                        }
-                    };
-                    return Ok(result);
-                }
-                ("fn", "from_bits", [Value::Compile(CompileValue::Type(ty)), v]) => {
-                    return self.eval_builtin_from_bits(expr_span, ty, v, false);
-                }
-                ("fn", "from_bits_unsafe", [Value::Compile(CompileValue::Type(ty)), v]) => {
-                    return self.eval_builtin_from_bits(expr_span, ty, v, true);
-                }
                 // fallthrough into err
                 _ => {}
             }
@@ -1045,73 +1062,6 @@ impl<'s> CompileItemContext<'_, 's> {
             .finish()
             .finish();
         Err(diags.report(diag))
-    }
-
-    fn eval_builtin_from_bits(
-        &mut self,
-        expr_span: Span,
-        ty: &Type,
-        v: &Value,
-        un_safe: bool,
-    ) -> Result<Value, ErrorGuaranteed> {
-        let diags = self.refs.diags;
-        let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(expr_span, ty))?;
-
-        // TODO this is really strange, maybe clock should not actually be a hardware type, only a domain?
-        if let HardwareType::Clock = ty_hw {
-            return Err(diags.report_todo(expr_span, "ban from_bits for clock type"));
-        }
-
-        if !un_safe && !ty_hw.every_bit_pattern_is_valid() {
-            let diag = Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
-                .add_error(
-                    expr_span,
-                    format!("got type `{}` with invalid bit patterns", ty_hw.to_diagnostic_string()),
-                )
-                .footer(
-                    Level::Help,
-                    "consider using use target type where every bit pattern is valid",
-                )
-                .footer(
-                    Level::Help,
-                    "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
-                )
-                .finish();
-            return Err(diags.report(diag));
-        }
-
-        let ty_ir = ty_hw.as_ir();
-        let width = ty_ir.size_bits();
-
-        let v = check_type_is_bool_array(
-            diags,
-            TypeContainsReason::Operator(expr_span),
-            Spanned::new(expr_span, v.clone()),
-            Some(&width),
-        )?;
-
-        let result = match v {
-            Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(&v).map_err(|_| {
-                diags.report_simple(
-                    "`from_bits` failed",
-                    expr_span,
-                    format!(
-                        "while converting value `{:?}` into type `{}`",
-                        v,
-                        ty.to_diagnostic_string()
-                    ),
-                )
-            })?),
-            Value::Hardware(v) => {
-                let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
-                Value::Hardware(HardwareValue {
-                    ty: ty_hw,
-                    domain: v.domain,
-                    expr,
-                })
-            }
-        };
-        Ok(result)
     }
 
     pub fn eval_expression_as_compile(

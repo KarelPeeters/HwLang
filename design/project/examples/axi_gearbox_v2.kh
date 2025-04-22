@@ -3,7 +3,7 @@ import std.types.[
     bool, int_range, int, uint, natural,
     int_bits, uint_bits, any,
 ];
-import std.util.[typeof, print, to_bits];
+import std.util.[typeof, print];
 import std.math.[gcd, min, max, clog2];
 
 pub module axi_gearbox_v2(

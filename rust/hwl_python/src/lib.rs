@@ -6,6 +6,8 @@ use hwl_language::front::compile::{
 };
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
+use hwl_language::syntax::pos::{Pos, Span};
+use hwl_language::syntax::source::FilePath;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
     front::{
@@ -40,6 +42,7 @@ mod convert;
 #[pyclass]
 struct Source {
     source: RustSourceDatabase,
+    dummy_span: Span,
 }
 
 #[pyclass]
@@ -131,6 +134,16 @@ impl Source {
     #[new]
     fn new(root_dir: &str) -> PyResult<Self> {
         let mut source_builder = RustSourceDatabaseBuilder::new();
+
+        let dummy_source = "// dummy file, representing the python caller";
+        let dummy_file = source_builder
+            .add_file(
+                FilePath(vec!["python".to_owned(), root_dir.to_owned()]),
+                "python.py".to_owned(),
+                dummy_source.to_owned(),
+            )
+            .unwrap();
+
         source_builder
             .add_tree(vec![], Path::new(root_dir))
             .map_err(|e| match e {
@@ -151,8 +164,21 @@ impl Source {
                 }
             })?;
 
-        let source = source_builder.finish();
-        Ok(Self { source })
+        let (source, _, mapping) = source_builder.finish_with_mapping();
+
+        let dummy_file = *mapping.get(&dummy_file).unwrap();
+        let dummy_span = Span::new(
+            Pos {
+                file: dummy_file,
+                byte: 0,
+            },
+            Pos {
+                file: dummy_file,
+                byte: dummy_source.len(),
+            },
+        );
+
+        Ok(Self { source, dummy_span })
     }
 
     #[getter]
@@ -302,8 +328,9 @@ impl Function {
             let state = &mut compile_ref.state;
             let parsed_ref = compile_ref.parsed.borrow(py);
             let parsed = &parsed_ref.parsed;
-            let source = &parsed_ref.source.borrow(py).source;
-            let dummy_span = self.function_value.decl_span;
+            let source_ref = parsed_ref.source.borrow(py);
+            let source = &source_ref.source;
+            let dummy_span = source_ref.dummy_span;
 
             // convert args
             let f_arg = |v| Spanned::new(dummy_span, Value::Compile(v));
@@ -327,7 +354,7 @@ impl Function {
             };
 
             println!("call_function");
-            let returned = item_ctx.call_function(&mut ctx, &mut vars, &self.function_value, args);
+            let returned = item_ctx.call_function(&mut ctx, &mut vars, dummy_span, &self.function_value, args);
             let (_block, returned) = map_diag_error(source, &diags, returned)?;
 
             // run any downstream elaboration

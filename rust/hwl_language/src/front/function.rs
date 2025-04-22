@@ -1,21 +1,22 @@
 use crate::front::block::{BlockEnd, BlockEndReturn};
-use crate::front::check::{check_type_contains_value, TypeContainsReason};
+use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
 use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::item::ElaboratedItemParams;
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
-use crate::front::types::Type;
-use crate::front::value::{CompileValue, Value};
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
+use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::map::Entry as IndexMapEntry;
 use indexmap::IndexMap;
@@ -25,7 +26,26 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 #[derive(Debug, Clone)]
-pub struct FunctionValue {
+pub enum FunctionValue {
+    User(UserFunctionValue),
+    Bits(FunctionBits),
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionBits {
+    pub ty_hw: HardwareType,
+    pub kind: FunctionBitsKind,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum FunctionBitsKind {
+    ToBits,
+    FromBits,
+}
+
+// TODO find a better name for this
+#[derive(Debug, Clone)]
+pub struct UserFunctionValue {
     // only used for uniqueness
     pub decl_span: Span,
     pub scope_captured: CapturedScope,
@@ -33,13 +53,6 @@ pub struct FunctionValue {
     // TODO point into ast instead of storing a clone here
     pub params: Spanned<Vec<AstParameter>>,
     pub body: Spanned<FunctionBody>,
-}
-
-impl FunctionValue {
-    pub fn equality_key(&self) -> impl Eq + Hash + '_ {
-        // TODO get this to implement hash
-        (self.decl_span, &self.scope_captured)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -274,7 +287,24 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         ctx: &mut C,
         vars: &mut VariableValues,
+        span_call: Span,
         function: &FunctionValue,
+        args: Args<Option<Identifier>, Spanned<Value>>,
+    ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
+        match function {
+            FunctionValue::User(function) => self.call_normal_function(ctx, vars, function, args),
+            FunctionValue::Bits(function) => {
+                let result = self.call_bits_function(span_call, function, args)?;
+                Ok((None, result))
+            }
+        }
+    }
+
+    fn call_normal_function<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        vars: &mut VariableValues,
+        function: &UserFunctionValue,
         args: Args<Option<Identifier>, Spanned<Value>>,
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -351,6 +381,108 @@ impl CompileItemContext<'_, '_> {
             }
         })
         .flatten_err()
+    }
+
+    fn call_bits_function(
+        &mut self,
+        span_call: Span,
+        function: &FunctionBits,
+        args: Args<Option<Identifier>, Spanned<Value>>,
+    ) -> Result<Value, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        // check arg is single non-named value
+        let value = match args.inner.single() {
+            Some(Arg { span: _, name, value }) => {
+                if let Some(name) = name {
+                    return Err(diags.report_simple(
+                        "this function expects a single unnamed parameter",
+                        name.span,
+                        "got named argument here",
+                    ));
+                }
+                value
+            }
+            None => {
+                return Err(diags.report_simple(
+                    "this function expects a single parameter",
+                    args.span,
+                    "incorrect arguments here",
+                ));
+            }
+        };
+
+        // actual implementation
+        let FunctionBits { ty_hw, kind } = function;
+        match kind {
+            FunctionBitsKind::ToBits => {
+                check_type_contains_value(
+                    diags,
+                    TypeContainsReason::Operator(span_call),
+                    &ty_hw.as_type(),
+                    value.as_ref(),
+                    false,
+                    false,
+                )?;
+
+                let ty_ir = ty_hw.as_ir();
+                let width = ty_ir.size_bits();
+
+                let result = match &value.inner {
+                    Value::Compile(value) => {
+                        // TODO dedicated compile-time bits value that's faster than a boxed array of bools
+                        let bits = ty_hw
+                            .value_to_bits(value)
+                            .map_err(|_| diags.report_internal_error(span_call, "to_bits failed"))?;
+                        Value::Compile(CompileValue::Array(
+                            bits.into_iter().map(CompileValue::Bool).collect_vec(),
+                        ))
+                    }
+                    Value::Hardware(value_raw) => {
+                        let value = value_raw.clone().soft_expand_to_type(&mut self.large, ty_hw);
+
+                        let expr = self
+                            .large
+                            .push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr.clone()));
+                        let ty_bits = HardwareType::Array(Box::new(HardwareType::Bool), width);
+
+                        Value::Hardware(HardwareValue {
+                            ty: ty_bits,
+                            domain: value.domain,
+                            expr,
+                        })
+                    }
+                };
+                Ok(result)
+            }
+            FunctionBitsKind::FromBits => {
+                let ty_ir = ty_hw.as_ir();
+                let width = ty_ir.size_bits();
+
+                let value =
+                    check_type_is_bool_array(diags, TypeContainsReason::Operator(span_call), value, Some(&width))?;
+
+                let result = match value {
+                    Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(&v).map_err(|_| {
+                        let msg = format!(
+                            "while converting value `{:?}` into type `{}`",
+                            v,
+                            ty_hw.to_diagnostic_string()
+                        );
+                        diags.report_simple("`from_bits` failed", span_call, msg)
+                    })?),
+                    Value::Hardware(v) => {
+                        let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
+                        Value::Hardware(HardwareValue {
+                            ty: ty_hw.clone(),
+                            domain: v.domain,
+                            expr,
+                        })
+                    }
+                };
+                Ok(result)
+            }
+        }
     }
 }
 
@@ -570,6 +702,23 @@ fn maybe_assigned_to_captured(maybe: &MaybeAssignedValue) -> Result<CapturedValu
 }
 
 impl Eq for FunctionValue {}
+
+impl FunctionValue {
+    pub fn equality_key(&self) -> impl Eq + Hash + '_ {
+        match self {
+            FunctionValue::User(UserFunctionValue {
+                decl_span,
+                scope_captured,
+                params,
+                body,
+            }) => {
+                let _ = (params, body);
+                (Some((*decl_span, scope_captured)), None)
+            }
+            FunctionValue::Bits(FunctionBits { ty_hw: ty, kind }) => (None, Some((ty, kind))),
+        }
+    }
+}
 
 impl PartialEq for FunctionValue {
     fn eq(&self, other: &Self) -> bool {

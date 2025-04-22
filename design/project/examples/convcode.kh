@@ -1,6 +1,6 @@
 import std.types.[bool, int_range, int, natural, uint, uint_bits];
 import std.math.[clog2];
-import std.util.[typeof, print, to_bits, from_bits];
+import std.util.[typeof, print];
 
 // TODO implement structs
 // TODO allow fields to depend on previous fields (only for compile-time structs ofc)
@@ -76,7 +76,7 @@ pub module convcode_decoder(
     const prob_bits = clog2(length) + analog_bits + 2;
     const codebook: [num_states, 2]bool = [
         {
-            val code = to_bits(uint_bits(length), i);
+            val code = uint_bits(length).to_bits(i);
             var output = [false, false];
             for (j in 0..length) {
                 output[0] ^= code[j] & generator_0[length - 1 - j];
@@ -131,7 +131,7 @@ pub module convcode_decoder(
             var paths_new: t_paths = [*half_paths, *half_paths];
             for (i in 0..num_states) {
                 // TODO the modulo here is awkward
-                probs_new[i] = (probs_new[i] + book_probs[from_bits(uint_bits(2), codebook[i])]) % 2**prob_bits;
+                probs_new[i] = (probs_new[i] + book_probs[uint_bits(2).from_bits(codebook[i])]) % 2**prob_bits;
             }
 
             // update probabilities and paths
@@ -161,12 +161,8 @@ pub module convcode_decoder(
 // TODO this is a weird construct, what does this even mean in context?
 // TODO should we allow arithmetic on bool arrays?
 fn uint_not(n: uint, v: uint_bits(n)) -> uint_bits(n) {
-    val bits = to_bits(uint_bits(n), v);
-    var not_bits: [n]bool = [false] * n;
-    for (i in 0..n) {
-        not_bits[i] = !bits[i];
-    }
-    return from_bits(uint_bits(n), not_bits);
+    type ty = uint_bits(n);
+    return ty.from_bits([!x for x in ty.to_bits(n)]);
 }
 
 // TODO file-level block scopes, keeping variables local to this block

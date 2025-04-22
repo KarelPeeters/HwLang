@@ -597,22 +597,25 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
-    // dot indexing
-    <target:BoxSpanned<ExprLevelArrayImpl<allow_struct>>> "." <index: Id>
-        => ExpressionKind::DotIdIndex(target, index),
-    <target:BoxSpanned<ExprLevelArrayImpl<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
-        => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_owned())),
-
     ExprLevelCall<allow_struct>,
 }
 
 ExprLevelCall<allow_struct>: ExpressionKind = {
     "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")"
         => ExpressionKind::Builtin(args),
-    <target:BoxSpanned<ExprLevelAtomic<allow_struct>>> "(" <args:Args> ")"
+    <target:BoxSpanned<ExprLevelDot<allow_struct>>> "(" <args:Args> ")"
         => ExpressionKind::Call(target, args),
     <span_keyword:Span<"reg">> "(" <value:BoxExpr> "," <init:BoxExpr> ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
+
+    ExprLevelDot<allow_struct>,
+}
+
+ExprLevelDot<allow_struct>: ExpressionKind = {
+    <target:BoxSpanned<ExprLevelCall<allow_struct>>> "." <index: Id>
+        => ExpressionKind::DotIdIndex(target, index),
+    <target:BoxSpanned<ExprLevelCall<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
+        => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_owned())),
 
     ExprLevelAtomic<allow_struct>,
 }

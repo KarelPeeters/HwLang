@@ -1,7 +1,7 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, ElaboratedModule};
 use crate::front::diagnostic::ErrorGuaranteed;
-use crate::front::function::{CapturedScope, FunctionBody, FunctionValue};
+use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
@@ -84,7 +84,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         Ok(CompileValue::Module(elab_id))
                     }
                     Some(params) => {
-                        let func = FunctionValue {
+                        let func = UserFunctionValue {
                             decl_span: id.span(),
                             scope_captured: CapturedScope::from_file_scope(item.file()),
                             params: params.clone(),
@@ -93,7 +93,7 @@ impl<'s> CompileItemContext<'_, 's> {
                                 inner: FunctionBody::ModulePortsAndBody(item),
                             },
                         };
-                        Ok(CompileValue::Function(func))
+                        Ok(CompileValue::Function(FunctionValue::User(func)))
                     }
                 }
             }
@@ -116,7 +116,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         Ok(CompileValue::Interface(elab_id))
                     }
                     Some(params) => {
-                        let func = FunctionValue {
+                        let func = UserFunctionValue {
                             decl_span: id.span(),
                             scope_captured: CapturedScope::from_file_scope(item.file()),
                             params: params.clone(),
@@ -125,7 +125,7 @@ impl<'s> CompileItemContext<'_, 's> {
                                 inner: FunctionBody::Interface(item),
                             },
                         };
-                        Ok(CompileValue::Function(func))
+                        Ok(CompileValue::Function(FunctionValue::User(func)))
                     }
                 }
             }
@@ -183,7 +183,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         Ok(CompileValue::Type(ty.inner))
                     }
                     Some(params) => {
-                        let func = FunctionValue {
+                        let func = UserFunctionValue {
                             decl_span: id.span(),
                             scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
                             params: params.clone(),
@@ -192,7 +192,7 @@ impl<'s> CompileItemContext<'_, 's> {
                                 inner: FunctionBody::TypeAliasExpr(body.clone()),
                             },
                         };
-                        Ok(CompileValue::Function(func))
+                        Ok(CompileValue::Function(FunctionValue::User(func)))
                     }
                 }
             }
@@ -234,7 +234,7 @@ impl<'s> CompileItemContext<'_, 's> {
                     body: body.clone(),
                     ret_ty: ret_ty.as_ref().map(|ret_ty| Box::new(ret_ty.clone())),
                 };
-                let function = FunctionValue {
+                let function = UserFunctionValue {
                     decl_span: id.span(),
                     scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
                     params: params.clone(),
@@ -243,7 +243,7 @@ impl<'s> CompileItemContext<'_, 's> {
                         inner: body_inner,
                     },
                 };
-                Ok(CompileValue::Function(function))
+                Ok(CompileValue::Function(FunctionValue::User(function)))
             }
         }
     }
