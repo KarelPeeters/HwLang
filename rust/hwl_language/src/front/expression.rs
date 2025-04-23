@@ -352,7 +352,7 @@ impl<'s> CompileItemContext<'_, 's> {
                 for index_value in iter {
                     let index_value = index_value.to_maybe_compile(&mut self.large);
                     let index_var =
-                        vars.var_new_immutable_init(&mut self.variables, index.clone(), span_keyword, index_value);
+                        vars.var_new_immutable_init(&mut self.variables, index.clone(), span_keyword, Ok(index_value));
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);

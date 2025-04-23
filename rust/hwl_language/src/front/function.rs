@@ -11,16 +11,17 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter as AstParameter, Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, ParameterItem, Parameters,
+    Spanned,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
-use crate::util::data::{IndexMapExt, VecExt};
+use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
-use indexmap::map::Entry as IndexMapEntry;
+use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{enumerate, Itertools};
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
@@ -51,7 +52,7 @@ pub struct UserFunctionValue {
     pub scope_captured: CapturedScope,
 
     // TODO point into ast instead of storing a clone here
-    pub params: Spanned<Vec<AstParameter>>,
+    pub params: Parameters,
     pub body: Spanned<FunctionBody>,
 }
 
@@ -110,173 +111,183 @@ pub enum FailedCaptureReason {
 }
 
 impl CompileItemContext<'_, '_> {
-    pub fn match_args_to_params_and_typecheck<'p, I, V: Clone + Into<Value>>(
+    pub fn match_args_to_params_and_typecheck<'a, 'p>(
         &mut self,
         vars: &mut VariableValues,
         scope_outer: &'p Scope,
-        params: &Spanned<Vec<AstParameter>>,
-        args: &Args<I, Spanned<V>>,
+        params: &'a Parameters,
+        args: &Args<Option<Identifier>, Spanned<Value>>,
         args_must_be_compile: bool,
-    ) -> Result<(Scope<'p>, Vec<(Identifier, V)>), ErrorGuaranteed>
-    where
-        for<'i> &'i I: Into<Option<&'i Identifier>>,
-    {
+    ) -> Result<(Scope<'p>, Vec<(Identifier, Value)>), ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        // check params unique
-        // TODO we could do this earlier, but then parameters that only exist conditionally can't get checked yet
-        //   eventually we will do partial checking of generic items, then this check will trigger early enough
-        let mut param_ids: IndexMap<&str, &Identifier> = IndexMap::new();
-        let mut e = Ok(());
-        for param in &params.inner {
-            match param_ids.entry(&param.id.string) {
-                IndexMapEntry::Occupied(entry) => {
-                    let diag = Diagnostic::new("parameter declared twice")
-                        .add_info(entry.get().span, "first declared here")
-                        .add_error(param.span, "redeclared here".to_string())
-                        .finish();
-                    e = Err(diags.report(diag));
+        // check for duplicate arg names and check that positional args are before named args
+        let mut arg_name_to_index: IndexMap<&str, usize> = IndexMap::new();
+        let mut first_named_span = None;
+        let mut positional_count: usize = 0;
+        let mut any_err_args = Ok(());
+        for (arg_index, arg) in enumerate(&args.inner) {
+            if args_must_be_compile && !matches!(arg.value.inner, Value::Compile(_)) {
+                let diag = Diagnostic::new("call target only supports compile-time arguments")
+                    .add_info(params.span, "parameters defined here")
+                    .add_error(arg.value.span, "hardware value passed here")
+                    .finish();
+                any_err_args = Err(diags.report(diag));
+            }
+
+            match &arg.name {
+                Some(id) => {
+                    match arg_name_to_index.entry(id.string.as_str()) {
+                        Entry::Occupied(entry) => {
+                            let prev_index = *entry.get();
+                            let diag = Diagnostic::new("duplicate named parameter")
+                                .add_info(args.inner[prev_index].span, "previously passed here")
+                                .add_error(id.span, "passed again here")
+                                .finish();
+                            any_err_args = Err(diags.report(diag));
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(arg_index);
+                        }
+                    }
+
+                    if first_named_span.is_none() {
+                        first_named_span = Some(id.span);
+                    }
                 }
-                IndexMapEntry::Vacant(entry) => {
-                    entry.insert(&param.id);
+                None => {
+                    if let Some(first_named_span) = first_named_span {
+                        let diag = Diagnostic::new("positional arguments after named arguments are not allowed")
+                            .add_info(first_named_span, "first named argument here")
+                            .add_error(arg.span, "later positional argument here".to_string())
+                            .finish();
+                        any_err_args = Err(diags.report(diag));
+                    }
+                    positional_count += 1;
                 }
             }
         }
-        let () = e?;
+        any_err_args?;
 
         // match args to params
-        let mut first_named_span = None;
-        let mut args_passed = IndexMap::new();
+        let mut scope = Scope::new_child(params.span, scope_outer);
+        let mut next_param_index: usize = 0;
+        let mut arg_used = vec![false; args.inner.len()];
+        let mut param_values_vec = vec![];
 
-        for arg in &args.inner {
-            let &Arg {
-                span: arg_span,
-                name: ref arg_name,
-                value: ref arg_value,
-            } = arg;
-            let arg_name = arg_name.into();
+        let mut param_names: IndexMap<&str, Span> = IndexMap::new();
 
-            match (first_named_span, arg_name) {
-                (None, None) => {
-                    // positional arg
-                    match param_ids.get_index(args_passed.len()) {
-                        Some((_, &param_id)) => {
-                            args_passed.insert_first(param_id.string.clone(), (param_id, arg_span, arg_value));
+        let mut any_err_params = Ok(());
+        let mut visit_param =
+            |ctx: &mut CompileItemContext, vars: &mut VariableValues, scope: &mut Scope, param: &'a Parameter| {
+                let param_index = next_param_index;
+                next_param_index += 1;
+
+                if let Some(prev_span) = param_names.insert(&param.id.string, param.id.span) {
+                    let diag = Diagnostic::new("duplicate parameter name")
+                        .add_info(prev_span, "previously defined here")
+                        .add_error(param.id.span, "defined again here")
+                        .finish();
+                    any_err_params = Err(diags.report(diag));
+                    return;
+                }
+
+                let param_value = if param_index < positional_count {
+                    // positional match
+                    let arg_index = param_index;
+                    let arg = &args.inner[arg_index];
+                    assert!(arg.name.is_none());
+                    assert!(!arg_used[arg_index]);
+
+                    // check if there's also a named match to get better error messages
+                    if let Some(&other_arg_index) = arg_name_to_index.get(param.id.string.as_str()) {
+                        let diag = Diagnostic::new("argument matches positionally but is also passed as named")
+                            .add_info(param.id.span, "parameter defined here")
+                            .add_info(arg.span, "positional match here")
+                            .add_error(args.inner[other_arg_index].span, "named match here")
+                            .finish();
+                        any_err_params = Err(diags.report(diag));
+                        arg_used[other_arg_index] = true;
+                    }
+
+                    arg_used[arg_index] = true;
+                    Ok(&arg.value)
+                } else {
+                    // named match
+                    match arg_name_to_index.get(param.id.string.as_str()) {
+                        Some(&arg_index) => {
+                            let arg = &args.inner[arg_index];
+                            assert!(arg.name.is_some());
+                            assert!(!arg_used[param_index]);
+                            arg_used[arg_index] = true;
+                            Ok(&arg.value)
                         }
                         None => {
-                            let diag = Diagnostic::new("too many arguments")
-                                .add_info(params.span, format!("expected {} parameter(s)", param_ids.len()))
-                                .add_error(arg.span, format!("trying to pass {} argument(s)", args.inner.len()))
+                            let diag = Diagnostic::new(format!("missing argument for parameter `{}`", param.id.string))
+                                .add_info(param.id.span, "parameter defined here")
+                                .add_error(args.span, "missing argument here")
                                 .finish();
-                            return Err(diags.report(diag));
+                            let e = diags.report(diag);
+                            any_err_params = Err(e);
+                            Err(e)
                         }
                     }
+                };
+
+                if let Ok(param_value) = param_value {
+                    // record value into vec
+                    param_values_vec.push((param.id.clone(), param_value.inner.clone()));
                 }
-                (_, Some(name)) => {
-                    // named arg
-                    match args_passed.get(&name.string) {
-                        None => match param_ids.get(name.string.as_str()) {
-                            Some(&param_id) => {
-                                args_passed.insert(name.string.clone(), (param_id, arg_span, arg_value));
-                                first_named_span = first_named_span.or(Some(arg_span));
-                            }
-                            None => {
-                                let diag = Diagnostic::new(format!("unexpected argument `{}`", name.string))
-                                    .add_info(params.span, "parameters declared here")
-                                    .add_error(name.span, "unexpected argument")
-                                    .finish();
-                                return Err(diags.report(diag));
-                            }
-                        },
-                        Some(&(_, prev_span, _)) => {
-                            let diag = Diagnostic::new(format!("argument `{}` passed twice", name.string))
-                                .add_info(prev_span, "first passed here")
-                                .add_error(arg.span, "passed again here")
-                                .finish();
-                            return Err(diags.report(diag));
+
+                // declare param in scope
+                let param_var = vars.var_new_immutable_init(
+                    &mut ctx.variables,
+                    MaybeIdentifier::Identifier(param.id.clone()),
+                    param.id.span,
+                    param_value.map(|v| v.inner.clone()),
+                );
+                let entry = DeclaredValueSingle::Value {
+                    span: param.id.span,
+                    value: ScopedEntry::Named(NamedValue::Variable(param_var)),
+                };
+                scope.declare_already_checked(param.id.string.clone(), entry);
+            };
+
+        fn visit_param_item<'a>(
+            visit_param: &mut impl FnMut(&mut CompileItemContext, &mut VariableValues, &mut Scope, &'a Parameter),
+            ctx: &mut CompileItemContext,
+            vars: &mut VariableValues,
+            scope: &mut Scope,
+            item: &'a ParameterItem,
+        ) -> Result<(), ErrorGuaranteed> {
+            match item {
+                ParameterItem::Parameter(param) => visit_param(ctx, vars, scope, param),
+                ParameterItem::If(if_stmt) => {
+                    if let Some(block) = ctx.compile_if_statement_choose_block(&scope, vars, if_stmt)? {
+                        for inner_item in &block.items {
+                            visit_param_item(visit_param, ctx, vars, scope, inner_item)?;
                         }
                     }
-                }
-                (Some(first_named_span), None) => {
-                    let diag = Diagnostic::new("positional argument after named argument")
-                        .add_info(first_named_span, "first named argument here")
-                        .add_error(arg.span, "positional argument here".to_string())
-                        .finish();
-                    return Err(diags.report(diag));
                 }
             }
+            Ok(())
         }
+        for item in &params.items {
+            visit_param_item(&mut visit_param, self, vars, &mut scope, item)?;
+        }
+        any_err_params?;
 
-        // report missing args
-        for (_, param_id) in param_ids {
-            if !args_passed.contains_key(param_id.string.as_str()) {
-                let diag = Diagnostic::new("missing argument")
-                    .add_error(
-                        args.span,
-                        format!("missing argument for parameter `{}`", param_id.string),
-                    )
-                    .add_info(param_id.span, "parameter declared here")
+        let mut any_err_used = Ok(());
+        for (i, arg_used) in enumerate(arg_used) {
+            if !arg_used {
+                let diag = Diagnostic::new("argument did not match any param")
+                    .add_info(params.span, "parameters defined here")
+                    .add_error(args.inner[i].span, "argument passed here")
                     .finish();
-                return Err(diags.report(diag));
+                any_err_used = Err(diags.report(diag));
             }
         }
-
-        // typecheck and final result building
-        if params.inner.len() != args_passed.len() {
-            return Err(diags.report_internal_error(args.span, "finished matching args, but got wrong final length"));
-        }
-
-        // TODO wrong span, this should include the body
-        let mut param_values_vec = vec![];
-        let mut scope = Scope::new_child(params.span, scope_outer);
-
-        for param_info in &params.inner {
-            let param_id = &param_info.id;
-
-            // eval and check param type
-            let param_ty = self.eval_expression_as_ty(&scope, vars, &param_info.ty)?;
-            let (_, _, arg_value) = args_passed.get(&param_id.string).ok_or_else(|| {
-                diags.report_internal_error(params.span, "finished matching args, but got missing param name")
-            })?;
-
-            // TODO this is abusing the assignment reason, and the span is probably not even right
-            let reason = TypeContainsReason::Assignment {
-                span_target: param_id.span,
-                span_target_ty: param_ty.span,
-            };
-            let arg_value_maybe = arg_value.as_ref().map_inner(|arg_value| arg_value.clone().into());
-            check_type_contains_value(diags, reason, &param_ty.inner, arg_value_maybe.as_ref(), true, true)?;
-
-            // check compile-time
-            if args_must_be_compile {
-                match arg_value_maybe.inner {
-                    Value::Compile(_) => {}
-                    Value::Hardware(_) => {
-                        let diag = Diagnostic::new("arguments must be compile-time constants")
-                            .add_info(param_id.span, "param declared here needs to be compile-time constant")
-                            .add_error(arg_value.span, "hardware value passed here")
-                            .finish();
-                        return Err(diags.report(diag));
-                    }
-                }
-            }
-
-            // record value into vec
-            param_values_vec.push((param_id.clone(), arg_value.inner.clone()));
-
-            // declare param in scope
-            let param_var = vars.var_new_immutable_init(
-                &mut self.variables,
-                MaybeIdentifier::Identifier(param_id.clone()),
-                param_id.span,
-                arg_value_maybe.inner,
-            );
-            let entry = DeclaredValueSingle::Value {
-                span: param_id.span,
-                value: ScopedEntry::Named(NamedValue::Variable(param_var)),
-            };
-            scope.declare_already_checked(param_id.string.clone(), entry);
-        }
+        any_err_used?;
 
         Ok((scope, param_values_vec))
     }
@@ -668,7 +679,7 @@ impl CapturedScope {
                                 variables,
                                 id_recreated,
                                 span,
-                                Value::Compile(value.clone()),
+                                Ok(Value::Compile(value.clone())),
                             );
 
                             DeclaredValueSingle::Value {

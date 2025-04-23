@@ -156,7 +156,7 @@ impl<'p> VariableValues<'p> {
         variables: &mut ArenaVariables,
         id: MaybeIdentifier,
         assign_span: Span,
-        value: Value,
+        value: Result<Value, ErrorGuaranteed>,
     ) -> Variable {
         let info = VariableInfo {
             id,
@@ -164,14 +164,22 @@ impl<'p> VariableValues<'p> {
             ty: None,
         };
         let var = self.var_new(variables, info);
-        let assigned = AssignedValue {
-            last_assignment_span: assign_span,
-            value_and_version: match value {
-                Value::Compile(value) => Value::Compile(value),
-                Value::Hardware(value) => Value::Hardware((value, self.kind.increment_version())),
-            },
+
+        let assigned = match value {
+            Ok(value) => {
+                let assigned = AssignedValue {
+                    last_assignment_span: assign_span,
+                    value_and_version: match value {
+                        Value::Compile(value) => Value::Compile(value),
+                        Value::Hardware(value) => Value::Hardware((value, self.kind.increment_version())),
+                    },
+                };
+                MaybeAssignedValue::Assigned(assigned)
+            }
+            Err(e) => MaybeAssignedValue::Error(e),
         };
-        self.var_values.insert(var, MaybeAssignedValue::Assigned(assigned));
+
+        self.var_values.insert(var, assigned);
         var
     }
 

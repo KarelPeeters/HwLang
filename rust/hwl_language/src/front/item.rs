@@ -148,7 +148,7 @@ impl<'s> CompileItemContext<'_, 's> {
                     &mut self.variables,
                     MaybeIdentifier::Identifier(id.clone()),
                     id.span,
-                    Value::Compile(value.clone()),
+                    Ok(Value::Compile(value.clone())),
                 );
                 let declared = DeclaredValueSingle::Value {
                     span: id.span,
@@ -257,7 +257,7 @@ impl<'s> CompileItemContext<'_, 's> {
         let diags = self.refs.diags;
         let (decl_span, id) = decl.info();
         let entry = self.eval_declaration(scope, vars, decl).map(|v| {
-            let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, Value::Compile(v));
+            let var = vars.var_new_immutable_init(&mut self.variables, id.clone(), decl_span, Ok(Value::Compile(v)));
             ScopedEntry::Named(NamedValue::Variable(var))
         });
         scope.maybe_declare(diags, id.as_ref(), entry);

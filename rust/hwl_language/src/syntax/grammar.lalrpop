@@ -118,7 +118,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
-        <params:(<Parameters<Parameter>>)?>
+        <params:(<Parameters>)?>
         <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
@@ -135,7 +135,7 @@ Item: Item = {
     },
 
     <start:@L>
-        <vis:Vis> "interface" <id:MaybeId> <params:Parameters<Parameter>?> <start_body:@L> "{"
+        <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
             <port_types:Separated<InterfacePortType, ",">>
             <views:InterfaceView*>
         "}"
@@ -197,7 +197,7 @@ ModuleStatementKind: ModuleStatementKind = {
     // control flow
     Block<ModuleStatement> => ModuleStatementKind::Block(<>),
     "const" <Block<BlockStatement>> => ModuleStatementKind::ConstBlock(<>),
-    IfStatement<ModuleStatement> => ModuleStatementKind::If(<>),
+    IfStatement<Block<ModuleStatement>> => ModuleStatementKind::If(<>),
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration> => ModuleStatementKind::CommonDeclaration(<>),
@@ -270,6 +270,7 @@ ResetKind: ResetKind = {
 
 // TODO better port syntax, maybe including directionality, eg ==> and <== or -> and <-?
 //   now it's different from both generics and struct literals
+// TODO add shorthand when port and connected expression are the same string
 PortConnection: PortConnection = {
     "." <id:Id> "(" <expr:Expr> ")" => PortConnection { id, expr },
 }
@@ -292,7 +293,7 @@ BlockStatementKind: BlockStatementKind = {
     <Block<BlockStatement>> => BlockStatementKind::Block(<>),
     "const" <Block<BlockStatement>> => BlockStatementKind::ConstBlock(<>),
     // control flow
-    IfStatement<BlockStatement>
+    IfStatement<Block<BlockStatement>>
         => BlockStatementKind::If(<>),
     ForStatement<BlockStatement>
         => BlockStatementKind::For(<>),
@@ -305,10 +306,12 @@ BlockStatementKind: BlockStatementKind = {
     <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
 }
 
-IfStatement<S>: IfStatement<S> = {
-    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:Block<S>> <end_if:@R>
-    <else_ifs:ElseIfPair<S>*>
-    <final_else:("else" <Block<S>>)?> => {
+// TODO refactor, the `{}` should probably be part of this grammer rule,
+//   instead of hoping the user parses those in `B`
+IfStatement<B>: IfStatement<B> = {
+    <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:B> <end_if:@R>
+    <else_ifs:ElseIfPair<B>*>
+    <final_else:("else" <B>)?> => {
         IfStatement {
             initial_if: IfCondBlockPair {
                 span: loc.span(start, end_if),
@@ -322,8 +325,8 @@ IfStatement<S>: IfStatement<S> = {
     },
 }
 
-ElseIfPair<S>: IfCondBlockPair<S> = {
-    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:Block<S>> <end:@R>
+ElseIfPair<B>: IfCondBlockPair<B> = {
+    <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:B> <end:@R>
         => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
 }
 
@@ -333,19 +336,19 @@ ForStatement<S>: ForStatement<S> = {
 }
 
 CommonDeclaration: CommonDeclaration = {
-    <start:@L> "type" <id:MaybeId> <params:Parameters<Parameter>?> "=" <body:BoxExpr> ";" <end:@R>
+    <start:@L> "type" <id:MaybeId> <params:Parameters?> "=" <body:BoxExpr> ";" <end:@R>
         => CommonDeclaration::Type(TypeDeclaration { id, params, body, span: loc.span(start, end) }),
 
     <start:@L> "const" <id:MaybeId> <ty:(":" <BoxExpr>)?> "=" <value:BoxExpr> ";" <end:@R>
         => CommonDeclaration::Const(ConstDeclaration { id, ty, value, span: loc.span(start, end) }),
 
     <start:@L>
-        "struct" <id:MaybeId> <params:Parameters<Parameter>?>
+        "struct" <id:MaybeId> <params:Parameters?>
         "{" <fields: Separated<StructField, ",">> "}"
     <end:@R>
         => CommonDeclaration::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end) }),
     <start:@L>
-        "enum" <id:MaybeId> <params:Parameters<Parameter>?>
+        "enum" <id:MaybeId> <params:Parameters?>
         "{" <variants: Separated<EnumVariant, ",">> "}"
     <end:@R>
         => CommonDeclaration::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
@@ -355,7 +358,7 @@ CommonDeclaration: CommonDeclaration = {
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     // TODO allow specifying "const" before function params to make error messages nicer
     <start:@L>
-        "fn" <id:MaybeId> <params:Parameters<Parameter>>
+        "fn" <id:MaybeId> <params:Parameters>
         <ret_ty:("->" <Spanned<ExprLevelArrayNoStruct>>)?>
         <body:Block<BlockStatement>>
     <end:@R>
@@ -375,16 +378,29 @@ VariableMutable: bool = {
 
 // parameters
 // TODO allow "if" here
-Parameters<P>: Spanned<Vec<P>> = {
-    <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
+Parameters: Parameters = {
+    <start:@L> "(" <items:ParameterItems> ")" <end:@R>
+        => Parameters { items, span: loc.span(start, end) },
+}
+
+ParameterItems: Vec<ParameterItem> = {
+    Separated<ParameterItem,",">,
+}
+
+ParametersBlock: ParametersBlock = {
+    <start:@L> "{" <items:Separated<ParameterItem,",">> "}" <end:@R>
+        => ParametersBlock { items, span: loc.span(start, end) },
+}
+
+ParameterItem: ParameterItem = {
+    Parameter => ParameterItem::Parameter(<>),
+    IfStatement<ParametersBlock> => ParameterItem::If(<>),
 }
 
 Parameter: Parameter = {
     <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => Parameter { id, ty, span: loc.span(start, end) },
 }
 
-// TODO get rid of the need for a comma after a block
-// TODO add shorthand when port and connected expression are the same string
 ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
 
 ModulePortItem: ModulePortItem = {

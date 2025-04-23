@@ -1,5 +1,7 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
-use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
+use crate::front::check::{
+    check_type_contains_compile_value, check_type_contains_value, check_type_is_bool_compile, TypeContainsReason,
+};
 use crate::front::compile::{CompileItemContext, VariableInfo};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
@@ -330,7 +332,10 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
-        ifs: Option<(&IfCondBlockPair<BlockStatement>, &[IfCondBlockPair<BlockStatement>])>,
+        ifs: Option<(
+            &IfCondBlockPair<Block<BlockStatement>>,
+            &[IfCondBlockPair<Block<BlockStatement>>],
+        )>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -553,7 +558,7 @@ impl CompileItemContext<'_, '_> {
 
             // create scope and set index
             let index_var =
-                vars.var_new_immutable_init(&mut self.variables, index_id.clone(), span_keyword, index_value);
+                vars.var_new_immutable_init(&mut self.variables, index_id.clone(), span_keyword, Ok(index_value));
 
             let mut scope_index = Scope::new_child(stmt.span, scope_parent);
             scope_index.maybe_declare(
@@ -583,5 +588,50 @@ impl CompileItemContext<'_, '_> {
         }
 
         Ok(BlockEnd::Normal)
+    }
+
+    pub fn compile_if_statement_choose_block<'a, B>(
+        &mut self,
+        scope: &Scope,
+        vars: &VariableValues,
+        if_stmt: &'a IfStatement<B>,
+    ) -> Result<Option<&'a B>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let IfStatement {
+            initial_if,
+            else_ifs,
+            final_else,
+        } = if_stmt;
+
+        let mut eval_pair = |pair: &'a IfCondBlockPair<B>| {
+            let IfCondBlockPair {
+                span: _,
+                span_if,
+                cond,
+                block,
+            } = pair;
+
+            let mut vars_inner = VariableValues::new_child(vars);
+            let cond = self.eval_expression_as_compile(scope, &mut vars_inner, cond, "compile-time if condition")?;
+
+            let reason = TypeContainsReason::IfCondition(*span_if);
+            let cond = check_type_is_bool_compile(diags, reason, cond)?;
+
+            if cond {
+                Ok(Some(block))
+            } else {
+                Ok(None)
+            }
+        };
+
+        if let Some(block) = eval_pair(initial_if)? {
+            return Ok(Some(block));
+        }
+        for else_if in else_ifs {
+            if let Some(block) = eval_pair(else_if)? {
+                return Ok(Some(block));
+            }
+        }
+        Ok(final_else.as_ref())
     }
 }

@@ -72,7 +72,7 @@ pub struct ImportEntry {
 pub struct StructDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub params: Option<Parameters>,
     pub fields: Vec<StructField>,
 }
 
@@ -88,7 +88,7 @@ pub struct StructField {
 pub struct EnumDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub params: Option<Parameters>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -105,7 +105,7 @@ pub struct FunctionDeclaration {
     pub id: MaybeIdentifier,
     /// All function parameters are "generic", which means they can be types.
     /// It doesn't make sense to force a distinction similar to modules.
-    pub params: Spanned<Vec<Parameter>>,
+    pub params: Parameters,
     pub ret_ty: Option<Expression>,
     pub body: Block<BlockStatement>,
 }
@@ -115,7 +115,7 @@ pub struct ItemDefModule {
     pub span: Span,
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub params: Option<Parameters>,
     pub ports: Spanned<Vec<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
 }
@@ -125,7 +125,7 @@ pub struct ItemDefInterface {
     pub span: Span,
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub params: Option<Parameters>,
     pub span_body: Span,
     pub port_types: Vec<(Identifier, Box<Expression>)>,
     pub views: Vec<InterfaceView>,
@@ -135,6 +135,24 @@ pub struct ItemDefInterface {
 pub struct InterfaceView {
     pub id: MaybeIdentifier,
     pub port_dirs: Vec<(Identifier, Spanned<PortDirection>)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Parameters {
+    pub span: Span,
+    pub items: Vec<ParameterItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParametersBlock {
+    pub span: Span,
+    pub items: Vec<ParameterItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ParameterItem {
+    Parameter(Parameter),
+    If(IfStatement<ParametersBlock>),
 }
 
 #[derive(Debug, Clone)]
@@ -287,7 +305,7 @@ pub enum ModuleStatementKind {
     // control flow
     Block(Block<ModuleStatement>),
     ConstBlock(Block<BlockStatement>),
-    If(IfStatement<ModuleStatement>),
+    If(IfStatement<Block<ModuleStatement>>),
     For(ForStatement<ModuleStatement>),
     // declarations
     CommonDeclaration(CommonDeclaration),
@@ -315,7 +333,7 @@ pub enum BlockStatementKind {
     // control flow
     Block(Block<BlockStatement>),
     ConstBlock(Block<BlockStatement>),
-    If(IfStatement<BlockStatement>),
+    If(IfStatement<Block<BlockStatement>>),
     For(ForStatement<BlockStatement>),
     While(WhileStatement),
 
@@ -326,18 +344,18 @@ pub enum BlockStatementKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct IfStatement<S> {
-    pub initial_if: IfCondBlockPair<S>,
-    pub else_ifs: Vec<IfCondBlockPair<S>>,
-    pub final_else: Option<Block<S>>,
+pub struct IfStatement<B> {
+    pub initial_if: IfCondBlockPair<B>,
+    pub else_ifs: Vec<IfCondBlockPair<B>>,
+    pub final_else: Option<B>,
 }
 
 #[derive(Debug, Clone)]
-pub struct IfCondBlockPair<S> {
+pub struct IfCondBlockPair<B> {
     pub span: Span,
     pub span_if: Span,
     pub cond: Box<Expression>,
-    pub block: Block<S>,
+    pub block: B,
 }
 
 #[derive(Debug, Clone)]
@@ -392,7 +410,7 @@ pub struct WireDeclaration {
 pub struct TypeDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub params: Option<Spanned<Vec<Parameter>>>,
+    pub params: Option<Parameters>,
     pub body: Box<Expression>,
 }
 

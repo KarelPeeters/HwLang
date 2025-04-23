@@ -1,6 +1,5 @@
 use crate::front::check::{
-    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, check_type_is_bool_compile,
-    TypeContainsReason,
+    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
 use crate::front::compile::{
     ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs, Port, PortInfo, PortInterfaceInfo, Register,
@@ -24,9 +23,8 @@ use crate::mid::ir::{
     IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ExpressionKind, ForStatement, IfCondBlockPair, IfStatement, ModulePortBlock,
-    ModulePortInBlock, ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind,
-    PortDirection, ResetKind,
+    self, ClockedBlockReset, ExpressionKind, ForStatement, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection, ResetKind,
 };
 use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
@@ -778,10 +776,16 @@ impl BodyElaborationContext<'_, '_, '_> {
                             Err(e) => Err(e),
                         };
                 }
-                ModuleStatementKind::If(if_stmt) => match self.elaborate_if(scope, vars, signals, if_stmt) {
-                    Ok(()) => {}
-                    Err(e) => self.delayed_error = Err(e),
-                },
+                ModuleStatementKind::If(if_stmt) => {
+                    match self.ctx.compile_if_statement_choose_block(scope, vars, if_stmt) {
+                        Ok(block) => {
+                            if let Some(block) = block {
+                                self.elaborate_block(scope, vars, signals, block, false);
+                            }
+                        }
+                        Err(e) => self.delayed_error = Err(e),
+                    }
+                }
                 ModuleStatementKind::For(for_stmt) => {
                     let for_stmt = Spanned::new(stmt.span, for_stmt);
                     match self.elaborate_for(scope, vars, signals, for_stmt) {
@@ -987,64 +991,6 @@ impl BodyElaborationContext<'_, '_, '_> {
         vars
     }
 
-    fn elaborate_if(
-        &mut self,
-        scope: &Scope,
-        vars: &VariableValues,
-        signals: &mut SignalsInScope,
-        if_stmt: &IfStatement<ModuleStatement>,
-    ) -> Result<(), ErrorGuaranteed> {
-        let IfStatement {
-            initial_if,
-            else_ifs,
-            final_else,
-        } = if_stmt;
-
-        if self.elaborate_if_pair(scope, vars, signals, initial_if)? {
-            return Ok(());
-        }
-        for else_if in else_ifs {
-            if self.elaborate_if_pair(scope, vars, signals, else_if)? {
-                return Ok(());
-            }
-        }
-        if let Some(final_else) = final_else {
-            self.elaborate_block(scope, vars, signals, final_else, false);
-        }
-
-        Ok(())
-    }
-
-    fn elaborate_if_pair(
-        &mut self,
-        scope: &Scope,
-        vars: &VariableValues,
-        signals: &mut SignalsInScope,
-        pair: &IfCondBlockPair<ModuleStatement>,
-    ) -> Result<bool, ErrorGuaranteed> {
-        let diags = self.ctx.refs.diags;
-        let IfCondBlockPair {
-            span: _,
-            span_if,
-            cond,
-            block,
-        } = pair;
-
-        let mut vars_inner = VariableValues::new_child(vars);
-
-        let cond = self
-            .ctx
-            .eval_expression_as_compile(scope, &mut vars_inner, cond, "module-level if condition")?;
-        let reason = TypeContainsReason::IfCondition(*span_if);
-        let cond = check_type_is_bool_compile(diags, reason, cond)?;
-
-        if cond {
-            self.elaborate_block(scope, &vars_inner, signals, block, false)
-        }
-
-        Ok(cond)
-    }
-
     fn elaborate_for(
         &mut self,
         scope: &Scope,
@@ -1096,8 +1042,12 @@ impl BodyElaborationContext<'_, '_, '_> {
             }
 
             let mut scope_inner = Scope::new_child(index.span().join(body.span), scope);
-            let var =
-                vars_inner.var_new_immutable_init(&mut self.ctx.variables, index.clone(), span_keyword, index_value);
+            let var = vars_inner.var_new_immutable_init(
+                &mut self.ctx.variables,
+                index.clone(),
+                span_keyword,
+                Ok(index_value),
+            );
             scope_inner.maybe_declare(diags, index.as_ref(), Ok(ScopedEntry::Named(NamedValue::Variable(var))));
 
             self.elaborate_block(&scope_inner, &vars_inner, signals, body, false);
