@@ -3,7 +3,7 @@ import std.types.[
     int_bits, uint_bits, any,
 ];
 import std.math.[gcd, min, max];
-import std.util.[typeof, print, print_compile];
+import std.util.[typeof, print];
 
 pub module top ports(
     clk: in clock,
