@@ -89,7 +89,7 @@ pub enum EvaluatedId {
     Value(Value),
 }
 
-impl<'s> CompileItemContext<'_, 's> {
+impl CompileItemContext<'_, '_> {
     pub fn eval_id(&mut self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 

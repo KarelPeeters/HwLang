@@ -396,7 +396,7 @@ pub fn check_type_is_bool_array(
     expected_len: Option<&BigUint>,
 ) -> Result<Value<Vec<bool>, HardwareValue<BigUint>>, ErrorGuaranteed> {
     if let Type::Array(ty_inner, ty_len) = value.inner.ty() {
-        if expected_len.map_or(true, |expected_len| expected_len == &ty_len) {
+        if expected_len.is_none_or(|expected_len| expected_len == &ty_len) {
             if let Type::Bool = *ty_inner {
                 return match value.inner {
                     Value::Compile(c) => {

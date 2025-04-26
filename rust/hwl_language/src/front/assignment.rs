@@ -513,7 +513,7 @@ impl CompileItemContext<'_, '_> {
                 check
             }
             BlockDomain::Clocked(block_domain) => {
-                let block_domain = block_domain.map_inner(|d| ValueDomain::Sync(d));
+                let block_domain = block_domain.map_inner(ValueDomain::Sync);
 
                 let mut check = self.check_valid_domain_crossing(
                     op_span,

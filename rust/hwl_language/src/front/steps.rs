@@ -289,7 +289,7 @@ impl ArraySteps<ArrayStep> {
                                     base: curr_inner.expr,
                                     index: index.expr.clone(),
                                 },
-                                index.domain.clone(),
+                                index.domain,
                                 None,
                             )
                         }
@@ -306,7 +306,7 @@ impl ArraySteps<ArrayStep> {
                                     start: start.expr.clone(),
                                     len: len.clone(),
                                 },
-                                start.domain.clone(),
+                                start.domain,
                                 Some(len),
                             )
                         }

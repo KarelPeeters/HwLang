@@ -557,7 +557,7 @@ impl WireInfo {
     pub fn as_hardware_value(&self) -> HardwareValue {
         HardwareValue {
             ty: self.ty.inner.clone(),
-            domain: self.domain.inner.clone(),
+            domain: self.domain.inner,
             expr: IrExpression::Wire(self.ir),
         }
     }

@@ -101,7 +101,7 @@ impl Signal {
     pub fn domain(self, state: &CompileItemContext) -> Spanned<ValueDomain> {
         match self {
             Signal::Port(port) => state.ports[port].domain.map_inner(ValueDomain::from_port_domain),
-            Signal::Wire(wire) => state.wires[wire].domain.clone(),
+            Signal::Wire(wire) => state.wires[wire].domain,
             Signal::Register(reg) => state.registers[reg].domain.map_inner(ValueDomain::Sync),
         }
     }
@@ -128,7 +128,7 @@ impl Signal {
                 let wire_info = &state.wires[wire];
                 HardwareValue {
                     ty: wire_info.ty.inner.clone(),
-                    domain: wire_info.domain.inner.clone(),
+                    domain: wire_info.domain.inner,
                     expr: IrExpression::Wire(wire_info.ir),
                 }
             }

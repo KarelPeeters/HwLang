@@ -199,9 +199,9 @@ impl CompileRefs<'_, '_> {
                                     }),
                                 ),
                                 WireKind::Normal { domain, ty } => (
-                                    ctx.eval_port_domain(&scope_ports, domain)
+                                    ctx.eval_port_domain(scope_ports, domain)
                                         .map(|d| d.map_inner(PortDomain::Kind)),
-                                    ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port"),
+                                    ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port"),
                                 ),
                             };
 
@@ -225,9 +225,9 @@ impl CompileRefs<'_, '_> {
                             domain,
                             interface,
                         } => {
-                            let domain = ctx.eval_port_domain(&scope_ports, domain);
+                            let domain = ctx.eval_port_domain(scope_ports, domain);
                             let interface_view = ctx
-                                .eval_expression_as_compile(&scope_ports, vars, interface, "interface")
+                                .eval_expression_as_compile(scope_ports, vars, interface, "interface")
                                 .and_then(|interface| match interface.inner {
                                     CompileValue::InterfaceView(view) => Ok(view),
                                     value => Err(diags.report_simple(
@@ -256,7 +256,7 @@ impl CompileRefs<'_, '_> {
                 ModulePortItem::Block(port_item) => {
                     let ModulePortBlock { span: _, domain, ports } = port_item;
 
-                    let domain = ctx.eval_port_domain(&scope_ports, domain);
+                    let domain = ctx.eval_port_domain(scope_ports, domain);
 
                     let mut visit_port_item_in_block =
                         |ctx: &mut CompileItemContext,
@@ -267,7 +267,7 @@ impl CompileRefs<'_, '_> {
 
                             match kind {
                                 ModulePortInBlockKind::Port { direction, ty } => {
-                                    let ty = ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port");
+                                    let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
 
                                     let entry = result_pair(domain, ty).map(|(domain, ty)| {
                                         push_connector_single(
@@ -289,7 +289,7 @@ impl CompileRefs<'_, '_> {
                                     interface,
                                 } => {
                                     let interface_view = ctx
-                                        .eval_expression_as_compile(&scope_ports, vars, interface, "interface")
+                                        .eval_expression_as_compile(scope_ports, vars, interface, "interface")
                                         .and_then(|interface| match interface.inner {
                                             CompileValue::InterfaceView(view) => Ok(view),
                                             value => Err(diags.report_simple(

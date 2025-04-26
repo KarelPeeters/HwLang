@@ -84,7 +84,7 @@ impl ValueDomain {
     pub fn join(self, other: Self) -> Self {
         // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
-            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other.clone(),
+            (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other,
             (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left),
             _ => ValueDomain::Async,
         }
@@ -111,7 +111,7 @@ impl ValueDomain {
         //   and once a non-trivial operation happens it needs to delay to the worst side.
         //   Maybe implement that by changing the current join to assume the worst,
         //   and adding a separate join_simple that propagates the edges more carefully.
-        self.clone()
+        *self
     }
 
     pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
