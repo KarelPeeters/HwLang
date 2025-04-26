@@ -7,10 +7,11 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    CommonDeclaration, ConstDeclaration, FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefInterface,
-    ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Spanned, TypeDeclaration,
+    CommonDeclaration, ConstDeclaration, Expression, FunctionDeclaration, Identifier, Item, ItemDeclaration,
+    ItemDefInterface, ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
+use crate::syntax::pos::Span;
 
 pub struct ElaboratedItemParams<I> {
     pub item: I,
@@ -34,6 +35,14 @@ impl<I: Copy> ElaboratedItemParams<I> {
             params: param_values,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum FunctionItemBody {
+    // TODO change this to be a type alias, or maybe change the others to be ast references too?
+    TypeAliasExpr(Box<Expression>),
+    Module(AstRefModule),
+    Interface(AstRefInterface),
 }
 
 impl<'s> CompileItemContext<'_, 's> {
@@ -72,30 +81,17 @@ impl<'s> CompileItemContext<'_, 's> {
                     vis: _,
                     id,
                     params,
-                    ports,
+                    ports: _,
                     body,
                 } = module;
                 let item = AstRefModule::new_unchecked(item, module);
+                let body_span = body.span;
 
-                match params {
-                    None => {
-                        let item_params = ElaboratedItemParams { item, params: None };
-                        let (elab_id, _) = self.refs.elaborate_module(item_params)?;
-                        Ok(CompileValue::Module(elab_id))
-                    }
-                    Some(params) => {
-                        let func = UserFunctionValue {
-                            decl_span: id.span(),
-                            scope_captured: CapturedScope::from_file_scope(item.file()),
-                            params: params.clone(),
-                            body: Spanned {
-                                span: ports.span.join(body.span),
-                                inner: FunctionBody::ModulePortsAndBody(item),
-                            },
-                        };
-                        Ok(CompileValue::Function(FunctionValue::User(func)))
-                    }
-                }
+                let body = FunctionItemBody::Module(item);
+
+                let scope = self.refs.shared.file_scope(item.file())?;
+                let mut vars = VariableValues::new_root(&self.variables);
+                self.eval_maybe_generic_item(id.span(), body_span, scope, &mut vars, params, body)
             }
             Item::Interface(interface) => {
                 let ItemDefInterface {
@@ -109,25 +105,11 @@ impl<'s> CompileItemContext<'_, 's> {
                 } = interface;
                 let item = AstRefInterface::new_unchecked(item, interface);
 
-                match params {
-                    None => {
-                        let item_params = ElaboratedItemParams { item, params: None };
-                        let (elab_id, _) = self.refs.elaborate_interface(item_params)?;
-                        Ok(CompileValue::Interface(elab_id))
-                    }
-                    Some(params) => {
-                        let func = UserFunctionValue {
-                            decl_span: id.span(),
-                            scope_captured: CapturedScope::from_file_scope(item.file()),
-                            params: params.clone(),
-                            body: Spanned {
-                                span: *span_body,
-                                inner: FunctionBody::Interface(item),
-                            },
-                        };
-                        Ok(CompileValue::Function(FunctionValue::User(func)))
-                    }
-                }
+                let body = FunctionItemBody::Interface(item);
+
+                let scope = self.refs.shared.file_scope(item.file())?;
+                let mut vars = VariableValues::new_root(&self.variables);
+                self.eval_maybe_generic_item(id.span(), *span_body, scope, &mut vars, params, body)
             }
         }
     }
@@ -176,25 +158,10 @@ impl<'s> CompileItemContext<'_, 's> {
                     params,
                     body,
                 } = decl;
+                let body_span = body.span;
 
-                match params {
-                    None => {
-                        let ty = self.eval_expression_as_ty(scope, vars, body)?;
-                        Ok(CompileValue::Type(ty.inner))
-                    }
-                    Some(params) => {
-                        let func = UserFunctionValue {
-                            decl_span: id.span(),
-                            scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
-                            params: params.clone(),
-                            body: Spanned {
-                                span: body.span,
-                                inner: FunctionBody::TypeAliasExpr(body.clone()),
-                            },
-                        };
-                        Ok(CompileValue::Function(FunctionValue::User(func)))
-                    }
-                }
+                let body = FunctionItemBody::TypeAliasExpr(body.clone());
+                self.eval_maybe_generic_item(id.span(), body_span, scope, vars, params, body)
             }
             CommonDeclaration::Const(decl) => {
                 let ConstDeclaration { span: _, id, ty, value } = decl;
@@ -261,5 +228,62 @@ impl<'s> CompileItemContext<'_, 's> {
             ScopedEntry::Named(NamedValue::Variable(var))
         });
         scope.maybe_declare(diags, id.as_ref(), entry);
+    }
+
+    fn eval_maybe_generic_item(
+        &mut self,
+        span_decl: Span,
+        span_body: Span,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        params: &Option<Parameters>,
+        body: FunctionItemBody,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        match params {
+            None => {
+                // eval immediately
+                self.eval_item_function_body(scope, vars, None, &body)
+            }
+            Some(params) => {
+                // build function
+                let func = UserFunctionValue {
+                    decl_span: span_decl,
+                    scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
+                    params: params.clone(),
+                    body: Spanned {
+                        span: span_body,
+                        inner: FunctionBody::ItemBody(body),
+                    },
+                };
+                Ok(CompileValue::Function(FunctionValue::User(func)))
+            }
+        }
+    }
+
+    pub fn eval_item_function_body(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        params: Option<Vec<(Identifier, CompileValue)>>,
+        body: &FunctionItemBody,
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        match body {
+            FunctionItemBody::TypeAliasExpr(expr) => {
+                let result_ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
+                Ok(CompileValue::Type(result_ty))
+            }
+            &FunctionItemBody::Module(item) => {
+                let item_params = ElaboratedItemParams { item, params };
+                let (result_id, _) = self.refs.elaborate_module(item_params)?;
+                Ok(CompileValue::Module(result_id))
+            }
+            &FunctionItemBody::Interface(item) => {
+                let item_params = ElaboratedItemParams { item, params };
+                let (result_id, _) = self.refs.elaborate_interface(item_params)?;
+                Ok(CompileValue::Interface(result_id))
+            }
+        }
     }
 }

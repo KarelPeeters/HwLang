@@ -3,7 +3,7 @@ use crate::front::check::{check_type_contains_value, check_type_is_bool_array, T
 use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::item::ElaboratedItemParams;
+use crate::front::item::FunctionItemBody;
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
@@ -13,7 +13,7 @@ use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters, Spanned,
 };
-use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
+use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
@@ -62,11 +62,7 @@ pub enum FunctionBody {
         body: Block<BlockStatement>,
         ret_ty: Option<Box<Expression>>,
     },
-
-    TypeAliasExpr(Box<Expression>),
-    ModulePortsAndBody(AstRefModule),
-    Interface(AstRefInterface),
-    // TODO add struct, enum
+    ItemBody(FunctionItemBody),
 }
 
 impl FunctionBody {
@@ -74,7 +70,7 @@ impl FunctionBody {
         match self {
             // TODO add optional marker to functions that can only be used with compare args
             FunctionBody::FunctionBodyBlock { .. } => false,
-            FunctionBody::TypeAliasExpr(_) | FunctionBody::ModulePortsAndBody(_) | FunctionBody::Interface(_) => true,
+            FunctionBody::ItemBody(_) => true,
         }
     }
 }
@@ -340,38 +336,13 @@ impl CompileItemContext<'_, '_> {
 
                     Ok((Some(ir_block), ret_value))
                 }
-                FunctionBody::TypeAliasExpr(expr) => {
-                    let result_ty = s.eval_expression_as_ty(&scope, vars, expr)?.inner;
-                    let result_value = Value::Compile(CompileValue::Type(result_ty));
-                    Ok((None, result_value))
-                }
-                &FunctionBody::ModulePortsAndBody(item) => {
+                FunctionBody::ItemBody(item_body) => {
                     let param_values = param_values
                         .into_iter()
                         .map(|(id, v)| (id, v.unwrap_compile()))
                         .collect_vec();
-
-                    let item_params = ElaboratedItemParams {
-                        item,
-                        params: Some(param_values),
-                    };
-                    let (result_id, _) = s.refs.elaborate_module(item_params)?;
-                    let result_value = Value::Compile(CompileValue::Module(result_id));
-                    Ok((None, result_value))
-                }
-                &FunctionBody::Interface(item) => {
-                    let param_values = param_values
-                        .into_iter()
-                        .map(|(id, v)| (id, v.unwrap_compile()))
-                        .collect_vec();
-
-                    let item_params = ElaboratedItemParams {
-                        item,
-                        params: Some(param_values),
-                    };
-                    let (result_id, _) = s.refs.elaborate_interface(item_params)?;
-                    let result_value = Value::Compile(CompileValue::Interface(result_id));
-                    Ok((None, result_value))
+                    let value = s.eval_item_function_body(&scope, vars, Some(param_values), item_body)?;
+                    Ok((None, Value::Compile(value)))
                 }
             }
         })
