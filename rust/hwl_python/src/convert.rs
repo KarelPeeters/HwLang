@@ -61,6 +61,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: CompileValue)
         // TODO actually expose these to python
         CompileValue::Interface(_) => UnsupportedValue("interface".to_owned()).into_py_any(py),
         CompileValue::InterfaceView(_) => UnsupportedValue("interface view".to_owned()).into_py_any(py),
+        CompileValue::Struct(_, _, _) => UnsupportedValue("struct".to_owned()).into_py_any(py),
     }
 }
 

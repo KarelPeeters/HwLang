@@ -1,3 +1,4 @@
+use crate::front::compile::ElaboratedStruct;
 use crate::front::value::CompileValue;
 use crate::mid::ir::IrType;
 use crate::swrite;
@@ -23,6 +24,8 @@ pub enum Type {
     Int(IncRange<BigInt>),
     Tuple(Vec<Type>),
     Array(Box<Type>, BigUint),
+    // TODO avoid storing copy of field types
+    Struct(ElaboratedStruct, Vec<Type>),
     Range,
     // TODO maybe maybe these (optionally) more specific
     Function,
@@ -38,6 +41,7 @@ pub enum HardwareType {
     Int(ClosedIncRange<BigInt>),
     Tuple(Vec<HardwareType>),
     Array(Box<HardwareType>, BigUint),
+    Struct(ElaboratedStruct, Vec<HardwareType>),
 }
 
 // TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
@@ -132,7 +136,6 @@ impl Type {
                 }
             }
             // array
-            // TODO cache this
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
                     let inner = if allow_compound_subtype {
@@ -144,7 +147,16 @@ impl Type {
                     };
                     Type::Array(Box::new(inner), a_len.clone())
                 } else {
-                    // TODO into list?
+                    // TODO into list once that exists?
+                    Type::Any
+                }
+            }
+            // struct
+            (Type::Struct(a_item, a_fields), Type::Struct(b_item, b_fields)) => {
+                if a_item == b_item {
+                    debug_assert_eq!(a_fields, b_fields);
+                    Type::Struct(*a_item, a_fields.clone())
+                } else {
                     Type::Any
                 }
             }
@@ -162,7 +174,8 @@ impl Type {
                 | Type::InterfaceView
                 | Type::Int(_)
                 | Type::Tuple(_)
-                | Type::Array(_, _),
+                | Type::Array(_, _)
+                | Type::Struct(_, _),
                 Type::Type
                 | Type::Clock
                 | Type::Bool
@@ -174,7 +187,8 @@ impl Type {
                 | Type::InterfaceView
                 | Type::Int(_)
                 | Type::Tuple(_)
-                | Type::Array(_, _),
+                | Type::Array(_, _)
+                | Type::Struct(_, _),
             ) => Type::Any,
         }
     }
@@ -197,6 +211,11 @@ impl Type {
             Type::Array(inner, len) => inner
                 .as_hardware_type()
                 .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
+            Type::Struct(item, fields) => fields
+                .iter()
+                .map(Type::as_hardware_type)
+                .collect::<Option<Vec<_>>>()
+                .map(|fields| HardwareType::Struct(*item, fields)),
             Type::Type | Type::Any | Type::Undefined => None,
             Type::String | Type::Range | Type::Function | Type::Module | Type::Interface | Type::InterfaceView => None,
         }
@@ -229,6 +248,7 @@ impl Type {
                 let inner_str = inner.to_diagnostic_string();
                 format!("{inner_str}[{dims}]")
             }
+            Type::Struct(_, _) => "struct".to_string(),
             Type::Range => "range".to_string(),
             Type::Function => "function".to_string(),
             Type::Module => "module".to_string(),
@@ -249,6 +269,9 @@ impl HardwareType {
             HardwareType::Int(range) => Type::Int(range.clone().into_range()),
             HardwareType::Tuple(inner) => Type::Tuple(inner.iter().map(HardwareType::as_type).collect_vec()),
             HardwareType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
+            HardwareType::Struct(item, fields) => {
+                Type::Struct(*item, fields.iter().map(HardwareType::as_type).collect_vec())
+            }
         }
     }
 
@@ -259,6 +282,7 @@ impl HardwareType {
             HardwareType::Int(range) => IrType::Int(range.clone()),
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::as_ir).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir()), len.clone()),
+            HardwareType::Struct(_, fields) => IrType::Tuple(fields.iter().map(HardwareType::as_ir).collect_vec()),
         }
     }
 
@@ -274,8 +298,9 @@ impl HardwareType {
                 let repr = IntRepresentation::for_range(range);
                 &repr.range() == range
             }
-            HardwareType::Tuple(inner) => inner.iter().all(|e| e.every_bit_pattern_is_valid()),
+            HardwareType::Tuple(inner) => inner.iter().all(HardwareType::every_bit_pattern_is_valid),
             HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(),
+            HardwareType::Struct(_, fields) => fields.iter().all(HardwareType::every_bit_pattern_is_valid),
         }
     }
 
@@ -360,6 +385,14 @@ impl HardwareType {
                 Ok(CompileValue::Array(
                     (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?,
                 ))
+            }
+            HardwareType::Struct(item, fields) => {
+                let inners = fields
+                    .iter()
+                    .map(|inner| inner.value_from_bits_impl(bits))
+                    .try_collect()?;
+                let fields = fields.iter().map(HardwareType::as_type).collect_vec();
+                Ok(CompileValue::Struct(*item, fields, inners))
             }
         }
     }

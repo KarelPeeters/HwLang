@@ -341,6 +341,8 @@ impl CompileItemContext<'_, '_> {
                         .into_iter()
                         .map(|(id, v)| (id, v.unwrap_compile()))
                         .collect_vec();
+
+                    let item_body = Spanned::new(function.body.span, item_body);
                     let value = s.eval_item_function_body(&scope, vars, Some(param_values), item_body)?;
                     Ok((None, Value::Compile(value)))
                 }

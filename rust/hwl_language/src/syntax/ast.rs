@@ -71,9 +71,10 @@ pub struct ImportEntry {
 #[derive(Debug, Clone)]
 pub struct StructDeclaration {
     pub span: Span,
+    pub span_body: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub fields: Vec<StructField>,
+    pub fields: Vec<ConditionalItem<StructField>>,
 }
 
 #[derive(Debug, Clone)]

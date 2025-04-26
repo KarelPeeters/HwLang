@@ -349,16 +349,14 @@ CommonDeclaration: CommonDeclaration = {
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
-        "{" <fields: Separated<StructField, ",">> "}"
+        <start_body:@L> "{" <fields: Separated<ConditionalItem<StructField>, ",">> "}"
     <end:@R>
-        => CommonDeclaration::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end) }),
+        => CommonDeclaration::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end), span_body: loc.span(start_body, end) }),
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
         "{" <variants: Separated<EnumVariant, ",">> "}"
     <end:@R>
         => CommonDeclaration::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
-
-    // TODO add struct, enum
 
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     // TODO allow specifying "const" before function params to make error messages nicer

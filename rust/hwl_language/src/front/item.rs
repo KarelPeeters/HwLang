@@ -1,17 +1,22 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, ElaboratedModule};
-use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::compile::{AstRefStruct, CompileItemContext, ElaboratedModule};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
+use crate::front::types::Type;
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    CommonDeclaration, ConstDeclaration, Expression, FunctionDeclaration, Identifier, Item, ItemDeclaration,
-    ItemDefInterface, ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned, TypeDeclaration,
+    CommonDeclaration, ConditionalItem, ConstDeclaration, Expression, FunctionDeclaration, Identifier, Item,
+    ItemDeclaration, ItemDefInterface, ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned,
+    StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
+use indexmap::map::Entry;
+use indexmap::IndexMap;
+use itertools::Itertools;
 
 pub struct ElaboratedItemParams<I> {
     pub item: I,
@@ -43,6 +48,12 @@ pub enum FunctionItemBody {
     TypeAliasExpr(Box<Expression>),
     Module(AstRefModule),
     Interface(AstRefInterface),
+    Struct(MaybeIdentifier, Vec<ConditionalItem<StructField>>),
+}
+
+#[derive(Debug)]
+pub struct ElaboratedStructInfo {
+    pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
 }
 
 impl<'s> CompileItemContext<'_, 's> {
@@ -186,7 +197,18 @@ impl<'s> CompileItemContext<'_, 's> {
 
                 Ok(value.inner)
             }
-            CommonDeclaration::Struct(_) => Err(diags.report_todo(decl.info().1.span(), "struct declaration")),
+            CommonDeclaration::Struct(decl) => {
+                let StructDeclaration {
+                    span: _,
+                    span_body,
+                    id,
+                    params,
+                    fields,
+                } = decl;
+
+                let body = FunctionItemBody::Struct(id.clone(), fields.clone());
+                self.eval_maybe_generic_item(id.span(), *span_body, scope, vars, params, body)
+            }
             CommonDeclaration::Enum(_) => Err(diags.report_todo(decl.info().1.span(), "enum declaration")),
             CommonDeclaration::Function(decl) => {
                 let FunctionDeclaration {
@@ -244,7 +266,8 @@ impl<'s> CompileItemContext<'_, 's> {
         match params {
             None => {
                 // eval immediately
-                self.eval_item_function_body(scope, vars, None, &body)
+                let body = Spanned::new(span_body, &body);
+                self.eval_item_function_body(scope, vars, None, body)
             }
             Some(params) => {
                 // build function
@@ -264,14 +287,14 @@ impl<'s> CompileItemContext<'_, 's> {
 
     pub fn eval_item_function_body(
         &mut self,
-        scope: &Scope,
+        scope_params: &Scope,
         vars: &mut VariableValues,
         params: Option<Vec<(Identifier, CompileValue)>>,
-        body: &FunctionItemBody,
+        body: Spanned<&FunctionItemBody>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
-        match body {
+        match body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
-                let result_ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
+                let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
             &FunctionItemBody::Module(item) => {
@@ -284,6 +307,65 @@ impl<'s> CompileItemContext<'_, 's> {
                 let (result_id, _) = self.refs.elaborate_interface(item_params)?;
                 Ok(CompileValue::Interface(result_id))
             }
+            FunctionItemBody::Struct(id, fields) => {
+                let item_params = ElaboratedItemParams {
+                    item: AstRefStruct(id.span()),
+                    params,
+                };
+                let (result_id, result_info) = self.refs.shared.elaborated_structs.elaborate(item_params, |_| {
+                    self.elaborate_struct_new(scope_params, vars, body.span, fields)
+                })?;
+
+                let fields = result_info
+                    .fields
+                    .values()
+                    .map(|(_, ty)| ty.inner.clone())
+                    .collect_vec();
+                Ok(CompileValue::Type(Type::Struct(result_id, fields)))
+            }
         }
+    }
+
+    fn elaborate_struct_new(
+        &mut self,
+        scope_params: &Scope,
+        vars: &mut VariableValues,
+        span_body: Span,
+        fields: &[ConditionalItem<StructField>],
+    ) -> Result<ElaboratedStructInfo, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        // TODO generalize this indexmap "already defined" structure
+        let mut fields_eval = IndexMap::new();
+
+        let mut any_field_err = Ok(());
+        let mut visit_field = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, field: &StructField| {
+            let StructField { span: _, id, ty } = field;
+
+            let ty = s.eval_expression_as_ty(scope, vars, ty)?;
+
+            match fields_eval.entry(id.string.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((id.clone(), ty));
+                }
+                Entry::Occupied(entry) => {
+                    let diag = Diagnostic::new("duplicate struct field name")
+                        .add_info(entry.get().0.span, "previously declared here")
+                        .add_error(id.span, "declared again here")
+                        .finish();
+                    any_field_err = Err(diags.report(diag));
+                }
+            }
+
+            Ok(())
+        };
+
+        let mut scope = Scope::new_child(span_body, scope_params);
+        for field in fields {
+            self.compile_visit_conditional_items(&mut scope, vars, field, &mut visit_field)?;
+        }
+        any_field_err?;
+
+        Ok(ElaboratedStructInfo { fields: fields_eval })
     }
 }

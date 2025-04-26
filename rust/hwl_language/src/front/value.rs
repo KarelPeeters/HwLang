@@ -1,4 +1,4 @@
-use crate::front::compile::ElaboratedItem;
+use crate::front::compile::{ElaboratedItem, ElaboratedStruct};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
@@ -7,7 +7,7 @@ use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrL
 use crate::syntax::parsed::{AstRefInterface, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
-use itertools::enumerate;
+use itertools::{enumerate, Itertools};
 use std::convert::identity;
 
 // TODO just provide both as default args, by now it's pretty clear that this uses HardwareValue almost always
@@ -25,9 +25,12 @@ pub enum CompileValue {
     Bool(bool),
     Int(BigInt),
     String(String),
+
+    IntRange(IncRange<BigInt>),
     Tuple(Vec<CompileValue>),
     Array(Vec<CompileValue>),
-    IntRange(IncRange<BigInt>),
+    // TODO avoid storing copy of field types
+    Struct(ElaboratedStruct, Vec<Type>, Vec<CompileValue>),
 
     Function(FunctionValue),
     Module(ElaboratedItem<AstRefModule>),
@@ -93,6 +96,7 @@ impl Typed for CompileValue {
                 let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty(), true));
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
             }
+            CompileValue::Struct(item, fields, _) => Type::Struct(*item, fields.clone()),
             CompileValue::IntRange(_) => Type::Range,
             CompileValue::Function(_) => Type::Function,
             CompileValue::Module(_) => Type::Module,
@@ -108,8 +112,9 @@ impl CompileValue {
     pub fn contains_undefined(&self) -> bool {
         match self {
             CompileValue::Undefined => true,
-            CompileValue::Tuple(values) => values.iter().any(|v| v.contains_undefined()),
-            CompileValue::Array(values) => values.iter().any(|v| v.contains_undefined()),
+            CompileValue::Tuple(values) => values.iter().any(CompileValue::contains_undefined),
+            CompileValue::Array(values) => values.iter().any(CompileValue::contains_undefined),
+            CompileValue::Struct(_, _, values) => values.iter().any(CompileValue::contains_undefined),
             CompileValue::Type(_)
             | CompileValue::Bool(_)
             | CompileValue::Int(_)
@@ -192,6 +197,13 @@ impl CompileValue {
                     IrArrayLiteralElement::Single,
                     |e| IrExpressionLarge::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
                 ),
+                _ => HardwareValueResult::InvalidType,
+            },
+            CompileValue::Struct(item_value, _, values) => match ty {
+                HardwareType::Struct(item, fields) if item == item_value => {
+                    assert_eq!(fields.len(), values.len());
+                    map_array(large, values, |i| &fields[i], identity, IrExpressionLarge::TupleLiteral)
+                }
                 _ => HardwareValueResult::InvalidType,
             },
             CompileValue::Type(_)
@@ -292,8 +304,12 @@ impl CompileValue {
                     .join(", ");
                 format!("[{}]", values)
             }
+            CompileValue::Struct(_, _, values) => {
+                let values = values.iter().map(CompileValue::to_diagnostic_string).join(", ");
+                format!("struct({})", values)
+            }
             CompileValue::IntRange(range) => format!("({})", range),
-            // TODO include item name and generic args?
+            // TODO include item name and generic args
             CompileValue::Function(_) => "function".to_string(),
             CompileValue::Module(_) => "module".to_string(),
             CompileValue::Interface(_) => "interface".to_string(),

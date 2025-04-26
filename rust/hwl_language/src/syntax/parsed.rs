@@ -90,6 +90,7 @@ macro_rules! impl_ast_ref_alias {
 
 impl_ast_ref_alias!(AstRefModule, ast::Item::Module, ast::ItemDefModule);
 impl_ast_ref_alias!(AstRefInterface, ast::Item::Interface, ast::ItemDefInterface);
+impl_ast_ref_alias!(AstRefStruct, ast::Item::Interface, ast::ItemDefInterface);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {

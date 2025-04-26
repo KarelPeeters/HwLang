@@ -2,7 +2,7 @@ use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, TH
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::interface::ElaboratedInterfaceInfo;
-use crate::front::item::{ElaboratedItemKey, ElaboratedItemParams};
+use crate::front::item::{ElaboratedItemKey, ElaboratedItemParams, ElaboratedStructInfo};
 use crate::front::module::{ElaboratedModuleHeader, ElaboratedModuleInfo};
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
@@ -242,11 +242,17 @@ pub enum WorkItem {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedItem<I> {
     index: usize,
+    // TODO does this actually need to be here?
     pub item: I,
 }
 
+// workaround for pointers into the ast not really working yet
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct AstRefStruct(pub Span);
+
 pub type ElaboratedModule = ElaboratedItem<AstRefModule>;
 pub type ElaboratedInterface = ElaboratedItem<AstRefInterface>;
+pub type ElaboratedStruct = ElaboratedItem<AstRefStruct>;
 
 /// long-term shared between threads
 pub struct CompileShared {
@@ -257,6 +263,7 @@ pub struct CompileShared {
 
     elaborated_modules: ElaborateItemArena<AstRefModule, ElaboratedModuleInfo>,
     elaborated_interfaces: ElaborateItemArena<AstRefInterface, ElaboratedInterfaceInfo>,
+    pub elaborated_structs: ElaborateItemArena<AstRefStruct, ElaboratedStructInfo>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
@@ -265,7 +272,7 @@ pub struct CompileShared {
 
 // TODO generalize and move to sync module?
 // TODO should this support cycle detection too?
-struct ElaborateItemArena<I, F> {
+pub struct ElaborateItemArena<I, F> {
     next_id: AtomicUsize,
     key_to_id: ComputeOnceMap<ElaboratedItemKey<I>, ElaboratedItem<I>>,
     id_to_info: ComputeOnceMap<ElaboratedItem<I>, Result<F, ErrorGuaranteed>>,
@@ -783,6 +790,7 @@ impl CompileShared {
             item_values,
             elaborated_modules: ElaborateItemArena::new(),
             elaborated_interfaces: ElaborateItemArena::new(),
+            elaborated_structs: ElaborateItemArena::new(),
             ir_modules: Mutex::new(Arena::new()),
         }
     }
