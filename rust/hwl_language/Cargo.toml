@@ -9,6 +9,7 @@ default-run = "hwl_language"
 [dependencies]
 annotate-snippets.workspace = true
 clap.workspace = true
+ctrlc.workspace = true
 dashmap.workspace = true
 indexmap.workspace = true
 itertools.workspace = true

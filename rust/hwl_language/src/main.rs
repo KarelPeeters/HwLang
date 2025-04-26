@@ -12,6 +12,8 @@ use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -106,6 +108,12 @@ fn main_inner(args: Args) -> ExitCode {
     let parsed = ParsedDatabase::new(&diags, &source);
     let time_parse = start_parse.elapsed();
 
+    let should_stop = Arc::new(AtomicBool::new(false));
+    {
+        let should_stop = should_stop.clone();
+        ctrlc::set_handler(move || should_stop.store(true, Ordering::Relaxed)).expect("Failed to set Ctrl+C handler");
+    }
+
     let start_compile = Instant::now();
     let compiled = compile(
         &diags,
@@ -113,7 +121,7 @@ fn main_inner(args: Args) -> ExitCode {
         &parsed,
         elaboration_set,
         &mut StdoutPrintHandler,
-        &|| false,
+        &|| should_stop.load(Ordering::Relaxed),
         thread_count,
     );
     let time_compile = start_compile.elapsed();
