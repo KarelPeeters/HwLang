@@ -188,6 +188,12 @@ Block<S>: Block<S> = {
     },
 }
 
+BlockSeparated<T, S>: Block<T> = {
+    <start:@L> "{" <statements:Separated<T, S>> "}" <end:@R> => {
+        Block { statements, span: loc.span(start, end) }
+    },
+}
+
 ModuleStatement: ModuleStatement = Spanned<ModuleStatementKind>;
 BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
@@ -244,6 +250,7 @@ ModuleStatementKind: ModuleStatementKind = {
     },
     // module instance
     // TODO allow strings as instance names? necessary for modules instantiated in loops
+    // TODO allow "if" here?
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
         "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
@@ -306,8 +313,6 @@ BlockStatementKind: BlockStatementKind = {
     <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
 }
 
-// TODO refactor, the `{}` should probably be part of this grammer rule,
-//   instead of hoping the user parses those in `B`
 IfStatement<B>: IfStatement<B> = {
     <start:@L> <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <then_block:B> <end_if:@R>
     <else_ifs:ElseIfPair<B>*>
@@ -377,36 +382,21 @@ VariableMutable: bool = {
 }
 
 // parameters
-// TODO allow "if" here
 Parameters: Parameters = {
-    <start:@L> "(" <items:ParameterItems> ")" <end:@R>
+    <start:@L> "(" <items:Separated<ConditionalItem<Parameter>, ",">> ")" <end:@R>
         => Parameters { items, span: loc.span(start, end) },
-}
-
-ParameterItems: Vec<ParameterItem> = {
-    Separated<ParameterItem,",">,
-}
-
-ParametersBlock: ParametersBlock = {
-    <start:@L> "{" <items:Separated<ParameterItem,",">> "}" <end:@R>
-        => ParametersBlock { items, span: loc.span(start, end) },
-}
-
-ParameterItem: ParameterItem = {
-    Parameter => ParameterItem::Parameter(<>),
-    IfStatement<ParametersBlock> => ParameterItem::If(<>),
 }
 
 Parameter: Parameter = {
     <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => Parameter { id, ty, span: loc.span(start, end) },
 }
 
-ModulePorts: Vec<ModulePortItem> = Separated<ModulePortItem, ",">;
+ModulePorts: Vec<ConditionalItem<ModulePortItem>> = Separated<ConditionalItem<ModulePortItem>, ",">;
 
 ModulePortItem: ModulePortItem = {
     <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
-            => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
-    <start:@L> <domain:Spanned<DomainKind>> "{" <ports:Separated<ModulePortInBlock, ",">> "}" <end:@R>
+        => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
+    <start:@L> <domain:Spanned<DomainKind>> <ports:BlockSeparated<ConditionalItem<ModulePortInBlock>, ",">> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
@@ -427,6 +417,11 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Port { direction, ty },
     <span_keyword:Span<"interface">> <interface:BoxExpr>
         => ModulePortInBlockKind::Interface { span_keyword, interface },
+}
+
+ConditionalItem<I>: ConditionalItem<I> = {
+    I => ConditionalItem::Inner(<>),
+    IfStatement<BlockSeparated<ConditionalItem<I>, ",">> => ConditionalItem::If(<>),
 }
 
 WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
@@ -619,6 +614,7 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
 ExprLevelCall<allow_struct>: ExpressionKind = {
     "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")"
         => ExpressionKind::Builtin(args),
+    // TODO allow "if" here?
     <target:BoxSpanned<ExprLevelDot<allow_struct>>> "(" <args:Args> ")"
         => ExpressionKind::Call(target, args),
     <span_keyword:Span<"reg">> "(" <value:BoxExpr> "," <init:BoxExpr> ")"

@@ -11,8 +11,7 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, ParameterItem, Parameters,
-    Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters, Spanned,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
@@ -253,27 +252,12 @@ impl CompileItemContext<'_, '_> {
                 scope.declare_already_checked(param.id.string.clone(), entry);
             };
 
-        fn visit_param_item<'a>(
-            visit_param: &mut impl FnMut(&mut CompileItemContext, &mut VariableValues, &mut Scope, &'a Parameter),
-            ctx: &mut CompileItemContext,
-            vars: &mut VariableValues,
-            scope: &mut Scope,
-            item: &'a ParameterItem,
-        ) -> Result<(), ErrorGuaranteed> {
-            match item {
-                ParameterItem::Parameter(param) => visit_param(ctx, vars, scope, param),
-                ParameterItem::If(if_stmt) => {
-                    if let Some(block) = ctx.compile_if_statement_choose_block(&scope, vars, if_stmt)? {
-                        for inner_item in &block.items {
-                            visit_param_item(visit_param, ctx, vars, scope, inner_item)?;
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
         for item in &params.items {
-            visit_param_item(&mut visit_param, self, vars, &mut scope, item)?;
+            // we need to short-circuit here, duplicate or missing params might cause spurious errors
+            self.compile_visit_conditional_items(&mut scope, vars, item, &mut |s, scope, vars, param| {
+                visit_param(s, vars, scope, param);
+                Ok(())
+            })?;
         }
         any_err_params?;
 

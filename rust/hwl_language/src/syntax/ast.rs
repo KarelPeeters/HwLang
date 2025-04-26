@@ -116,7 +116,7 @@ pub struct ItemDefModule {
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub ports: Spanned<Vec<ModulePortItem>>,
+    pub ports: Spanned<Vec<ConditionalItem<ModulePortItem>>>,
     pub body: Block<ModuleStatement>,
 }
 
@@ -140,19 +140,7 @@ pub struct InterfaceView {
 #[derive(Debug, Clone)]
 pub struct Parameters {
     pub span: Span,
-    pub items: Vec<ParameterItem>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParametersBlock {
-    pub span: Span,
-    pub items: Vec<ParameterItem>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ParameterItem {
-    Parameter(Parameter),
-    If(IfStatement<ParametersBlock>),
+    pub items: Vec<ConditionalItem<Parameter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +149,13 @@ pub struct Parameter {
     pub id: Identifier,
     pub ty: Expression,
     // TODO add default value
+}
+
+#[derive(Debug, Clone)]
+pub enum ConditionalItem<I> {
+    Inner(I),
+    If(IfStatement<Block<ConditionalItem<I>>>),
+    // TODO add `match` here too once that exists
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +175,7 @@ pub struct ModulePortSingle {
 pub struct ModulePortBlock {
     pub span: Span,
     pub domain: Spanned<DomainKind<Box<Expression>>>,
-    pub ports: Vec<ModulePortInBlock>,
+    pub ports: Block<ConditionalItem<ModulePortInBlock>>,
 }
 
 #[derive(Debug, Clone)]

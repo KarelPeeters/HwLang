@@ -14,8 +14,8 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{merge_variable_branches, VariableValues};
 use crate::mid::ir::{IrIfStatement, IrStatement};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement, Spanned,
-    VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConditionalItem, ForStatement, IfCondBlockPair, IfStatement,
+    ReturnStatement, Spanned, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -588,6 +588,26 @@ impl CompileItemContext<'_, '_> {
         }
 
         Ok(BlockEnd::Normal)
+    }
+
+    pub fn compile_visit_conditional_items<'a, I>(
+        &mut self,
+        scope: &mut Scope,
+        vars: &mut VariableValues,
+        c: &'a ConditionalItem<I>,
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut VariableValues, &'a I) -> Result<(), ErrorGuaranteed>,
+    ) -> Result<(), ErrorGuaranteed> {
+        match c {
+            ConditionalItem::Inner(inner) => f(self, scope, vars, inner),
+            ConditionalItem::If(if_stmt) => {
+                if let Some(block) = self.compile_if_statement_choose_block(scope, vars, if_stmt)? {
+                    for item in &block.statements {
+                        self.compile_visit_conditional_items(scope, vars, item, f)?;
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn compile_if_statement_choose_block<'a, B>(

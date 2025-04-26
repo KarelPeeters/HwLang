@@ -1,5 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::syntax::ast::{FileContent, ModulePortInBlock, ModulePortSingle};
+use crate::syntax::ast::FileContent;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::IndexType;
@@ -26,24 +26,6 @@ impl ParsedDatabase {
         }
 
         Self { file_ast }
-    }
-
-    pub fn module_port_ast(&self, port: AstRefModulePort) -> ModulePort {
-        let AstRefModulePort {
-            module,
-            port_item_index,
-            port_in_block_index,
-        } = port;
-        let module_ast = &self[module];
-        let item = &module_ast.ports.inner[port_item_index];
-
-        match port_in_block_index {
-            None => ModulePort::Single(unwrap_match!(item, ast::ModulePortItem::Single(port) => port)),
-            Some(port_in_block_index) => {
-                let block = unwrap_match!(item, ast::ModulePortItem::Block(block) => block);
-                ModulePort::InBlock(&block.ports[port_in_block_index])
-            }
-        }
     }
 }
 
@@ -114,12 +96,6 @@ pub struct AstRefModulePort {
     module: AstRefModule,
     port_item_index: usize,
     port_in_block_index: Option<usize>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum ModulePort<'a> {
-    Single(&'a ModulePortSingle),
-    InBlock(&'a ModulePortInBlock),
 }
 
 impl FileContent {

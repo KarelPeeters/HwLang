@@ -23,8 +23,8 @@ use crate::mid::ir::{
     IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ExpressionKind, ForStatement, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection, ResetKind,
+    self, ClockedBlockReset, ConditionalItem, ExpressionKind, ForStatement, ModulePortBlock, ModulePortInBlock,
+    ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection, ResetKind,
 };
 use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
@@ -110,7 +110,7 @@ impl CompileRefs<'_, '_> {
         // elaborate ports
         // TODO we actually need a full context here?
         let (connectors, scope_ports, ports_ir) =
-            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span);
+            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
         let scope_ports = scope_ports.into_content();
 
         let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
@@ -160,9 +160,9 @@ impl CompileRefs<'_, '_> {
         ctx: &mut CompileItemContext,
         scope_params: &'p Scope<'p>,
         vars: &mut VariableValues,
-        ports: &Spanned<Vec<ModulePortItem>>,
+        ports: &Spanned<Vec<ConditionalItem<ModulePortItem>>>,
         module_def_span: Span,
-    ) -> (ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>) {
+    ) -> Result<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>), ErrorGuaranteed> {
         let diags = self.diags;
 
         let mut scope_ports = Scope::new_child(ports.span.join(Span::single_at(module_def_span.end)), scope_params);
@@ -178,7 +178,10 @@ impl CompileRefs<'_, '_> {
             scalar
         };
 
-        for port_item in &ports.inner {
+        let mut visit_port_item = |ctx: &mut CompileItemContext,
+                                   scope_ports: &mut Scope,
+                                   vars: &mut VariableValues,
+                                   port_item: &ModulePortItem| {
             match port_item {
                 ModulePortItem::Single(port_item) => {
                     let ModulePortSingle { span: _, id, kind } = port_item;
@@ -255,67 +258,86 @@ impl CompileRefs<'_, '_> {
 
                     let domain = ctx.eval_port_domain(&scope_ports, domain);
 
-                    for port in ports {
-                        let ModulePortInBlock { span: _, id, kind } = port;
+                    let mut visit_port_item_in_block =
+                        |ctx: &mut CompileItemContext,
+                         scope_ports: &mut Scope,
+                         vars: &mut VariableValues,
+                         port_item_in_block: &ModulePortInBlock| {
+                            let ModulePortInBlock { span: _, id, kind } = port_item_in_block;
 
-                        match kind {
-                            ModulePortInBlockKind::Port { direction, ty } => {
-                                let ty = ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port");
+                            match kind {
+                                ModulePortInBlockKind::Port { direction, ty } => {
+                                    let ty = ctx.eval_expression_as_ty_hardware(&scope_ports, vars, ty, "port");
 
-                                let entry = result_pair(domain, ty).map(|(domain, ty)| {
-                                    push_connector_single(
-                                        ctx,
-                                        &mut ports_ir,
-                                        &mut connectors,
-                                        &mut port_to_single,
-                                        &mut next_single,
-                                        id,
-                                        *direction,
-                                        domain.map_inner(PortDomain::Kind),
-                                        ty,
-                                    )
-                                });
-                                scope_ports.declare(diags, id, entry);
-                            }
-                            ModulePortInBlockKind::Interface {
-                                span_keyword: _,
-                                interface,
-                            } => {
-                                let interface_view = ctx
-                                    .eval_expression_as_compile(&scope_ports, vars, interface, "interface")
-                                    .and_then(|interface| match interface.inner {
-                                        CompileValue::InterfaceView(view) => Ok(view),
-                                        value => Err(diags.report_simple(
-                                            "expected interface view",
-                                            interface.span,
-                                            format!("got other value `{}`", value.to_diagnostic_string()),
-                                        )),
+                                    let entry = result_pair(domain, ty).map(|(domain, ty)| {
+                                        push_connector_single(
+                                            ctx,
+                                            &mut ports_ir,
+                                            &mut connectors,
+                                            &mut port_to_single,
+                                            &mut next_single,
+                                            id,
+                                            *direction,
+                                            domain.map_inner(PortDomain::Kind),
+                                            ty,
+                                        )
                                     });
+                                    scope_ports.declare(diags, id, entry);
+                                }
+                                ModulePortInBlockKind::Interface {
+                                    span_keyword: _,
+                                    interface,
+                                } => {
+                                    let interface_view = ctx
+                                        .eval_expression_as_compile(&scope_ports, vars, interface, "interface")
+                                        .and_then(|interface| match interface.inner {
+                                            CompileValue::InterfaceView(view) => Ok(view),
+                                            value => Err(diags.report_simple(
+                                                "expected interface view",
+                                                interface.span,
+                                                format!("got other value `{}`", value.to_diagnostic_string()),
+                                            )),
+                                        });
 
-                                let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
-                                    push_connector_interface(
-                                        ctx,
-                                        &mut ports_ir,
-                                        &mut connectors,
-                                        &mut port_to_single,
-                                        &mut next_single,
-                                        id,
-                                        domain,
-                                        view,
-                                    )
-                                });
-                                scope_ports.declare(diags, id, entry);
+                                    let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
+                                        push_connector_interface(
+                                            ctx,
+                                            &mut ports_ir,
+                                            &mut connectors,
+                                            &mut port_to_single,
+                                            &mut next_single,
+                                            id,
+                                            domain,
+                                            view,
+                                        )
+                                    });
+                                    scope_ports.declare(diags, id, entry);
+                                }
                             }
+                            Ok(())
                         };
+
+                    for port_item_in_block in &ports.statements {
+                        ctx.compile_visit_conditional_items(
+                            scope_ports,
+                            vars,
+                            port_item_in_block,
+                            &mut visit_port_item_in_block,
+                        )?;
                     }
                 }
             }
+            Ok(())
+        };
+
+        for port_item in &ports.inner {
+            ctx.compile_visit_conditional_items(&mut scope_ports, vars, port_item, &mut visit_port_item)?;
         }
 
         assert!(ctx.ports.len() >= connectors.len());
         assert_eq!(ctx.ports.len(), ports_ir.len());
 
-        (connectors, scope_ports, ports_ir)
+        Ok((connectors, scope_ports, ports_ir))
     }
 
     fn elaborate_module_body_impl(

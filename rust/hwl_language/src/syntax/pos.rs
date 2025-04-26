@@ -23,6 +23,7 @@ pub struct PosFull {
 }
 
 // TODO make this more compact, sharing the file?
+// TODO track spans relative to the start of the item, allowing incremental compilation to actually work
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Span {
     /// inclusive
