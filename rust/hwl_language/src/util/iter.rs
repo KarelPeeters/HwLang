@@ -14,6 +14,13 @@ pub trait IterExt: Iterator {
     {
         self.try_collect_all()
     }
+
+    fn try_collect_vec<T, E>(self) -> Result<Vec<T>, E>
+    where
+        Self: Sized + Iterator<Item = Result<T, E>>,
+    {
+        self.collect()
+    }
 }
 
 impl<I: Iterator> IterExt for I {

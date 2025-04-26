@@ -12,6 +12,7 @@ use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
+use crate::util::iter::IterExt;
 use crate::util::Indent;
 use crate::{swrite, swriteln};
 use itertools::enumerate;
@@ -438,7 +439,24 @@ impl CodegenBlockContext<'_> {
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
 
-                IrExpressionLarge::TupleLiteral(_) => return Err(todo("TupleLiteral")),
+                IrExpressionLarge::TupleLiteral(elements) => {
+                    let elements_eval = elements
+                        .iter()
+                        .map(|e| self.eval(indent, span, e, stage_read))
+                        .try_collect_vec()?;
+
+                    let result_ty = expr.ty(self.module_info, self.locals);
+                    let result_ty_str = type_to_cpp(self.diags, span, &result_ty)?;
+                    let tmp_result = self.new_temporary();
+
+                    swrite!(self.f, "{indent}{result_ty_str} {tmp_result} = {{");
+                    for (i, element_eval) in enumerate(elements_eval) {
+                        swrite!(self.f, "{}{}", element_eval, end_comma(i, elements.len()));
+                    }
+                    swriteln!(self.f, "}};");
+
+                    Evaluated::Temporary(tmp_result)
+                }
                 IrExpressionLarge::ArrayLiteral(inner_ty, len, elements) => {
                     let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
                     let tmp_result = self.new_temporary();
@@ -493,7 +511,7 @@ impl CodegenBlockContext<'_> {
                     let tmp_result = self.new_temporary();
                     swriteln!(self.f, "{indent}std::array<bool, {size_bits}> {tmp_result};");
 
-                    self.impl_to_bits(indent, span, ty, tmp_result, "0", &value.to_string())?;
+                    self.impl_to_bits(indent, ty, tmp_result, "0", &value.to_string())?;
 
                     Evaluated::Temporary(tmp_result)
                 }
@@ -504,7 +522,7 @@ impl CodegenBlockContext<'_> {
                     let tmp_result = self.new_temporary();
                     swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
 
-                    self.impl_from_bits(indent, span, ty, &tmp_result.to_string(), value, "0")?;
+                    self.impl_from_bits(indent, ty, &tmp_result.to_string(), value, "0")?;
 
                     Evaluated::Temporary(tmp_result)
                 }
@@ -527,17 +545,15 @@ impl CodegenBlockContext<'_> {
     fn impl_to_bits(
         &mut self,
         indent: Indent,
-        span: Span,
         ty: &IrType,
         result: Temporary,
         result_offset: &str,
         value: &str,
     ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.diags;
         // TODO maybe it's better to switch to just storing bits for everything in C++ too?
         match ty {
             IrType::Bool => {
-                swriteln!(self.f, "{indent}{result}[{result_offset}] = {value}",);
+                swriteln!(self.f, "{indent}{result}[{result_offset}] = {value};",);
             }
             IrType::Int(range) => {
                 // TODO this this pretty inefficient
@@ -554,7 +570,19 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
-            IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type tuple")),
+            IrType::Tuple(elements) => {
+                let mut offset = BigUint::ZERO;
+                for (element_i, element) in enumerate(elements) {
+                    self.impl_to_bits(
+                        indent,
+                        element,
+                        result,
+                        &format!("{} + {}", result_offset, offset),
+                        &format!("std::get<{element_i}>({value})"),
+                    )?;
+                    offset += element.size_bits();
+                }
+            }
             IrType::Array(ty_inner, ty_len) => {
                 let ty_inner_size = ty_inner.size_bits();
                 let tmp_i = self.new_temporary();
@@ -564,7 +592,6 @@ impl CodegenBlockContext<'_> {
                 );
                 self.impl_to_bits(
                     indent.nest(),
-                    span,
                     ty_inner,
                     result,
                     &format!("{result_offset} + {tmp_i} * {ty_inner_size}"),
@@ -580,16 +607,14 @@ impl CodegenBlockContext<'_> {
     fn impl_from_bits(
         &mut self,
         indent: Indent,
-        span: Span,
         ty: &IrType,
         result: &str,
         value: Temporary,
         value_offset: &str,
     ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.diags;
         match ty {
             IrType::Bool => {
-                swriteln!(self.f, "{indent}{result}= {value}",);
+                swriteln!(self.f, "{indent}{result} = {value}[{value_offset}];",);
             }
             IrType::Int(range) => {
                 // TODO this this pretty inefficient
@@ -608,7 +633,19 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
-            IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type tuple")),
+            IrType::Tuple(tys_inner) => {
+                let mut offset = BigUint::ZERO;
+                for (element_i, element) in enumerate(tys_inner) {
+                    self.impl_from_bits(
+                        indent,
+                        element,
+                        &format!("std::get<{element_i}>({result})"),
+                        value,
+                        &format!("{} + {}", value_offset, offset),
+                    )?;
+                    offset += element.size_bits();
+                }
+            }
             IrType::Array(ty_inner, ty_len) => {
                 let ty_inner_size = ty_inner.size_bits();
                 let tmp_i = self.new_temporary();
@@ -618,7 +655,6 @@ impl CodegenBlockContext<'_> {
                 );
                 self.impl_from_bits(
                     indent.nest(),
-                    span,
                     ty_inner,
                     &format!("{result}[{tmp_i}]"),
                     value,
@@ -786,7 +822,11 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, E
                 return Err(diags.report_todo(span, format!("simulator wide integer type: {range}")));
             }
         }
-        IrType::Tuple(_) => return Err(diags.report_todo(span, "simulator type Tuple")),
+        IrType::Tuple(inner) => {
+            let inner_strs = inner.iter().map(|ty| type_to_cpp(diags, span, ty)).try_collect_vec()?;
+            let inner_str = inner_strs.join(", ");
+            format!("std::tuple<{inner_str}>")
+        }
         IrType::Array(inner, len) => {
             // TODO we want to represent boolean arrays als bitfields, either through a template optimization trick
             //   or through a special case here (and in every other place that interacts with arrays)
@@ -843,6 +883,6 @@ fn end_comma(i: usize, len: usize) -> &'static str {
     if i == len - 1 {
         ""
     } else {
-        ","
+        ", "
     }
 }
