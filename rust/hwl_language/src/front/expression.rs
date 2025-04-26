@@ -547,6 +547,12 @@ impl CompileItemContext<'_, '_> {
                                 };
                                 Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
                             }
+                            "new" => match ty {
+                                Type::Struct(elab, _) => {
+                                    Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)))
+                                }
+                                _ => todo!("err"),
+                            },
                             _ => {
                                 return Err(diags.report_simple(
                                     "unknown property for type",

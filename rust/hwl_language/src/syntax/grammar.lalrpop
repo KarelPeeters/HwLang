@@ -386,7 +386,7 @@ Parameters: Parameters = {
 }
 
 Parameter: Parameter = {
-    <start:@L> <id:Id> ":" <ty:Expr> <end:@R> => Parameter { id, ty, span: loc.span(start, end) },
+    <id:Id> ":" <ty:Expr> => Parameter { id, ty },
 }
 
 ModulePorts: Vec<ConditionalItem<ModulePortItem>> = Separated<ConditionalItem<ModulePortItem>, ",">;

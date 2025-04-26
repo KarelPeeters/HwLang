@@ -53,6 +53,7 @@ pub enum FunctionItemBody {
 
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
+    pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
 }
 
@@ -366,6 +367,9 @@ impl<'s> CompileItemContext<'_, 's> {
         }
         any_field_err?;
 
-        Ok(ElaboratedStructInfo { fields: fields_eval })
+        Ok(ElaboratedStructInfo {
+            span_body,
+            fields: fields_eval,
+        })
     }
 }

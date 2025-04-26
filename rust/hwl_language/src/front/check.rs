@@ -113,6 +113,9 @@ pub enum TypeContainsReason {
     ArrayLen {
         span_len: Span,
     },
+    Parameter {
+        param_ty: Span,
+    },
 }
 
 impl TypeContainsReason {
@@ -174,6 +177,9 @@ impl TypeContainsReason {
             }
             TypeContainsReason::ArrayLen { span_len } => {
                 diag.add_info(span_len, format!("array length requires type `{}`", target_ty_str))
+            }
+            TypeContainsReason::Parameter { param_ty } => {
+                diag.add_info(param_ty, format!("parameter requires type `{}`", target_ty_str))
             }
         }
     }

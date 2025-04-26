@@ -146,7 +146,6 @@ pub struct Parameters {
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    pub span: Span,
     pub id: Identifier,
     pub ty: Expression,
     // TODO add default value
