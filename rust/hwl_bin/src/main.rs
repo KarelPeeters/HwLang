@@ -162,16 +162,16 @@ fn main_inner(args: Args) -> ExitCode {
     // TODO don't hardcode paths here
     if let Some((_, _, lowered, simulator_code)) = &lower_results {
         // save lowered verilog
-        std::fs::create_dir_all("../../ignored").unwrap();
+        std::fs::create_dir_all("../ignored").unwrap();
         std::fs::write(
-            "../../ignored/lowered.v",
+            "../ignored/lowered.v",
             lowered.as_ref().map_or(&String::new(), |s| &s.verilog_source),
         )
         .unwrap();
 
         // save simulator code
         std::fs::write(
-            "../../ignored/lowered.cpp",
+            "../ignored/lowered.cpp",
             simulator_code.as_ref().unwrap_or(&String::new()),
         )
         .unwrap();
