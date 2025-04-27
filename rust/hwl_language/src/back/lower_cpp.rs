@@ -482,7 +482,10 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
-
+                IrExpressionLarge::TupleIndex { base, index } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("({base_eval}.get({index}))"))
+                }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
                     let index_eval = self.eval(indent, span, index, stage_read)?;

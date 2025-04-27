@@ -162,6 +162,15 @@ impl BigUint {
             Storage::Big(storage) => storage.bits(),
         }
     }
+
+    pub fn as_usize_if_lt(&self, len: usize) -> Option<usize> {
+        let s = self.try_into().ok()?;
+        if s < len {
+            Some(s)
+        } else {
+            None
+        }
+    }
 }
 
 impl From<BigUint> for BigInt {

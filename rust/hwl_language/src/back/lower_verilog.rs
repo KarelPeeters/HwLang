@@ -925,8 +925,15 @@ fn lower_expression(
                     swrite!(f, "}}");
                 }
 
+                IrExpressionLarge::TupleIndex { base, index } => {
+                    // TODO this is completely wrong
+                    swrite!(f, "(");
+                    lower_expression(diags, large, name_map, span, base, f)?;
+                    swrite!(f, "[{}])", index);
+                }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     // TODO this is probably incorrect in general, we need to store the array in a variable first
+                    // TODO we're incorrectly using array indices as bit indices here
                     swrite!(f, "(");
                     lower_expression(diags, large, name_map, span, base, f)?;
                     swrite!(f, "[");
@@ -935,6 +942,7 @@ fn lower_expression(
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
                     // TODO this is probably incorrect in general, we need to store the array in a variable first
+                    // TODO we're incorrectly using array indices as bit indices here
                     swrite!(f, "(");
                     lower_expression(diags, large, name_map, span, base, f)?;
                     swrite!(f, "[");

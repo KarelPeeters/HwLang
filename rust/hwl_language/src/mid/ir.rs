@@ -285,6 +285,10 @@ pub enum IrExpressionLarge {
     ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
 
     // slice
+    TupleIndex {
+        base: IrExpression,
+        index: BigUint,
+    },
     ArrayIndex {
         base: IrExpression,
         index: IrExpression,
@@ -420,6 +424,10 @@ impl IrExpression {
                         IrType::Array(Box::new(ty_inner.clone()), len.clone())
                     }
 
+                    IrExpressionLarge::TupleIndex { base, index } => {
+                        let inner = unwrap_match!(base.ty(module, locals), IrType::Tuple(inner) => inner);
+                        inner[usize::try_from(index).unwrap()].clone()
+                    }
                     // TODO store resulting type in expression instead?
                     IrExpressionLarge::ArrayIndex { base, .. } => {
                         unwrap_match!(base.ty(module, locals), IrType::Array(inner, _) => *inner)
@@ -519,6 +527,9 @@ impl IrExpression {
                         .join(", ");
                     format!("[{ty_str} {len}; {v_str}]")
                 }
+                IrExpressionLarge::TupleIndex { base, index } => {
+                    format!("({}.{})", base.to_diagnostic_string(module), index)
+                }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     format!(
                         "({}[{}])",
@@ -585,6 +596,7 @@ impl IrExpression {
                 IrExpressionLarge::ArrayLiteral(_ty, _len, x) => x.iter().for_each(|a| match a {
                     IrArrayLiteralElement::Single(v) | IrArrayLiteralElement::Spread(v) => f(v),
                 }),
+                IrExpressionLarge::TupleIndex { base, index: _ } => f(base),
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     f(base);
                     f(index);

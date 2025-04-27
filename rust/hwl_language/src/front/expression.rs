@@ -4,7 +4,7 @@ use crate::front::check::{
     check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware,
     check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInterface, StackEntry};
+use crate::front::compile::{CompileItemContext, ElaboratedModule, ElaboratedStruct, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -65,8 +65,10 @@ impl ValueWithImplications {
     pub fn value_cloned(&self) -> Value {
         self.as_ref().map_hardware(|v| &v.value).cloned()
     }
+}
 
-    pub fn value_ty(&self) -> Type {
+impl Typed for ValueWithImplications {
+    fn ty(&self) -> Type {
         match self {
             Value::Compile(v) => v.ty(),
             Value::Hardware(v) => v.value.ty(),
@@ -619,16 +621,117 @@ impl CompileItemContext<'_, '_> {
                         };
                         Value::Compile(CompileValue::InterfaceView(interface_view))
                     }
-                    _ => {
-                        return Err(diags.report_simple(
-                            "invalid base for dot id index expression",
-                            base.span,
-                            "got unexpected value",
-                        ));
+                    ValueInner::Value(base_eval) => {
+                        let base_eval_ty = base_eval.ty();
+                        let field_index = |elab: ElaboratedStruct| {
+                            let info = self.refs.shared.elaborated_structs.get(elab)?;
+                            info.fields.get_index_of(&index.string).ok_or_else(|| {
+                                let diag = Diagnostic::new("field not found")
+                                    .add_info(
+                                        base.span,
+                                        format!("base has type `{}`", base_eval_ty.to_diagnostic_string()),
+                                    )
+                                    .add_error(index.span, "attempt to access non-existing field here")
+                                    .add_info(info.span_body, "fields declared here")
+                                    .finish();
+                                diags.report(diag)
+                            })
+                        };
+
+                        match base_eval {
+                            ValueWithImplications::Compile(base_eval) => match base_eval {
+                                CompileValue::Struct(elab, _, field_values) => {
+                                    let field_index = field_index(elab)?;
+                                    Value::Compile(field_values[field_index].clone())
+                                }
+                                _ => {
+                                    return Err(diags.report_internal_error(expr.span, "expected struct compile value"))
+                                }
+                            },
+                            ValueWithImplications::Hardware(base_eval) => {
+                                let base_eval = base_eval.value;
+                                match base_eval.ty {
+                                    HardwareType::Struct(elab, field_types) => {
+                                        let field_index = field_index(elab)?;
+                                        let expr = IrExpressionLarge::TupleIndex {
+                                            base: base_eval.expr,
+                                            index: field_index.into(),
+                                        };
+                                        Value::Hardware(HardwareValue {
+                                            ty: field_types[field_index].clone(),
+                                            domain: base_eval.domain,
+                                            expr: self.large.push_expr(expr),
+                                        })
+                                    }
+                                    _ => {
+                                        return Err(
+                                            diags.report_internal_error(expr.span, "expected struct hardware value")
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
-            ExpressionKind::DotIntIndex(_, _) => return Err(diags.report_todo(expr.span, "expr kind DotIntIndex")),
+            ExpressionKind::DotIntIndex(base, index) => {
+                let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+
+                let index_int = BigUint::from_str_radix(&index.inner, 10)
+                    .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
+                let err_not_tuple = |ty: &str| {
+                    let diag = Diagnostic::new("indexing into non-tuple type")
+                        .add_error(index.span, "attempt to index into non-tuple type here")
+                        .add_info(base.span, format!("base has type `{ty}`"))
+                        .finish();
+                    diags.report(diag)
+                };
+                let err_index_out_of_bounds = |len: usize| {
+                    let diag = Diagnostic::new("tuple index out of bounds")
+                        .add_error(index.span, format!("index `{index_int}` is out of bounds"))
+                        .add_info(base.span, format!("base is tuple with length `{len}`"))
+                        .finish();
+                    diags.report(diag)
+                };
+
+                match base_eval {
+                    ValueInner::Value(Value::Compile(CompileValue::Tuple(inner))) => {
+                        let index = index_int
+                            .as_usize_if_lt(inner.len())
+                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                        Value::Compile(inner[index].clone())
+                    }
+                    ValueInner::Value(Value::Compile(CompileValue::Type(Type::Tuple(inner)))) => {
+                        let index = index_int
+                            .as_usize_if_lt(inner.len())
+                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                        Value::Compile(CompileValue::Type(inner[index].clone()))
+                    }
+                    ValueInner::Value(Value::Hardware(value)) => {
+                        let value = value.value;
+                        match value.ty {
+                            HardwareType::Tuple(inner_tys) => {
+                                let index = index_int
+                                    .as_usize_if_lt(inner_tys.len())
+                                    .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
+
+                                let expr = IrExpressionLarge::TupleIndex {
+                                    base: value.expr,
+                                    index: index.into(),
+                                };
+                                Value::Hardware(HardwareValue {
+                                    ty: inner_tys[index].clone(),
+                                    domain: value.domain,
+                                    expr: self.large.push_expr(expr),
+                                })
+                            }
+                            _ => return Err(err_not_tuple(&value.ty.to_diagnostic_string())),
+                        }
+                    }
+                    ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().to_diagnostic_string())),
+                    ValueInner::PortInterface(_) => return Err(err_not_tuple("port interface")),
+                }
+            }
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
                 let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
@@ -1682,7 +1785,7 @@ pub fn eval_binary_expression(
             // TODO do we want to keep using multiplication as the "array repeat" syntax?
             //   if so, maybe allow tuples on the right side for multidimensional repeating
             let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value()));
-            match left.inner.value_ty() {
+            match left.inner.ty() {
                 Type::Array(left_ty_inner, left_len) => {
                     let right = right?;
                     let right_inner = match right.inner {
@@ -1771,7 +1874,7 @@ pub fn eval_binary_expression(
                     return Err(diags.report_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
-                        format!("got value with type `{}`", left.inner.value_ty().to_diagnostic_string()),
+                        format!("got value with type `{}`", left.inner.ty().to_diagnostic_string()),
                     ))
                 }
             }
