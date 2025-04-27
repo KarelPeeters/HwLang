@@ -2267,6 +2267,25 @@ fn array_literal_combine_values(
         .map(|v| v.span());
     if let Some(first_non_compile_span) = first_non_compile_span {
         // at least one non-compile, turn everything into IR
+        let expected_ty_inner = match expected_ty_inner {
+            Type::Any => {
+                // infer type based on elements
+                let mut ty_joined = Type::Undefined;
+                for value in &values {
+                    let value_ty = match value {
+                        ArrayLiteralElement::Single(value) => value.inner.ty(),
+                        ArrayLiteralElement::Spread(_, values) => match values.inner.ty() {
+                            Type::Array(ty, _) => *ty,
+                            _ => Type::Undefined,
+                        },
+                    };
+                    ty_joined = ty_joined.union(&value_ty, false);
+                }
+                ty_joined
+            }
+            _ => expected_ty_inner.clone(),
+        };
+
         let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
             // TODO clarify that inferred type comes from outside, not the expression itself
             let message = format!(
@@ -2295,7 +2314,7 @@ fn array_literal_combine_values(
                     check_type_contains_value(
                         diags,
                         TypeContainsReason::Operator(expr_span),
-                        expected_ty_inner,
+                        &expected_ty_inner,
                         Spanned {
                             span: elem_inner.span,
                             inner: &Value::Hardware(value_ir.clone()),
