@@ -1,0 +1,16 @@
+[package]
+name = "hwl_bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+default-run = "hwl_bin"
+
+[dependencies]
+hwl_language.workspace = true
+
+clap.workspace = true
+ctrlc.workspace = true
+num_cpus.workspace = true
+
+[lints]
+workspace = true

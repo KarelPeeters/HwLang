@@ -3,13 +3,9 @@ name = "hwl_language"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-default-run = "hwl_language"
 
-# TODO split binary into separate package, it has some extra deps (eg. num-cpus)
 [dependencies]
 annotate-snippets.workspace = true
-clap.workspace = true
-ctrlc.workspace = true
 dashmap.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
@@ -18,7 +14,6 @@ lazy_static.workspace = true
 num-bigint.workspace = true
 num-integer.workspace = true
 num-traits.workspace = true
-num_cpus.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 strum.workspace = true

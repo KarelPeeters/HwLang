@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "hwl_language",
+    "hwl_bin",
     "hwl_lsp_server",
     "hwl_wasm",
     "hwl_python",
