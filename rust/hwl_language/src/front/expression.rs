@@ -551,7 +551,14 @@ impl CompileItemContext<'_, '_> {
                                 Type::Struct(elab, _) => {
                                     Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)))
                                 }
-                                _ => todo!("err"),
+                                _ => {
+                                    let ty_str = ty.to_diagnostic_string();
+                                    let diag = Diagnostic::new("`new` only exists for structs")
+                                        .add_error(index.span, "attempt to use `new` here")
+                                        .add_info(base.span, format!("base value has non-struct type `{ty_str}`"))
+                                        .finish();
+                                    return Err(diags.report(diag));
+                                }
                             },
                             _ => {
                                 return Err(diags.report_simple(
