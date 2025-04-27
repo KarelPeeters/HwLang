@@ -8,8 +8,9 @@ use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInte
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionValue};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
+use crate::front::item::FunctionItemBody;
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
@@ -569,6 +570,27 @@ impl CompileItemContext<'_, '_> {
                             }
                         }
                     }
+                    ValueInner::Value(Value::Compile(CompileValue::Function(FunctionValue::User(
+                        UserFunctionValue {
+                            body:
+                                Spanned {
+                                    inner: FunctionBody::ItemBody(FunctionItemBody::Struct(ref_struct, _)),
+                                    ..
+                                },
+                            ..
+                        },
+                    )))) => match index.string.as_str() {
+                        "new" => Value::Compile(CompileValue::Function(FunctionValue::StructNewInfer(Spanned::new(
+                            base.span, ref_struct,
+                        )))),
+                        _ => {
+                            let diag = Diagnostic::new("method `new` only exists for struct types")
+                                .add_error(index.span, "attempt to use `new` here")
+                                .add_info(base.span, "base is non-struct-type expression".to_string())
+                                .finish();
+                            return Err(diags.report(diag));
+                        }
+                    },
                     ValueInner::PortInterface(port_interface) => {
                         // get the port
                         let port_interface_info = &self.port_interfaces[port_interface];
@@ -632,7 +654,9 @@ impl CompileItemContext<'_, '_> {
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
                 let (result_block, result_value) = self
-                    .recurse(entry, |s| s.call_function(ctx, vars, expr.span, &target, args))
+                    .recurse(entry, |s| {
+                        s.call_function(ctx, vars, expected_ty, expr.span, &target, args)
+                    })
                     .flatten_err()?;
 
                 if let Some(result_block) = result_block {
@@ -1040,14 +1064,14 @@ impl CompileItemContext<'_, '_> {
                     "assert",
                     &[Value::Compile(CompileValue::Bool(cond)), Value::Compile(CompileValue::String(ref msg))],
                 ) => {
-                    if cond {
-                        return Ok(Value::Compile(CompileValue::UNIT));
+                    return if cond {
+                        Ok(Value::Compile(CompileValue::UNIT))
                     } else {
-                        return Err(diags.report_simple(
+                        Err(diags.report_simple(
                             format!("assertion failed with message {:?}", msg),
                             expr_span,
                             "failed here",
-                        ));
+                        ))
                     }
                 }
                 ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {

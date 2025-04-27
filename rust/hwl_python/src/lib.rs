@@ -354,7 +354,14 @@ impl Function {
             };
 
             println!("call_function");
-            let returned = item_ctx.call_function(&mut ctx, &mut vars, dummy_span, &self.function_value, args);
+            let returned = item_ctx.call_function(
+                &mut ctx,
+                &mut vars,
+                &RustType::Any,
+                dummy_span,
+                &self.function_value,
+                args,
+            );
             let (_block, returned) = map_diag_error(source, &diags, returned)?;
 
             // run any downstream elaboration

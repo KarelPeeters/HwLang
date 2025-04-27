@@ -48,7 +48,7 @@ pub enum FunctionItemBody {
     TypeAliasExpr(Box<Expression>),
     Module(AstRefModule),
     Interface(AstRefInterface),
-    Struct(MaybeIdentifier, Vec<ConditionalItem<StructField>>),
+    Struct(AstRefStruct, Vec<ConditionalItem<StructField>>),
 }
 
 #[derive(Debug)]
@@ -207,7 +207,8 @@ impl<'s> CompileItemContext<'_, 's> {
                     fields,
                 } = decl;
 
-                let body = FunctionItemBody::Struct(id.clone(), fields.clone());
+                let ast_ref = AstRefStruct(id.span());
+                let body = FunctionItemBody::Struct(ast_ref, fields.clone());
                 self.eval_maybe_generic_item(id.span(), *span_body, scope, vars, params, body)
             }
             CommonDeclaration::Enum(_) => Err(diags.report_todo(decl.info().1.span(), "enum declaration")),
@@ -308,11 +309,8 @@ impl<'s> CompileItemContext<'_, 's> {
                 let (result_id, _) = self.refs.elaborate_interface(item_params)?;
                 Ok(CompileValue::Interface(result_id))
             }
-            FunctionItemBody::Struct(id, fields) => {
-                let item_params = ElaboratedItemParams {
-                    item: AstRefStruct(id.span()),
-                    params,
-                };
+            &FunctionItemBody::Struct(ast_ref, ref fields) => {
+                let item_params = ElaboratedItemParams { item: ast_ref, params };
                 let (result_id, result_info) = self.refs.shared.elaborated_structs.elaborate(item_params, |_| {
                     self.elaborate_struct_new(scope_params, vars, body.span, fields)
                 })?;

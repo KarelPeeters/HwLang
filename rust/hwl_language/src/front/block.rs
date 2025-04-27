@@ -144,7 +144,7 @@ impl CompileItemContext<'_, '_> {
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
-                        let init_expected_ty = ty.as_ref().map_or(&Type::Type, |ty| &ty.inner);
+                        let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
                         init.as_ref()
                             .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, vars, init_expected_ty, init))
                             .transpose()
@@ -188,8 +188,7 @@ impl CompileItemContext<'_, '_> {
                     self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
                 }
                 BlockStatementKind::Expression(expr) => {
-                    let _: Spanned<Value> =
-                        self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Type, expr)?;
+                    let _: Spanned<Value> = self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, expr)?;
                 }
                 BlockStatementKind::Block(inner_block) => {
                     let (inner_block_ir, block_end) = self.elaborate_block(ctx, scope, vars, inner_block)?;
@@ -301,11 +300,10 @@ impl CompileItemContext<'_, '_> {
                         ref value,
                     } = stmt;
 
-                    // we don't use the return type for the expected type here,
-                    //  checking happens in the function call, and expanding at the call expression
+                    // TODO actually pass expected type here
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Type, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, value))
                         .transpose()?;
 
                     let end =
