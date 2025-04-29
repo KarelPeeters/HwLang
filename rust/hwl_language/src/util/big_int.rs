@@ -331,8 +331,6 @@ impl std::iter::Sum for BigUint {
     }
 }
 
-// impl std::iter::Step
-
 impl std::iter::Sum for BigInt {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(BigInt::ZERO, |a, x| a + x)

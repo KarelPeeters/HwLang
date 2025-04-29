@@ -71,7 +71,7 @@ impl ArraySteps<ArrayStep> {
         let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type), false)?;
         let steps = steps.unwrap();
 
-        let result_ty_hw = result_ty.as_hardware_type().ok_or_else(|| {
+        let result_ty_hw = result_ty.as_hardware_type().map_err(|_| {
             diags.report_internal_error(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
@@ -217,7 +217,7 @@ impl ArraySteps<ArrayStep> {
                 (step_inner, curr_inner) => {
                     // convert curr to hardware
                     let ty = curr_inner.ty();
-                    let ty = ty.as_hardware_type().ok_or_else(|| {
+                    let ty = ty.as_hardware_type().map_err(|_| {
                         let diag = Diagnostic::new("hardware array indexing target needs to have hardware type")
                             .add_error(
                                 curr.span,

@@ -2,7 +2,7 @@ use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, TH
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::interface::ElaboratedInterfaceInfo;
-use crate::front::item::{ElaboratedItemKey, ElaboratedItemParams, ElaboratedStructInfo};
+use crate::front::item::{ElaboratedEnumInfo, ElaboratedItemKey, ElaboratedItemParams, ElaboratedStructInfo};
 use crate::front::module::{ElaboratedModuleHeader, ElaboratedModuleInfo};
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
@@ -246,13 +246,16 @@ pub struct ElaboratedItem<I> {
     pub item: I,
 }
 
-// workaround for pointers into the ast not really working yet
+// TODO these are wrong, they should take the captured context into account
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefStruct(pub Span);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct AstRefEnum(pub Span);
 
 pub type ElaboratedModule = ElaboratedItem<AstRefModule>;
 pub type ElaboratedInterface = ElaboratedItem<AstRefInterface>;
 pub type ElaboratedStruct = ElaboratedItem<AstRefStruct>;
+pub type ElaboratedEnum = ElaboratedItem<AstRefEnum>;
 
 /// long-term shared between threads
 pub struct CompileShared {
@@ -264,6 +267,7 @@ pub struct CompileShared {
     elaborated_modules: ElaborateItemArena<AstRefModule, ElaboratedModuleInfo>,
     elaborated_interfaces: ElaborateItemArena<AstRefInterface, ElaboratedInterfaceInfo>,
     pub elaborated_structs: ElaborateItemArena<AstRefStruct, ElaboratedStructInfo>,
+    pub elaborated_enums: ElaborateItemArena<AstRefEnum, ElaboratedEnumInfo>,
 
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
@@ -791,6 +795,7 @@ impl CompileShared {
             elaborated_modules: ElaborateItemArena::new(),
             elaborated_interfaces: ElaborateItemArena::new(),
             elaborated_structs: ElaborateItemArena::new(),
+            elaborated_enums: ElaborateItemArena::new(),
             ir_modules: Mutex::new(Arena::new()),
         }
     }

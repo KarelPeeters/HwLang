@@ -1,9 +1,9 @@
-use crate::front::compile::{ElaboratedItem, ElaboratedStruct};
+use crate::front::compile::{ElaboratedEnum, ElaboratedItem, ElaboratedStruct};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrVariable};
+use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType, IrVariable};
 use crate::syntax::parsed::{AstRefInterface, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
@@ -31,6 +31,7 @@ pub enum CompileValue {
     Array(Vec<CompileValue>),
     // TODO avoid storing copy of field types
     Struct(ElaboratedStruct, Vec<Type>, Vec<CompileValue>),
+    Enum(ElaboratedEnum, Vec<Option<Type>>, (usize, Option<Box<CompileValue>>)),
 
     Function(FunctionValue),
     Module(ElaboratedItem<AstRefModule>),
@@ -59,11 +60,9 @@ pub enum MaybeUndefined<T> {
 
 #[derive(Debug)]
 pub enum HardwareValueResult {
-    Success(IrExpression),
+    Defined(IrExpression),
     Undefined,
     PartiallyUndefined,
-    Unrepresentable,
-    InvalidType,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -97,6 +96,7 @@ impl Typed for CompileValue {
                 Type::Array(Box::new(inner), BigUint::from(values.len()))
             }
             CompileValue::Struct(item, fields, _) => Type::Struct(*item, fields.clone()),
+            CompileValue::Enum(item, types, _) => Type::Enum(*item, types.clone()),
             CompileValue::IntRange(_) => Type::Range,
             CompileValue::Function(_) => Type::Function,
             CompileValue::Module(_) => Type::Module,
@@ -115,6 +115,7 @@ impl CompileValue {
             CompileValue::Tuple(values) => values.iter().any(CompileValue::contains_undefined),
             CompileValue::Array(values) => values.iter().any(CompileValue::contains_undefined),
             CompileValue::Struct(_, _, values) => values.iter().any(CompileValue::contains_undefined),
+            CompileValue::Enum(_, _, (_, value)) => value.as_ref().is_some_and(|v| v.contains_undefined()),
             CompileValue::Type(_)
             | CompileValue::Bool(_)
             | CompileValue::Int(_)
@@ -127,50 +128,59 @@ impl CompileValue {
         }
     }
 
-    pub fn try_as_hardware_value(&self, large: &mut IrLargeArena, ty: &HardwareType) -> HardwareValueResult {
+    pub fn try_as_hardware_value(
+        &self,
+        diags: &Diagnostics,
+        large: &mut IrLargeArena,
+        span: Span,
+        ty: &HardwareType,
+    ) -> Result<HardwareValueResult, ErrorGuaranteed> {
         fn map_array<'t, E>(
+            diags: &Diagnostics,
             large: &mut IrLargeArena,
+            span: Span,
             values: &[CompileValue],
             t: impl Fn(usize) -> &'t HardwareType,
             e: impl Fn(IrExpression) -> E,
             f: impl FnOnce(Vec<E>) -> IrExpressionLarge,
-        ) -> HardwareValueResult {
+        ) -> Result<HardwareValueResult, ErrorGuaranteed> {
             let mut hardware_values = vec![];
             let mut all_undefined = true;
             let mut any_undefined = false;
 
             for (i, value) in enumerate(values) {
-                match value.try_as_hardware_value(large, t(i)) {
-                    HardwareValueResult::Unrepresentable => return HardwareValueResult::Unrepresentable,
-                    HardwareValueResult::Success(v) => {
+                match value.try_as_hardware_value(diags, large, span, t(i))? {
+                    HardwareValueResult::Defined(v) => {
                         all_undefined = false;
                         hardware_values.push(e(v))
                     }
                     HardwareValueResult::Undefined => {
                         any_undefined = true;
                     }
-                    HardwareValueResult::PartiallyUndefined => return HardwareValueResult::PartiallyUndefined,
-                    HardwareValueResult::InvalidType => return HardwareValueResult::InvalidType,
+                    HardwareValueResult::PartiallyUndefined => return Ok(HardwareValueResult::PartiallyUndefined),
                 }
             }
 
-            match (any_undefined, all_undefined) {
+            let result = match (any_undefined, all_undefined) {
                 (true, true) => HardwareValueResult::Undefined,
                 (true, false) => HardwareValueResult::PartiallyUndefined,
                 (false, false) => {
                     assert_eq!(hardware_values.len(), values.len());
-                    HardwareValueResult::Success(large.push_expr(f(hardware_values)))
+                    HardwareValueResult::Defined(large.push_expr(f(hardware_values)))
                 }
                 (false, true) => {
                     assert!(hardware_values.is_empty());
-                    HardwareValueResult::Success(large.push_expr(f(vec![])))
+                    HardwareValueResult::Defined(large.push_expr(f(vec![])))
                 }
-            }
+            };
+            Ok(result)
         }
 
+        let err_type = || diags.report_internal_error(span, "type mismatch while converting to hardware value");
+
         match self {
-            CompileValue::Undefined => HardwareValueResult::Undefined,
-            &CompileValue::Bool(value) => HardwareValueResult::Success(IrExpression::Bool(value)),
+            CompileValue::Undefined => Ok(HardwareValueResult::Undefined),
+            &CompileValue::Bool(value) => Ok(HardwareValueResult::Defined(IrExpression::Bool(value))),
             CompileValue::Int(value) => match ty {
                 HardwareType::Int(ty) if ty.contains(value) => {
                     let expr = IrExpression::Int(value.clone());
@@ -179,32 +189,73 @@ impl CompileValue {
                     } else {
                         large.push_expr(IrExpressionLarge::ExpandIntRange(ty.clone(), expr))
                     };
-                    HardwareValueResult::Success(expr)
+                    Ok(HardwareValueResult::Defined(expr))
                 }
-                _ => HardwareValueResult::InvalidType,
+                _ => Err(err_type()),
             },
             CompileValue::Tuple(values) => match ty {
-                HardwareType::Tuple(tys) if tys.len() == values.len() => {
-                    map_array(large, values, |i| &tys[i], identity, IrExpressionLarge::TupleLiteral)
-                }
-                _ => HardwareValueResult::InvalidType,
+                HardwareType::Tuple(tys) if tys.len() == values.len() => map_array(
+                    diags,
+                    large,
+                    span,
+                    values,
+                    |i| &tys[i],
+                    identity,
+                    IrExpressionLarge::TupleLiteral,
+                ),
+                _ => Err(err_type()),
             },
             CompileValue::Array(values) => match ty {
                 HardwareType::Array(inner_ty, len) if len == &BigUint::from(values.len()) => map_array(
+                    diags,
                     large,
+                    span,
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,
                     |e| IrExpressionLarge::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
                 ),
-                _ => HardwareValueResult::InvalidType,
+                _ => Err(err_type()),
             },
             CompileValue::Struct(item_value, _, values) => match ty {
                 HardwareType::Struct(item, fields) if item == item_value => {
                     assert_eq!(fields.len(), values.len());
-                    map_array(large, values, |i| &fields[i], identity, IrExpressionLarge::TupleLiteral)
+                    map_array(
+                        diags,
+                        large,
+                        span,
+                        values,
+                        |i| &fields[i],
+                        identity,
+                        IrExpressionLarge::TupleLiteral,
+                    )
                 }
-                _ => HardwareValueResult::InvalidType,
+                _ => Err(err_type()),
+            },
+            &CompileValue::Enum(item_value, _, (variant_index, ref content_value)) => match ty {
+                HardwareType::Enum(hw_enum) if hw_enum.elab == item_value => {
+                    // convert content to bits and then ir expression
+                    let content_ir = content_value
+                        .as_ref()
+                        .map(|content_value| {
+                            let content_ty = hw_enum.variants[variant_index].as_ref().unwrap();
+                            let content_bits = content_ty.value_to_bits(diags, span, content_value)?;
+
+                            let content_elements = content_bits
+                                .into_iter()
+                                .map(|b| IrArrayLiteralElement::Single(IrExpression::Bool(b)))
+                                .collect_vec();
+                            let content_ir =
+                                IrExpressionLarge::ArrayLiteral(IrType::Bool, content_ty.size_bits(), content_elements);
+                            Ok(large.push_expr(content_ir))
+                        })
+                        .transpose()?;
+
+                    // build the entire ir expression
+                    let result = hw_enum.build_ir_expression(large, variant_index, content_ir)?;
+                    Ok(HardwareValueResult::Defined(result))
+                }
+                _ => Err(err_type()),
             },
             CompileValue::Type(_)
             | CompileValue::String(_)
@@ -212,7 +263,9 @@ impl CompileValue {
             | CompileValue::Function(_)
             | CompileValue::Module(_)
             | CompileValue::Interface(_)
-            | CompileValue::InterfaceView(_) => HardwareValueResult::Unrepresentable,
+            | CompileValue::InterfaceView(_) => {
+                Err(diags.report_internal_error(span, "this value kind is not representable as hardware"))
+            }
         }
     }
 
@@ -223,27 +276,10 @@ impl CompileValue {
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<IrExpression>, ErrorGuaranteed> {
-        match self.try_as_hardware_value(large, ty_hw) {
-            HardwareValueResult::Success(v) => Ok(MaybeUndefined::Defined(v)),
+        match self.try_as_hardware_value(diags, large, span, ty_hw)? {
+            HardwareValueResult::Defined(v) => Ok(MaybeUndefined::Defined(v)),
             HardwareValueResult::Undefined => Ok(MaybeUndefined::Undefined),
             HardwareValueResult::PartiallyUndefined => Err(diags.report_todo(span, "partially undefined values")),
-            HardwareValueResult::Unrepresentable => Err(diags.report_internal_error(
-                span,
-                format!(
-                    "value `{}` has hardware type but is itself not representable",
-                    self.to_diagnostic_string()
-                ),
-            )),
-            // type checking should have already happened before this, so this is an internal error
-            HardwareValueResult::InvalidType => Err(diags.report_internal_error(
-                span,
-                format!(
-                    "value `{}` with type `{}` cannot be represented as hardware type `{}`",
-                    self.to_diagnostic_string(),
-                    self.ty().to_diagnostic_string(),
-                    ty_hw.as_type().to_diagnostic_string()
-                ),
-            )),
         }
     }
 
@@ -308,6 +344,10 @@ impl CompileValue {
                 let values = values.iter().map(CompileValue::to_diagnostic_string).join(", ");
                 format!("struct({})", values)
             }
+            CompileValue::Enum(_, _, (index, value)) => match value {
+                None => format!("enum({})", index),
+                Some(value) => format!("enum({}, {})", index, value.to_diagnostic_string()),
+            },
             CompileValue::IntRange(range) => format!("({})", range),
             // TODO include item name and generic args
             CompileValue::Function(_) => "function".to_string(),

@@ -1,7 +1,7 @@
 use crate::front::block::{BlockEnd, BlockEndReturn};
 use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
 use crate::front::compile::{
-    ArenaVariables, AstRefStruct, CompileItemContext, CompileRefs, ElaboratedStruct, StackEntry,
+    ArenaVariables, AstRefStruct, CompileItemContext, CompileRefs, ElaboratedEnum, ElaboratedStruct, StackEntry,
 };
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
@@ -36,6 +36,7 @@ pub enum FunctionValue {
     Bits(FunctionBits),
     StructNew(ElaboratedStruct),
     StructNewInfer(Spanned<AstRefStruct>),
+    EnumNew(ElaboratedEnum, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -129,13 +130,20 @@ pub struct ParamArgMacher<'a> {
     any_err: Result<(), ErrorGuaranteed>,
 }
 
+#[derive(Debug, Copy, Clone)]
+enum NamedRule {
+    OnlyNamed,
+    OnlyPositional,
+    PositionalAndNamed,
+}
+
 impl<'a> ParamArgMacher<'a> {
-    pub fn new(
+    fn new(
         diags: &'a Diagnostics,
         params_span: Span,
         args: &'a Args<Option<Identifier>, Spanned<Value>>,
         args_must_be_compile: bool,
-        args_must_be_named: bool,
+        args_must_be_named: NamedRule,
     ) -> Result<Self, ErrorGuaranteed> {
         // check for duplicate arg names and check that positional args are before named args
         let mut arg_name_to_index: IndexMap<&str, usize> = IndexMap::new();
@@ -149,6 +157,27 @@ impl<'a> ParamArgMacher<'a> {
                     .add_error(arg.value.span, "hardware value passed here")
                     .finish();
                 any_err_args = Err(diags.report(diag));
+            }
+
+            match (&arg.name, args_must_be_named) {
+                (None, NamedRule::OnlyNamed) => {
+                    let diag = Diagnostic::new("positional arguments are not allowed for this call target")
+                        .add_info(params_span, "parameters defined here")
+                        .add_error(arg.span, "positional argument passed here")
+                        .finish();
+                    any_err_args = Err(diags.report(diag));
+                }
+                (Some(_), NamedRule::OnlyPositional) => {
+                    let diag = Diagnostic::new("named arguments are not allowed for this call target")
+                        .add_info(params_span, "parameters defined here")
+                        .add_error(arg.span, "named argument passed here")
+                        .finish();
+                    any_err_args = Err(diags.report(diag));
+                }
+
+                (None, NamedRule::OnlyPositional) => {}
+                (Some(_), NamedRule::OnlyNamed) => {}
+                (_, NamedRule::PositionalAndNamed) => {}
             }
 
             match &arg.name {
@@ -172,14 +201,6 @@ impl<'a> ParamArgMacher<'a> {
                     }
                 }
                 None => {
-                    if args_must_be_named {
-                        let diag = Diagnostic::new("positional arguments are not allowed for this call target")
-                            .add_info(params_span, "parameters defined here")
-                            .add_error(arg.span, "positional argument passed here")
-                            .finish();
-                        any_err_args = Err(diags.report(diag));
-                    }
-
                     if let Some(first_named_span) = first_named_span {
                         let diag = Diagnostic::new("positional arguments after named arguments are not allowed")
                             .add_info(first_named_span, "first named argument here")
@@ -313,6 +334,8 @@ impl CompileItemContext<'_, '_> {
         function: &FunctionValue,
         args: Args<Option<Identifier>, Spanned<Value>>,
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         match function {
             FunctionValue::User(function) => self.call_normal_function(ctx, vars, function, args),
             FunctionValue::Bits(function) => {
@@ -363,6 +386,63 @@ impl CompileItemContext<'_, '_> {
                     Err(self.refs.diags.report(diag))
                 }
             },
+            &FunctionValue::EnumNew(enum_elab, variant_index) => {
+                let enum_info = self.refs.shared.elaborated_enums.get(enum_elab)?;
+                let (variant_id, variant_content) = &enum_info.variants[variant_index];
+                let variant_content = variant_content.as_ref().unwrap();
+
+                let mut matcher =
+                    ParamArgMacher::new(self.refs.diags, span_call, &args, false, NamedRule::OnlyPositional)?;
+                let content = matcher.resolve_param(variant_id, variant_content.as_ref())?;
+                matcher.finish()?;
+
+                let variant_tys = enum_info
+                    .variants
+                    .iter()
+                    .map(|(_, (_, t))| t.as_ref().map(|t| t.inner.clone()))
+                    .collect_vec();
+
+                let result = match content.inner {
+                    Value::Compile(content) => Value::Compile(CompileValue::Enum(
+                        enum_elab,
+                        variant_tys,
+                        (variant_index, Some(Box::new(content.clone()))),
+                    )),
+                    Value::Hardware(content_inner) => {
+                        // get hardware version of enum type
+                        let ty = Type::Enum(enum_elab, variant_tys);
+                        let ty_hw = ty.as_hardware_type().map_err(|_| {
+                            let diag = Diagnostic::new(format!(
+                                "enum type `{}` is not representable in hardware",
+                                ty.to_diagnostic_string()
+                            ))
+                            .add_error(span_call, "enum variant constructed here")
+                            .add_info(content.span, "content value is hardware")
+                            .finish();
+                            diags.report(diag)
+                        })?;
+                        let hw_enum = match &ty_hw {
+                            HardwareType::Enum(hw_enum) => hw_enum,
+                            _ => return Err(diags.report_internal_error(span_call, "expected hardware enum")),
+                        };
+
+                        // build new expression
+                        let content_bits = self.large.push_expr(IrExpressionLarge::ToBits(
+                            content_inner.ty.as_ir(),
+                            content_inner.expr.clone(),
+                        ));
+                        let expr = hw_enum.build_ir_expression(&mut self.large, variant_index, Some(content_bits))?;
+
+                        Value::Hardware(HardwareValue {
+                            ty: ty_hw,
+                            domain: content_inner.domain,
+                            expr,
+                        })
+                    }
+                };
+
+                Ok((None, result))
+            }
         }
     }
 
@@ -376,7 +456,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let &ElaboratedStructInfo { span_body, ref fields } = self.refs.shared.elaborated_structs.get(elab)?;
 
-        let mut matcher = ParamArgMacher::new(self.refs.diags, span_body, &args, false, true)?;
+        let mut matcher = ParamArgMacher::new(self.refs.diags, span_body, &args, false, NamedRule::OnlyNamed)?;
 
         let mut field_values = vec![];
         for (field_id, field_ty) in fields.values() {
@@ -401,7 +481,7 @@ impl CompileItemContext<'_, '_> {
 
             for (i, value) in enumerate(field_values) {
                 let expected_ty_inner = &fields[i].1.inner;
-                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
                     let message = format!(
                         "struct field has type `{}` which is not representable in hardware",
                         expected_ty_inner.to_diagnostic_string()
@@ -459,7 +539,13 @@ impl CompileItemContext<'_, '_> {
         let mut param_values = vec![];
 
         let compile = function.body.inner.params_must_be_compile();
-        let mut matcher = ParamArgMacher::new(diags, function.params.span, &args, compile, false)?;
+        let mut matcher = ParamArgMacher::new(
+            diags,
+            function.params.span,
+            &args,
+            compile,
+            NamedRule::PositionalAndNamed,
+        )?;
         for param_item in &function.params.items {
             self.compile_visit_conditional_items(&mut scope, vars, param_item, &mut |ctx, scope, vars, param| {
                 let Parameter { id, ty } = param;
@@ -574,9 +660,7 @@ impl CompileItemContext<'_, '_> {
                 let result = match &value.inner {
                     Value::Compile(value) => {
                         // TODO dedicated compile-time bits value that's faster than a boxed array of bools
-                        let bits = ty_hw
-                            .value_to_bits(value)
-                            .map_err(|_| diags.report_internal_error(span_call, "to_bits failed"))?;
+                        let bits = ty_hw.value_to_bits(diags, span_call, value)?;
                         Value::Compile(CompileValue::Array(
                             bits.into_iter().map(CompileValue::Bool).collect_vec(),
                         ))
@@ -606,7 +690,7 @@ impl CompileItemContext<'_, '_> {
                     check_type_is_bool_array(diags, TypeContainsReason::Operator(span_call), value, Some(&width))?;
 
                 let result = match value {
-                    Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(&v).map_err(|_| {
+                    Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(diags, span_call, &v).map_err(|_| {
                         let msg = format!(
                             "while converting value `{:?}` into type `{}`",
                             v,
@@ -848,6 +932,15 @@ impl Eq for FunctionValue {}
 
 impl FunctionValue {
     pub fn equality_key(&self) -> impl Eq + Hash + '_ {
+        #[derive(Eq, PartialEq, Hash)]
+        enum Key<'a> {
+            User(Span, &'a CapturedScope),
+            Bits(&'a HardwareType, FunctionBitsKind),
+            StructNew(ElaboratedStruct),
+            StructNewInfer(Spanned<AstRefStruct>),
+            EnumNew(ElaboratedEnum, usize),
+        }
+
         match self {
             FunctionValue::User(UserFunctionValue {
                 decl_span,
@@ -855,12 +948,15 @@ impl FunctionValue {
                 params,
                 body,
             }) => {
+                // these are both derivable from the decl_span, so redundant
+                // TODO actually remove them from the struct
                 let _ = (params, body);
-                (Some((*decl_span, scope_captured)), None, None, None)
+                Key::User(*decl_span, scope_captured)
             }
-            FunctionValue::Bits(FunctionBits { ty_hw: ty, kind }) => (None, Some((ty, kind)), None, None),
-            FunctionValue::StructNew(elab) => (None, None, Some(elab), None),
-            FunctionValue::StructNewInfer(ref_struct) => (None, None, None, Some(ref_struct)),
+            FunctionValue::Bits(FunctionBits { ty_hw: ty, kind }) => Key::Bits(ty, *kind),
+            FunctionValue::StructNew(elab) => Key::StructNew(*elab),
+            FunctionValue::StructNewInfer(ref_struct) => Key::StructNewInfer(*ref_struct),
+            FunctionValue::EnumNew(elab, index) => Key::EnumNew(*elab, *index),
         }
     }
 }

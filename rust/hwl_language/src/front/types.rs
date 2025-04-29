@@ -1,13 +1,17 @@
-use crate::front::compile::ElaboratedStruct;
+use crate::front::compile::{ElaboratedEnum, ElaboratedStruct};
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::value::CompileValue;
-use crate::mid::ir::IrType;
+use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
 use crate::swrite;
+use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
+use crate::util::iter::IterExt;
 use itertools::{zip_eq, Itertools};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
 use std::ops::{AddAssign, RangeBounds};
+use unwrap_match::unwrap_match;
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -26,6 +30,7 @@ pub enum Type {
     Array(Box<Type>, BigUint),
     // TODO avoid storing copy of field types
     Struct(ElaboratedStruct, Vec<Type>),
+    Enum(ElaboratedEnum, Vec<Option<Type>>),
     Range,
     // TODO maybe maybe these (optionally) more specific
     Function,
@@ -42,6 +47,64 @@ pub enum HardwareType {
     Tuple(Vec<HardwareType>),
     Array(Box<HardwareType>, BigUint),
     Struct(ElaboratedStruct, Vec<HardwareType>),
+    // TODO allow configuring whether this is stored compactly or more like a tuple,
+    //   the first is better for memory but the second may be better for timing
+    Enum(HardwareEnum),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct HardwareEnum {
+    pub elab: ElaboratedEnum,
+    pub variants: Vec<Option<HardwareType>>,
+    pub data_size: usize,
+}
+
+impl HardwareEnum {
+    pub fn tag_range(&self) -> ClosedIncRange<BigInt> {
+        ClosedIncRange {
+            start_inc: BigInt::ZERO,
+            end_inc: BigInt::from(self.variants.len()) - 1,
+        }
+    }
+
+    pub fn padding_for_variant(&self, variant: usize) -> usize {
+        let content_size = match &self.variants[variant] {
+            None => 0,
+            Some(variant) => usize::try_from(variant.size_bits()).unwrap(),
+        };
+
+        assert!(content_size <= self.data_size);
+        self.data_size - content_size
+    }
+
+    pub fn build_ir_expression(
+        &self,
+        large: &mut IrLargeArena,
+        variant: usize,
+        content_bits: Option<IrExpression>,
+    ) -> Result<IrExpression, ErrorGuaranteed> {
+        assert_eq!(self.variants[variant].is_some(), content_bits.is_some());
+
+        // tag
+        let tag_range = self.tag_range();
+        let ir_tag = IrExpressionLarge::ExpandIntRange(tag_range, IrExpression::Int(BigInt::from(variant)));
+
+        // content
+        let mut ir_elements = vec![];
+        if let Some(content_bits) = content_bits {
+            ir_elements.push(IrArrayLiteralElement::Spread(content_bits));
+        }
+
+        // padding
+        for _ in 0..self.padding_for_variant(variant) {
+            ir_elements.push(IrArrayLiteralElement::Single(IrExpression::Bool(false)));
+        }
+
+        // build final expression
+        let ir_content = IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.data_size), ir_elements);
+        let ir_expr = IrExpressionLarge::TupleLiteral(vec![large.push_expr(ir_tag), large.push_expr(ir_content)]);
+        Ok(large.push_expr(ir_expr))
+    }
 }
 
 // TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
@@ -68,6 +131,9 @@ pub trait Typed {
     fn ty(&self) -> Type;
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct NonHardwareType;
+
 impl Type {
     pub const UNIT: Type = Type::Tuple(Vec::new());
 
@@ -89,7 +155,6 @@ impl Type {
             (Type::Interface, Type::Interface) => Type::Interface,
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
 
-            // integer
             (Type::Int(a), Type::Int(b)) => {
                 let IncRange {
                     start_inc: a_start,
@@ -115,7 +180,6 @@ impl Type {
                 })
             }
 
-            // tuple
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
                     Type::Tuple(
@@ -135,7 +199,6 @@ impl Type {
                     Type::Any
                 }
             }
-            // array
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
                     let inner = if allow_compound_subtype {
@@ -151,11 +214,18 @@ impl Type {
                     Type::Any
                 }
             }
-            // struct
             (Type::Struct(a_item, a_fields), Type::Struct(b_item, b_fields)) => {
                 if a_item == b_item {
                     debug_assert_eq!(a_fields, b_fields);
                     Type::Struct(*a_item, a_fields.clone())
+                } else {
+                    Type::Any
+                }
+            }
+            (Type::Enum(a_item, a_variants), Type::Enum(b_item, b_variants)) => {
+                if a_item == b_item {
+                    debug_assert_eq!(a_variants, b_variants);
+                    Type::Enum(a_item.clone(), a_variants.clone())
                 } else {
                     Type::Any
                 }
@@ -175,7 +245,8 @@ impl Type {
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _)
-                | Type::Struct(_, _),
+                | Type::Struct(_, _)
+                | Type::Enum(_, _),
                 Type::Type
                 | Type::Clock
                 | Type::Bool
@@ -188,7 +259,8 @@ impl Type {
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _)
-                | Type::Struct(_, _),
+                | Type::Struct(_, _)
+                | Type::Enum(_, _),
             ) => Type::Any,
         }
     }
@@ -198,15 +270,18 @@ impl Type {
     }
 
     // TODO centralize error messages for this, everyone is just doing them manually for now
-    pub fn as_hardware_type(&self) -> Option<HardwareType> {
+    pub fn as_hardware_type(&self) -> Result<HardwareType, NonHardwareType> {
         match self {
-            Type::Clock => Some(HardwareType::Clock),
-            Type::Bool => Some(HardwareType::Bool),
-            Type::Int(range) => range.clone().try_into_closed().map(HardwareType::Int).ok(),
+            Type::Clock => Ok(HardwareType::Clock),
+            Type::Bool => Ok(HardwareType::Bool),
+            Type::Int(range) => match range.clone().try_into_closed() {
+                Ok(closed_range) => Ok(HardwareType::Int(closed_range)),
+                Err(_) => Err(NonHardwareType),
+            },
             Type::Tuple(inner) => inner
                 .iter()
                 .map(Type::as_hardware_type)
-                .collect::<Option<_>>()
+                .try_collect()
                 .map(HardwareType::Tuple),
             Type::Array(inner, len) => inner
                 .as_hardware_type()
@@ -214,10 +289,36 @@ impl Type {
             Type::Struct(item, fields) => fields
                 .iter()
                 .map(Type::as_hardware_type)
-                .collect::<Option<Vec<_>>>()
+                .try_collect()
                 .map(|fields| HardwareType::Struct(*item, fields)),
-            Type::Type | Type::Any | Type::Undefined => None,
-            Type::String | Type::Range | Type::Function | Type::Module | Type::Interface | Type::InterfaceView => None,
+            Type::Enum(item, variants) => {
+                let variants = variants
+                    .iter()
+                    .map(|v| v.as_ref().map(Type::as_hardware_type).transpose())
+                    .try_collect_vec()?;
+
+                let data_size = variants
+                    .iter()
+                    .filter_map(|ty| ty.as_ref().map(HardwareType::size_bits))
+                    .max()
+                    .unwrap_or(BigUint::ZERO);
+                let data_size = usize::try_from(data_size).map_err(|_| NonHardwareType)?;
+
+                Ok(HardwareType::Enum(HardwareEnum {
+                    elab: item.clone(),
+                    variants,
+                    data_size,
+                }))
+            }
+            Type::Type
+            | Type::Any
+            | Type::Undefined
+            | Type::String
+            | Type::Range
+            | Type::Function
+            | Type::Module
+            | Type::Interface
+            | Type::InterfaceView => Err(NonHardwareType),
         }
     }
 
@@ -249,6 +350,7 @@ impl Type {
                 format!("{inner_str}[{dims}]")
             }
             Type::Struct(_, _) => "struct".to_string(),
+            Type::Enum(_, _) => "enum".to_string(),
             Type::Range => "range".to_string(),
             Type::Function => "function".to_string(),
             Type::Module => "module".to_string(),
@@ -257,9 +359,6 @@ impl Type {
         }
     }
 }
-
-#[derive(Debug)]
-pub struct FailedBitConversion;
 
 impl HardwareType {
     pub fn as_type(&self) -> Type {
@@ -272,6 +371,14 @@ impl HardwareType {
             HardwareType::Struct(item, fields) => {
                 Type::Struct(*item, fields.iter().map(HardwareType::as_type).collect_vec())
             }
+            HardwareType::Enum(hw_enum) => Type::Enum(
+                hw_enum.elab,
+                hw_enum
+                    .variants
+                    .iter()
+                    .map(|v| v.as_ref().map(HardwareType::as_type))
+                    .collect_vec(),
+            ),
         }
     }
 
@@ -283,6 +390,14 @@ impl HardwareType {
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::as_ir).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir()), len.clone()),
             HardwareType::Struct(_, fields) => IrType::Tuple(fields.iter().map(HardwareType::as_ir).collect_vec()),
+            HardwareType::Enum(hw_enum) => {
+                let tag_ty = IrType::Int(ClosedIncRange {
+                    start_inc: BigInt::ZERO,
+                    end_inc: BigInt::from(hw_enum.variants.len()) - 1,
+                });
+                let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(hw_enum.data_size));
+                IrType::Tuple(vec![tag_ty, data_ty])
+            }
         }
     }
 
@@ -301,16 +416,57 @@ impl HardwareType {
             HardwareType::Tuple(inner) => inner.iter().all(HardwareType::every_bit_pattern_is_valid),
             HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(),
             HardwareType::Struct(_, fields) => fields.iter().all(HardwareType::every_bit_pattern_is_valid),
+            HardwareType::Enum(hw_enum) => {
+                // The tag needs to be fully valid.
+                let tag_range = ClosedIncRange {
+                    start_inc: BigInt::ZERO,
+                    end_inc: BigInt::from(hw_enum.variants.len()) - 1,
+                };
+                let tag_repr = IntRepresentation::for_range(&tag_range);
+                if tag_repr.range() != tag_range {
+                    return false;
+                }
+
+                // We don't need all variants to be the same size:
+                //   the bits they don't cover will never be used, since the tag should be checked first.
+                // Each variant being valid individually is enough.
+                hw_enum
+                    .variants
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .all(HardwareType::every_bit_pattern_is_valid)
+            }
         }
     }
 
-    pub fn value_to_bits(&self, value: &CompileValue) -> Result<Vec<bool>, FailedBitConversion> {
+    pub fn value_to_bits(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        value: &CompileValue,
+    ) -> Result<Vec<bool>, ErrorGuaranteed> {
         let mut result = Vec::new();
-        self.value_to_bits_impl(value, &mut result)?;
+        self.value_to_bits_impl(diags, span, value, &mut result)?;
         Ok(result)
     }
 
-    fn value_to_bits_impl(&self, value: &CompileValue, result: &mut Vec<bool>) -> Result<(), FailedBitConversion> {
+    fn value_to_bits_impl(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        value: &CompileValue,
+        result: &mut Vec<bool>,
+    ) -> Result<(), ErrorGuaranteed> {
+        let err_internal = || {
+            diags.report_internal_error(
+                span,
+                format!(
+                    "failed to convert value `{}` to bits of type `{}`",
+                    value.to_diagnostic_string(),
+                    self.to_diagnostic_string()
+                ),
+            )
+        };
         match (self, value) {
             (HardwareType::Bool, &CompileValue::Bool(v)) => {
                 result.push(v);
@@ -318,81 +474,165 @@ impl HardwareType {
             }
             (HardwareType::Int(range), CompileValue::Int(v)) => {
                 let repr = IntRepresentation::for_range(range);
-                repr.value_to_bits(v, result).map_err(|_| FailedBitConversion)
+                repr.value_to_bits(v, result).map_err(|_| err_internal())
             }
             (HardwareType::Tuple(ty_inners), CompileValue::Tuple(v_inners)) => {
-                if ty_inners.len() == v_inners.len() {
-                    for (ty_inner, v_inner) in zip_eq(ty_inners, v_inners) {
-                        ty_inner.value_to_bits_impl(v_inner, result)?;
-                    }
-                    Ok(())
-                } else {
-                    Err(FailedBitConversion)
+                assert_eq!(ty_inners.len(), v_inners.len());
+                for (ty_inner, v_inner) in zip_eq(ty_inners, v_inners) {
+                    ty_inner.value_to_bits_impl(diags, span, v_inner, result)?;
                 }
+                Ok(())
             }
             (HardwareType::Array(ty_inner, ty_len), CompileValue::Array(v_inner)) => {
-                if ty_len == &BigUint::from(v_inner.len()) {
-                    for v_inner in v_inner {
-                        ty_inner.value_to_bits_impl(v_inner, result)?;
-                    }
-                    Ok(())
-                } else {
-                    Err(FailedBitConversion)
+                assert_eq!(ty_len, &BigUint::from(v_inner.len()));
+                for v_inner in v_inner {
+                    ty_inner.value_to_bits_impl(diags, span, v_inner, result)?;
                 }
+                Ok(())
             }
-            _ => Err(FailedBitConversion),
+            (HardwareType::Struct(_, ty_fields), CompileValue::Struct(_, _, value_fields)) => {
+                assert_eq!(ty_fields.len(), ty_fields.len());
+                for (ty_inner, v_inner) in zip_eq(ty_fields, value_fields) {
+                    ty_inner.value_to_bits_impl(diags, span, v_inner, result)?;
+                }
+                Ok(())
+            }
+            (HardwareType::Enum(ty_enum), &CompileValue::Enum(_, _, (variant, ref content))) => {
+                // tag
+                let tag_range = ty_enum.tag_range();
+                HardwareType::Int(tag_range).value_to_bits_impl(
+                    diags,
+                    span,
+                    &CompileValue::Int(BigInt::from(variant)),
+                    result,
+                )?;
+
+                // content
+                if let Some(content) = content {
+                    let content_ty = ty_enum.variants[variant].as_ref().unwrap();
+                    content_ty.value_to_bits_impl(diags, span, content, result)?;
+                }
+
+                // padding
+                for _ in 0..ty_enum.padding_for_variant(variant) {
+                    result.push(false);
+                }
+                Ok(())
+            }
+
+            // clock cannot be converted
+            (HardwareType::Clock, _) => Err(err_internal()),
+            // type mismatches
+            (
+                HardwareType::Bool
+                | HardwareType::Int(_)
+                | HardwareType::Tuple(_)
+                | HardwareType::Array(_, _)
+                | HardwareType::Struct(_, _)
+                | HardwareType::Enum(_),
+                _,
+            ) => Err(err_internal()),
         }
     }
 
-    pub fn value_from_bits(&self, bits: &[bool]) -> Result<CompileValue, FailedBitConversion> {
+    pub fn value_from_bits(
+        &self,
+        diags: &Diagnostics,
+        span: Span,
+        bits: &[bool],
+    ) -> Result<CompileValue, ErrorGuaranteed> {
         let mut iter = bits.iter().copied();
-        let result = self.value_from_bits_impl(&mut iter)?;
+        let result = self.value_from_bits_impl(diags, span, &mut iter)?;
         match iter.next() {
             None => Ok(result),
-            Some(_) => Err(FailedBitConversion),
+            Some(_) => Err(diags.report_internal_error(span, "leftover bits when converting to value")),
         }
     }
 
     pub fn value_from_bits_impl(
         &self,
+        diags: &Diagnostics,
+        span: Span,
         bits: &mut impl Iterator<Item = bool>,
-    ) -> Result<CompileValue, FailedBitConversion> {
+    ) -> Result<CompileValue, ErrorGuaranteed> {
+        let err_internal = || {
+            diags.report_internal_error(
+                span,
+                format!(
+                    "failed to convert bits to value of type `{}`",
+                    self.to_diagnostic_string()
+                ),
+            )
+        };
+
         match self {
-            HardwareType::Clock => Err(FailedBitConversion),
-            HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(FailedBitConversion)?)),
+            HardwareType::Clock => Err(err_internal()),
+            HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(err_internal())?)),
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range);
                 let bits: Vec<bool> = (0..repr.size_bits())
-                    .map(|_| bits.next().ok_or(FailedBitConversion))
+                    .map(|_| bits.next().ok_or_else(|| err_internal()))
                     .try_collect()?;
 
-                let result = repr.value_from_bits(&bits).map_err(|_| FailedBitConversion)?;
+                let result = repr.value_from_bits(&bits).map_err(|_| err_internal())?;
 
                 if range.contains(&result) {
                     Ok(CompileValue::Int(result))
                 } else {
-                    Err(FailedBitConversion)
+                    Err(err_internal())
                 }
             }
             HardwareType::Tuple(inners) => Ok(CompileValue::Array(
                 inners
                     .iter()
-                    .map(|inner| inner.value_from_bits_impl(bits))
+                    .map(|inner| inner.value_from_bits_impl(diags, span, bits))
                     .try_collect()?,
             )),
             HardwareType::Array(inner, len) => {
-                let len = usize::try_from(len).map_err(|_| FailedBitConversion)?;
+                let len = usize::try_from(len).map_err(|_| err_internal())?;
                 Ok(CompileValue::Array(
-                    (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?,
+                    (0..len)
+                        .map(|_| inner.value_from_bits_impl(diags, span, bits))
+                        .try_collect()?,
                 ))
             }
             HardwareType::Struct(item, fields) => {
                 let inners = fields
                     .iter()
-                    .map(|inner| inner.value_from_bits_impl(bits))
+                    .map(|inner| inner.value_from_bits_impl(diags, span, bits))
                     .try_collect()?;
                 let fields = fields.iter().map(HardwareType::as_type).collect_vec();
                 Ok(CompileValue::Struct(*item, fields, inners))
+            }
+            HardwareType::Enum(item) => {
+                // tag
+                let tag_ty = HardwareType::Int(item.tag_range());
+                let tag_value = tag_ty.value_from_bits_impl(diags, span, bits)?;
+                let tag_value = unwrap_match!(tag_value, CompileValue::Int(v) => v);
+                let tag_value = usize::try_from(tag_value).unwrap();
+
+                // content
+                let content_ty = item.variants[tag_value].as_ref();
+                let content_value = if let Some(content_ty) = content_ty {
+                    let content_value = content_ty.value_from_bits_impl(diags, span, bits)?;
+                    Some(Box::new(content_value))
+                } else {
+                    None
+                };
+
+                // discard padding
+                for _ in 0..item.padding_for_variant(tag_value) {
+                    bits.next().ok_or_else(|| err_internal())?;
+                }
+
+                Ok(CompileValue::Enum(
+                    item.elab,
+                    item.variants
+                        .iter()
+                        .map(|v| v.as_ref().map(HardwareType::as_type))
+                        .collect_vec(),
+                    (tag_value, content_value),
+                ))
             }
         }
     }
@@ -592,7 +832,7 @@ impl Iterator for ClosedIncRangeIterator<BigUint> {
     }
 }
 
-impl std::iter::IntoIterator for ClosedIncRange<BigInt> {
+impl IntoIterator for ClosedIncRange<BigInt> {
     type Item = BigInt;
     type IntoIter = ClosedIncRangeIterator<BigInt>;
 

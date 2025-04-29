@@ -910,6 +910,7 @@ fn lower_expression(
                     //  (assuming all sub-expression have the right width, which they should)
                     // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions
                     // TODO use repeat operator if array elements are repeated
+                    // TODO the order is wrong, the verilog array operator is the wrong way around
                     swrite!(f, "{{");
                     for (i, elem) in enumerate(elements) {
                         if i != 0 {

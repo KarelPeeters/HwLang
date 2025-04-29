@@ -93,8 +93,8 @@ impl CompileRefs<'_, '_> {
         for (port_id, ty) in port_types {
             let ty_eval = ctx.eval_expression_as_ty(&scope_params, &mut vars, ty).and_then(|ty| {
                 match ty.inner.as_hardware_type() {
-                    Some(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
-                    None => Err(diags.report_simple(
+                    Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
+                    Err(_) => Err(diags.report_simple(
                         "interface ports must have hardware types",
                         ty.span,
                         format!("got non-hardware type `{}`", ty.inner.to_diagnostic_string()),

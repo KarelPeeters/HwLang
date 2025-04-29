@@ -443,17 +443,17 @@ pub fn check_hardware_type_for_bit_operation(
     diags: &Diagnostics,
     ty: Spanned<&Type>,
 ) -> Result<HardwareType, ErrorGuaranteed> {
-    if let Some(ty_hw) = ty.inner.as_hardware_type() {
-        // TODO this feels strange, maybe clock should not actually be a hardware type, only a domain?
-        if let HardwareType::Clock = ty_hw {
-            return Err(diags.report_todo(ty.span, "interaction between to/from bits and clocks"));
-        }
+    let ty_hw = ty.inner.as_hardware_type().map_err(|_| {
+        let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
+            .add_error(ty.span, format!("actual type `{}`", ty.inner.to_diagnostic_string()))
+            .finish();
+        diags.report(diag)
+    })?;
 
-        return Ok(ty_hw);
+    // TODO this feels strange, maybe clock should not actually be a hardware type, only a domain?
+    if let HardwareType::Clock = ty_hw {
+        return Err(diags.report_todo(ty.span, "interaction between to/from bits and clocks"));
     }
 
-    let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
-        .add_error(ty.span, format!("actual type `{}`", ty.inner.to_diagnostic_string()))
-        .finish();
-    Err(diags.report(diag))
+    Ok(ty_hw)
 }

@@ -4,11 +4,11 @@ use crate::front::check::{
     check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware,
     check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, ElaboratedModule, ElaboratedStruct, Port, PortInterface, StackEntry};
+use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, UserFunctionValue};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::item::FunctionItemBody;
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -112,6 +112,7 @@ impl CompileItemContext<'_, '_> {
         })
     }
 
+    // TODO make all of these functions on ExpressionContext instead of dragging all these parameters around
     pub fn eval_expression<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -490,189 +491,7 @@ impl CompileItemContext<'_, '_> {
                 Value::Compile(CompileValue::Type(result))
             }
             ExpressionKind::DotIdIndex(base, index) => {
-                let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
-
-                match base_eval {
-                    ValueInner::Value(Value::Compile(CompileValue::Type(ty))) => {
-                        match index.string.as_str() {
-                            "size_bits" => {
-                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
-                                let width = ty_hw.as_ir().size_bits();
-                                Value::Compile(CompileValue::Int(width.into()))
-                            }
-                            // TODO all of these should return functions with a single params,
-                            //   without the need for scope capturing
-                            "to_bits" => {
-                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
-                                let func = FunctionBits {
-                                    ty_hw,
-                                    kind: FunctionBitsKind::ToBits,
-                                };
-                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
-                            }
-                            "from_bits" => {
-                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
-
-                                if !ty_hw.every_bit_pattern_is_valid() {
-                                    let diag = Diagnostic::new(
-                                        "from_bits is only allowed for types where every bit pattern is valid",
-                                    )
-                                    .add_error(
-                                        base.span,
-                                        format!(
-                                            "got type `{}` with invalid bit patterns",
-                                            ty_hw.to_diagnostic_string()
-                                        ),
-                                    )
-                                    .footer(
-                                        Level::Help,
-                                        "consider using use target type where every bit pattern is valid",
-                                    )
-                                    .footer(
-                                        Level::Help,
-                                        "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
-                                    )
-                                    .finish();
-                                    return Err(diags.report(diag));
-                                }
-
-                                let func = FunctionBits {
-                                    ty_hw,
-                                    kind: FunctionBitsKind::FromBits,
-                                };
-                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
-                            }
-                            "from_bits_unsafe" => {
-                                let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, &ty))?;
-                                let func = FunctionBits {
-                                    ty_hw,
-                                    kind: FunctionBitsKind::FromBits,
-                                };
-                                Value::Compile(CompileValue::Function(FunctionValue::Bits(func)))
-                            }
-                            "new" => match ty {
-                                Type::Struct(elab, _) => {
-                                    Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)))
-                                }
-                                _ => {
-                                    let ty_str = ty.to_diagnostic_string();
-                                    let diag = Diagnostic::new("`new` only exists for structs")
-                                        .add_error(index.span, "attempt to use `new` here")
-                                        .add_info(base.span, format!("base value has non-struct type `{ty_str}`"))
-                                        .finish();
-                                    return Err(diags.report(diag));
-                                }
-                            },
-                            _ => {
-                                return Err(diags.report_simple(
-                                    "unknown property for type",
-                                    index.span,
-                                    "unknown property here",
-                                ));
-                            }
-                        }
-                    }
-                    ValueInner::Value(Value::Compile(CompileValue::Function(FunctionValue::User(
-                        UserFunctionValue {
-                            body:
-                                Spanned {
-                                    inner: FunctionBody::ItemBody(FunctionItemBody::Struct(ref_struct, _)),
-                                    ..
-                                },
-                            ..
-                        },
-                    )))) => match index.string.as_str() {
-                        "new" => Value::Compile(CompileValue::Function(FunctionValue::StructNewInfer(Spanned::new(
-                            base.span, ref_struct,
-                        )))),
-                        _ => {
-                            let diag = Diagnostic::new("method `new` only exists for struct types")
-                                .add_error(index.span, "attempt to use `new` here")
-                                .add_info(base.span, "base is non-struct-type expression".to_string())
-                                .finish();
-                            return Err(diags.report(diag));
-                        }
-                    },
-                    ValueInner::PortInterface(port_interface) => {
-                        // get the port
-                        let port_interface_info = &self.port_interfaces[port_interface];
-                        let interface_info = self
-                            .refs
-                            .shared
-                            .elaborated_interface_info(port_interface_info.view.interface)?;
-                        let port_index = interface_info.ports.get_index_of(&index.string).ok_or_else(|| {
-                            let diag = Diagnostic::new(format!("port `{}` not found on interface", index.string))
-                                .add_error(index.span, "attempt to access port here")
-                                .add_info(interface_info.id.span(), "interface declared here")
-                                .finish();
-                            diags.report(diag)
-                        })?;
-                        let port = port_interface_info.ports[port_index];
-
-                        return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
-                    }
-                    ValueInner::Value(Value::Compile(CompileValue::Interface(base_interface))) => {
-                        let info = self.refs.shared.elaborated_interface_info(base_interface)?;
-                        let _ = info.get_view(diags, index)?;
-
-                        let interface_view = ElaboratedInterfaceView {
-                            interface: base_interface,
-                            view: index.string.clone(),
-                        };
-                        Value::Compile(CompileValue::InterfaceView(interface_view))
-                    }
-                    ValueInner::Value(base_eval) => {
-                        let base_eval_ty = base_eval.ty();
-                        let field_index = |elab: ElaboratedStruct| {
-                            let info = self.refs.shared.elaborated_structs.get(elab)?;
-                            info.fields.get_index_of(&index.string).ok_or_else(|| {
-                                let diag = Diagnostic::new("field not found")
-                                    .add_info(
-                                        base.span,
-                                        format!("base has type `{}`", base_eval_ty.to_diagnostic_string()),
-                                    )
-                                    .add_error(index.span, "attempt to access non-existing field here")
-                                    .add_info(info.span_body, "fields declared here")
-                                    .finish();
-                                diags.report(diag)
-                            })
-                        };
-
-                        match base_eval {
-                            ValueWithImplications::Compile(base_eval) => match base_eval {
-                                CompileValue::Struct(elab, _, field_values) => {
-                                    let field_index = field_index(elab)?;
-                                    Value::Compile(field_values[field_index].clone())
-                                }
-                                _ => {
-                                    return Err(diags.report_internal_error(expr.span, "expected struct compile value"))
-                                }
-                            },
-                            ValueWithImplications::Hardware(base_eval) => {
-                                let base_eval = base_eval.value;
-                                match base_eval.ty {
-                                    HardwareType::Struct(elab, field_types) => {
-                                        let field_index = field_index(elab)?;
-                                        let expr = IrExpressionLarge::TupleIndex {
-                                            base: base_eval.expr,
-                                            index: field_index.into(),
-                                        };
-                                        Value::Hardware(HardwareValue {
-                                            ty: field_types[field_index].clone(),
-                                            domain: base_eval.domain,
-                                            expr: self.large.push_expr(expr),
-                                        })
-                                    }
-                                    _ => {
-                                        return Err(
-                                            diags.report_internal_error(expr.span, "expected struct hardware value")
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expr.span, base, index);
             }
             ExpressionKind::DotIntIndex(base, index) => {
                 let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
@@ -789,7 +608,7 @@ impl CompileItemContext<'_, '_> {
                 let value_ty = value.inner.ty();
                 let init_ty = init.inner.ty();
                 let ty = value_ty.union(&init_ty, true);
-                let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+                let ty_hw = ty.as_hardware_type().map_err(|_| {
                     let diag = Diagnostic::new("register type must be representable in hardware")
                         .add_error(
                             span_keyword,
@@ -842,6 +661,217 @@ impl CompileItemContext<'_, '_> {
         };
 
         Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
+    }
+
+    fn eval_dot_id_index<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        expr_span: Span,
+        base: &Expression,
+        index: &Identifier,
+    ) -> Result<ValueInner, ErrorGuaranteed> {
+        // TODO make sure users don't accidentally define fields/variants/functions with the same name
+        let diags = self.refs.diags;
+
+        let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+        let index_str = index.string.as_str();
+
+        // interface fields
+        let base_eval = match base_eval {
+            ValueInner::PortInterface(port_interface) => {
+                // get the underlying port
+                let port_interface_info = &self.port_interfaces[port_interface];
+                let interface_info = self
+                    .refs
+                    .shared
+                    .elaborated_interface_info(port_interface_info.view.interface)?;
+                let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
+                    let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
+                        .add_error(index.span, "attempt to access port here")
+                        .add_info(interface_info.id.span(), "interface declared here")
+                        .finish();
+                    diags.report(diag)
+                })?;
+                let port = port_interface_info.ports[port_index];
+
+                return self.eval_port(ctx, vars, Spanned::new(expr_span, port));
+            }
+            ValueInner::Value(base_eval) => base_eval,
+        };
+
+        // interface views
+        if let &Value::Compile(CompileValue::Interface(base_interface)) = &base_eval {
+            let info = self.refs.shared.elaborated_interface_info(base_interface)?;
+            let _ = info.get_view(diags, index)?;
+
+            let interface_view = ElaboratedInterfaceView {
+                interface: base_interface,
+                view: index_str.to_owned(),
+            };
+            let result = Value::Compile(CompileValue::InterfaceView(interface_view));
+            return Ok(ValueInner::Value(result));
+        }
+
+        // common type attributes
+        if let Value::Compile(CompileValue::Type(ty)) = &base_eval {
+            match index_str {
+                "size_bits" => {
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, ty))?;
+                    let width = ty_hw.as_ir().size_bits();
+                    let result = Value::Compile(CompileValue::Int(width.into()));
+                    return Ok(ValueInner::Value(result));
+                }
+                // TODO all of these should return functions with a single params,
+                //   without the need for scope capturing
+                "to_bits" => {
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, ty))?;
+                    let func = FunctionBits {
+                        ty_hw,
+                        kind: FunctionBitsKind::ToBits,
+                    };
+                    let result = Value::Compile(CompileValue::Function(FunctionValue::Bits(func)));
+                    return Ok(ValueInner::Value(result));
+                }
+                "from_bits" => {
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, ty))?;
+
+                    if !ty_hw.every_bit_pattern_is_valid() {
+                        let diag =
+                            Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
+                                .add_error(
+                                    base.span,
+                                    format!("got type `{}` with invalid bit patterns", ty_hw.to_diagnostic_string()),
+                                )
+                                .footer(
+                                    Level::Help,
+                                    "consider using use target type where every bit pattern is valid",
+                                )
+                                .footer(
+                                    Level::Help,
+                                    "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
+                                )
+                                .finish();
+                        return Err(diags.report(diag));
+                    }
+
+                    let func = FunctionBits {
+                        ty_hw,
+                        kind: FunctionBitsKind::FromBits,
+                    };
+                    let result = Value::Compile(CompileValue::Function(FunctionValue::Bits(func)));
+                    return Ok(ValueInner::Value(result));
+                }
+                "from_bits_unsafe" => {
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, Spanned::new(base.span, ty))?;
+                    let func = FunctionBits {
+                        ty_hw,
+                        kind: FunctionBitsKind::FromBits,
+                    };
+                    let result = Value::Compile(CompileValue::Function(FunctionValue::Bits(func)));
+                    return Ok(ValueInner::Value(result));
+                }
+                _ => {}
+            }
+        }
+
+        // struct new
+        if let &Value::Compile(CompileValue::Type(Type::Struct(elab, _))) = &base_eval {
+            if index_str == "new" {
+                let result = Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)));
+                return Ok(ValueInner::Value(result));
+            }
+        }
+
+        let base_item_function = match &base_eval {
+            Value::Compile(CompileValue::Function(FunctionValue::User(func))) => match &func.body.inner {
+                FunctionBody::ItemBody(body) => Some(body),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(&FunctionItemBody::Struct(ast_ref, _)) = base_item_function {
+            if index_str == "new" {
+                let ast_ref_spanned = Spanned::new(base.span, ast_ref);
+                let func = FunctionValue::StructNewInfer(ast_ref_spanned);
+                let result = Value::Compile(CompileValue::Function(func));
+                return Ok(ValueInner::Value(result));
+            }
+        }
+
+        // enum variants (similar to struct new)
+        if let &Value::Compile(CompileValue::Type(Type::Enum(elab, ref variant_tys))) = &base_eval {
+            let info = self.refs.shared.elaborated_enums.get(elab)?;
+            let variant_index = info.variants.get_index_of(index_str).ok_or_else(|| {
+                let diag = Diagnostic::new(format!("variant `{}` not found on enum", index_str))
+                    .add_error(index.span, "attempt to access variant here")
+                    .add_info(info.span_body, "enum variants declared here")
+                    .finish();
+                diags.report(diag)
+            })?;
+
+            let (_, content_ty) = &info.variants[variant_index];
+
+            let result = match content_ty {
+                None => CompileValue::Enum(elab, variant_tys.clone(), (variant_index, None)),
+                Some(_) => CompileValue::Function(FunctionValue::EnumNew(elab, variant_index)),
+            };
+
+            return Ok(ValueInner::Value(Value::Compile(result)));
+        }
+
+        // TODO inferring version of enum variants
+        //   they're tricky because we need to constant non-inferring versions immediately,
+        //   without a later call that can depend on the expected type
+
+        // struct fields
+        let base_ty = base_eval.ty();
+        if let Type::Struct(elab, _) = base_ty {
+            let info = self.refs.shared.elaborated_structs.get(elab)?;
+            let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
+                let diag = Diagnostic::new("field not found")
+                    .add_info(base.span, format!("base has type `{}`", base_ty.to_diagnostic_string()))
+                    .add_error(index.span, "attempt to access non-existing field here")
+                    .add_info(info.span_body, "struct fields declared here")
+                    .finish();
+                diags.report(diag)
+            })?;
+
+            let result = match base_eval {
+                Value::Compile(base_eval) => match base_eval {
+                    CompileValue::Struct(_, _, field_values) => Value::Compile(field_values[field_index].clone()),
+                    _ => return Err(diags.report_internal_error(expr_span, "expected struct compile value")),
+                },
+                Value::Hardware(base_eval) => {
+                    let base_eval = base_eval.value;
+                    match base_eval.ty {
+                        HardwareType::Struct(_, field_types) => {
+                            let expr = IrExpressionLarge::TupleIndex {
+                                base: base_eval.expr,
+                                index: field_index.into(),
+                            };
+                            Value::Hardware(HardwareValue {
+                                ty: field_types[field_index].clone(),
+                                domain: base_eval.domain,
+                                expr: self.large.push_expr(expr),
+                            })
+                        }
+                        _ => return Err(diags.report_internal_error(expr_span, "expected struct hardware value")),
+                    }
+                }
+            };
+
+            return Ok(ValueInner::Value(ValueWithImplications::simple(result)));
+        }
+
+        // fallthrough into error
+        let diag = Diagnostic::new("invalid dot index expression")
+            .add_info(base.span, format!("base has type `{}`", base_ty.to_diagnostic_string()))
+            .add_error(index.span, format!("no attribute found with with name `{index_str}`"))
+            .finish();
+        Err(diags.report(diag))
     }
 
     fn eval_port<C: ExpressionContext>(
@@ -948,7 +978,7 @@ impl CompileItemContext<'_, '_> {
                 } else {
                     value.inner.ty()
                 };
-                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
                     let message = format!(
                         "tuple element has inferred type `{}` which is not representable in hardware",
                         expected_ty_inner.to_diagnostic_string()
@@ -1267,7 +1297,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
-        let ty_hw = ty.as_hardware_type().ok_or_else(|| {
+        let ty_hw = ty.as_hardware_type().map_err(|_| {
             diags.report_simple(
                 format!("{} type must be representable in hardware", reason),
                 expr.span,
@@ -2389,7 +2419,7 @@ fn array_literal_combine_values(
             _ => expected_ty_inner.clone(),
         };
 
-        let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().ok_or_else(|| {
+        let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
             // TODO clarify that inferred type comes from outside, not the expression itself
             let message = format!(
                 "hardware array literal has inferred inner type `{}` which is not representable in hardware",

@@ -430,7 +430,7 @@ impl CompileItemContext<'_, '_> {
                 .finish();
             diags.report(diag)
         })?;
-        let target_base_ty_hw = target_base_ty.inner.as_hardware_type().ok_or_else(|| {
+        let target_base_ty_hw = target_base_ty.inner.as_hardware_type().map_err(|_| {
             let diag = Diagnostic::new("variable needs hardware type because it is assigned a hardware value")
                 .add_error(
                     target_span,

@@ -90,7 +90,7 @@ pub struct EnumDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub variants: Vec<EnumVariant>,
+    pub variants: Vec<ConditionalItem<EnumVariant>>,
 }
 
 #[derive(Debug, Clone)]

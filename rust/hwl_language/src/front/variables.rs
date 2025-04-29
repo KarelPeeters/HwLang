@@ -479,7 +479,7 @@ fn merge_values<C: ExpressionContext>(
     // check that both types are hardware
     // (we do this before finding the common type to get nicer error messages)
     let value_ty_hw = |value: Spanned<&Value>| {
-        value.inner.ty().as_hardware_type().ok_or_else(|| {
+        value.inner.ty().as_hardware_type().map_err(|_| {
             let ty_str = value.inner.ty().to_diagnostic_string();
             let diag = Diagnostic::new("merging if assignments needs hardware type")
                 .add_info(debug_info_id.span(), "for this variable")
@@ -501,7 +501,7 @@ fn merge_values<C: ExpressionContext>(
 
     // figure out the common type
     let ty = ty_0.as_type().union(&ty_1.as_type(), false);
-    let ty = ty.as_hardware_type().ok_or_else(|| {
+    let ty = ty.as_hardware_type().map_err(|_| {
         let ty_str = ty.to_diagnostic_string();
         let ty_0_str = ty_0.to_diagnostic_string();
         let ty_1_str = ty_1.to_diagnostic_string();

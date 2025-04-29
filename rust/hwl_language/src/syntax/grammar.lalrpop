@@ -136,7 +136,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
-            <port_types:Separated<InterfacePortType, ",">>
+            <port_types:Separated<InterfacePortType,",">>
             <views:InterfaceView*>
         "}"
     <end:@R> => {
@@ -149,7 +149,7 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    "interface" <id:MaybeId> "{" <port_dirs:Separated<InterfacePortDir, ",">> "}" => {
+    "interface" <id:MaybeId> "{" <port_dirs:Separated<InterfacePortDir,",">> "}" => {
         InterfaceView { id, port_dirs }
     }
 }
@@ -164,7 +164,7 @@ InterfacePortDir: (Identifier, Spanned<PortDirection>) = {
 
 ImportFinalKind: ImportFinalKind = {
     ImportEntry => ImportFinalKind::Single(<>),
-    "[" <Separated<ImportEntry, ",">> "]" => ImportFinalKind::Multi(<>),
+    "[" <Separated<ImportEntry,",">> "]" => ImportFinalKind::Multi(<>),
 }
 
 ImportEntry: ImportEntry = {
@@ -253,7 +253,7 @@ ModuleStatementKind: ModuleStatementKind = {
     // TODO allow "if" here?
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>, ",">>> ")"
+        "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>,",">>> ")"
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
@@ -349,12 +349,13 @@ CommonDeclaration: CommonDeclaration = {
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
-        <start_body:@L> "{" <fields: Separated<ConditionalItem<StructField>, ",">> "}"
+        <start_body:@L> "{" <fields: Separated<ConditionalItem<StructField>,",">> "}"
     <end:@R>
         => CommonDeclaration::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end), span_body: loc.span(start_body, end) }),
+
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
-        "{" <variants: Separated<EnumVariant, ",">> "}"
+        "{" <variants: Separated<ConditionalItem<EnumVariant>,",">> "}"
     <end:@R>
         => CommonDeclaration::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
 
@@ -381,7 +382,7 @@ VariableMutable: bool = {
 
 // parameters
 Parameters: Parameters = {
-    <start:@L> "(" <items:Separated<ConditionalItem<Parameter>, ",">> ")" <end:@R>
+    <start:@L> "(" <items:Separated<ConditionalItem<Parameter>,",">> ")" <end:@R>
         => Parameters { items, span: loc.span(start, end) },
 }
 
@@ -389,12 +390,12 @@ Parameter: Parameter = {
     <id:Id> ":" <ty:Expr> => Parameter { id, ty },
 }
 
-ModulePorts: Vec<ConditionalItem<ModulePortItem>> = Separated<ConditionalItem<ModulePortItem>, ",">;
+ModulePorts: Vec<ConditionalItem<ModulePortItem>> = Separated<ConditionalItem<ModulePortItem>,",">;
 
 ModulePortItem: ModulePortItem = {
     <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
         => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
-    <start:@L> <domain:Spanned<DomainKind>> <ports:BlockSeparated<ConditionalItem<ModulePortInBlock>, ",">> <end:@R>
+    <start:@L> <domain:Spanned<DomainKind>> <ports:BlockSeparated<ConditionalItem<ModulePortInBlock>,",">> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
@@ -419,7 +420,7 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
 
 ConditionalItem<I>: ConditionalItem<I> = {
     I => ConditionalItem::Inner(<>),
-    IfStatement<BlockSeparated<ConditionalItem<I>, ",">> => ConditionalItem::If(<>),
+    IfStatement<BlockSeparated<ConditionalItem<I>,",">> => ConditionalItem::If(<>),
 }
 
 WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
@@ -589,17 +590,17 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     // TODO find better array type syntax
     // TODO we can expand this one to allow `[4][3][2]ty` without causing ambiguity, maybe even remove `[2,3]ty`
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement, ",">>> "]" <target:BoxSpanned<ExprLevelCall<allow_struct>>>
+    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:BoxSpanned<ExprLevelCall<allow_struct>>>
         => ExpressionKind::ArrayType(args, target),
     // array index
-    <target:BoxSpanned<ExprLevelCall<allow_struct>>> "[" <args:Spanned<Separated<Expr, ",">>> "]"
+    <target:BoxSpanned<ExprLevelCall<allow_struct>>> "[" <args:Spanned<Separated<Expr,",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
-    "[" <Separated<ArrayLiteralElement, ",">> "]"
+    "[" <Separated<ArrayLiteralElement,",">> "]"
         => ExpressionKind::ArrayLiteral(<>),
     // tuple literal
-    "(" <SeparatedAtLeastOneSep<Expr, ",">> ")"
+    "(" <SeparatedAtLeastOneSep<Expr,",">> ")"
         => ExpressionKind::TupleLiteral(<>),
 
     // array comprehension
@@ -610,7 +611,7 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
 }
 
 ExprLevelCall<allow_struct>: ExpressionKind = {
-    "__builtin" "(" <args:Spanned<Separated<Expr, ",">>> ")"
+    "__builtin" "(" <args:Spanned<Separated<Expr,",">>> ")"
         => ExpressionKind::Builtin(args),
     // TODO allow "if" here?
     <target:BoxSpanned<ExprLevelDot<allow_struct>>> "(" <args:Args> ")"
@@ -632,7 +633,7 @@ ExprLevelDot<allow_struct>: ExpressionKind = {
 
 // TODO allow "if" here
 Args: Args = {
-    <start:@L> <inner:Separated<Arg, ",">> <end:@L> =>
+    <start:@L> <inner:Separated<Arg,",">> <end:@L> =>
         Args { inner, span: loc.span(start, end) },
 }
 
@@ -651,7 +652,7 @@ ExprLevelStructInit<allow_struct>: ExpressionKind = {
     //  struct
     // TODO allow struct type params?
     // <struct_ty:Id> "{" "}" => {},
-//    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField, ",">> "}" => {},
+//    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField,",">> "}" => {},
 //        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
     ExprLevelAtomic<allow_struct>,
 }
@@ -726,7 +727,7 @@ AssignOpInner: Option<BinaryOp> = {
 
 // utilities
 GroupedList<P>: Spanned<Vec<P>> = {
-    <start:@L> "(" <inner: Separated<P, ",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
+    <start:@L> "(" <inner: Separated<P,",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
 }
 
 Separated<T, S>: Vec<T> = {

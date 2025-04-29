@@ -1,5 +1,5 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{AstRefStruct, CompileItemContext, ElaboratedModule};
+use crate::front::compile::{AstRefEnum, AstRefStruct, CompileItemContext, ElaboratedModule};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
@@ -8,9 +8,9 @@ use crate::front::types::Type;
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    CommonDeclaration, ConditionalItem, ConstDeclaration, Expression, FunctionDeclaration, Identifier, Item,
-    ItemDeclaration, ItemDefInterface, ItemDefModule, MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned,
-    StructDeclaration, StructField, TypeDeclaration,
+    CommonDeclaration, ConditionalItem, ConstDeclaration, EnumDeclaration, EnumVariant, Expression,
+    FunctionDeclaration, Identifier, Item, ItemDeclaration, ItemDefInterface, ItemDefModule, MaybeIdentifier,
+    ModuleInstanceItem, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
@@ -49,12 +49,19 @@ pub enum FunctionItemBody {
     Module(AstRefModule),
     Interface(AstRefInterface),
     Struct(AstRefStruct, Vec<ConditionalItem<StructField>>),
+    Enum(AstRefEnum, Vec<ConditionalItem<EnumVariant>>),
 }
 
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
+}
+
+#[derive(Debug)]
+pub struct ElaboratedEnumInfo {
+    pub span_body: Span,
+    pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
 }
 
 impl<'s> CompileItemContext<'_, 's> {
@@ -211,7 +218,18 @@ impl<'s> CompileItemContext<'_, 's> {
                 let body = FunctionItemBody::Struct(ast_ref, fields.clone());
                 self.eval_maybe_generic_item(id.span(), *span_body, scope, vars, params, body)
             }
-            CommonDeclaration::Enum(_) => Err(diags.report_todo(decl.info().1.span(), "enum declaration")),
+            CommonDeclaration::Enum(decl) => {
+                let EnumDeclaration {
+                    span,
+                    id,
+                    params,
+                    variants,
+                } = decl;
+
+                let ast_ref = AstRefEnum(id.span());
+                let body = FunctionItemBody::Enum(ast_ref, variants.clone());
+                self.eval_maybe_generic_item(id.span(), *span, scope, vars, params, body)
+            }
             CommonDeclaration::Function(decl) => {
                 let FunctionDeclaration {
                     span: _,
@@ -322,6 +340,18 @@ impl<'s> CompileItemContext<'_, 's> {
                     .collect_vec();
                 Ok(CompileValue::Type(Type::Struct(result_id, fields)))
             }
+            &FunctionItemBody::Enum(ast_ref, ref variants) => {
+                let item_params = ElaboratedItemParams { item: ast_ref, params };
+                let (result_id, result_info) = self.refs.shared.elaborated_enums.elaborate(item_params, |_| {
+                    self.elaborate_enum_new(scope_params, vars, body.span, variants)
+                })?;
+                let variants = result_info
+                    .variants
+                    .values()
+                    .map(|(_, ty)| ty.as_ref().map(|ty| ty.inner.clone()))
+                    .collect_vec();
+                Ok(CompileValue::Type(Type::Enum(result_id, variants)))
+            }
         }
     }
 
@@ -368,6 +398,54 @@ impl<'s> CompileItemContext<'_, 's> {
         Ok(ElaboratedStructInfo {
             span_body,
             fields: fields_eval,
+        })
+    }
+
+    fn elaborate_enum_new(
+        &mut self,
+        scope_params: &Scope,
+        vars: &mut VariableValues,
+        span_body: Span,
+        variants: &[ConditionalItem<EnumVariant>],
+    ) -> Result<ElaboratedEnumInfo, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let mut variants_eval = IndexMap::new();
+        let mut any_variant_err = Ok(());
+
+        let mut visit_variant = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, variant: &EnumVariant| {
+            let EnumVariant { span: _, id, content } = variant;
+
+            let content = content
+                .as_ref()
+                .map(|content| s.eval_expression_as_ty(scope, vars, content))
+                .transpose()?;
+
+            match variants_eval.entry(id.string.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((id.clone(), content));
+                }
+                Entry::Occupied(entry) => {
+                    let diag = Diagnostic::new("duplicate enum variant name")
+                        .add_info(entry.get().0.span, "previously declared here")
+                        .add_error(id.span, "declared again here")
+                        .finish();
+                    any_variant_err = Err(diags.report(diag));
+                }
+            }
+
+            Ok(())
+        };
+
+        let mut scope = Scope::new_child(span_body, scope_params);
+        for variant in variants {
+            self.compile_visit_conditional_items(&mut scope, vars, variant, &mut visit_variant)?;
+        }
+        any_variant_err?;
+
+        Ok(ElaboratedEnumInfo {
+            span_body,
+            variants: variants_eval,
         })
     }
 }
