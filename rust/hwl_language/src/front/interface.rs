@@ -85,39 +85,48 @@ impl CompileRefs<'_, '_> {
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
+        let mut scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
 
         // elaborate port types
         let mut port_map = IndexMap::new();
 
-        for (port_id, ty) in port_types {
-            let ty_eval = ctx.eval_expression_as_ty(&scope_params, &mut vars, ty).and_then(|ty| {
-                match ty.inner.as_hardware_type() {
-                    Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
-                    Err(_) => Err(diags.report_simple(
-                        "interface ports must have hardware types",
-                        ty.span,
-                        format!("got non-hardware type `{}`", ty.inner.to_diagnostic_string()),
-                    )),
-                }
-            });
-
-            match port_map.entry(port_id.string.clone()) {
-                Entry::Occupied(mut entry) => {
-                    let prev: &mut ElaboratedInterfacePortInfo = entry.get_mut();
-                    let diag = Diagnostic::new("port declared twice")
-                        .add_info(prev.id.span, "previously declared here")
-                        .add_error(port_id.span, "redeclared here")
-                        .finish();
-                    prev.ty = Err(diags.report(diag));
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(ElaboratedInterfacePortInfo {
-                        id: port_id.clone(),
-                        ty: ty_eval,
+        for item in port_types {
+            ctx.compile_visit_conditional_items(
+                &mut scope_params,
+                &mut vars,
+                &item,
+                &mut |ctx, scope_params, vars, (port_id, ty)| {
+                    let ty_eval = ctx.eval_expression_as_ty(scope_params, vars, ty).and_then(|ty| {
+                        match ty.inner.as_hardware_type() {
+                            Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
+                            Err(_) => Err(diags.report_simple(
+                                "interface ports must have hardware types",
+                                ty.span,
+                                format!("got non-hardware type `{}`", ty.inner.to_diagnostic_string()),
+                            )),
+                        }
                     });
-                }
-            }
+
+                    match port_map.entry(port_id.string.clone()) {
+                        Entry::Occupied(mut entry) => {
+                            let prev: &mut ElaboratedInterfacePortInfo = entry.get_mut();
+                            let diag = Diagnostic::new("port declared twice")
+                                .add_info(prev.id.span, "previously declared here")
+                                .add_error(port_id.span, "redeclared here")
+                                .finish();
+                            prev.ty = Err(diags.report(diag));
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(ElaboratedInterfacePortInfo {
+                                id: port_id.clone(),
+                                ty: ty_eval,
+                            });
+                        }
+                    }
+
+                    Ok(())
+                },
+            )?;
         }
 
         // elaborate views
@@ -129,27 +138,36 @@ impl CompileRefs<'_, '_> {
                 vec![None; port_map.len()];
             let mut any_view_err = Ok(());
 
-            for (port_id, dir) in port_dirs {
-                if let Some(port_index) = port_map.get_index_of(&port_id.string) {
-                    let slot = &mut port_dir_vec[port_index];
-                    if let Some(prev) = &*slot {
-                        if let Ok((prev_id, _)) = prev {
-                            let diag = Diagnostic::new("port direction set twice")
-                                .add_info(prev_id.span, "previously set here")
-                                .add_error(port_id.span, "set again here")
-                                .finish();
-                            *slot = Some(Err(diags.report(diag)));
+            for item in port_dirs {
+                ctx.compile_visit_conditional_items(
+                    &mut scope_params,
+                    &mut vars,
+                    &item,
+                    &mut |_, _, _, (port_id, dir)| {
+                        if let Some(port_index) = port_map.get_index_of(&port_id.string) {
+                            let slot = &mut port_dir_vec[port_index];
+                            if let Some(prev) = &*slot {
+                                if let Ok((prev_id, _)) = prev {
+                                    let diag = Diagnostic::new("port direction set twice")
+                                        .add_info(prev_id.span, "previously set here")
+                                        .add_error(port_id.span, "set again here")
+                                        .finish();
+                                    *slot = Some(Err(diags.report(diag)));
+                                }
+                            } else {
+                                *slot = Some(Ok((port_id.clone(), *dir)));
+                            }
+                        } else {
+                            any_view_err = Err(diags.report_simple(
+                                "port not found in this interface",
+                                port_id.span,
+                                "attempt to set direction here",
+                            ));
                         }
-                    } else {
-                        *slot = Some(Ok((port_id.clone(), *dir)));
-                    }
-                } else {
-                    any_view_err = Err(diags.report_simple(
-                        "port not found in this interface",
-                        port_id.span,
-                        "attempt to set direction here",
-                    ));
-                }
+
+                        Ok(())
+                    },
+                )?;
             }
 
             let port_dir_vec = any_view_err.and_then(|()| {

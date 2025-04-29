@@ -128,14 +128,14 @@ pub struct ItemDefInterface {
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub span_body: Span,
-    pub port_types: Vec<(Identifier, Box<Expression>)>,
+    pub port_types: Vec<ConditionalItem<(Identifier, Box<Expression>)>>,
     pub views: Vec<InterfaceView>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceView {
     pub id: MaybeIdentifier,
-    pub port_dirs: Vec<(Identifier, Spanned<PortDirection>)>,
+    pub port_dirs: Vec<ConditionalItem<(Identifier, Spanned<PortDirection>)>>,
 }
 
 #[derive(Debug, Clone)]

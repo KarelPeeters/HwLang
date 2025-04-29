@@ -136,7 +136,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
-            <port_types:Separated<InterfacePortType,",">>
+            <port_types:Separated<ConditionalItem<InterfacePortType>,",">>
             <views:InterfaceView*>
         "}"
     <end:@R> => {
@@ -149,7 +149,7 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    "interface" <id:MaybeId> "{" <port_dirs:Separated<InterfacePortDir,",">> "}" => {
+    "interface" <id:MaybeId> "{" <port_dirs:Separated<ConditionalItem<InterfacePortDir>,",">> "}" => {
         InterfaceView { id, port_dirs }
     }
 }
