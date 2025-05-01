@@ -1806,13 +1806,12 @@ impl BodyElaborationContext<'_, '_, '_> {
             let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
             let mut ctx_block = ctx_expr.new_ir_block();
 
-            let expected_ty = ty.as_ref_ok().ok().map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
             let value = ctx.eval_expression(
                 &mut ctx_expr,
                 &mut ctx_block,
                 scope_body,
                 &mut vars_inner,
-                &expected_ty,
+                &ty.as_ref_ok()?.inner.as_type(),
                 value,
             );
 
