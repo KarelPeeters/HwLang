@@ -302,11 +302,10 @@ impl<'s> CompileItemContext<'_, 's> {
                 let ty = ty
                     .as_ref()
                     .map(|ty| self.eval_expression_as_ty(scope, vars, ty))
-                    .transpose();
-                let value = self.eval_expression_as_compile(scope, vars, value, "const value");
+                    .transpose()?;
 
-                let ty = ty?;
-                let value = value?;
+                let expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
+                let value = self.eval_expression_as_compile(scope, vars, expected_ty, value, "const value")?;
 
                 // check type
                 if let Some(ty) = ty {

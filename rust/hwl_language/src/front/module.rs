@@ -230,7 +230,13 @@ impl CompileRefs<'_, '_> {
                         } => {
                             let domain = ctx.eval_port_domain(scope_ports, domain);
                             let interface_view = ctx
-                                .eval_expression_as_compile(scope_ports, vars, interface, "interface")
+                                .eval_expression_as_compile(
+                                    scope_ports,
+                                    vars,
+                                    &Type::InterfaceView,
+                                    interface,
+                                    "interface view",
+                                )
                                 .and_then(|interface| match interface.inner {
                                     CompileValue::InterfaceView(view) => Ok(view),
                                     value => Err(diags.report_simple(
@@ -292,7 +298,13 @@ impl CompileRefs<'_, '_> {
                                     interface,
                                 } => {
                                     let interface_view = ctx
-                                        .eval_expression_as_compile(scope_ports, vars, interface, "interface")
+                                        .eval_expression_as_compile(
+                                            scope_ports,
+                                            vars,
+                                            &Type::InterfaceView,
+                                            interface,
+                                            "interface",
+                                        )
                                         .and_then(|interface| match interface.inner {
                                             CompileValue::InterfaceView(view) => Ok(view),
                                             value => Err(diags.report_simple(
@@ -1919,20 +1931,24 @@ impl BodyElaborationContext<'_, '_, '_> {
             .as_ref()
             .map_inner(|sync| ctx.eval_domain_sync(scope_body, sync))
             .transpose();
-        let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "register");
-        let init = ctx.eval_expression_as_compile(scope_body, &mut vars_inner, init.as_ref(), "register reset value");
-
+        let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "register")?;
+        let init_raw = ctx.eval_expression_as_compile(
+            scope_body,
+            &mut vars_inner,
+            &ty.inner.as_type(),
+            init,
+            "register reset value",
+        );
         let sync = sync?;
-        let ty = ty?;
 
         // check type
-        let init = init.and_then(|init| {
+        let init = init_raw.and_then(|init_raw| {
             let reason = TypeContainsReason::Assignment {
                 span_target: id.span(),
                 span_target_ty: ty.span,
             };
-            check_type_contains_compile_value(diags, reason, &ty.inner.as_type(), init.as_ref(), true)?;
-            Ok(init)
+            check_type_contains_compile_value(diags, reason, &ty.inner.as_type(), init_raw.as_ref(), true)?;
+            Ok(init_raw)
         });
 
         // build register
@@ -1981,16 +1997,18 @@ impl BodyElaborationContext<'_, '_, '_> {
                 Err(diags.report(diag))
             }
         });
+        let port = port?;
+        let port_info = &ctx.ports[port];
+        let port_ty = port_info.ty.inner.as_type();
 
         // evaluate init
         let mut vars_inner = VariableValues::new_child(vars_body);
-        let init = ctx.eval_expression_as_compile(scope_body, &mut vars_inner, init, "register reset value");
-
-        let port = port?;
-        let port_info = &ctx.ports[port];
-        let mut direction_err = Ok(());
+        let init_raw =
+            ctx.eval_expression_as_compile(scope_body, &mut vars_inner, &port_ty, init, "register reset value");
 
         // check port is output
+        let port_info = &ctx.ports[port];
+        let mut direction_err = Ok(());
         match port_info.direction.inner {
             PortDirection::Input => {
                 let diag = Diagnostic::new("only output ports can be marked as registers")
@@ -2024,13 +2042,13 @@ impl BodyElaborationContext<'_, '_, '_> {
         direction_err?;
 
         // check type
-        let init = init.and_then(|init| {
+        let init = init_raw.and_then(|init_raw| {
             let reason = TypeContainsReason::Assignment {
                 span_target: id.span,
                 span_target_ty: port_info.ty.span,
             };
-            check_type_contains_compile_value(diags, reason, &port_info.ty.inner.as_type(), init.as_ref(), true)?;
-            Ok(init)
+            check_type_contains_compile_value(diags, reason, &port_ty, init_raw.as_ref(), true)?;
+            Ok(init_raw)
         });
 
         // build register

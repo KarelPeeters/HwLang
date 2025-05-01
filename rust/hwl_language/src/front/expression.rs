@@ -275,7 +275,13 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::StructLiteral(_) => return Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: &Expression, name: &str, op_span: Span| {
-                    let bound = self.eval_expression_as_compile(scope, vars, bound, &format!("range {name}"))?;
+                    let bound = self.eval_expression_as_compile(
+                        scope,
+                        vars,
+                        &Type::Int(IncRange::OPEN),
+                        bound,
+                        &format!("range {name}"),
+                    )?;
                     let reason = TypeContainsReason::Operator(op_span);
                     check_type_is_int_compile(diags, reason, bound)
                 };
@@ -473,7 +479,12 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_todo(len.span(), "spread in array type lengths"))
                             }
                         };
-                        let len = self.eval_expression_as_compile(scope, vars, len, "array type length")?;
+                        let len_expected_ty = Type::Int(IncRange {
+                            start_inc: Some(BigInt::ZERO),
+                            end_inc: None,
+                        });
+                        let len =
+                            self.eval_expression_as_compile(scope, vars, &len_expected_ty, len, "array type length")?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, reason, len)
                     })
@@ -553,7 +564,7 @@ impl CompileItemContext<'_, '_> {
             }
             ExpressionKind::Call(target, args) => {
                 // evaluate target and args
-                let target = self.eval_expression_as_compile(scope, vars, target, "call target")?;
+                let target = self.eval_expression_as_compile(scope, vars, &Type::Any, target, "call target")?;
                 let args =
                     args.try_map_inner_all(|arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
 
@@ -601,7 +612,7 @@ impl CompileItemContext<'_, '_> {
 
                 // eval
                 let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
-                let init = self.eval_expression_as_compile(scope, vars, init, "register init");
+                let init = self.eval_expression_as_compile(scope, vars, expected_ty, init, "register init");
                 let (value, init) = result_pair(value, init)?;
 
                 // figure out type
@@ -1069,8 +1080,13 @@ impl CompileItemContext<'_, '_> {
             let start = self
                 .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, start)
                 .and_then(|start| check_type_is_int(diags, reason, start));
+
+            let len_expected_ty = Type::Int(IncRange {
+                start_inc: Some(BigInt::ZERO),
+                end_inc: None,
+            });
             let len = self
-                .eval_expression_as_compile(scope, vars, len, "range length")
+                .eval_expression_as_compile(scope, vars, &len_expected_ty, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, reason, len));
 
             let start = start?;
@@ -1238,6 +1254,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_ty: &Type,
         expr: &Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
@@ -1250,7 +1267,7 @@ impl CompileItemContext<'_, '_> {
         let mut ctx_block = ();
 
         let value_eval = self
-            .eval_expression(&mut ctx, &mut ctx_block, scope, vars, &Type::Any, expr)?
+            .eval_expression(&mut ctx, &mut ctx_block, scope, vars, expected_ty, expr)?
             .inner;
         match value_eval {
             Value::Compile(c) => Ok(Spanned {
@@ -1274,7 +1291,10 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         // TODO unify this message with the one when a normal type-check fails
-        match self.eval_expression_as_compile(scope, vars, expr, "type")?.inner {
+        match self
+            .eval_expression_as_compile(scope, vars, &Type::Type, expr, "type")?
+            .inner
+        {
             CompileValue::Type(ty) => Ok(Spanned {
                 span: expr.span,
                 inner: ty,
@@ -1615,7 +1635,7 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<ElaboratedModule, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let eval = self.eval_expression_as_compile(scope, vars, expr, "module")?;
+        let eval = self.eval_expression_as_compile(scope, vars, &Type::Module, expr, "module")?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
         check_type_contains_compile_value(diags, reason, &Type::Module, eval.as_ref(), false)?;

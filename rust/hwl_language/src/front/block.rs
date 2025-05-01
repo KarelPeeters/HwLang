@@ -243,7 +243,8 @@ impl CompileItemContext<'_, '_> {
                         self.refs.check_should_stop(span_keyword)?;
 
                         // eval cond
-                        let cond = self.eval_expression_as_compile(scope, vars, cond, "while loop condition")?;
+                        let cond =
+                            self.eval_expression_as_compile(scope, vars, &Type::Bool, cond, "while loop condition")?;
 
                         let reason = TypeContainsReason::WhileCondition(span_keyword);
                         check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -630,7 +631,13 @@ impl CompileItemContext<'_, '_> {
             } = pair;
 
             let mut vars_inner = VariableValues::new_child(vars);
-            let cond = self.eval_expression_as_compile(scope, &mut vars_inner, cond, "compile-time if condition")?;
+            let cond = self.eval_expression_as_compile(
+                scope,
+                &mut vars_inner,
+                &Type::Bool,
+                cond,
+                "compile-time if condition",
+            )?;
 
             let reason = TypeContainsReason::IfCondition(*span_if);
             let cond = check_type_is_bool_compile(diags, reason, cond)?;

@@ -76,7 +76,7 @@ pub fn compile(
                     let info = shared.elaboration_arenas.module_info(elab)?;
                     Ok((top_item, info.module_ir))
                 }
-                _ => todo!("err"),
+                _ => Err(diags.report_internal_error(parsed[top_item].id.span(), "top items should be modules")),
             }
         })
     };
