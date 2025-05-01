@@ -8,7 +8,7 @@ use crate::front::compile::{CompileItemContext, Port, PortInterface, StackEntry}
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
+use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -502,7 +502,7 @@ impl CompileItemContext<'_, '_> {
                 Value::Compile(CompileValue::Type(result))
             }
             ExpressionKind::DotIdIndex(base, index) => {
-                return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expr.span, base, index);
+                return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expected_ty, expr.span, base, index);
             }
             ExpressionKind::DotIntIndex(base, index) => {
                 let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
@@ -680,6 +680,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_ty: &Type,
         expr_span: Span,
         base: &Expression,
         index: &Identifier,
@@ -812,17 +813,10 @@ impl CompileItemContext<'_, '_> {
             }
         }
 
-        // enum variants (similar to struct new)
-        if let &Value::Compile(CompileValue::Type(Type::Enum(elab, ref variant_tys))) = &base_eval {
+        // enum variants
+        let eval_enum = |elab, variant_tys: &Vec<Option<Type>>| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
-            let variant_index = info.variants.get_index_of(index_str).ok_or_else(|| {
-                let diag = Diagnostic::new(format!("variant `{}` not found on enum", index_str))
-                    .add_error(index.span, "attempt to access variant here")
-                    .add_info(info.span_body, "enum variants declared here")
-                    .finish();
-                diags.report(diag)
-            })?;
-
+            let variant_index = info.find_variant(diags, Spanned::new(index.span, index_str))?;
             let (_, content_ty) = &info.variants[variant_index];
 
             let result = match content_ty {
@@ -830,12 +824,32 @@ impl CompileItemContext<'_, '_> {
                 Some(_) => CompileValue::Function(FunctionValue::EnumNew(elab, variant_index)),
             };
 
-            return Ok(ValueInner::Value(Value::Compile(result)));
-        }
+            Ok(ValueInner::Value(Value::Compile(result)))
+        };
 
-        // TODO inferring version of enum variants
-        //   they're tricky because we need to constant non-inferring versions immediately,
-        //   without a later call that can depend on the expected type
+        if let &Value::Compile(CompileValue::Type(Type::Enum(elab, ref variant_tys))) = &base_eval {
+            return eval_enum(elab, variant_tys);
+        }
+        if let Some(&FunctionItemBody::Enum(unique, _)) = base_item_function {
+            if let Type::Enum(expected, variant_tys) = expected_ty {
+                let expected_info = self.refs.shared.elaboration_arenas.enum_info(*expected)?;
+                if expected_info.unique == unique {
+                    return eval_enum(*expected, variant_tys);
+                } else {
+                    return Err(diags.report(error_unique_mismatch(
+                        "struct",
+                        base.span,
+                        expected_info.unique.span_id(),
+                        unique.span_id(),
+                    )));
+                }
+            } else {
+                // TODO check if there is any possible variant for this index string,
+                //   otherwise we'll get confusing and delayed error messages
+                let func = FunctionValue::EnumNewInfer(unique, index_str.to_owned());
+                return Ok(ValueInner::Value(Value::Compile(CompileValue::Function(func))));
+            }
+        }
 
         // struct fields
         let base_ty = base_eval.ty();

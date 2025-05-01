@@ -35,6 +35,7 @@ pub enum FunctionValue {
     StructNew(ElaboratedStruct),
     StructNewInfer(UniqueDeclaration),
     EnumNew(ElaboratedEnum, usize),
+    EnumNewInfer(UniqueDeclaration, String),
 }
 
 #[derive(Debug, Clone)]
@@ -335,6 +336,28 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
 
+        let err_infer_any = |kind: &str| {
+            let diag = Diagnostic::new(format!("cannot infer {kind} params"))
+                .add_info(span_call, "no expected type")
+                .add_error(span_target, format!("this {kind} has unbound generic parameters"))
+                .footer(
+                    Level::Help,
+                    "either set an expected type or use use the full type before calling new",
+                )
+                .finish();
+            self.refs.diags.report(diag)
+        };
+        let err_infer_mismatch = |kind: &str, actual_span: Span| {
+            let diag = Diagnostic::new("mismatching expected type")
+                .add_info(
+                    span_call,
+                    format!("non-{kind} expected type {:?}", expected_ty.to_diagnostic_string()),
+                )
+                .add_error(actual_span, format!("{kind} type set here"))
+                .finish();
+            self.refs.diags.report(diag)
+        };
+
         match function {
             FunctionValue::User(function) => self.call_normal_function(ctx, vars, function, args),
             FunctionValue::Bits(function) => {
@@ -352,93 +375,31 @@ impl CompileItemContext<'_, '_> {
                         let result = self.call_struct_new(expected_elab, args)?;
                         Ok((None, result))
                     } else {
-                        let diag = Diagnostic::new("struct expected type mismatch")
-                            .add_error(span_target, "actual struct type is set here")
-                            .add_info(expected_info.unique.span_id(), "expected struct type declared here")
-                            .add_info(func_unique.span_id(), "actual struct type defined here")
-                            .finish();
-                        Err(self.refs.diags.report(diag))
+                        Err(diags.report(error_unique_mismatch(
+                            "struct",
+                            span_target,
+                            expected_info.unique.span_id(),
+                            func_unique.span_id(),
+                        )))
                     }
                 }
-                Type::Any => {
-                    let diag = Diagnostic::new("cannot infer struct params")
-                        .add_info(span_call, "no expected type")
-                        .add_error(span_target, "this struct has unbound generic parameters")
-                        .footer(
-                            Level::Help,
-                            "either set an expected type or use use the full type before calling new",
-                        )
-                        .finish();
-                    Err(self.refs.diags.report(diag))
-                }
-                _ => {
-                    let diag = Diagnostic::new("mismatching expected type")
-                        .add_info(
-                            span_call,
-                            format!("non-struct expected type {:?}", expected_ty.to_diagnostic_string()),
-                        )
-                        .add_error(func_unique.span_id(), "struct type set here")
-                        .finish();
-                    Err(self.refs.diags.report(diag))
-                }
+                Type::Any => Err(err_infer_any("struct")),
+                _ => Err(err_infer_mismatch("struct", func_unique.span_id())),
             },
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
-                let enum_info = self.refs.shared.elaboration_arenas.enum_info(enum_elab)?;
-                let (variant_id, variant_content) = &enum_info.variants[variant_index];
-                let variant_content = variant_content.as_ref().unwrap();
-
-                let mut matcher =
-                    ParamArgMacher::new(self.refs.diags, span_call, &args, false, NamedRule::OnlyPositional)?;
-                let content = matcher.resolve_param(variant_id, variant_content.as_ref())?;
-                matcher.finish()?;
-
-                let variant_tys = enum_info
-                    .variants
-                    .iter()
-                    .map(|(_, (_, t))| t.as_ref().map(|t| t.inner.clone()))
-                    .collect_vec();
-
-                let result = match content.inner {
-                    Value::Compile(content) => Value::Compile(CompileValue::Enum(
-                        enum_elab,
-                        variant_tys,
-                        (variant_index, Some(Box::new(content.clone()))),
-                    )),
-                    Value::Hardware(content_inner) => {
-                        // get hardware version of enum type
-                        let ty = Type::Enum(enum_elab, variant_tys);
-                        let ty_hw = ty.as_hardware_type().map_err(|_| {
-                            let diag = Diagnostic::new(format!(
-                                "enum type `{}` is not representable in hardware",
-                                ty.to_diagnostic_string()
-                            ))
-                            .add_error(span_call, "enum variant constructed here")
-                            .add_info(content.span, "content value is hardware")
-                            .finish();
-                            diags.report(diag)
-                        })?;
-                        let hw_enum = match &ty_hw {
-                            HardwareType::Enum(hw_enum) => hw_enum,
-                            _ => return Err(diags.report_internal_error(span_call, "expected hardware enum")),
-                        };
-
-                        // build new expression
-                        let content_bits = self.large.push_expr(IrExpressionLarge::ToBits(
-                            content_inner.ty.as_ir(),
-                            content_inner.expr.clone(),
-                        ));
-                        let expr = hw_enum.build_ir_expression(&mut self.large, variant_index, Some(content_bits))?;
-
-                        Value::Hardware(HardwareValue {
-                            ty: ty_hw,
-                            domain: content_inner.domain,
-                            expr,
-                        })
-                    }
-                };
-
+                let result = self.call_enum_new(span_call, enum_elab, variant_index, &args)?;
                 Ok((None, result))
             }
+            &FunctionValue::EnumNewInfer(unique, ref variant_str) => match expected_ty {
+                &Type::Enum(elab, _) => {
+                    let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+                    let variant_index = info.find_variant(diags, Spanned::new(span_target, variant_str))?;
+                    let result = self.call_enum_new(span_call, elab, variant_index, &args)?;
+                    Ok((None, result))
+                }
+                Type::Any => Err(err_infer_any("enum")),
+                _ => Err(err_infer_mismatch("enum", unique.span_id())),
+            },
         }
     }
 
@@ -516,6 +477,71 @@ impl CompileItemContext<'_, '_> {
             let field_tys = fields.values().map(|(_, ty)| ty.inner.clone()).collect();
             Value::Compile(CompileValue::Struct(elab, field_tys, values))
         })
+    }
+
+    fn call_enum_new(
+        &mut self,
+        span_call: Span,
+        elab: ElaboratedEnum,
+        variant_index: usize,
+        args: &Args<Option<Identifier>, Spanned<Value>>,
+    ) -> Result<Value, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+        let (variant_id, variant_content) = &enum_info.variants[variant_index];
+        let variant_content = variant_content.as_ref().unwrap();
+
+        let mut matcher = ParamArgMacher::new(self.refs.diags, span_call, &args, false, NamedRule::OnlyPositional)?;
+        let content = matcher.resolve_param(variant_id, variant_content.as_ref())?;
+        matcher.finish()?;
+
+        let variant_tys = enum_info
+            .variants
+            .iter()
+            .map(|(_, (_, t))| t.as_ref().map(|t| t.inner.clone()))
+            .collect_vec();
+
+        let result = match content.inner {
+            Value::Compile(content) => Value::Compile(CompileValue::Enum(
+                elab,
+                variant_tys,
+                (variant_index, Some(Box::new(content.clone()))),
+            )),
+            Value::Hardware(content_inner) => {
+                // get hardware version of enum type
+                let ty = Type::Enum(elab, variant_tys);
+                let ty_hw = ty.as_hardware_type().map_err(|_| {
+                    let diag = Diagnostic::new(format!(
+                        "enum type `{}` is not representable in hardware",
+                        ty.to_diagnostic_string()
+                    ))
+                    .add_error(span_call, "enum variant constructed here")
+                    .add_info(content.span, "content value is hardware")
+                    .finish();
+                    diags.report(diag)
+                })?;
+                let hw_enum = match &ty_hw {
+                    HardwareType::Enum(hw_enum) => hw_enum,
+                    _ => return Err(diags.report_internal_error(span_call, "expected hardware enum")),
+                };
+
+                // build new expression
+                let content_bits = self.large.push_expr(IrExpressionLarge::ToBits(
+                    content_inner.ty.as_ir(),
+                    content_inner.expr.clone(),
+                ));
+                let expr = hw_enum.build_ir_expression(&mut self.large, variant_index, Some(content_bits))?;
+
+                Value::Hardware(HardwareValue {
+                    ty: ty_hw,
+                    domain: content_inner.domain,
+                    expr,
+                })
+            }
+        };
+
+        Ok(result)
     }
 
     fn call_normal_function<C: ExpressionContext>(
@@ -939,6 +965,7 @@ impl FunctionValue {
             StructNew(ElaboratedStruct),
             StructNewInfer(UniqueDeclaration),
             EnumNew(ElaboratedEnum, usize),
+            EnumNewInfer(UniqueDeclaration, &'a str),
         }
 
         match self {
@@ -957,6 +984,7 @@ impl FunctionValue {
             FunctionValue::StructNew(elab) => Key::StructNew(*elab),
             FunctionValue::StructNewInfer(ref_struct) => Key::StructNewInfer(*ref_struct),
             FunctionValue::EnumNew(elab, index) => Key::EnumNew(*elab, *index),
+            FunctionValue::EnumNewInfer(ref_struct, variant) => Key::EnumNewInfer(*ref_struct, &variant),
         }
     }
 }
@@ -971,4 +999,12 @@ impl Hash for FunctionValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.equality_key().hash(state);
     }
+}
+
+pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> Diagnostic {
+    Diagnostic::new(format!("{kind} expected type mismatch"))
+        .add_error(target_span, format!("actual {kind} type is set here"))
+        .add_info(expected_span, format!("expected {kind} type declared here"))
+        .add_info(actual_span, format!("actual {kind} type defined here"))
+        .finish()
 }

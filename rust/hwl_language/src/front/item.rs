@@ -1,6 +1,6 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, WorkItem};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::ElaboratedModuleInfo;
@@ -174,6 +174,18 @@ pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
     pub span_body: Span,
     pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
+}
+
+impl ElaboratedEnumInfo {
+    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> Result<usize, ErrorGuaranteed> {
+        self.variants.get_index_of(variant.inner).ok_or_else(|| {
+            let diag = Diagnostic::new(format!("variant `{}` not found on enum", variant.inner))
+                .add_error(variant.span, "attempt to access variant here")
+                .add_info(self.span_body, "enum variants declared here")
+                .finish();
+            diags.report(diag)
+        })
+    }
 }
 
 impl<'s> CompileItemContext<'_, 's> {
