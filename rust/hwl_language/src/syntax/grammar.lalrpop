@@ -602,6 +602,7 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     // tuple literal
     "(" <SeparatedAtLeastOneSep<Expr,",">> ")"
         => ExpressionKind::TupleLiteral(<>),
+    "(" ")" => ExpressionKind::TupleLiteral(vec![]),
 
     // array comprehension
     "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
