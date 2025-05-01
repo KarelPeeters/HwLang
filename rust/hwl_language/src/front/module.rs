@@ -11,7 +11,7 @@ use crate::front::context::{
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::{EvaluatedId, ValueInner};
-use crate::front::item::ElaboratedItemParams;
+use crate::front::item::{ElaboratedItemParams, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Polarized, Signal};
 use crate::front::types::{HardwareType, Type};
@@ -73,7 +73,7 @@ enum ConnectorKind {
 }
 
 pub struct ElaboratedModuleHeader {
-    item: AstRefModule,
+    ast_ref: AstRefModule,
     params: Option<Vec<(Identifier, CompileValue)>>,
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
@@ -82,7 +82,9 @@ pub struct ElaboratedModuleHeader {
 }
 
 pub struct ElaboratedModuleInfo {
-    pub module_ast: AstRefModule,
+    pub ast_ref: AstRefModule,
+    pub unique: UniqueDeclaration,
+
     pub module_ir: IrModule,
     pub connectors: ArenaConnectors,
 }
@@ -90,9 +92,10 @@ pub struct ElaboratedModuleInfo {
 impl CompileRefs<'_, '_> {
     pub fn elaborate_module_ports_new(
         self,
-        params: ElaboratedItemParams<AstRefModule>,
+        ast_ref: AstRefModule,
+        params: ElaboratedItemParams,
     ) -> Result<(ArenaConnectors, ElaboratedModuleHeader), ErrorGuaranteed> {
-        let ElaboratedItemParams { item, params } = params;
+        let ElaboratedItemParams { unique: _, params } = params;
         let &ast::ItemDefModule {
             span: def_span,
             vis: _,
@@ -100,12 +103,12 @@ impl CompileRefs<'_, '_> {
             params: _,
             ref ports,
             body: _,
-        } = &self.fixed.parsed[item];
+        } = &self.fixed.parsed[ast_ref];
 
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
+        let scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
 
         // elaborate ports
         // TODO we actually need a full context here?
@@ -114,7 +117,7 @@ impl CompileRefs<'_, '_> {
         let scope_ports = scope_ports.into_content();
 
         let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
-            item,
+            ast_ref,
             params,
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
@@ -126,7 +129,7 @@ impl CompileRefs<'_, '_> {
 
     pub fn elaborate_module_body_new(&self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ElaboratedModuleHeader {
-            item,
+            ast_ref,
             params,
             ports,
             port_interfaces,
@@ -140,7 +143,7 @@ impl CompileRefs<'_, '_> {
             params: _,
             ports: _,
             ref body,
-        } = &self.fixed.parsed[item];
+        } = &self.fixed.parsed[ast_ref];
 
         self.check_should_stop(id.span())?;
 
@@ -148,7 +151,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_restore(*self, None, ports, port_interfaces);
         let mut vars = VariableValues::new_root(&ctx.variables);
 
-        let scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
+        let scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
@@ -491,7 +494,7 @@ fn push_connector_interface(
         interface,
         view: view_name,
     } = &view;
-    let interface = ctx.refs.shared.elaborated_interface_info(*interface)?;
+    let interface = ctx.refs.shared.elaboration_arenas.interface_info(*interface)?;
     let view_info = interface.views.get(view_name).unwrap();
 
     let port_dirs = view_info.port_dirs.as_ref_ok()?;
@@ -1098,12 +1101,13 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let elaborated_module = self.ctx.eval_expression_as_module(scope, vars, *span_keyword, module)?;
         let &ElaboratedModuleInfo {
-            module_ast,
+            ast_ref,
+            unique: _,
             module_ir,
             ref connectors,
-        } = self.ctx.refs.shared.elaborated_module_info(elaborated_module)?;
+        } = self.ctx.refs.shared.elaboration_arenas.module_info(elaborated_module)?;
 
-        let module_ast = &refs.fixed.parsed[module_ast];
+        let module_ast = &refs.fixed.parsed[ast_ref];
 
         // eval and check port connections
         // TODO use function parameter matching for ports too?
@@ -1506,7 +1510,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                     .ctx
                     .refs
                     .shared
-                    .elaborated_interface_info(connector_view.interface)?;
+                    .elaboration_arenas
+                    .interface_info(connector_view.interface)?;
                 let view_info = interface_info.views.get(&connector_view.view).unwrap();
                 let value_view_info = interface_info.views.get(&value_info.view.view).unwrap();
 

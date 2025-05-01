@@ -1,12 +1,10 @@
 use crate::front::block::{BlockEnd, BlockEndReturn};
 use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
-use crate::front::compile::{
-    ArenaVariables, AstRefStruct, CompileItemContext, CompileRefs, ElaboratedEnum, ElaboratedStruct, StackEntry,
-};
+use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
-use crate::front::item::{ElaboratedStructInfo, FunctionItemBody};
+use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, UniqueDeclaration};
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
@@ -35,7 +33,7 @@ pub enum FunctionValue {
     User(UserFunctionValue),
     Bits(FunctionBits),
     StructNew(ElaboratedStruct),
-    StructNewInfer(Spanned<AstRefStruct>),
+    StructNewInfer(UniqueDeclaration),
     EnumNew(ElaboratedEnum, usize),
 }
 
@@ -330,6 +328,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         vars: &mut VariableValues,
         expected_ty: &Type,
+        span_target: Span,
         span_call: Span,
         function: &FunctionValue,
         args: Args<Option<Identifier>, Spanned<Value>>,
@@ -346,19 +345,17 @@ impl CompileItemContext<'_, '_> {
                 let result = self.call_struct_new(struct_elab, args)?;
                 Ok((None, result))
             }
-            &FunctionValue::StructNewInfer(struct_ref) => match *expected_ty {
-                Type::Struct(struct_elab, _) => {
-                    if struct_elab.item == struct_ref.inner {
-                        let result = self.call_struct_new(struct_elab, args)?;
+            &FunctionValue::StructNewInfer(func_unique) => match *expected_ty {
+                Type::Struct(expected_elab, _) => {
+                    let expected_info = self.refs.shared.elaboration_arenas.struct_info(expected_elab)?;
+                    if expected_info.unique == func_unique {
+                        let result = self.call_struct_new(expected_elab, args)?;
                         Ok((None, result))
                     } else {
-                        let diag = Diagnostic::new("struct type mismatch")
-                            .add_info(
-                                span_call,
-                                format!("expected struct type {:?}", expected_ty.to_diagnostic_string()),
-                            )
-                            .add_error(struct_ref.span, "actual struct type is different")
-                            .add_info(struct_elab.item.0, "actual struct type defined here")
+                        let diag = Diagnostic::new("struct expected type mismatch")
+                            .add_error(span_target, "actual struct type is set here")
+                            .add_info(expected_info.unique.span_id(), "expected struct type declared here")
+                            .add_info(func_unique.span_id(), "actual struct type defined here")
                             .finish();
                         Err(self.refs.diags.report(diag))
                     }
@@ -366,8 +363,7 @@ impl CompileItemContext<'_, '_> {
                 Type::Any => {
                     let diag = Diagnostic::new("cannot infer struct params")
                         .add_info(span_call, "no expected type")
-                        .add_error(struct_ref.span, "this struct has unbound generic parameters")
-                        .add_info(struct_ref.inner.0, "struct defined here")
+                        .add_error(span_target, "this struct has unbound generic parameters")
                         .footer(
                             Level::Help,
                             "either set an expected type or use use the full type before calling new",
@@ -381,13 +377,13 @@ impl CompileItemContext<'_, '_> {
                             span_call,
                             format!("non-struct expected type {:?}", expected_ty.to_diagnostic_string()),
                         )
-                        .add_error(struct_ref.span, "struct type set here")
+                        .add_error(func_unique.span_id(), "struct type set here")
                         .finish();
                     Err(self.refs.diags.report(diag))
                 }
             },
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
-                let enum_info = self.refs.shared.elaborated_enums.get(enum_elab)?;
+                let enum_info = self.refs.shared.elaboration_arenas.enum_info(enum_elab)?;
                 let (variant_id, variant_content) = &enum_info.variants[variant_index];
                 let variant_content = variant_content.as_ref().unwrap();
 
@@ -454,7 +450,11 @@ impl CompileItemContext<'_, '_> {
         args: Args<Option<Identifier>, Spanned<Value>>,
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let &ElaboratedStructInfo { span_body, ref fields } = self.refs.shared.elaborated_structs.get(elab)?;
+        let &ElaboratedStructInfo {
+            span_body,
+            unique: _,
+            ref fields,
+        } = self.refs.shared.elaboration_arenas.struct_info(elab)?;
 
         let mut matcher = ParamArgMacher::new(self.refs.diags, span_body, &args, false, NamedRule::OnlyNamed)?;
 
@@ -937,7 +937,7 @@ impl FunctionValue {
             User(Span, &'a CapturedScope),
             Bits(&'a HardwareType, FunctionBitsKind),
             StructNew(ElaboratedStruct),
-            StructNewInfer(Spanned<AstRefStruct>),
+            StructNewInfer(UniqueDeclaration),
             EnumNew(ElaboratedEnum, usize),
         }
 

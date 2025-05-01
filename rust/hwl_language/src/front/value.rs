@@ -1,10 +1,9 @@
-use crate::front::compile::{ElaboratedEnum, ElaboratedItem, ElaboratedStruct};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
+use crate::front::item::{ElaboratedEnum, ElaboratedInterface, ElaboratedModule, ElaboratedStruct};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType, IrVariable};
-use crate::syntax::parsed::{AstRefInterface, AstRefModule};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::{enumerate, Itertools};
@@ -34,14 +33,14 @@ pub enum CompileValue {
     Enum(ElaboratedEnum, Vec<Option<Type>>, (usize, Option<Box<CompileValue>>)),
 
     Function(FunctionValue),
-    Module(ElaboratedItem<AstRefModule>),
-    Interface(ElaboratedItem<AstRefInterface>),
+    Module(ElaboratedModule),
+    Interface(ElaboratedInterface),
     InterfaceView(ElaboratedInterfaceView),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedInterfaceView {
-    pub interface: ElaboratedItem<AstRefInterface>,
+    pub interface: ElaboratedInterface,
     pub view: String,
 }
 

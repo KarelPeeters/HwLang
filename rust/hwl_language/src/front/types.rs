@@ -1,5 +1,5 @@
-use crate::front::compile::{ElaboratedEnum, ElaboratedStruct};
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::item::{ElaboratedEnum, ElaboratedStruct};
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
 use crate::swrite;

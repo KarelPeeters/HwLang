@@ -272,7 +272,7 @@ unsafe impl<K: Send + Sync, V: Send + Sync> Sync for ComputeOnceMap<K, V> {}
 #[derive(Debug)]
 pub struct KeyAlreadyPresent;
 
-impl<K: Debug + Hash + Eq, V> ComputeOnceMap<K, V> {
+impl<K: Eq + Hash, V> ComputeOnceMap<K, V> {
     pub fn new() -> Self {
         Self { inner: DashMap::new() }
     }

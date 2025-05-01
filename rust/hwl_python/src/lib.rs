@@ -1,9 +1,8 @@
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args};
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{
-    CompileFixed, CompileItemContext, CompileRefs, CompileShared, ElaboratedModule, StdoutPrintHandler,
-};
+use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler};
+use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
 use hwl_language::syntax::pos::{Pos, Span};
@@ -359,6 +358,7 @@ impl Function {
                 &mut vars,
                 &RustType::Any,
                 dummy_span,
+                dummy_span,
                 &self.function_value,
                 args,
             );
@@ -391,9 +391,11 @@ impl Module {
     fn generate_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
         // borrow self
         let compile = &mut *self.compile.borrow_mut(py);
-        let parsed_red = compile.parsed.borrow(py);
-        let parsed = &parsed_red.parsed;
-        let source = &parsed_red.source.borrow(py).source;
+        let parsed_ref = compile.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let dummy_span = source_ref.dummy_span;
 
         // take out the old compiler
         // TODO this is really weird, don't do this
@@ -406,10 +408,10 @@ impl Module {
 
         // get the right ir module
         let diags = Diagnostics::new();
-        let ir_module = map_diag_error(source, &diags, state.elaborated_module_info(self.module))?.module_ir;
+        let ir_module = map_diag_error(source, &diags, state.elaboration_arenas.module_info(self.module))?.module_ir;
 
         // check that all modules are resolved
-        let ir_modules = state.finish_ir_modules(&diags, parsed[self.module.item].id.span());
+        let ir_modules = state.finish_ir_modules(&diags, dummy_span);
         let ir_modules = map_diag_error(source, &diags, ir_modules)?;
 
         // actual lowering

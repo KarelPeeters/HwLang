@@ -1,7 +1,9 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{AstRefEnum, AstRefStruct, CompileItemContext, ElaboratedModule};
+use crate::front::compile::{CompileItemContext, WorkItem};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
+use crate::front::interface::ElaboratedInterfaceInfo;
+use crate::front::module::ElaboratedModuleInfo;
 use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::Type;
@@ -14,29 +16,137 @@ use crate::syntax::ast::{
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
+use crate::util::sync::ComputeOnceMap;
+use crate::util::ResultExt;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use itertools::Itertools;
+use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct ElaboratedItemParams<I> {
-    pub item: I,
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedModule(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedInterface(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedStruct(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedEnum(usize);
+
+pub struct ElaborationArenas {
+    elaborated_modules: ElaborateItemArena<ElaboratedModule, ElaboratedModuleInfo>,
+    elaborated_interfaces: ElaborateItemArena<ElaboratedInterface, ElaboratedInterfaceInfo>,
+    elaborated_structs: ElaborateItemArena<ElaboratedStruct, ElaboratedStructInfo>,
+    elaborated_enums: ElaborateItemArena<ElaboratedEnum, ElaboratedEnumInfo>,
+    next_unique_declaration: AtomicUsize,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct UniqueDeclaration(usize, Span);
+
+impl UniqueDeclaration {
+    pub fn span_id(&self) -> Span {
+        self.1
+    }
+}
+
+impl ElaborationArenas {
+    pub fn new() -> Self {
+        ElaborationArenas {
+            elaborated_modules: ElaborateItemArena::new(),
+            elaborated_interfaces: ElaborateItemArena::new(),
+            elaborated_structs: ElaborateItemArena::new(),
+            elaborated_enums: ElaborateItemArena::new(),
+            next_unique_declaration: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn module_info(&self, elab: ElaboratedModule) -> Result<&ElaboratedModuleInfo, ErrorGuaranteed> {
+        self.elaborated_modules.get(elab)
+    }
+
+    pub fn interface_info(&self, elab: ElaboratedInterface) -> Result<&ElaboratedInterfaceInfo, ErrorGuaranteed> {
+        self.elaborated_interfaces.get(elab)
+    }
+
+    pub fn struct_info(&self, elab: ElaboratedStruct) -> Result<&ElaboratedStructInfo, ErrorGuaranteed> {
+        self.elaborated_structs.get(elab)
+    }
+
+    pub fn enum_info(&self, elab: ElaboratedEnum) -> Result<&ElaboratedEnumInfo, ErrorGuaranteed> {
+        self.elaborated_enums.get(elab)
+    }
+
+    fn next_unique_declaration(&self, span_id: Span) -> UniqueDeclaration {
+        let id = self.next_unique_declaration.fetch_add(1, Ordering::Relaxed);
+        assert!(id < usize::MAX / 2, "(close to) overflowing");
+
+        UniqueDeclaration(id, span_id)
+    }
+}
+
+pub struct ElaborateItemArena<E, F> {
+    next_id: AtomicUsize,
+    key_to_id: ComputeOnceMap<ElaboratedItemKey, E>,
+    id_to_info: ComputeOnceMap<E, Result<F, ErrorGuaranteed>>,
+}
+
+impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
+    pub fn new() -> Self {
+        ElaborateItemArena {
+            next_id: AtomicUsize::new(0),
+            key_to_id: ComputeOnceMap::new(),
+            id_to_info: ComputeOnceMap::new(),
+        }
+    }
+
+    pub fn get(&self, id: E) -> Result<&F, ErrorGuaranteed> {
+        self.id_to_info.get(&id).unwrap().as_ref_ok()
+    }
+
+    pub fn elaborate(
+        &self,
+        params: ElaboratedItemParams,
+        e: impl FnOnce(usize) -> E,
+        f: impl FnOnce(ElaboratedItemParams) -> Result<F, ErrorGuaranteed>,
+    ) -> Result<(E, &F), ErrorGuaranteed> {
+        let key = params.cache_key();
+
+        let &id = self.key_to_id.get_or_compute(key, |_| {
+            let index = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let id = e(index);
+
+            let info = f(params);
+
+            self.id_to_info.set(id, info).unwrap();
+            id
+        });
+
+        let info = self.get(id)?;
+        Ok((id, info))
+    }
+}
+
+pub struct ElaboratedItemParams {
+    // TODO maybe remove this field?
+    pub unique: UniqueDeclaration,
     pub params: Option<Vec<(Identifier, CompileValue)>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ElaboratedItemKey<I> {
-    item: I,
+pub struct ElaboratedItemKey {
+    unique: UniqueDeclaration,
     params: Option<Vec<CompileValue>>,
 }
 
-impl<I: Copy> ElaboratedItemParams<I> {
-    pub fn cache_key(&self) -> ElaboratedItemKey<I> {
-        let &ElaboratedItemParams { item, ref params } = self;
+impl ElaboratedItemParams {
+    pub fn cache_key(&self) -> ElaboratedItemKey {
+        let &ElaboratedItemParams { unique, ref params } = self;
         let param_values = params
             .as_ref()
             .map(|params| params.iter().map(|(_, v)| v.clone()).collect());
         ElaboratedItemKey {
-            item,
+            unique,
             params: param_values,
         }
     }
@@ -46,20 +156,22 @@ impl<I: Copy> ElaboratedItemParams<I> {
 pub enum FunctionItemBody {
     // TODO change this to be a type alias, or maybe change the others to be ast references too?
     TypeAliasExpr(Box<Expression>),
-    Module(AstRefModule),
-    Interface(AstRefInterface),
-    Struct(AstRefStruct, Vec<ConditionalItem<StructField>>),
-    Enum(AstRefEnum, Vec<ConditionalItem<EnumVariant>>),
+    Module(UniqueDeclaration, AstRefModule),
+    Interface(UniqueDeclaration, AstRefInterface),
+    Struct(UniqueDeclaration, Vec<ConditionalItem<StructField>>),
+    Enum(UniqueDeclaration, Vec<ConditionalItem<EnumVariant>>),
 }
 
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
+    pub unique: UniqueDeclaration,
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
 }
 
 #[derive(Debug)]
 pub struct ElaboratedEnumInfo {
+    pub unique: UniqueDeclaration,
     pub span_body: Span,
     pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
 }
@@ -106,7 +218,8 @@ impl<'s> CompileItemContext<'_, 's> {
                 let item = AstRefModule::new_unchecked(item, module);
                 let body_span = body.span;
 
-                let body = FunctionItemBody::Module(item);
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let body = FunctionItemBody::Module(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
                 let mut vars = VariableValues::new_root(&self.variables);
@@ -124,7 +237,8 @@ impl<'s> CompileItemContext<'_, 's> {
                 } = interface;
                 let item = AstRefInterface::new_unchecked(item, interface);
 
-                let body = FunctionItemBody::Interface(item);
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let body = FunctionItemBody::Interface(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
                 let mut vars = VariableValues::new_root(&self.variables);
@@ -214,8 +328,8 @@ impl<'s> CompileItemContext<'_, 's> {
                     fields,
                 } = decl;
 
-                let ast_ref = AstRefStruct(id.span());
-                let body = FunctionItemBody::Struct(ast_ref, fields.clone());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let body = FunctionItemBody::Struct(unique, fields.clone());
                 self.eval_maybe_generic_item(id.span(), *span_body, scope, vars, params, body)
             }
             CommonDeclaration::Enum(decl) => {
@@ -226,8 +340,8 @@ impl<'s> CompileItemContext<'_, 's> {
                     variants,
                 } = decl;
 
-                let ast_ref = AstRefEnum(id.span());
-                let body = FunctionItemBody::Enum(ast_ref, variants.clone());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let body = FunctionItemBody::Enum(unique, variants.clone());
                 self.eval_maybe_generic_item(id.span(), *span, scope, vars, params, body)
             }
             CommonDeclaration::Function(decl) => {
@@ -317,21 +431,56 @@ impl<'s> CompileItemContext<'_, 's> {
                 let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
-            &FunctionItemBody::Module(item) => {
-                let item_params = ElaboratedItemParams { item, params };
-                let (result_id, _) = self.refs.elaborate_module(item_params)?;
+            &FunctionItemBody::Module(unique, ast_ref) => {
+                let item_params = ElaboratedItemParams { unique, params };
+                let refs = self.refs;
+
+                let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules.elaborate(
+                    item_params,
+                    ElaboratedModule,
+                    |item_params| {
+                        // elaborate ports
+                        let (connectors, header) = refs.elaborate_module_ports_new(ast_ref, item_params)?;
+
+                        // reserve ir module key, will be filled in later during body elaboration
+                        let ir_module = { refs.shared.ir_modules.lock().unwrap().push(None) };
+
+                        // queue body elaboration for later
+                        refs.shared
+                            .work_queue
+                            .push(WorkItem::ElaborateModuleBody(header, ir_module));
+
+                        Ok(ElaboratedModuleInfo {
+                            unique,
+                            ast_ref,
+                            module_ir: ir_module,
+                            connectors,
+                        })
+                    },
+                )?;
+
                 Ok(CompileValue::Module(result_id))
             }
-            &FunctionItemBody::Interface(item) => {
-                let item_params = ElaboratedItemParams { item, params };
-                let (result_id, _) = self.refs.elaborate_interface(item_params)?;
+            &FunctionItemBody::Interface(unique, ast_ref) => {
+                let item_params = ElaboratedItemParams { unique, params };
+
+                let refs = self.refs;
+                let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
+                    item_params,
+                    ElaboratedInterface,
+                    |item_params| refs.elaborate_interface_new(ast_ref, item_params),
+                )?;
+
                 Ok(CompileValue::Interface(result_id))
             }
-            &FunctionItemBody::Struct(ast_ref, ref fields) => {
-                let item_params = ElaboratedItemParams { item: ast_ref, params };
-                let (result_id, result_info) = self.refs.shared.elaborated_structs.elaborate(item_params, |_| {
-                    self.elaborate_struct_new(scope_params, vars, body.span, fields)
-                })?;
+            &FunctionItemBody::Struct(unique, ref fields) => {
+                let item_params = ElaboratedItemParams { unique, params };
+
+                let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
+                    item_params,
+                    ElaboratedStruct,
+                    |_| self.elaborate_struct_new(scope_params, vars, unique, body.span, fields),
+                )?;
 
                 let fields = result_info
                     .fields
@@ -340,11 +489,15 @@ impl<'s> CompileItemContext<'_, 's> {
                     .collect_vec();
                 Ok(CompileValue::Type(Type::Struct(result_id, fields)))
             }
-            &FunctionItemBody::Enum(ast_ref, ref variants) => {
-                let item_params = ElaboratedItemParams { item: ast_ref, params };
-                let (result_id, result_info) = self.refs.shared.elaborated_enums.elaborate(item_params, |_| {
-                    self.elaborate_enum_new(scope_params, vars, body.span, variants)
-                })?;
+            &FunctionItemBody::Enum(unique, ref variants) => {
+                let item_params = ElaboratedItemParams { unique, params };
+
+                let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
+                    item_params,
+                    ElaboratedEnum,
+                    |_| self.elaborate_enum_new(scope_params, vars, unique, body.span, variants),
+                )?;
+
                 let variants = result_info
                     .variants
                     .values()
@@ -359,6 +512,7 @@ impl<'s> CompileItemContext<'_, 's> {
         &mut self,
         scope_params: &Scope,
         vars: &mut VariableValues,
+        unique: UniqueDeclaration,
         span_body: Span,
         fields: &[ConditionalItem<StructField>],
     ) -> Result<ElaboratedStructInfo, ErrorGuaranteed> {
@@ -396,6 +550,7 @@ impl<'s> CompileItemContext<'_, 's> {
         any_field_err?;
 
         Ok(ElaboratedStructInfo {
+            unique,
             span_body,
             fields: fields_eval,
         })
@@ -405,6 +560,7 @@ impl<'s> CompileItemContext<'_, 's> {
         &mut self,
         scope_params: &Scope,
         vars: &mut VariableValues,
+        unique: UniqueDeclaration,
         span_body: Span,
         variants: &[ConditionalItem<EnumVariant>],
     ) -> Result<ElaboratedEnumInfo, ErrorGuaranteed> {
@@ -444,6 +600,7 @@ impl<'s> CompileItemContext<'_, 's> {
         any_variant_err?;
 
         Ok(ElaboratedEnumInfo {
+            unique,
             span_body,
             variants: variants_eval,
         })

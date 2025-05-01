@@ -4,13 +4,13 @@ use crate::front::check::{
     check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware,
     check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, ElaboratedModule, Port, PortInterface, StackEntry};
+use crate::front::compile::{CompileItemContext, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
-use crate::front::item::FunctionItemBody;
+use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
@@ -559,7 +559,7 @@ impl CompileItemContext<'_, '_> {
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
-                let target = match target.inner {
+                let target_inner = match target.inner {
                     CompileValue::Function(f) => f,
                     _ => {
                         let e = diags.report_simple(
@@ -577,7 +577,7 @@ impl CompileItemContext<'_, '_> {
                 let entry = StackEntry::FunctionCall(expr.span);
                 let (result_block, result_value) = self
                     .recurse(entry, |s| {
-                        s.call_function(ctx, vars, expected_ty, expr.span, &target, args)
+                        s.call_function(ctx, vars, expected_ty, target.span, expr.span, &target_inner, args)
                     })
                     .flatten_err()?;
 
@@ -687,7 +687,8 @@ impl CompileItemContext<'_, '_> {
                 let interface_info = self
                     .refs
                     .shared
-                    .elaborated_interface_info(port_interface_info.view.interface)?;
+                    .elaboration_arenas
+                    .interface_info(port_interface_info.view.interface)?;
                 let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
                     let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
                         .add_error(index.span, "attempt to access port here")
@@ -704,7 +705,7 @@ impl CompileItemContext<'_, '_> {
 
         // interface views
         if let &Value::Compile(CompileValue::Interface(base_interface)) = &base_eval {
-            let info = self.refs.shared.elaborated_interface_info(base_interface)?;
+            let info = self.refs.shared.elaboration_arenas.interface_info(base_interface)?;
             let _ = info.get_view(diags, index)?;
 
             let interface_view = ElaboratedInterfaceView {
@@ -792,10 +793,9 @@ impl CompileItemContext<'_, '_> {
             },
             _ => None,
         };
-        if let Some(&FunctionItemBody::Struct(ast_ref, _)) = base_item_function {
+        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function {
             if index_str == "new" {
-                let ast_ref_spanned = Spanned::new(base.span, ast_ref);
-                let func = FunctionValue::StructNewInfer(ast_ref_spanned);
+                let func = FunctionValue::StructNewInfer(unique);
                 let result = Value::Compile(CompileValue::Function(func));
                 return Ok(ValueInner::Value(result));
             }
@@ -803,7 +803,7 @@ impl CompileItemContext<'_, '_> {
 
         // enum variants (similar to struct new)
         if let &Value::Compile(CompileValue::Type(Type::Enum(elab, ref variant_tys))) = &base_eval {
-            let info = self.refs.shared.elaborated_enums.get(elab)?;
+            let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
             let variant_index = info.variants.get_index_of(index_str).ok_or_else(|| {
                 let diag = Diagnostic::new(format!("variant `{}` not found on enum", index_str))
                     .add_error(index.span, "attempt to access variant here")
@@ -829,7 +829,7 @@ impl CompileItemContext<'_, '_> {
         // struct fields
         let base_ty = base_eval.ty();
         if let Type::Struct(elab, _) = base_ty {
-            let info = self.refs.shared.elaborated_structs.get(elab)?;
+            let info = self.refs.shared.elaboration_arenas.struct_info(elab)?;
             let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
                 let diag = Diagnostic::new("field not found")
                     .add_info(base.span, format!("base has type `{}`", base_ty.to_diagnostic_string()))
@@ -1383,7 +1383,8 @@ impl CompileItemContext<'_, '_> {
                         let interface_info = self
                             .refs
                             .shared
-                            .elaborated_interface_info(port_interface_info.view.interface)?;
+                            .elaboration_arenas
+                            .interface_info(port_interface_info.view.interface)?;
                         let (port_index, _) = interface_info.get_port(diags, index)?;
                         let port = port_interface_info.ports[port_index];
 

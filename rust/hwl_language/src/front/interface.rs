@@ -68,9 +68,10 @@ pub struct ElaboratedInterfaceViewInfo {
 impl CompileRefs<'_, '_> {
     pub fn elaborate_interface_new(
         self,
-        params: ElaboratedItemParams<AstRefInterface>,
+        ast_ref: AstRefInterface,
+        params: ElaboratedItemParams,
     ) -> Result<ElaboratedInterfaceInfo, ErrorGuaranteed> {
-        let ElaboratedItemParams { item, params } = params;
+        let ElaboratedItemParams { unique: _, params } = params;
         let ItemDefInterface {
             span: _,
             vis: _,
@@ -79,13 +80,13 @@ impl CompileRefs<'_, '_> {
             span_body: _,
             port_types,
             views,
-        } = &self.fixed.parsed[item];
+        } = &self.fixed.parsed[ast_ref];
         let diags = self.diags;
 
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let mut scope_params = ctx.rebuild_params_scope(item.into(), &mut vars, &params)?;
+        let mut scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
 
         // elaborate port types
         let mut port_map = IndexMap::new();
