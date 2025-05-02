@@ -962,10 +962,14 @@ impl CompileItemContext<'_, '_> {
                     ));
                     let declare = match (ty_content, id_content) {
                         (Some(ty_content), Some(id_content)) => {
-                            // TODO truncate depending on variant
-                            let target_content_bits = large.push_expr(IrExpressionLarge::TupleIndex {
+                            let target_content_all_bits = large.push_expr(IrExpressionLarge::TupleIndex {
                                 base: target.expr.clone(),
                                 index: BigUint::ONE,
+                            });
+                            let target_content_bits = large.push_expr(IrExpressionLarge::ArraySlice {
+                                base: target_content_all_bits,
+                                start: IrExpression::Int(BigInt::ZERO),
+                                len: ty_content.size_bits(),
                             });
                             let target_content =
                                 large.push_expr(IrExpressionLarge::FromBits(ty_content.as_ir(), target_content_bits));
