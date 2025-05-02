@@ -354,7 +354,12 @@ MatchPattern: MatchPattern = {
     <value:BoxExpr> => MatchPattern::Equal(value),
     "val" <id:Id> => MatchPattern::Val(id),
     "in" <value:BoxExpr> => MatchPattern::In(value),
-    "." <variant:Id> <id_content:("(" "val" <MaybeId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
+    "." <variant:Id> <id_content:("(" <MaybeValId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
+}
+
+MaybeValId: MaybeIdentifier = {
+    "val" <MaybeId> => <>,
+    Span<"_"> => MaybeIdentifier::Dummy(<>),
 }
 
 ForStatement<S>: ForStatement<S> = {
