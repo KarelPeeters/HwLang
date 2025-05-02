@@ -261,6 +261,7 @@ impl<'s> Tokenizer<'s> {
 
             // simple fixed
             ['=', '=', _] => skip_fixed(2, TokenType::EqEq),
+            ['=', '>', _] => skip_fixed(2, TokenType::DoubleArrow),
             ['=', _, _] => skip_fixed(1, TokenType::Eq),
             ['!', '=', _] => skip_fixed(2, TokenType::Neq),
             ['%', '=', _] => skip_fixed(2, TokenType::PercentEq),
@@ -459,6 +460,7 @@ declare_tokens! {
         If("if", TC::Keyword),
         Else("else", TC::Keyword),
         Loop("loop", TC::Keyword),
+        Match("match", TC::Keyword),
         For("for", TC::Keyword),
         While("while", TC::Keyword),
         Public("pub", TC::Keyword),
@@ -470,6 +472,7 @@ declare_tokens! {
         Colon(":", TC::Symbol),
         Comma(",", TC::Symbol),
         Arrow("->", TC::Symbol),
+        DoubleArrow("=>", TC::Symbol),
         Underscore("_", TC::Symbol),
         ColonColon("::", TC::Symbol),
 

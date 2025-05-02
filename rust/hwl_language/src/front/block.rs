@@ -9,17 +9,25 @@ use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{ForIterator, ValueWithImplications};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::Type;
+use crate::front::types::{HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{merge_variable_branches, VariableValues};
-use crate::mid::ir::{IrIfStatement, IrStatement};
+use crate::mid::ir::{IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConditionalItem, ForStatement, IfCondBlockPair, IfStatement,
-    ReturnStatement, Spanned, VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConditionalItem, ExpressionKind, ForStatement, Identifier,
+    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, Spanned,
+    VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
+use crate::util::big_int::{BigInt, BigUint};
+use crate::util::iter::IterExt;
 use crate::util::{result_pair, ResultExt};
+use annotate_snippets::Level;
+use itertools::{zip_eq, Itertools};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::ops::RangeBounds;
 
 #[derive(Debug)]
 pub enum BlockEnd<S = BlockEndStopping> {
@@ -41,7 +49,11 @@ pub struct BlockEndReturn {
 }
 
 impl BlockEnd<BlockEndStopping> {
-    pub fn unwrap_normal_todo_in_if(self, diags: &Diagnostics, span_cond: Span) -> Result<(), ErrorGuaranteed> {
+    pub fn unwrap_normal_todo_in_conditional(
+        self,
+        diags: &Diagnostics,
+        span_cond: Span,
+    ) -> Result<(), ErrorGuaranteed> {
         match self {
             BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => {
@@ -51,7 +63,7 @@ impl BlockEnd<BlockEndStopping> {
                     BlockEndStopping::LoopContinue(span) => (span, "continue"),
                 };
 
-                let diag = Diagnostic::new_todo(format!("{} in if statement with runtime condition", kind))
+                let diag = Diagnostic::new_todo(format!("{} in conditional statement with runtime condition", kind))
                     .add_error(span, "used here")
                     .add_info(span_cond, "runtime condition here")
                     .finish();
@@ -99,8 +111,51 @@ impl BlockEnd<BlockEndStopping> {
     }
 }
 
+enum BranchMatched {
+    Yes(Option<(MaybeIdentifier, CompileValue)>),
+    No,
+}
+
+impl BranchMatched {
+    fn from_bool(b: bool) -> Self {
+        if b {
+            BranchMatched::Yes(None)
+        } else {
+            BranchMatched::No
+        }
+    }
+}
+
+enum PatternEqual {
+    Bool(bool),
+    Int(BigInt),
+    String(String),
+}
+
+type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, &'a Identifier>;
+
 impl CompileItemContext<'_, '_> {
-    pub fn elaborate_block<C: ExpressionContext>(
+    pub fn elaborate_and_push_block<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope_parent: &Scope,
+        vars: &mut VariableValues,
+        block: &Block<BlockStatement>,
+    ) -> Result<BlockEnd, ErrorGuaranteed> {
+        let (ctx_block_inner, block_end) = self.elaborate_block_raw(ctx, scope_parent, vars, block)?;
+
+        let block_ir_spanned = Spanned {
+            span: block.span,
+            inner: ctx_block_inner,
+        };
+        ctx.push_ir_statement_block(ctx_block, block_ir_spanned);
+
+        Ok(block_end)
+    }
+
+    // TODO rename back to elaborate_block
+    pub fn elaborate_block_raw<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         scope_parent: &Scope,
@@ -124,8 +179,11 @@ impl CompileItemContext<'_, '_> {
         let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
-            match &stmt.inner {
-                BlockStatementKind::CommonDeclaration(decl) => self.eval_and_declare_declaration(scope, vars, decl),
+            let stmt_end = match &stmt.inner {
+                BlockStatementKind::CommonDeclaration(decl) => {
+                    self.eval_and_declare_declaration(scope, vars, decl);
+                    BlockEnd::Normal
+                }
                 BlockStatementKind::VariableDeclaration(decl) => {
                     let VariableDeclaration {
                         span: _,
@@ -183,34 +241,27 @@ impl CompileItemContext<'_, '_> {
                     });
 
                     scope.maybe_declare(diags, id.as_ref(), entry);
+                    BlockEnd::Normal
                 }
                 BlockStatementKind::Assignment(stmt) => {
                     self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
+                    BlockEnd::Normal
                 }
                 BlockStatementKind::Expression(expr) => {
                     let _: Spanned<Value> = self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, expr)?;
+                    BlockEnd::Normal
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    let (inner_block_ir, block_end) = self.elaborate_block(ctx, scope, vars, inner_block)?;
-
-                    let inner_block_spanned = Spanned {
-                        span: inner_block.span,
-                        inner: inner_block_ir,
-                    };
-                    ctx.push_ir_statement_block(&mut ctx_block, inner_block_spanned);
-
-                    match block_end {
-                        BlockEnd::Normal => {}
-                        BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
-                    }
+                    self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, inner_block)?
                 }
                 BlockStatementKind::ConstBlock(inner_block) => {
                     let mut ctx_inner = CompileTimeExpressionContext {
                         span: inner_block.span,
                         reason: "const block".to_owned(),
                     };
-                    let ((), block_end) = self.elaborate_block(&mut ctx_inner, scope, vars, inner_block)?;
+                    let ((), block_end) = self.elaborate_block_raw(&mut ctx_inner, scope, vars, inner_block)?;
                     block_end.unwrap_outside_function_and_loop(diags)?;
+                    BlockEnd::Normal
                 }
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement {
@@ -219,18 +270,17 @@ impl CompileItemContext<'_, '_> {
                         final_else,
                     } = stmt_if;
 
-                    let block_end = self.elaborate_if_statement(
+                    self.elaborate_if_statement(
                         ctx,
                         &mut ctx_block,
                         scope,
                         vars,
                         Some((initial_if, else_ifs)),
                         final_else,
-                    )?;
-                    match block_end {
-                        BlockEnd::Normal => {}
-                        BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
-                    }
+                    )?
+                }
+                BlockStatementKind::Match(stmt_match) => {
+                    self.elaborate_match_statement(ctx, &mut ctx_block, scope, vars, stmt.span, stmt_match)?
                 }
                 BlockStatementKind::While(stmt_while) => {
                     let &WhileStatement {
@@ -254,27 +304,22 @@ impl CompileItemContext<'_, '_> {
                                 .report_internal_error(cond.span, "expected bool, should have been checked already")),
                         };
 
-                        // handle cond
+                        // check cond
                         if !cond {
-                            break;
+                            break BlockEnd::Normal;
                         }
 
                         // visit body
-                        let (body_ir, end) = self.elaborate_block(ctx, scope, vars, body)?;
-                        let body_ir_spanned = Spanned {
-                            span: body.span,
-                            inner: body_ir,
-                        };
-                        ctx.push_ir_statement_block(&mut ctx_block, body_ir_spanned);
+                        let end = self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, body)?;
 
                         // handle end
                         match end {
                             BlockEnd::Normal => {}
                             BlockEnd::Stopping(end) => match end {
                                 BlockEndStopping::FunctionReturn(ret) => {
-                                    return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret))));
+                                    break BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret));
                                 }
-                                BlockEndStopping::LoopBreak(_span) => break,
+                                BlockEndStopping::LoopBreak(_span) => break BlockEnd::Normal,
                                 BlockEndStopping::LoopContinue(_span) => continue,
                             },
                         }
@@ -289,10 +334,8 @@ impl CompileItemContext<'_, '_> {
                     ctx_block = block;
 
                     match end {
-                        BlockEnd::Normal => {}
-                        BlockEnd::Stopping(ret) => {
-                            return Ok((ctx_block, BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret))))
-                        }
+                        BlockEnd::Normal => BlockEnd::Normal,
+                        BlockEnd::Stopping(ret) => BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret)),
                     }
                 }
                 BlockStatementKind::Return(stmt) => {
@@ -307,19 +350,16 @@ impl CompileItemContext<'_, '_> {
                         .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, value))
                         .transpose()?;
 
-                    let end =
-                        BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }));
-                    return Ok((ctx_block, end));
+                    BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
                 }
-                &BlockStatementKind::Break(span) => {
-                    let end = BlockEnd::Stopping(BlockEndStopping::LoopBreak(span));
-                    return Ok((ctx_block, end));
-                }
-                &BlockStatementKind::Continue(span) => {
-                    let end = BlockEnd::Stopping(BlockEndStopping::LoopContinue(span));
-                    return Ok((ctx_block, end));
-                }
+                &BlockStatementKind::Break(span) => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
+                &BlockStatementKind::Continue(span) => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
             };
+
+            match stmt_end {
+                BlockEnd::Normal => {}
+                BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
+            }
         }
 
         Ok((ctx_block, BlockEnd::Normal))
@@ -345,7 +385,7 @@ impl CompileItemContext<'_, '_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) = self.elaborate_block(ctx, scope, vars, final_else)?;
+                        let (final_else_ir, final_else_end) = self.elaborate_block_raw(ctx, scope, vars, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
@@ -385,13 +425,7 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    let (block_ir, block_end) = self.elaborate_block(ctx, scope, vars, block)?;
-                    let block_ir_spanned = Spanned {
-                        span: block.span,
-                        inner: block_ir,
-                    };
-                    ctx.push_ir_statement_block(ctx_block, block_ir_spanned);
-                    Ok(block_end)
+                    self.elaborate_and_push_block(ctx, ctx_block, scope, vars, block)
                 } else {
                     self.elaborate_if_statement(ctx, ctx_block, scope, vars, remaining_ifs.split_first(), final_else)
                 }
@@ -428,7 +462,7 @@ impl CompileItemContext<'_, '_> {
                         let mut then_vars = VariableValues::new_child(vars);
                         let (then_ir, then_end) =
                             ctx.with_implications(diags, cond_value.implications.if_true, |ctx_inner| {
-                                self.elaborate_block(ctx_inner, scope, &mut then_vars, block)
+                                self.elaborate_block_raw(ctx_inner, scope, &mut then_vars, block)
                             })?;
 
                         // lower else
@@ -448,8 +482,8 @@ impl CompileItemContext<'_, '_> {
                         Ok((then_ir, then_vars, then_end, else_ir, else_vars, else_end))
                     })?;
 
-                let then_end_err = then_end.unwrap_normal_todo_in_if(diags, cond.span);
-                let else_end_err = else_end.unwrap_normal_todo_in_if(diags, cond.span);
+                let then_end_err = then_end.unwrap_normal_todo_in_conditional(diags, cond.span);
+                let else_end_err = else_end.unwrap_normal_todo_in_conditional(diags, cond.span);
                 then_end_err?;
                 else_end_err?;
 
@@ -460,10 +494,10 @@ impl CompileItemContext<'_, '_> {
                     &self.variables,
                     vars,
                     span_if,
-                    &mut then_ir,
-                    then_vars.into_content(),
-                    &mut else_ir,
-                    else_vars.into_content(),
+                    vec![
+                        (&mut then_ir, then_vars.into_content()),
+                        (&mut else_ir, else_vars.into_content()),
+                    ],
                 )?;
 
                 // actually record the if statement
@@ -485,6 +519,555 @@ impl CompileItemContext<'_, '_> {
                 Ok(BlockEnd::Normal)
             }
         }
+    }
+
+    fn elaborate_match_statement<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        stmt_span: Span,
+        stmt: &MatchStatement<Block<BlockStatement>>,
+    ) -> Result<BlockEnd, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let MatchStatement {
+            target,
+            span_branches,
+            branches,
+        } = stmt;
+
+        // eval target
+        let target = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, target)?;
+        let target_ty = target.inner.ty();
+
+        // track pattern coverage
+        let mut cover_all = false;
+        let mut cover_bool_false = false;
+        let mut cover_bool_true = false;
+        let mut cover_enum_variant: HashMap<usize, Span> = HashMap::new();
+
+        // some type-specific handling
+        let cover_enum_count = if let &Type::Enum(elab, _) = &target_ty {
+            let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+            Some(info.variants.len())
+        } else {
+            None
+        };
+        let eq_expected_ty = if matches!(&target_ty, Type::Int(_)) && matches!(&target.inner, Value::Compile(_)) {
+            &Type::Int(IncRange::OPEN)
+        } else {
+            &target_ty
+        };
+
+        // eval all branch patterns before visiting any bodies, to check for coverage and to get nice error messages
+        let reason = "match pattern";
+        let branch_patterns = branches
+            .iter()
+            .map(|branch| -> Result<CheckedMatchPattern, ErrorGuaranteed> {
+                if cover_all {
+                    // TODO turn into warning
+                    let diag = Diagnostic::new("redundant match branch")
+                        .add_error(branch.pattern.span, "this branch is unreachable")
+                        .finish();
+                    diags.report(diag);
+                }
+
+                match &branch.pattern.inner {
+                    MatchPattern::Dummy => {
+                        cover_all = true;
+                        Ok(MatchPattern::Dummy)
+                    }
+                    MatchPattern::Val(i) => {
+                        cover_all = true;
+                        Ok(MatchPattern::Val(i))
+                    }
+                    MatchPattern::Equal(value) => {
+                        // TODO support tuples, arrays, structs, enums (by value), all recursively
+                        if let ExpressionKind::Dummy = &value.inner {
+                            cover_all = true;
+                            Ok(MatchPattern::Dummy)
+                        } else {
+                            let value = self.eval_expression_as_compile(scope, vars, &target_ty, value, reason)?;
+
+                            check_type_contains_compile_value(
+                                diags,
+                                TypeContainsReason::MatchPattern(target.span),
+                                eq_expected_ty,
+                                value.as_ref(),
+                                false,
+                            )?;
+
+                            let pattern = match value.inner {
+                                CompileValue::Bool(value) => {
+                                    cover_bool_true |= value == true;
+                                    cover_bool_false |= value == false;
+                                    cover_all |= cover_bool_true && cover_bool_false;
+                                    PatternEqual::Bool(value)
+                                }
+                                CompileValue::Int(value) => {
+                                    // TODO track covered int ranges
+                                    PatternEqual::Int(value)
+                                }
+                                CompileValue::String(value) => PatternEqual::String(value),
+                                _ => {
+                                    return Err(diags.report_simple(
+                                        "unsupported match type",
+                                        value.span,
+                                        format!("pattern has type `{}`", value.inner.ty().to_diagnostic_string()),
+                                    ))
+                                }
+                            };
+
+                            Ok(MatchPattern::Equal(pattern))
+                        }
+                    }
+                    MatchPattern::In(value) => {
+                        if !matches!(target_ty, Type::Int(_)) {
+                            return Err(diags.report_simple(
+                                "range patterns are only supported for int values",
+                                value.span,
+                                format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                            ));
+                        }
+
+                        let value = self.eval_expression_as_compile(scope, vars, &target_ty, value, reason)?;
+                        let value = match value.inner {
+                            CompileValue::IntRange(range) => range,
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "expected range for in pattern",
+                                    value.span,
+                                    format!("pattern has type `{}`", value.inner.ty().to_diagnostic_string()),
+                                ))
+                            }
+                        };
+
+                        Ok(MatchPattern::In(value))
+                    }
+                    MatchPattern::EnumVariant(variant, id_content) => {
+                        let elab = match target_ty {
+                            Type::Enum(elab, _) => elab,
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "expected enum type for enum variant pattern",
+                                    variant.span,
+                                    format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                                ))
+                            }
+                        };
+                        let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+                        let variant_index = info.find_variant(diags, Spanned::new(variant.span, &variant.string))?;
+
+                        // check reachable
+                        match cover_enum_variant.entry(variant_index) {
+                            Entry::Occupied(entry) => {
+                                let prev = *entry.get();
+                                let diag = Diagnostic::new("redundant match branch")
+                                    .add_error(branch.pattern.span, "this branch is unreachable")
+                                    .add_info(prev, "this enum variant was already handled here")
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                            Entry::Vacant(entry) => {
+                                entry.insert(branch.pattern.span);
+
+                                if cover_enum_count == Some(cover_enum_variant.len()) {
+                                    cover_all = true;
+                                }
+                            }
+                        }
+
+                        // check content
+                        let (variant_decl, variant_content) = &info.variants[variant_index];
+                        match (variant_content, id_content) {
+                            (Some(_), Some(_)) | (None, None) => {}
+                            (Some(variant_content), None) => {
+                                let diag = Diagnostic::new("mismatch between enum and match content")
+                                    .add_info(variant_content.span, "enum variant declared with content here")
+                                    .add_error(branch.pattern.span, "match pattern without content here")
+                                    .footer(Level::Help, "use (_) to ignore the content")
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                            (None, Some(id_content)) => {
+                                let diag = Diagnostic::new("mismatch between enum and match content")
+                                    .add_info(variant_decl.span, "enum variant declared without content here")
+                                    .add_error(id_content.span(), "match pattern with content here")
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                        }
+
+                        Ok(MatchPattern::EnumVariant(
+                            variant_index,
+                            id_content.as_ref().map(MaybeIdentifier::as_ref),
+                        ))
+                    }
+                }
+            })
+            .try_collect_all_vec()?;
+
+        // check that all cases have been handled
+        if !cover_all {
+            let msg;
+            let msg = match target_ty {
+                Type::Bool => match (cover_bool_false, cover_bool_true) {
+                    (false, false) => "values not covered: false, true",
+                    (false, true) => "value not covered: false",
+                    (true, false) => "value not covered: true",
+                    _ => unreachable!(),
+                },
+                Type::Enum(elab, _) => {
+                    let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+
+                    let mut not_covered = vec![];
+                    for (i, (id, _)) in info.variants.iter().enumerate() {
+                        if !cover_enum_variant.contains_key(&i) {
+                            not_covered.push(id);
+                        }
+                    }
+                    let prefix = if not_covered.len() > 1 { "variant" } else { "variants" };
+                    msg = format!("{prefix} not covered: {}", not_covered.iter().join(","));
+                    &msg
+                }
+                _ => "not all values are covered",
+            };
+
+            let diag = Diagnostic::new("match does not cover all values")
+                .add_error(*span_branches, msg)
+                .add_info(
+                    target.span,
+                    format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+
+        // evaluate match itself
+        match target.inner {
+            Value::Compile(target_inner) => self.elaborate_match_statement_compile(
+                ctx,
+                ctx_block,
+                scope,
+                vars,
+                stmt_span,
+                target_inner,
+                branches,
+                branch_patterns,
+            ),
+            Value::Hardware(target_inner) => {
+                let domain = Spanned::new(target.span, target_inner.domain);
+                ctx.with_condition_domain(diags, domain, |ctx| {
+                    self.elaborate_match_statement_hardware(
+                        ctx,
+                        ctx_block,
+                        scope,
+                        vars,
+                        stmt_span,
+                        target_inner,
+                        branches,
+                        branch_patterns,
+                    )
+                })
+            }
+        }
+    }
+
+    fn elaborate_match_statement_compile<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        stmt_span: Span,
+        cond: CompileValue,
+        branches: &Vec<MatchBranch<Block<BlockStatement>>>,
+        branch_patterns: Vec<CheckedMatchPattern>,
+    ) -> Result<BlockEnd, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        for (branch, pattern) in zip_eq(branches, branch_patterns) {
+            let MatchBranch {
+                pattern: pattern_raw,
+                block,
+            } = branch;
+            let pattern_span = pattern_raw.span;
+
+            let matched: BranchMatched = match pattern {
+                MatchPattern::Dummy => BranchMatched::Yes(None),
+                MatchPattern::Val(id) => {
+                    BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id.clone()), cond.clone())))
+                }
+                MatchPattern::Equal(pattern) => {
+                    let c = match (&pattern, &cond) {
+                        (PatternEqual::Bool(p), CompileValue::Bool(v)) => p == v,
+                        (PatternEqual::Int(p), CompileValue::Int(v)) => p == v,
+                        (PatternEqual::String(p), CompileValue::String(v)) => p == v,
+                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected pattern/value")),
+                    };
+
+                    BranchMatched::from_bool(c)
+                }
+                MatchPattern::In(pattern) => match &cond {
+                    CompileValue::Int(value) => BranchMatched::from_bool(pattern.contains(value)),
+                    _ => return Err(diags.report_internal_error(pattern_span, "unexpected range/value")),
+                },
+                MatchPattern::EnumVariant(pattern_index, id_content) => match &cond {
+                    CompileValue::Enum(_, _, (value_index, value_content)) => {
+                        if pattern_index == *value_index {
+                            let declare_content = match (id_content, value_content) {
+                                (Some(id_content), Some(value_content)) => {
+                                    Some((id_content.map_inner(Identifier::clone), (**value_content).clone()))
+                                }
+                                (None, None) => None,
+                                _ => unreachable!(),
+                            };
+                            BranchMatched::Yes(declare_content)
+                        } else {
+                            BranchMatched::No
+                        }
+                    }
+                    _ => return Err(diags.report_internal_error(pattern_span, "unexpected enum/value")),
+                },
+            };
+
+            match matched {
+                BranchMatched::No => continue,
+                BranchMatched::Yes(declare) => {
+                    let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope);
+
+                    let scoped_used = if let Some((declare_id, declare_value)) = declare {
+                        let var = vars.var_new_immutable_init(
+                            &mut self.variables,
+                            declare_id.clone(),
+                            pattern_span,
+                            Ok(Value::Compile(declare_value)),
+                        );
+                        scope_inner.maybe_declare(
+                            diags,
+                            declare_id.as_ref(),
+                            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+                        );
+                        &scope_inner
+                    } else {
+                        scope
+                    };
+
+                    return self.elaborate_and_push_block(ctx, ctx_block, scoped_used, vars, block);
+                }
+            }
+        }
+
+        // we should never get here, we already checked that all cases are handled
+        Err(diags.report_internal_error(stmt_span, "reached end of match statement"))
+    }
+
+    fn elaborate_match_statement_hardware<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        ctx_block: &mut C::Block,
+        scope_outer: &Scope,
+        vars_outer: &mut VariableValues,
+        stmt_span: Span,
+        target: HardwareValue,
+        branches: &Vec<MatchBranch<Block<BlockStatement>>>,
+        branch_patterns: Vec<CheckedMatchPattern>,
+    ) -> Result<BlockEnd, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        let mut if_stack_cond_block = vec![];
+        let mut if_stack_vars = vec![];
+
+        for (branch, pattern) in zip_eq(branches, branch_patterns) {
+            let MatchBranch {
+                pattern: pattern_raw,
+                block,
+            } = branch;
+            let pattern_span = pattern_raw.span;
+            let large = &mut self.large;
+
+            let (cond, declare): (Option<IrExpression>, Option<(MaybeIdentifier, HardwareValue)>) = match pattern {
+                MatchPattern::Dummy => (None, None),
+                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id.clone()), target.clone()))),
+                MatchPattern::Equal(pattern) => {
+                    let cond = match (&target.ty, pattern) {
+                        (HardwareType::Bool, PatternEqual::Bool(pattern)) => {
+                            let cond_expr = target.expr.clone();
+                            if pattern {
+                                cond_expr
+                            } else {
+                                large.push_expr(IrExpressionLarge::BoolNot(cond_expr))
+                            }
+                        }
+                        (HardwareType::Int(_), PatternEqual::Int(pattern)) => {
+                            // TODO expand int range?
+                            large.push_expr(IrExpressionLarge::IntCompare(
+                                IrIntCompareOp::Eq,
+                                target.expr.clone(),
+                                IrExpression::Int(pattern),
+                            ))
+                        }
+                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw pattern/value")),
+                    };
+
+                    (Some(cond), None)
+                }
+                MatchPattern::In(range) => {
+                    let IncRange { start_inc, end_inc } = range;
+
+                    let start_inc = start_inc.map(|start_inc| {
+                        large.push_expr(IrExpressionLarge::IntCompare(
+                            IrIntCompareOp::Lte,
+                            IrExpression::Int(start_inc),
+                            target.expr.clone(),
+                        ))
+                    });
+                    let end_inc = end_inc.map(|end_inc| {
+                        large.push_expr(IrExpressionLarge::IntCompare(
+                            IrIntCompareOp::Lte,
+                            target.expr.clone(),
+                            IrExpression::Int(end_inc),
+                        ))
+                    });
+
+                    let cond = match (start_inc, end_inc) {
+                        (None, None) => None,
+                        (Some(single), None) => Some(single),
+                        (None, Some(single)) => Some(single),
+                        (Some(start), Some(end)) => {
+                            let cond = large.push_expr(IrExpressionLarge::BoolBinary(IrBoolBinaryOp::And, start, end));
+                            Some(cond)
+                        }
+                    };
+
+                    (cond, None)
+                }
+                MatchPattern::EnumVariant(pattern_index, id_content) => {
+                    let target_ty = match &target.ty {
+                        HardwareType::Enum(cond_ty) => cond_ty,
+                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw enum/value")),
+                    };
+                    let ty_content = &target_ty.variants[pattern_index];
+
+                    let target_tag = large.push_expr(IrExpressionLarge::TupleIndex {
+                        base: target.expr.clone(),
+                        index: BigUint::ZERO,
+                    });
+
+                    let cond = large.push_expr(IrExpressionLarge::IntCompare(
+                        IrIntCompareOp::Eq,
+                        target_tag,
+                        IrExpression::Int(BigInt::from(pattern_index)),
+                    ));
+                    let declare = match (ty_content, id_content) {
+                        (Some(ty_content), Some(id_content)) => {
+                            // TODO truncate depending on variant
+                            let target_content_bits = large.push_expr(IrExpressionLarge::TupleIndex {
+                                base: target.expr.clone(),
+                                index: BigUint::ONE,
+                            });
+                            let target_content =
+                                large.push_expr(IrExpressionLarge::FromBits(ty_content.as_ir(), target_content_bits));
+
+                            let declare_value = HardwareValue {
+                                ty: ty_content.clone(),
+                                domain: target.domain,
+                                expr: target_content,
+                            };
+                            Some((id_content.map_inner(Identifier::clone), declare_value))
+                        }
+                        (None, None) => None,
+                        _ => unreachable!(),
+                    };
+
+                    (Some(cond), declare)
+                }
+            };
+
+            let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope_outer);
+            let mut vars_inner = VariableValues::new_child(vars_outer);
+
+            let scoped_used = if let Some((declare_id, declare_value)) = declare {
+                let var = vars_inner.var_new_immutable_init(
+                    &mut self.variables,
+                    declare_id.clone(),
+                    pattern_span,
+                    Ok(Value::Hardware(declare_value)),
+                );
+                scope_inner.maybe_declare(
+                    diags,
+                    declare_id.as_ref(),
+                    Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+                );
+                &scope_inner
+            } else {
+                scope_outer
+            };
+
+            let (ctx_block_inner, end) = self.elaborate_block_raw(ctx, scoped_used, &mut vars_inner, block)?;
+            end.unwrap_normal_todo_in_conditional(diags, stmt_span)?;
+
+            match cond {
+                Some(cond) => {
+                    if_stack_cond_block.push((cond, ctx_block_inner));
+                    if_stack_vars.push(vars_inner);
+                }
+                None => {
+                    if_stack_cond_block.push((IrExpression::Bool(true), ctx_block_inner));
+                    if_stack_vars.push(vars_inner);
+                    break;
+                }
+            }
+        }
+
+        // merge vars
+        let merge_children = zip_eq(&mut if_stack_cond_block, if_stack_vars)
+            .map(|((_, b), vars)| (b, vars.into_content()))
+            .collect_vec();
+        merge_variable_branches(
+            diags,
+            ctx,
+            &mut self.large,
+            &mut self.variables,
+            vars_outer,
+            stmt_span,
+            merge_children,
+        )?;
+
+        // build complete if chain
+        let mut else_inner = None;
+        for (curr_cond, curr_block) in if_stack_cond_block.into_iter().rev() {
+            let else_next = match else_inner {
+                Some(else_inner) => {
+                    let curr_block_ir = ctx.unwrap_ir_block(diags, stmt_span, curr_block)?;
+                    let else_block_ir = ctx.unwrap_ir_block(diags, stmt_span, else_inner)?;
+
+                    // build if statement
+                    let if_stmt = IrIfStatement {
+                        condition: curr_cond,
+                        then_block: curr_block_ir,
+                        else_block: Some(else_block_ir),
+                    };
+                    let mut if_block = ctx.new_ir_block();
+                    ctx.push_ir_statement(diags, &mut if_block, Spanned::new(stmt_span, IrStatement::If(if_stmt)))?;
+                    if_block
+                }
+                None => {
+                    // this is the final branch, which means that the condition can be ignored
+                    //   (this is easier to reason about for var merging and synthesis tools)
+                    let _ = curr_cond;
+                    curr_block
+                }
+            };
+            else_inner = Some(else_next);
+        }
+
+        if let Some(else_inner) = else_inner {
+            ctx.push_ir_statement_block(ctx_block, Spanned::new(stmt_span, else_inner));
+        }
+
+        Ok(BlockEnd::Normal)
     }
 
     fn elaborate_for_statement<C: ExpressionContext>(
@@ -567,15 +1150,9 @@ impl CompileItemContext<'_, '_> {
             );
 
             // run body
-            let (body_block, body_end) = self.elaborate_block(ctx, &scope_index, vars, body)?;
+            let body_end = self.elaborate_and_push_block(ctx, ctx_block, &scope_index, vars, body)?;
 
-            let body_block_spanned = Spanned {
-                span: body.span,
-                inner: body_block,
-            };
-            ctx.push_ir_statement_block(ctx_block, body_block_spanned);
-
-            // handle possible termination
+            // handle possible loop termination
             match body_end {
                 BlockEnd::Normal => {}
                 BlockEnd::Stopping(end) => match end {

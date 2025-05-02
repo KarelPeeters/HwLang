@@ -328,7 +328,10 @@ pub enum BlockStatementKind {
     // control flow
     Block(Block<BlockStatement>),
     ConstBlock(Block<BlockStatement>),
+
     If(IfStatement<Block<BlockStatement>>),
+    Match(MatchStatement<Block<BlockStatement>>),
+
     For(ForStatement<BlockStatement>),
     While(WhileStatement),
 
@@ -351,6 +354,29 @@ pub struct IfCondBlockPair<B> {
     pub span_if: Span,
     pub cond: Box<Expression>,
     pub block: B,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchStatement<B> {
+    pub target: Box<Expression>,
+    pub span_branches: Span,
+    pub branches: Vec<MatchBranch<B>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchBranch<B> {
+    pub pattern: Spanned<MatchPattern>,
+    pub block: B,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern<E = Box<Expression>, R = Box<Expression>, V = Identifier, I = Identifier> {
+    Dummy,
+    Val(I),
+
+    Equal(E),
+    In(R),
+    EnumVariant(V, Option<MaybeIdentifier<I>>),
 }
 
 #[derive(Debug, Clone)]
@@ -509,6 +535,8 @@ pub type Expression = Spanned<ExpressionKind>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
+    // TODO maybe this should not be part of expression, it's only allowed in very few places
+    //   just the existence of this makes type checking harder to trust
     Undefined,
     Type,
     TypeFunction,

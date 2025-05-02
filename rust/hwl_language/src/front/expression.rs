@@ -2106,6 +2106,7 @@ pub fn eval_binary_expression(
         BinaryOp::BoolOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
         BinaryOp::BoolXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // (T, T)
+        // TODO expand eq/neq to bools/tuples/structs/enums, for the latter only if the type is the same
         BinaryOp::CmpEq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Eq),
         BinaryOp::CmpNeq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Neq),
         BinaryOp::CmpLt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lt),
@@ -2113,6 +2114,7 @@ pub fn eval_binary_expression(
         BinaryOp::CmpGt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gt),
         BinaryOp::CmpGte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gte),
         // (int, range)
+        // TODO share code with match "in" pattern
         BinaryOp::In => return Err(diags.report_todo(expr_span, "binary op In")),
         // (bool, bool)
         // TODO support boolean arrays

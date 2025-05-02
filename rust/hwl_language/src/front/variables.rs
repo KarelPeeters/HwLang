@@ -1,22 +1,23 @@
 use crate::front::compile::{ArenaVariables, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::domain::ValueDomain;
 use crate::front::signal::{Signal, SignalOrVariable};
-use crate::front::types::{HardwareType, Typed};
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::{IndexType, RandomCheck};
 use crate::util::data::IndexMapExt;
-use crate::util::result_pair;
-use indexmap::IndexMap;
-use itertools::chain;
+use crate::util::iter::IterExt;
+use indexmap::{IndexMap, IndexSet};
+use itertools::{zip_eq, Itertools};
 use std::cell::Cell;
-use std::hash::Hash;
 
 // TODO this is really not just the variable values any more, it also tracks value version states
 //   and will probably track combinatorial coverage in the future. This is more like a SSA-style "flow" state.
+// TODO merge this into scopes and/or into flow?
 #[derive(Debug)]
 pub struct VariableValues<'p> {
     kind: ParentKind<'p>,
@@ -34,8 +35,8 @@ pub struct VariableValuesContent {
 }
 
 #[derive(Debug, Clone)]
-pub enum MaybeAssignedValue {
-    Assigned(AssignedValue),
+pub enum MaybeAssignedValue<A = AssignedValue> {
+    Assigned(A),
     NotYetAssigned,
     PartiallyAssigned,
     Error(ErrorGuaranteed),
@@ -329,7 +330,8 @@ impl ParentKind<'_> {
     }
 }
 
-// TODO expand to n-way merge (for match statements)
+struct NeedsHardwareMerge;
+
 // TODO take implications from before the merge into account while merging, requires implications to be in the flow
 pub fn merge_variable_branches<C: ExpressionContext>(
     diags: &Diagnostics,
@@ -338,145 +340,181 @@ pub fn merge_variable_branches<C: ExpressionContext>(
     variables: &ArenaVariables,
     parent: &mut VariableValues,
     span_merge: Span,
-    ctx_block_0: &mut C::Block,
-    child_0: VariableValuesContent,
-    ctx_block_1: &mut C::Block,
-    child_1: VariableValuesContent,
+    mut children: Vec<(&mut C::Block, VariableValuesContent)>,
 ) -> Result<(), ErrorGuaranteed> {
-    let VariableValuesContent {
-        check: check_0,
-        next_version_if_root: _,
-        var_values: var_values_0,
-        signal_versions: signal_versions_0,
-    } = child_0;
-    let VariableValuesContent {
-        check: check_1,
-        next_version_if_root: _,
-        var_values: var_values_1,
-        signal_versions: signal_versions_1,
-    } = child_1;
-    assert_eq!(parent.check, check_0);
-    assert_eq!(parent.check, check_1);
+    // TODO do we need to handle the empty children case separately?
 
-    // TODO avoid cloning values, but that probably requires us to clone map keys
-    for &var in combined_keys(&var_values_0, &var_values_1) {
-        let value_parent = match parent.var_find(var) {
-            // this variable did not yet exist in the parent scope, so it would not be observable after this merge
-            None => continue,
-            Some(v) => v,
-        };
-
-        let value_0 = var_values_0.get(&var).map(Ok).unwrap_or_else(|| Ok(value_parent))?;
-        let value_1 = var_values_1.get(&var).map(Ok).unwrap_or_else(|| Ok(value_parent))?;
-
-        let value_combined = match (value_0, value_1) {
-            (MaybeAssignedValue::Assigned(value_0), MaybeAssignedValue::Assigned(value_1)) => {
-                let same_value_and_version = match (&value_0.value_and_version, &value_1.value_and_version) {
-                    (Value::Compile(value_0), Value::Compile(value_1)) => value_0 == value_1,
-                    (Value::Hardware((_, version_0)), Value::Hardware((_, version_1))) => version_0 == version_1,
-                    _ => false,
-                };
-
-                if same_value_and_version {
-                    let span_combined = if value_0.last_assignment_span == value_1.last_assignment_span {
-                        value_0.last_assignment_span
-                    } else {
-                        span_merge
-                    };
-
-                    MaybeAssignedValue::Assigned(AssignedValue {
-                        last_assignment_span: span_combined,
-                        value_and_version: value_0.value_and_version.clone(),
-                    })
-                } else {
-                    let value_0 = Spanned::new(value_0.last_assignment_span, value_0.value());
-                    let value_1 = Spanned::new(value_1.last_assignment_span, value_1.value());
-
-                    // TODO if the merge fails, we don't need to immediately report an error,
-                    //   we could also delay that until someone actually tries to use it.
-                    //   That's adds complexity and is probably not very useful though.
-                    let value_combined = merge_values(
-                        diags,
-                        ctx,
-                        large,
-                        span_merge,
-                        &variables[var].id,
-                        value_0.as_ref(),
-                        value_1.as_ref(),
-                    );
-                    match value_combined {
-                        Ok(MergedValue {
-                            value,
-                            store_0,
-                            store_1,
-                        }) => {
-                            ctx.push_ir_statement(diags, ctx_block_0, store_0)?;
-                            ctx.push_ir_statement(diags, ctx_block_1, store_1)?;
-
-                            let version = parent.kind.increment_version();
-                            MaybeAssignedValue::Assigned(AssignedValue {
-                                last_assignment_span: span_merge,
-                                value_and_version: Value::Hardware((value.to_general_expression(), version)),
-                            })
-                        }
-                        Err(e) => MaybeAssignedValue::Error(e),
-                    }
-                }
+    // collect the interesting vars and signals:
+    //   * items that are not in any child didn't change
+    //   * items that are not in the parent will go out of scope and can be ignored
+    let mut merged_vars = IndexSet::new();
+    let mut merged_signals = IndexSet::new();
+    for (_, child) in &children {
+        assert_eq!(parent.check, child.check);
+        for &var in child.var_values.keys() {
+            if parent.var_find(var).is_some() {
+                merged_vars.insert(var);
             }
-            (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
-                MaybeAssignedValue::NotYetAssigned
+        }
+        for &signal in child.signal_versions.keys() {
+            if parent.signal_get_version(signal).is_some() {
+                merged_signals.insert(signal);
             }
-            (
-                MaybeAssignedValue::NotYetAssigned
-                | MaybeAssignedValue::PartiallyAssigned
-                | MaybeAssignedValue::Assigned(_),
-                MaybeAssignedValue::NotYetAssigned
-                | MaybeAssignedValue::PartiallyAssigned
-                | MaybeAssignedValue::Assigned(_),
-            ) => MaybeAssignedValue::PartiallyAssigned,
-            (&MaybeAssignedValue::Error(e), _) | (_, &MaybeAssignedValue::Error(e)) => MaybeAssignedValue::Error(e),
-        };
-
-        parent.var_values.insert(var, value_combined);
+        }
     }
 
-    for &signal in combined_keys(&signal_versions_0, &signal_versions_1) {
+    // TODO avoid cloning values if possible
+    for var in merged_vars {
+        let value_parent = parent.var_find(var).unwrap();
+
+        let mut merged: Option<MaybeAssignedValue<Result<AssignedValue, NeedsHardwareMerge>>> = None;
+        for (_, child) in &children {
+            let child_value = child.var_values.get(&var).unwrap_or(value_parent);
+
+            // first branch, just set it
+            let Some(merged_value) = merged else {
+                merged = Some(match child_value {
+                    MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(Ok(v.clone())),
+                    MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
+                    MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
+                    &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
+                });
+                continue;
+            };
+
+            // check if we need to do a merge merge
+            //   we don't stop once we know we need to merge, because later unassigned values might remove that requirement again
+            let merged_new = match (merged_value, child_value) {
+                // once we need a hardware merge that stays true
+                (MaybeAssignedValue::Assigned(Err(e)), MaybeAssignedValue::Assigned(_)) => {
+                    MaybeAssignedValue::Assigned(Err(e))
+                }
+                // actual merge check
+                (MaybeAssignedValue::Assigned(Ok(merged_value)), MaybeAssignedValue::Assigned(child_value)) => {
+                    let same_value_and_version = match (&merged_value.value_and_version, &child_value.value_and_version)
+                    {
+                        (Value::Compile(merged_value), Value::Compile(child_value)) => merged_value == child_value,
+                        (Value::Hardware((_, merged_value)), Value::Hardware((_, child_value))) => {
+                            merged_value == child_value
+                        }
+                        _ => false,
+                    };
+
+                    if same_value_and_version {
+                        let span_combined = if merged_value.last_assignment_span == child_value.last_assignment_span {
+                            merged_value.last_assignment_span
+                        } else {
+                            span_merge
+                        };
+
+                        MaybeAssignedValue::Assigned(Ok(AssignedValue {
+                            last_assignment_span: span_combined,
+                            value_and_version: merged_value.value_and_version,
+                        }))
+                    } else {
+                        MaybeAssignedValue::Assigned(Err(NeedsHardwareMerge))
+                    }
+                }
+                // unassigned cases, these are in some sense nice because we can avoid doing the merge
+                (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
+                    MaybeAssignedValue::NotYetAssigned
+                }
+                (
+                    MaybeAssignedValue::NotYetAssigned
+                    | MaybeAssignedValue::PartiallyAssigned
+                    | MaybeAssignedValue::Assigned(_),
+                    MaybeAssignedValue::NotYetAssigned
+                    | MaybeAssignedValue::PartiallyAssigned
+                    | MaybeAssignedValue::Assigned(_),
+                ) => MaybeAssignedValue::PartiallyAssigned,
+                (MaybeAssignedValue::Error(e), _) | (_, &MaybeAssignedValue::Error(e)) => MaybeAssignedValue::Error(e),
+            };
+            merged = Some(merged_new);
+        }
+
+        let result_value = match merged {
+            // no branches, nothing to do
+            None => continue,
+            // hardware merge needed
+            Some(MaybeAssignedValue::Assigned(Err(NeedsHardwareMerge))) => {
+                // TODO avoid vec allocation
+                let children = children
+                    .iter_mut()
+                    .map(|(block, child)| {
+                        let value = child.var_values.get(&var).unwrap_or(value_parent);
+                        let value = match value {
+                            MaybeAssignedValue::Assigned(v) => v,
+                            _ => unreachable!(),
+                        };
+                        (&mut **block, Spanned::new(span_merge, value.value()))
+                    })
+                    .collect_vec();
+                let merged = merge_hardware_values(diags, ctx, large, span_merge, &variables[var].id, children)?;
+
+                let value_and_version = (merged.to_general_expression(), parent.kind.increment_version());
+                MaybeAssignedValue::Assigned(AssignedValue {
+                    last_assignment_span: span_merge,
+                    value_and_version: Value::Hardware(value_and_version),
+                })
+            }
+            // simple passthrough
+            Some(MaybeAssignedValue::Assigned(Ok(value))) => MaybeAssignedValue::Assigned(value),
+            Some(MaybeAssignedValue::NotYetAssigned) => MaybeAssignedValue::NotYetAssigned,
+            Some(MaybeAssignedValue::PartiallyAssigned) => MaybeAssignedValue::PartiallyAssigned,
+            Some(MaybeAssignedValue::Error(e)) => MaybeAssignedValue::Error(e),
+        };
+
+        parent.var_values.insert(var, result_value);
+    }
+
+    for signal in merged_signals {
         let version_parent = match parent.signal_get_version(signal) {
             // context without versioning, give up
             // TODO why do contexts like this exist? don't we want versioning everywhere, eg. even in port connections?
             None => continue,
             Some(version_parent) => version_parent,
         };
-        let version_0 = signal_versions_0.get(&signal).copied().unwrap_or(version_parent);
-        let version_1 = signal_versions_1.get(&signal).copied().unwrap_or(version_parent);
 
-        let version_combined = if version_0 == version_1 {
-            version_0
-        } else {
-            parent.kind.increment_version()
+        let mut merged: Option<Result<ValueVersion, NeedsHardwareMerge>> = None;
+        for (_, child) in &children {
+            let version_child = child.signal_versions.get(&signal).copied().unwrap_or(version_parent);
+
+            merged = match merged {
+                None => Some(Ok(version_child)),
+                Some(Ok(curr_version)) => {
+                    if curr_version == version_child {
+                        Some(Ok(curr_version))
+                    } else {
+                        Some(Err(NeedsHardwareMerge))
+                    }
+                }
+                Some(Err(NeedsHardwareMerge)) => Some(Err(NeedsHardwareMerge)),
+            }
+        }
+
+        let merged_version = match merged {
+            None => continue,
+            Some(Ok(version)) => version,
+            Some(Err(NeedsHardwareMerge)) => parent.kind.increment_version(),
         };
-        parent.signal_versions.insert(signal, version_combined);
+        parent.signal_versions.insert(signal, merged_version);
     }
 
     Ok(())
 }
 
-struct MergedValue {
-    value: HardwareValue<HardwareType, IrVariable>,
-    store_0: Spanned<IrStatement>,
-    store_1: Spanned<IrStatement>,
-}
-
-fn merge_values<C: ExpressionContext>(
+fn merge_hardware_values<'a, C: ExpressionContext>(
     diags: &Diagnostics,
     ctx: &mut C,
     large: &mut IrLargeArena,
     span_merge: Span,
     debug_info_id: &MaybeIdentifier,
-    value_0: Spanned<&Value>,
-    value_1: Spanned<&Value>,
-) -> Result<MergedValue, ErrorGuaranteed> {
-    // check that both types are hardware
+    children: Vec<(&mut C::Block, Spanned<Value>)>,
+) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed>
+where
+    C::Block: 'a,
+{
+    // check that all types are hardware
     // (we do this before finding the common type to get nicer error messages)
     let value_ty_hw = |value: Spanned<&Value>| {
         value.inner.ty().as_hardware_type().map_err(|_| {
@@ -495,36 +533,35 @@ fn merge_values<C: ExpressionContext>(
             diags.report(diag)
         })
     };
-    let ty_0 = value_ty_hw(value_0);
-    let ty_1 = value_ty_hw(value_1);
-    let (ty_0, ty_1) = result_pair(ty_0, ty_1)?;
+    let tys = children
+        .iter()
+        .map(|(_, v)| value_ty_hw(v.as_ref()))
+        .try_collect_all_vec()?;
 
-    // figure out the common type
-    let ty = ty_0.as_type().union(&ty_1.as_type(), false);
+    // find common type
+    let ty = tys.iter().fold(Type::Undefined, |a, t| a.union(&t.as_type(), false));
+
+    // convert common to hardware too
     let ty = ty.as_hardware_type().map_err(|_| {
         let ty_str = ty.to_diagnostic_string();
-        let ty_0_str = ty_0.to_diagnostic_string();
-        let ty_1_str = ty_1.to_diagnostic_string();
 
-        let diag = Diagnostic::new("merging if assignments needs hardware type")
+        let mut diag = Diagnostic::new("merging if assignments needs hardware type")
             .add_info(debug_info_id.span(), "for this variable")
-            .add_info(value_0.span, format!("value assigned here has type `{}`", ty_0_str))
-            .add_info(value_1.span, format!("value assigned here has type `{}`", ty_1_str))
             .add_error(
                 span_merge,
                 format!(
                     "merging happens here, combined type `{}` cannot be represented in hardware",
                     ty_str
                 ),
+            );
+        for ((_, v), ty) in zip_eq(&children, tys) {
+            diag = diag.add_info(
+                v.span,
+                format!("value assigned here has type `{}`", ty.to_diagnostic_string()),
             )
-            .finish();
-        diags.report(diag)
+        }
+        diags.report(diag.finish())
     })?;
-
-    // convert values to common type
-    let value_0 = value_0.inner.as_hardware_value(diags, large, value_0.span, &ty);
-    let value_1 = value_1.inner.as_hardware_value(diags, large, value_1.span, &ty);
-    let (value_0, value_1) = result_pair(value_0, value_1)?;
 
     // create result variable
     let var_ir_info = IrVariableInfo {
@@ -534,23 +571,17 @@ fn merge_values<C: ExpressionContext>(
     let var_ir = ctx.new_ir_variable(diags, span_merge, var_ir_info)?;
 
     // store values into that variable
-    let store_0 = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value_0.expr);
-    let store_1 = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value_1.expr);
+    let mut domain = ValueDomain::CompileTime;
+    for (block, value) in children {
+        let value = value.inner.as_hardware_value(diags, large, value.span, &ty)?;
+        let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
+        ctx.push_ir_statement(diags, block, Spanned::new(span_merge, store))?;
+        domain = domain.join(value.domain);
+    }
 
-    Ok(MergedValue {
-        store_0: Spanned::new(span_merge, store_0),
-        store_1: Spanned::new(span_merge, store_1),
-        value: HardwareValue {
-            ty,
-            domain: value_0.domain.join(value_1.domain),
-            expr: var_ir,
-        },
+    Ok(HardwareValue {
+        ty,
+        domain,
+        expr: var_ir,
     })
-}
-
-fn combined_keys<'a, K: Eq + Hash, V>(
-    map_0: &'a IndexMap<K, V>,
-    map_1: &'a IndexMap<K, V>,
-) -> impl Iterator<Item = &'a K> + 'a {
-    chain(map_0.keys(), map_1.keys().filter(|&k| !map_0.contains_key(k)))
 }

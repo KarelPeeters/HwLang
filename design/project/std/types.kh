@@ -71,3 +71,18 @@ pub type uint_bits(n: uint) = int_range(0 .. 2**n);
 // ) -> integer() {
 //
 // }
+
+pub enum Option(T: type) {
+    None,
+    Some(T),
+}
+
+pub enum Result(T: type, E: type) {
+    Ok(T),
+    Err(E),
+}
+
+pub enum Either(L: type, R: type) {
+    Left(L),
+    Right(R),
+}

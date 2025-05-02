@@ -106,6 +106,7 @@ pub enum TypeContainsReason {
     },
     ForIndexType(Span),
     IfCondition(Span),
+    MatchPattern(Span),
     WhileCondition(Span),
     ArrayIndex {
         span_index: Span,
@@ -169,6 +170,10 @@ impl TypeContainsReason {
             TypeContainsReason::IfCondition(span) => {
                 diag.add_info(span, format!("if condition requires type `{}`", target_ty_str))
             }
+            TypeContainsReason::MatchPattern(span) => diag.add_info(
+                span,
+                format!("match pattern against value with type `{}`", target_ty_str),
+            ),
             TypeContainsReason::WhileCondition(span) => {
                 diag.add_info(span, format!("while condition requires type `{}`", target_ty_str))
             }

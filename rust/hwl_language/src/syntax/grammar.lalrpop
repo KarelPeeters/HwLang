@@ -50,6 +50,7 @@ extern {
         "undef" => TokenType::Undefined,
         "if" => TokenType::If,
         "else" => TokenType::Else,
+        "match" => TokenType::Match,
         "loop" => TokenType::Loop,
         "for" => TokenType::For,
         "while" => TokenType::While,
@@ -59,6 +60,7 @@ extern {
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
         "->" => TokenType::Arrow,
+        "=>" => TokenType::DoubleArrow,
         "_" => TokenType::Underscore,
         "::" => TokenType::ColonColon,
         "{" => TokenType::OpenC,
@@ -302,6 +304,8 @@ BlockStatementKind: BlockStatementKind = {
     // control flow
     IfStatement<Block<BlockStatement>>
         => BlockStatementKind::If(<>),
+    MatchStatement<Block<BlockStatement>>
+        => BlockStatementKind::Match(<>),
     ForStatement<BlockStatement>
         => BlockStatementKind::For(<>),
     <span_keyword:Span<"while">> "(" <cond:BoxExpr> ")" <body:Block<BlockStatement>>
@@ -330,9 +334,27 @@ IfStatement<B>: IfStatement<B> = {
     },
 }
 
+// TODO don't require parentheses?
 ElseIfPair<B>: IfCondBlockPair<B> = {
     <start:@L> "else" <span_if:Span<"if">> "(" <cond:BoxExpr> ")" <block:B> <end:@R>
         => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
+}
+
+// TODO don't require parentheses?
+MatchStatement<B>: MatchStatement<B> = {
+    "match" "(" <target:BoxExpr> ")" "{" <start_branches:@L> <branches:MatchBranch<B>*> <end_branches:@R> "}"
+        => MatchStatement { target, branches, span_branches: loc.span(start_branches, end_branches) },
+}
+
+MatchBranch<B>: MatchBranch<B> = {
+    <pattern:Spanned<MatchPattern>> "=>" <block:B> => MatchBranch { pattern, block },
+}
+
+MatchPattern: MatchPattern = {
+    <value:BoxExpr> => MatchPattern::Equal(value),
+    "val" <id:Id> => MatchPattern::Val(id),
+    "in" <value:BoxExpr> => MatchPattern::In(value),
+    "." <variant:Id> <id_content:("(" "val" <MaybeId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
 }
 
 ForStatement<S>: ForStatement<S> = {
@@ -672,6 +694,7 @@ ExprLevelAtomic<allow_struct>: ExpressionKind = {
     <id:Id> => ExpressionKind::Id(id),
     "type" => ExpressionKind::Type,
     "fn" => ExpressionKind::TypeFunction,
+    // TODO this should maybe not be an expression kind after all, there's only a few specific places it's allowed in
     "_" => ExpressionKind::Dummy,
     // literals
     "true" => ExpressionKind::BoolLiteral(true),

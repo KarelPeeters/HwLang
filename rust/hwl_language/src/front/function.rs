@@ -614,7 +614,7 @@ impl CompileItemContext<'_, '_> {
                         .transpose();
 
                     // evaluate block
-                    let (ir_block, end) = s.elaborate_block(ctx, &scope, vars, body)?;
+                    let (ir_block, end) = s.elaborate_block_raw(ctx, &scope, vars, body)?;
 
                     // check return type
                     let ret_ty = ret_ty?;

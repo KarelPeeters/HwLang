@@ -1,13 +1,13 @@
 # Frontend features
 
-* structs
-* enums
 * match
 
+* infer domain for reg (based on first usage) and wire (based on init expr)
 * range fixes (ensure always increasing, never crashing)
 * implication fixes (if empty drop the block instead of stopping)
 * add something to cast domains
 * fix type inference for vars/vals
+* allow hardware return/break/continue
 
 # Backend fixes
 

@@ -20,6 +20,8 @@ use std::fmt::Debug;
 pub trait ExpressionContext {
     type Block: Debug;
 
+    // TODO rework IR unwrapping, look at what's actually necessary,
+    //   maybe just `unwrap(&mut self) -> IrExpressionContext` is enough
     fn new_ir_block(&self) -> Self::Block;
 
     fn push_ir_statement(
