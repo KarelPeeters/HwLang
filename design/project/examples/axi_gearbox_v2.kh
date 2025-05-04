@@ -54,7 +54,7 @@ pub module axi_gearbox_v2(
             data[..input_width] = input_data;
             mask[..input_width / step] = [true] * (input_width / step);
 
-            var shift = to_bits(uint_bits(shift_bits), level);
+            var shift = uint_bits(shift_bits).to_bits(level);
             for (i in 0..shift_bits) {
                 if (shift[i]) {
                     // note: the range `..` we use here and the `downto` in the original have opposite directions!
@@ -91,3 +91,10 @@ pub module axi_gearbox_v2(
         }
     }
 }
+
+instance axi_gearbox_v2(input_width=8, output_width=16);
+instance axi_gearbox_v2(input_width=16, output_width=8);
+
+// TODO why do these fail?
+//instance axi_gearbox_v2(input_width=8, output_width=3);
+//instance axi_gearbox_v2(input_width=3, output_width=8);

@@ -2,17 +2,14 @@ import std.types.[bool, int_range, int, natural, uint, uint_bits];
 import std.math.[clog2];
 import std.util.[typeof, print];
 
-// TODO implement structs
-// TODO allow fields to depend on previous fields (only for compile-time structs ofc)
-// struct Convcode(length: natural) {
-//     generator_0: [length]bool,
-//     generator_1: [length]bool,
-// }
+struct Generator(L: natural) {
+    generator_0: [L]bool,
+    generator_1: [L]bool,
+}
 
 pub module convcode_encoder(
     length: natural,
-    generator_0: [length]bool,
-    generator_1: [length]bool,
+    generator: Generator(length),
 ) ports (
     clk: in clock,
     rst: in async bool,
@@ -44,8 +41,8 @@ pub module convcode_encoder(
             output_data_0 = false;
             output_data_1 = false;
             for (i in 0..length) {
-                output_data_0 ^= delay_line_extra[i] & generator_0[length - 1 - i];
-                output_data_1 ^= delay_line_extra[i] & generator_1[length - 1 - i];
+                output_data_0 ^= delay_line_extra[i] & generator.generator_0[length - 1 - i];
+                output_data_1 ^= delay_line_extra[i] & generator.generator_1[length - 1 - i];
             }
         }
 
@@ -55,8 +52,7 @@ pub module convcode_encoder(
 
 pub module convcode_decoder(
     length: natural,
-    generator_0: [length]bool,
-    generator_1: [length]bool,
+    generator: Generator(length),
     analog_bits: natural,
     depth: natural,
 ) ports (
@@ -79,8 +75,8 @@ pub module convcode_decoder(
             val code = uint_bits(length).to_bits(i);
             var output = [false, false];
             for (j in 0..length) {
-                output[0] ^= code[j] & generator_0[length - 1 - j];
-                output[1] ^= code[j] & generator_1[length - 1 - j];
+                output[0] ^= code[j] & generator.generator_0[length - 1 - j];
+                output[1] ^= code[j] & generator.generator_1[length - 1 - j];
             }
             output
         } for i in 0..num_states
@@ -93,8 +89,8 @@ pub module convcode_decoder(
 
     const half_paths_reset = [[false] * depth] * (num_states/2);
 
-    reg half_probs: sync(clk, rst) t_half_probs = [0] * (num_states/2);
-    reg half_paths: sync(clk, rst) t_half_paths = half_paths_reset;
+    reg half_probs: t_half_probs = [0] * (num_states/2);
+    reg half_paths: t_half_paths = half_paths_reset;
     reg out output_data = false;
     reg out output_valid = false;
 
@@ -167,15 +163,17 @@ fn uint_not(n: uint, v: uint_bits(n)) -> uint_bits(n) {
 
 // TODO file-level block scopes, keeping variables local to this block
 const example_length = 3;
-const example_generator_0 = [true, true, true];
-const example_generator_1 = [true, false, true];
+const example_generator = Generator(example_length).new(
+    generator_0=[true, true, true],
+    generator_1=[true, false, true]
+);
 const example_analog_bits = 8;
 const example_depth = 4;
 
 instance convcode_encoder(
-    length=example_length, generator_0=example_generator_0, generator_1=example_generator_1
+    length=example_length, generator=example_generator
 );
 instance convcode_decoder(
-    length=example_length, generator_0=example_generator_0, generator_1=example_generator_1,
+    length=example_length, generator=example_generator,
     analog_bits=example_analog_bits, depth=example_depth
 );

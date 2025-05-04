@@ -1,19 +1,24 @@
 import std.types.[bool, int_range, int, uint, natural, uint_bits];
 
+// TODO get multiple returns working in hardware
 pub fn min(x: int, y: int) -> int {
+    val result;
     if (x < y) {
-        return x;
+        result = x;
     } else {
-        return y;
+        result = y;
     }
+    return result;
 }
 
 pub fn max(x: int, y: int) -> int {
+    val result;
     if (y > x) {
-        return y;
+        result = y;
     } else {
-        return x;
+        result = x;
     }
+    return result;
 }
 
 pub fn gcd(a: natural, b: natural) -> natural {

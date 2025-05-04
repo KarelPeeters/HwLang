@@ -23,13 +23,13 @@ fn test_parse(path: impl AsRef<Path>) {
 }
 
 #[test]
-fn parse_types() {
+fn parse_std_types() {
     test_parse("../../design/project/std/types.kh")
 }
 
 #[test]
-fn parse_util() {
-    test_parse("../../design/project/util/test.kh")
+fn parse_std_util() {
+    test_parse("../../design/project/std/util.kh")
 }
 
 #[test]
