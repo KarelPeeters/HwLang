@@ -9,7 +9,7 @@ use crate::front::signal::{Polarized, Signal};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{HardwareValue, Value};
-use crate::front::variables::VariableValues;
+use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
@@ -233,12 +233,24 @@ impl CompileItemContext<'_, '_> {
         // TODO move all of this into a function
         // check mutable
         if !self.variables[var].mutable {
-            // TODO allow if the variable is not mutable and is fully un-assigned so far
-            let diag = Diagnostic::new("assignment to immutable variable")
-                .add_error(target_base.span, "variable assigned to here")
-                .add_info(self.variables[var].id.span(), "variable declared as immutable here")
-                .finish();
-            return Err(diags.report(diag));
+            let allow = if target_steps.is_empty() {
+                match vars.var_get_maybe(diags, target_base.span, var)? {
+                    MaybeAssignedValue::Assigned(_) => false,
+                    MaybeAssignedValue::NotYetAssigned => true,
+                    MaybeAssignedValue::PartiallyAssigned => false,
+                    &MaybeAssignedValue::Error(e) => return Err(e),
+                }
+            } else {
+                false
+            };
+
+            if !allow {
+                let diag = Diagnostic::new("assignment to immutable variable")
+                    .add_error(target_base.span, "variable assigned to here")
+                    .add_info(self.variables[var].id.span(), "variable declared as immutable here")
+                    .finish();
+                return Err(diags.report(diag));
+            }
         }
 
         // If no steps, we can just do the full assignment immediately.
