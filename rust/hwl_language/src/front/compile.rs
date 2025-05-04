@@ -254,19 +254,16 @@ pub struct CompileItemContext<'a, 's> {
 #[derive(Debug, Copy, Clone)]
 pub enum StackEntry {
     ItemUsage(Span),
-    ItemEvaluation(AstRefItem),
+    ItemEvaluation(Span),
     FunctionCall(Span),
     FunctionRun(Span),
 }
 
 impl StackEntry {
-    pub fn into_span_message(self, parsed: &ParsedDatabase) -> (Span, &'static str) {
+    pub fn into_span_message(self) -> (Span, &'static str) {
         match self {
             StackEntry::ItemUsage(span) => (span, "item used here"),
-            StackEntry::ItemEvaluation(entry_item) => {
-                let entry_span = parsed[entry_item].common_info().span_short;
-                (entry_span, "item declared here")
-            }
+            StackEntry::ItemEvaluation(entry_span) => (entry_span, "item declared here"),
             StackEntry::FunctionCall(entry_span) => (entry_span, "function call here"),
             StackEntry::FunctionRun(entry_span) => (entry_span, "function declared here"),
         }
@@ -299,10 +296,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
 
     pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> Result<R, ErrorGuaranteed> {
         if self.stack.len() > MAX_STACK_ENTRIES {
-            return Err(self
-                .refs
-                .diags
-                .report(stack_overflow_diagnostic(self.refs.fixed.parsed, &self.stack)));
+            return Err(self.refs.diags.report(stack_overflow_diagnostic(&self.stack)));
         }
 
         self.stack.push(entry);
@@ -317,13 +311,16 @@ impl<'a, 's> CompileItemContext<'a, 's> {
     }
 
     pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
-        self.recurse(StackEntry::ItemEvaluation(item), |s| {
+        let item_span = self.refs.fixed.parsed[item].info().span_short;
+        let stack_entry = StackEntry::ItemEvaluation(item_span);
+
+        self.recurse(stack_entry, |s| {
             let origin = s.origin.map(|origin| (origin, s.stack.clone()));
             let f_compute = || {
                 let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
                 ctx.eval_item_new(item)
             };
-            let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(s.refs.fixed.parsed, stack));
+            let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(stack));
             s.refs
                 .shared
                 .item_values
@@ -335,13 +332,13 @@ impl<'a, 's> CompileItemContext<'a, 's> {
     }
 }
 
-fn cycle_diagnostic(parsed: &ParsedDatabase, mut stack: Vec<&StackEntry>) -> Diagnostic {
+fn cycle_diagnostic(mut stack: Vec<&StackEntry>) -> Diagnostic {
     // sort the stack to keep error messages deterministic
     assert!(!stack.is_empty());
     let min_index = stack
         .iter()
         .position_min_by_key(|entry| {
-            let (span, _) = entry.into_span_message(parsed);
+            let (span, _) = entry.into_span_message();
             span
         })
         .unwrap();
@@ -350,17 +347,17 @@ fn cycle_diagnostic(parsed: &ParsedDatabase, mut stack: Vec<&StackEntry>) -> Dia
     // create the diagnostic
     let mut diag = Diagnostic::new("encountered cyclic dependency");
     for (entry_index, &entry) in enumerate(stack) {
-        let (span, label) = entry.into_span_message(parsed);
+        let (span, label) = entry.into_span_message();
         diag = diag.add_error(span, format!("[{entry_index}] {label}"));
     }
     diag.finish()
 }
 
-fn stack_overflow_diagnostic(parsed: &ParsedDatabase, stack: &Vec<StackEntry>) -> Diagnostic {
+fn stack_overflow_diagnostic(stack: &Vec<StackEntry>) -> Diagnostic {
     let mut diag = Diagnostic::new(format!("encountered stack overflow, stack depth {}", stack.len()));
 
     let add_entry = |diag: DiagnosticBuilder, index: usize, entry: &StackEntry| {
-        let (span, label) = entry.into_span_message(parsed);
+        let (span, label) = entry.into_span_message();
         diag.add_error(span, format!("[{index}] {label}"))
     };
 
@@ -541,8 +538,8 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         let scope = parsed[file].as_ref_ok().map(|ast| {
             let mut scope = Scope::new_root(ast.span, file);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
-                if let Some(declaration_info) = ast_item.declaration_info() {
-                    scope.maybe_declare(diags, declaration_info.id, Ok(ScopedEntry::Item(ast_item_ref)));
+                if let Some(info) = ast_item.info().declaration {
+                    scope.maybe_declare(diags, info.id, Ok(ScopedEntry::Item(ast_item_ref)));
                 }
             }
             scope
@@ -582,7 +579,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
 
                         // check visibility, but still proceed as if the import succeeded
                         if let Ok(ScopedEntry::Item(source_item)) = source_value {
-                            let decl_info = parsed[source_item].declaration_info().unwrap();
+                            let decl_info = parsed[source_item].info().declaration.unwrap();
                             match decl_info.vis {
                                 Visibility::Public(_) => {}
                                 Visibility::Private => {

@@ -109,7 +109,7 @@ impl CompileRefs<'_, '_> {
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
+        let scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
 
         // elaborate ports
         // TODO we actually need a full context here?
@@ -152,7 +152,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_restore(*self, None, ports, port_interfaces);
         let mut vars = VariableValues::new_root(&ctx.variables);
 
-        let scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
+        let scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
@@ -714,7 +714,6 @@ impl BodyElaborationContext<'_, '_, '_> {
                 ModuleStatementKind::If(_) => {}
                 ModuleStatementKind::For(_) => {}
                 ModuleStatementKind::Block(_) => {}
-                ModuleStatementKind::ConstBlock(_) => {}
                 // declarations
                 ModuleStatementKind::CommonDeclaration(decl) => {
                     self.ctx.eval_and_declare_declaration(scope, vars, decl)
@@ -790,7 +789,6 @@ impl BodyElaborationContext<'_, '_, '_> {
         signals: &mut SignalsInScope,
         body: &Block<ModuleStatement>,
     ) {
-        let diags = self.ctx.refs.diags;
         let Block { span: _, statements } = body;
 
         for stmt in statements {
@@ -801,21 +799,6 @@ impl BodyElaborationContext<'_, '_, '_> {
                 // control flow
                 ModuleStatementKind::Block(block) => {
                     self.elaborate_block(scope, vars, signals, block, false);
-                }
-                ModuleStatementKind::ConstBlock(block) => {
-                    let mut ctx_inner = CompileTimeExpressionContext {
-                        span: block.span,
-                        reason: "const block".to_owned(),
-                    };
-                    let mut vars_inner = VariableValues::new_child(vars);
-                    let _: Result<(), ErrorGuaranteed> =
-                        match self
-                            .ctx
-                            .elaborate_block_raw(&mut ctx_inner, scope, &mut vars_inner, None, block)
-                        {
-                            Ok(((), block_end)) => block_end.unwrap_outside_function_and_loop(diags),
-                            Err(e) => Err(e),
-                        };
                 }
                 ModuleStatementKind::If(if_stmt) => {
                     match self.ctx.compile_if_statement_choose_block(scope, vars, if_stmt) {

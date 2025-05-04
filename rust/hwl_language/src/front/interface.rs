@@ -86,7 +86,7 @@ impl CompileRefs<'_, '_> {
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let mut scope_params = ctx.rebuild_params_scope(ast_ref.into(), &mut vars, &params)?;
+        let mut scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
 
         // elaborate port types
         let mut port_map = IndexMap::new();

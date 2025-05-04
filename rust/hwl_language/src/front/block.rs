@@ -14,7 +14,7 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{merge_variable_branches, VariableValues};
 use crate::mid::ir::{IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConditionalItem, ExpressionKind, ForStatement, Identifier,
+    Block, BlockStatement, BlockStatementKind, ConditionalItem, ConstBlock, ExpressionKind, ForStatement, Identifier,
     IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, Spanned,
     VariableDeclaration, WhileStatement,
 };
@@ -135,6 +135,31 @@ enum PatternEqual {
 type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, &'a Identifier>;
 
 impl CompileItemContext<'_, '_> {
+    pub fn elaborate_const_block(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        block: &ConstBlock,
+    ) -> Result<(), ErrorGuaranteed> {
+        // TODO assignments in this block should be not allowed to leak outside
+        //   we can fix this generally on the next scope/vars refactor,
+        //   if we provide a "child with immutable view on parent" child mode
+        let diags = self.refs.diags;
+        let &ConstBlock {
+            span_keyword,
+            ref block,
+        } = block;
+
+        let mut ctx = CompileTimeExpressionContext {
+            span: span_keyword.join(block.span),
+            reason: "const block".to_owned(),
+        };
+        let ((), block_end) = self.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
+        block_end.unwrap_outside_function_and_loop(diags)?;
+
+        Ok(())
+    }
+
     pub fn elaborate_and_push_block<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
@@ -257,15 +282,6 @@ impl CompileItemContext<'_, '_> {
                 }
                 BlockStatementKind::Block(inner_block) => {
                     self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, expected_return_ty, inner_block)?
-                }
-                BlockStatementKind::ConstBlock(inner_block) => {
-                    let mut ctx_inner = CompileTimeExpressionContext {
-                        span: inner_block.span,
-                        reason: "const block".to_owned(),
-                    };
-                    let ((), block_end) = self.elaborate_block_raw(&mut ctx_inner, scope, vars, None, inner_block)?;
-                    block_end.unwrap_outside_function_and_loop(diags)?;
-                    BlockEnd::Normal
                 }
                 BlockStatementKind::If(stmt_if) => {
                     let IfStatement {

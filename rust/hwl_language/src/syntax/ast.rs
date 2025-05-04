@@ -24,7 +24,7 @@ pub enum Item {
     Import(ItemImport),
     Instance(ModuleInstanceItem),
     // common declarations that are allowed anywhere
-    CommonDeclaration(ItemDeclaration),
+    CommonDeclaration(Spanned<CommonDeclaration<Visibility<Span>>>),
     // declarations that are only allowed top-level
     // TODO maybe we should also just allow module declarations anywhere?
     Module(ItemDefModule),
@@ -32,18 +32,30 @@ pub enum Item {
 }
 
 #[derive(Debug, Clone)]
-pub struct ItemDeclaration {
-    pub vis: Visibility<Span>,
-    pub decl: CommonDeclaration,
+pub enum CommonDeclaration<V> {
+    Named(CommonDeclarationNamed<V>),
+    ConstBlock(ConstBlock),
 }
 
 #[derive(Debug, Clone)]
-pub enum CommonDeclaration {
+pub struct CommonDeclarationNamed<V> {
+    pub vis: V,
+    pub kind: CommonDeclarationNamedKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum CommonDeclarationNamedKind {
     Type(TypeDeclaration),
     Const(ConstDeclaration),
     Struct(StructDeclaration),
     Enum(EnumDeclaration),
     Function(FunctionDeclaration),
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstBlock {
+    pub span_keyword: Span,
+    pub block: Block<BlockStatement>,
 }
 
 // TODO split this out from the items that actually define _new_ symbols?
@@ -305,11 +317,10 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 pub enum ModuleStatementKind {
     // control flow
     Block(Block<ModuleStatement>),
-    ConstBlock(Block<BlockStatement>),
     If(IfStatement<Block<ModuleStatement>>),
     For(ForStatement<ModuleStatement>),
     // declarations
-    CommonDeclaration(CommonDeclaration),
+    CommonDeclaration(CommonDeclaration<()>),
     RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
     // marker
@@ -323,7 +334,7 @@ pub enum ModuleStatementKind {
 #[derive(Debug, Clone)]
 pub enum BlockStatementKind {
     // declarations
-    CommonDeclaration(CommonDeclaration),
+    CommonDeclaration(CommonDeclaration<()>),
     VariableDeclaration(VariableDeclaration),
 
     // basic statements
@@ -333,8 +344,6 @@ pub enum BlockStatementKind {
 
     // control flow
     Block(Block<BlockStatement>),
-    ConstBlock(Block<BlockStatement>),
-
     If(IfStatement<Block<BlockStatement>>),
     Match(MatchStatement<Block<BlockStatement>>),
 
@@ -932,9 +941,10 @@ impl<'a> MaybeIdentifier<&'a Identifier> {
 }
 
 #[derive(Debug)]
-pub struct ItemCommonInfo {
+pub struct ItemInfo<'a> {
     pub span_full: Span,
     pub span_short: Span,
+    pub declaration: Option<ItemDeclarationInfo<'a>>,
 }
 
 #[derive(Debug)]
@@ -943,77 +953,77 @@ pub struct ItemDeclarationInfo<'s> {
     pub id: MaybeIdentifier<&'s Identifier>,
 }
 
-// TODO reorganize the item struct so all of these just become common fields
 impl Item {
-    pub fn common_info(&self) -> ItemCommonInfo {
-        self.info().0
-    }
-
-    pub fn declaration_info(&self) -> Option<ItemDeclarationInfo> {
-        self.info().1
-    }
-
-    fn info(&self) -> (ItemCommonInfo, Option<ItemDeclarationInfo>) {
+    pub fn info(&self) -> ItemInfo {
         match self {
-            Item::Import(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.span,
-                },
-                None,
-            ),
-            Item::Instance(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.span_keyword,
-                },
-                None,
-            ),
-            Item::CommonDeclaration(item) => {
-                let (span, id) = item.decl.info();
-                (
-                    ItemCommonInfo {
-                        span_full: span,
-                        span_short: id.span(),
-                    },
-                    Some(ItemDeclarationInfo {
-                        vis: item.vis,
-                        id: id.as_ref(),
+            Item::Import(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.span,
+                declaration: None,
+            },
+            Item::Instance(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.span_keyword,
+                declaration: None,
+            },
+            Item::CommonDeclaration(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.inner.span_short(),
+                declaration: match &item.inner {
+                    CommonDeclaration::Named(decl) => Some(ItemDeclarationInfo {
+                        vis: decl.vis,
+                        id: decl.kind.id().as_ref(),
                     }),
-                )
-            }
-            Item::Module(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span(),
+                    CommonDeclaration::ConstBlock(_) => None,
                 },
-                Some(ItemDeclarationInfo {
+            },
+            Item::Module(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.id.span(),
+                declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
                     id: item.id.as_ref(),
                 }),
-            ),
-            Item::Interface(item) => (
-                ItemCommonInfo {
-                    span_full: item.span,
-                    span_short: item.id.span(),
-                },
-                Some(ItemDeclarationInfo {
+            },
+            Item::Interface(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.id.span(),
+                declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
                     id: item.id.as_ref(),
                 }),
-            ),
+            },
         }
     }
 }
 
-impl CommonDeclaration {
-    pub fn info(&self) -> (Span, &MaybeIdentifier) {
+impl<V> CommonDeclaration<V> {
+    pub fn span_short(&self) -> Span {
         match self {
-            CommonDeclaration::Type(decl) => (decl.span, &decl.id),
-            CommonDeclaration::Const(decl) => (decl.span, &decl.id),
-            CommonDeclaration::Struct(decl) => (decl.span, &decl.id),
-            CommonDeclaration::Enum(decl) => (decl.span, &decl.id),
-            CommonDeclaration::Function(decl) => (decl.span, &decl.id),
+            CommonDeclaration::Named(decl) => decl.kind.id().span(),
+            CommonDeclaration::ConstBlock(block) => block.span_keyword,
+        }
+    }
+}
+
+impl CommonDeclarationNamedKind {
+    pub fn span(&self) -> Span {
+        match self {
+            CommonDeclarationNamedKind::Type(decl) => decl.span,
+            CommonDeclarationNamedKind::Const(decl) => decl.span,
+            CommonDeclarationNamedKind::Struct(decl) => decl.span,
+            CommonDeclarationNamedKind::Enum(decl) => decl.span,
+            CommonDeclarationNamedKind::Function(decl) => decl.span,
+        }
+    }
+
+    pub fn id(&self) -> &MaybeIdentifier {
+        match self {
+            CommonDeclarationNamedKind::Type(decl) => &decl.id,
+            CommonDeclarationNamedKind::Const(decl) => &decl.id,
+            CommonDeclarationNamedKind::Struct(decl) => &decl.id,
+            CommonDeclarationNamedKind::Enum(decl) => &decl.id,
+            CommonDeclarationNamedKind::Function(decl) => &decl.id,
         }
     }
 }
