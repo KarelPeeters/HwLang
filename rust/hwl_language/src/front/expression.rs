@@ -186,7 +186,9 @@ impl CompileItemContext<'_, '_> {
 
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
-                let (mut ctx_block, end) = self.elaborate_block_statements(ctx, &mut scope_inner, vars, statements)?;
+                // TODO propagate return type?
+                let (mut ctx_block, end) =
+                    self.elaborate_block_statements(ctx, &mut scope_inner, vars, None, statements)?;
                 end.unwrap_outside_function_and_loop(diags)?;
 
                 self.eval_expression(ctx, &mut ctx_block, &scope_inner, vars, expected_ty, expression)?

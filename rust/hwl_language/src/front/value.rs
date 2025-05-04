@@ -106,7 +106,8 @@ impl Typed for CompileValue {
 }
 
 impl CompileValue {
-    pub const UNIT: CompileValue = CompileValue::Tuple(vec![]);
+    // Empty tuples are considered types, since all their inner values are types.
+    pub const UNIT: CompileValue = CompileValue::Type(Type::UNIT);
 
     pub fn contains_undefined(&self) -> bool {
         match self {

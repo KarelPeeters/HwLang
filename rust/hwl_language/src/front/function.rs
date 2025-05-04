@@ -611,13 +611,14 @@ impl CompileItemContext<'_, '_> {
                     let ret_ty = ret_ty
                         .as_ref()
                         .map(|ret_ty| s.eval_expression_as_ty(&scope, vars, ret_ty))
-                        .transpose();
+                        .transpose()?;
 
                     // evaluate block
-                    let (ir_block, end) = s.elaborate_block_raw(ctx, &scope, vars, body)?;
+                    let ty_unit = &Type::UNIT;
+                    let expected_ret_ty = ret_ty.as_ref().map_or(ty_unit, |ty| &ty.inner);
+                    let (ir_block, end) = s.elaborate_block_raw(ctx, &scope, vars, Some(expected_ret_ty), body)?;
 
                     // check return type
-                    let ret_ty = ret_ty?;
                     let ret_value = check_function_return_value(diags, body.span, &ret_ty, end)?;
 
                     Ok((Some(ir_block), ret_value))
@@ -788,8 +789,10 @@ fn check_function_return_value(
                     }
                 }
                 (None, Some(ret_value)) => {
-                    let is_unit =
-                        matches!(&ret_value.inner, Value::Compile(CompileValue::Tuple(tuple)) if tuple.is_empty());
+                    let is_unit = match &ret_value.inner {
+                        Value::Compile(v) => v == &CompileValue::UNIT,
+                        Value::Hardware(_) => false,
+                    };
                     if is_unit {
                         Ok(Value::Compile(CompileValue::UNIT))
                     } else {

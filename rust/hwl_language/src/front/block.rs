@@ -141,9 +141,11 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope_parent: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         block: &Block<BlockStatement>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
-        let (ctx_block_inner, block_end) = self.elaborate_block_raw(ctx, scope_parent, vars, block)?;
+        let (ctx_block_inner, block_end) =
+            self.elaborate_block_raw(ctx, scope_parent, vars, expected_return_ty, block)?;
 
         let block_ir_spanned = Spanned {
             span: block.span,
@@ -160,12 +162,13 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         scope_parent: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         block: &Block<BlockStatement>,
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let &Block { span, ref statements } = block;
 
         let mut scope = Scope::new_child(span, scope_parent);
-        self.elaborate_block_statements(ctx, &mut scope, vars, statements)
+        self.elaborate_block_statements(ctx, &mut scope, vars, expected_return_ty, statements)
     }
 
     pub fn elaborate_block_statements<C: ExpressionContext>(
@@ -173,6 +176,7 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         scope: &mut Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         statements: &[BlockStatement],
     ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -252,14 +256,14 @@ impl CompileItemContext<'_, '_> {
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, inner_block)?
+                    self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, expected_return_ty, inner_block)?
                 }
                 BlockStatementKind::ConstBlock(inner_block) => {
                     let mut ctx_inner = CompileTimeExpressionContext {
                         span: inner_block.span,
                         reason: "const block".to_owned(),
                     };
-                    let ((), block_end) = self.elaborate_block_raw(&mut ctx_inner, scope, vars, inner_block)?;
+                    let ((), block_end) = self.elaborate_block_raw(&mut ctx_inner, scope, vars, None, inner_block)?;
                     block_end.unwrap_outside_function_and_loop(diags)?;
                     BlockEnd::Normal
                 }
@@ -275,13 +279,20 @@ impl CompileItemContext<'_, '_> {
                         &mut ctx_block,
                         scope,
                         vars,
+                        expected_return_ty,
                         Some((initial_if, else_ifs)),
                         final_else,
                     )?
                 }
-                BlockStatementKind::Match(stmt_match) => {
-                    self.elaborate_match_statement(ctx, &mut ctx_block, scope, vars, stmt.span, stmt_match)?
-                }
+                BlockStatementKind::Match(stmt_match) => self.elaborate_match_statement(
+                    ctx,
+                    &mut ctx_block,
+                    scope,
+                    vars,
+                    expected_return_ty,
+                    stmt.span,
+                    stmt_match,
+                )?,
                 BlockStatementKind::While(stmt_while) => {
                     let &WhileStatement {
                         span_keyword,
@@ -310,7 +321,8 @@ impl CompileItemContext<'_, '_> {
                         }
 
                         // visit body
-                        let end = self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, body)?;
+                        let end =
+                            self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, expected_return_ty, body)?;
 
                         // handle end
                         match end {
@@ -330,7 +342,8 @@ impl CompileItemContext<'_, '_> {
                         span: stmt.span,
                         inner: stmt_for,
                     };
-                    let (block, end) = self.elaborate_for_statement(ctx, ctx_block, scope, vars, stmt_for)?;
+                    let (block, end) =
+                        self.elaborate_for_statement(ctx, ctx_block, scope, vars, expected_return_ty, stmt_for)?;
                     ctx_block = block;
 
                     match end {
@@ -344,10 +357,16 @@ impl CompileItemContext<'_, '_> {
                         ref value,
                     } = stmt;
 
-                    // TODO actually pass expected type here
+                    let expected_return_ty = expected_return_ty.ok_or_else(|| {
+                        diags.report_simple(
+                            "return is not allowed outside a function body",
+                            span_keyword,
+                            "return statement here",
+                        )
+                    })?;
                     let value = value
                         .as_ref()
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, value))
+                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, expected_return_ty, value))
                         .transpose()?;
 
                     BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
@@ -371,6 +390,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         ifs: Option<(
             &IfCondBlockPair<Block<BlockStatement>>,
             &[IfCondBlockPair<Block<BlockStatement>>],
@@ -385,7 +405,8 @@ impl CompileItemContext<'_, '_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) = self.elaborate_block_raw(ctx, scope, vars, final_else)?;
+                        let (final_else_ir, final_else_end) =
+                            self.elaborate_block_raw(ctx, scope, vars, expected_return_ty, final_else)?;
                         let final_else_spanned = Spanned {
                             span: final_else.span,
                             inner: final_else_ir,
@@ -425,9 +446,17 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    self.elaborate_and_push_block(ctx, ctx_block, scope, vars, block)
+                    self.elaborate_and_push_block(ctx, ctx_block, scope, vars, expected_return_ty, block)
                 } else {
-                    self.elaborate_if_statement(ctx, ctx_block, scope, vars, remaining_ifs.split_first(), final_else)
+                    self.elaborate_if_statement(
+                        ctx,
+                        ctx_block,
+                        scope,
+                        vars,
+                        expected_return_ty,
+                        remaining_ifs.split_first(),
+                        final_else,
+                    )
                 }
             }
             // evaluate the if at runtime, generating IR
@@ -462,7 +491,7 @@ impl CompileItemContext<'_, '_> {
                         let mut then_vars = VariableValues::new_child(vars);
                         let (then_ir, then_end) =
                             ctx.with_implications(diags, cond_value.implications.if_true, |ctx_inner| {
-                                self.elaborate_block_raw(ctx_inner, scope, &mut then_vars, block)
+                                self.elaborate_block_raw(ctx_inner, scope, &mut then_vars, expected_return_ty, block)
                             })?;
 
                         // lower else
@@ -474,6 +503,7 @@ impl CompileItemContext<'_, '_> {
                                 &mut else_ir,
                                 scope,
                                 &mut else_vars,
+                                expected_return_ty,
                                 remaining_ifs.split_first(),
                                 final_else,
                             )
@@ -527,6 +557,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         stmt_span: Span,
         stmt: &MatchStatement<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
@@ -756,6 +787,7 @@ impl CompileItemContext<'_, '_> {
                 ctx_block,
                 scope,
                 vars,
+                expected_return_ty,
                 stmt_span,
                 target_inner,
                 branches,
@@ -769,6 +801,7 @@ impl CompileItemContext<'_, '_> {
                         ctx_block,
                         scope,
                         vars,
+                        expected_return_ty,
                         stmt_span,
                         target_inner,
                         branches,
@@ -785,6 +818,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         stmt_span: Span,
         cond: CompileValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
@@ -859,7 +893,7 @@ impl CompileItemContext<'_, '_> {
                         scope
                     };
 
-                    return self.elaborate_and_push_block(ctx, ctx_block, scoped_used, vars, block);
+                    return self.elaborate_and_push_block(ctx, ctx_block, scoped_used, vars, expected_return_ty, block);
                 }
             }
         }
@@ -874,6 +908,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope_outer: &Scope,
         vars_outer: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         stmt_span: Span,
         target: HardwareValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
@@ -1014,7 +1049,8 @@ impl CompileItemContext<'_, '_> {
                 scope_outer
             };
 
-            let (ctx_block_inner, end) = self.elaborate_block_raw(ctx, scoped_used, &mut vars_inner, block)?;
+            let (ctx_block_inner, end) =
+                self.elaborate_block_raw(ctx, scoped_used, &mut vars_inner, expected_return_ty, block)?;
             end.unwrap_normal_todo_in_conditional(diags, stmt_span)?;
 
             match cond {
@@ -1085,6 +1121,7 @@ impl CompileItemContext<'_, '_> {
         mut result_block: C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         stmt: Spanned<&ForStatement<BlockStatement>>,
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
         let ctx_block = &mut result_block;
@@ -1106,8 +1143,7 @@ impl CompileItemContext<'_, '_> {
         let index_ty = index_ty?;
         let iter = iter?;
 
-        // TODO (deterministic!) timeout?
-        let end = self.run_for_statement(ctx, ctx_block, scope, vars, stmt, index_ty, iter)?;
+        let end = self.run_for_statement(ctx, ctx_block, scope, vars, expected_return_ty, stmt, index_ty, iter)?;
         Ok((result_block, end))
     }
 
@@ -1118,6 +1154,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope_parent: &Scope,
         vars: &mut VariableValues,
+        expected_return_ty: Option<&Type>,
         stmt: Spanned<&ForStatement<BlockStatement>>,
         index_ty: Option<Spanned<Type>>,
         iter: ForIterator,
@@ -1159,7 +1196,8 @@ impl CompileItemContext<'_, '_> {
             );
 
             // run body
-            let body_end = self.elaborate_and_push_block(ctx, ctx_block, &scope_index, vars, body)?;
+            let body_end =
+                self.elaborate_and_push_block(ctx, ctx_block, &scope_index, vars, expected_return_ty, body)?;
 
             // handle possible loop termination
             match body_end {

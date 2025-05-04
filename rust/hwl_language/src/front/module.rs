@@ -811,7 +811,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     let _: Result<(), ErrorGuaranteed> =
                         match self
                             .ctx
-                            .elaborate_block_raw(&mut ctx_inner, scope, &mut vars_inner, block)
+                            .elaborate_block_raw(&mut ctx_inner, scope, &mut vars_inner, None, block)
                         {
                             Ok(((), block_end)) => block_end.unwrap_outside_function_and_loop(diags),
                             Err(e) => Err(e),
@@ -902,7 +902,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
         let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
 
-        let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, block)?;
+        let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
         let ir_variables = ctx.finish();
         end.unwrap_outside_function_and_loop(diags)?;
 
@@ -988,7 +988,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             };
             let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
 
-            let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, block)?;
+            let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
             let ir_variables = ctx.finish();
             end.unwrap_outside_function_and_loop(diags)?;
             Ok((ir_block, ir_variables))
