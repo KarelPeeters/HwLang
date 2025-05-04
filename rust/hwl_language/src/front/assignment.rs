@@ -5,7 +5,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, Error
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
-use crate::front::signal::Signal;
+use crate::front::signal::{Polarized, Signal};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{HardwareValue, Value};
@@ -13,7 +13,7 @@ use crate::front::variables::VariableValues;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned};
+use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 
 #[derive(Debug, Clone)]
@@ -111,8 +111,15 @@ impl CompileItemContext<'_, '_> {
         };
 
         // handle hardware signal assignment
+        ctx.check_ir_context(diags, stmt.span, "hardware assignment")?;
+        let clocked_block_domain = match ctx.block_domain() {
+            BlockDomain::CompileTime => unreachable!(),
+            BlockDomain::Combinatorial => None,
+            BlockDomain::Clocked(domain) => Some(domain),
+        };
+
         // TODO report exact range/sub-access that is being assigned
-        ctx.report_assignment(diags, Spanned::new(target_base.span, target_base_signal), vars)?;
+        ctx.report_assignment(self, Spanned::new(target_base.span, target_base_signal), vars)?;
 
         // get inner type and steps
         let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
@@ -123,7 +130,7 @@ impl CompileItemContext<'_, '_> {
             None => right_eval,
             Some(op_inner) => {
                 // TODO apply implications
-                let target_base_eval = target_base_signal.as_ir_expression(self);
+                let target_base_eval = target_base_signal.as_hardware_value(self, target_base.span)?;
                 let target_eval = target_steps.apply_to_value(
                     diags,
                     &mut self.large,
@@ -169,11 +176,18 @@ impl CompileItemContext<'_, '_> {
             span: value.span,
             inner: value_hw.domain,
         };
+
+        let suggested_domain = match clocked_block_domain {
+            Some(domain) => domain.map_inner(ValueDomain::Sync),
+            None => value.as_ref().map_inner(Value::domain),
+        };
+        let target_domain = target_base_signal.suggest_domain(self, suggested_domain)?;
+
         self.check_assignment_domains(
-            ctx.block_domain(),
+            clocked_block_domain,
             ctx.condition_domains(),
             op.span,
-            target_base_signal.domain(self),
+            target_domain,
             target_steps,
             value_domain,
         )?;
@@ -463,26 +477,15 @@ impl CompileItemContext<'_, '_> {
 
     fn check_assignment_domains(
         &self,
-        block_domain: BlockDomain,
+        clocked_block_domain: Option<Spanned<SyncDomain<Polarized<Signal>>>>,
         condition_domains: &[Spanned<ValueDomain>],
         op_span: Span,
         target_base_domain: Spanned<ValueDomain>,
         steps: &ArraySteps,
         value_domain: Spanned<ValueDomain>,
     ) -> Result<(), ErrorGuaranteed> {
-        let diags = self.refs.diags;
-        match block_domain {
-            BlockDomain::CompileTime => {
-                for d in [target_base_domain, value_domain] {
-                    if d.inner != ValueDomain::CompileTime {
-                        return Err(
-                            diags.report_internal_error(d.span, "non-compile-time domain in compile-time context")
-                        );
-                    }
-                }
-                Ok(())
-            }
-            BlockDomain::Combinatorial => {
+        match clocked_block_domain {
+            None => {
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
                     target_base_domain,
@@ -512,9 +515,8 @@ impl CompileItemContext<'_, '_> {
 
                 check
             }
-            BlockDomain::Clocked(block_domain) => {
+            Some(block_domain) => {
                 let block_domain = block_domain.map_inner(ValueDomain::Sync);
-
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
                     target_base_domain,

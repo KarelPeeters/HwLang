@@ -206,13 +206,13 @@ ModuleStatementKind: ModuleStatementKind = {
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration> => ModuleStatementKind::CommonDeclaration(<>),
-    <start:@L> "reg" <id:MaybeId> ":" <sync:Spanned<SyncDomain>> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
+    <start:@L> "reg" <id:MaybeId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
         let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    <start:@L> "wire" <id:MaybeId> ":" <kind:Spanned<WireKind>> <value: ("=" <BoxExpr>)?> ";" <end:@R> => {
-        let decl = WireDeclaration { span: loc.span(start, end), id, kind, value };
+    <start:@L> "wire" <id:MaybeId> <kind:WireDeclarationKind> ";" <end:@R> => {
+        let decl = WireDeclaration { span: loc.span(start, end), id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -429,10 +429,15 @@ ModulePortInBlock: ModulePortInBlock = {
 }
 
 ModulePortSingleKind: ModulePortSingleKind = {
-    <direction:Spanned<PortDirection>> <kind:Spanned<WireKind>>
+    <direction:Spanned<PortDirection>> <kind:PortSingleKindInner>
         => ModulePortSingleKind::Port { direction, kind },
     <span_keyword:Span<"interface">> <domain:Spanned<DomainKind>> <interface:BoxExpr>
         => ModulePortSingleKind::Interface { span_keyword, domain, interface },
+}
+
+PortSingleKindInner: PortSingleKindInner = {
+    <span_clock:Span<"clock">> => PortSingleKindInner::Clock { span_clock },
+    <domain:Spanned<DomainKind>> <ty:BoxExpr> => PortSingleKindInner::Normal { domain, ty },
 }
 
 ModulePortInBlockKind: ModulePortInBlockKind = {
@@ -447,9 +452,21 @@ ConditionalItem<I>: ConditionalItem<I> = {
     IfStatement<BlockSeparated<ConditionalItem<I>,",">> => ConditionalItem::If(<>),
 }
 
-WireKind: WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>> = {
-    "clock" => WireKind::Clock,
-    <domain:Spanned<DomainKind>> <ty:BoxExpr> => WireKind::Normal { domain, ty },
+WireDeclarationKind: WireDeclarationKind = {
+    ":" <span_clock:Span<"clock">> <value:("=" <BoxExpr>)?> => WireDeclarationKind::Clock { span_clock, value },
+    
+    // manually expanded because ":" be present iff at least one of domain or ty is present
+    ":" <domain:Spanned<DomainKind>> <ty:BoxExpr> "=" <value:BoxExpr>
+        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: Some(ty), value },
+    ":" <domain:Spanned<DomainKind>> "=" <value:BoxExpr>
+        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: None, value },
+    ":" <ty:BoxExpr> "=" <value:BoxExpr>
+        => WireDeclarationKind::NormalWithValue { domain: None, ty: Some(ty), value },
+    "=" <value:BoxExpr>
+        => WireDeclarationKind::NormalWithValue { domain: None, ty: None, value },
+    
+    ":" <domain:(Spanned<DomainKind>)?> <ty:BoxExpr>
+        => WireDeclarationKind::NormalWithoutValue { domain, ty },
 }
 
 PortDirection: PortDirection = {

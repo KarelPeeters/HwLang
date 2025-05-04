@@ -7,7 +7,7 @@ use crate::front::check::{
 use crate::front::compile::{CompileItemContext, Port, PortInterface, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::domain::{DomainSignal, ValueDomain};
+use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
 use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
@@ -221,20 +221,29 @@ impl CompileItemContext<'_, '_> {
                         }
                         NamedValue::Wire(wire) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
-                            let wire_info = &self.wires[wire];
+                            let wire_info = &mut self.wires[wire];
+
+                            if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
+                                wire_info
+                                    .suggest_domain(Spanned::new(expr.span, ValueDomain::Sync(block_domain.inner)));
+                            }
+                            let wire_value = wire_info.as_hardware_value(diags, expr.span)?;
 
                             let versioned = vars.signal_versioned(Signal::Wire(wire));
-                            let with_implications =
-                                apply_implications(ctx, &mut self.large, versioned, wire_info.as_hardware_value());
+                            let with_implications = apply_implications(ctx, &mut self.large, versioned, wire_value);
                             Value::Hardware(with_implications)
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
-                            let reg_info = &self.registers[reg];
+                            let reg_info = &mut self.registers[reg];
+
+                            if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
+                                reg_info.suggest_domain(Spanned::new(expr.span, block_domain.inner));
+                            }
+                            let reg_value = reg_info.as_hardware_value(diags, expr.span)?;
 
                             let versioned = vars.signal_versioned(Signal::Register(reg));
-                            let with_implications =
-                                apply_implications(ctx, &mut self.large, versioned, reg_info.as_hardware_value());
+                            let with_implications = apply_implications(ctx, &mut self.large, versioned, reg_value);
                             Value::Hardware(with_implications)
                         }
                     },

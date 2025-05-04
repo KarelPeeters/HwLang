@@ -414,6 +414,7 @@ pub struct VariableInfo {
     pub ty: Option<Spanned<Type>>,
 }
 
+// TODO move this stuff into signals?
 #[derive(Debug)]
 pub struct PortInfo {
     pub span: Span,
@@ -436,7 +437,7 @@ pub struct PortInterfaceInfo {
 #[derive(Debug)]
 pub struct WireInfo {
     pub id: MaybeIdentifier,
-    pub domain: Spanned<ValueDomain>,
+    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrWire,
 }
@@ -444,7 +445,7 @@ pub struct WireInfo {
 #[derive(Debug)]
 pub struct RegisterInfo {
     pub id: MaybeIdentifier,
-    pub domain: Spanned<SyncDomain<DomainSignal>>,
+    pub domain: Result<Option<Spanned<SyncDomain<DomainSignal>>>, ErrorGuaranteed>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrRegister,
 }
@@ -460,23 +461,75 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn as_hardware_value(&self) -> HardwareValue {
-        HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: self.domain.inner,
-            expr: IrExpression::Wire(self.ir),
+    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Spanned<ValueDomain> {
+        match self.domain {
+            Ok(Some(domain)) => domain,
+            Ok(None) | Err(_) => {
+                self.domain = Ok(Some(suggest));
+                suggest
+            }
         }
+    }
+
+    pub fn domain(&mut self, diags: &Diagnostics, span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        get_domain(diags, "wire", &mut self.domain, self.id.span(), span)
+    }
+
+    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
+        Ok(HardwareValue {
+            ty: self.ty.inner.clone(),
+            domain: self.domain(diags, span)?.inner,
+            expr: IrExpression::Wire(self.ir),
+        })
     }
 }
 
 impl RegisterInfo {
-    pub fn as_hardware_value(&self) -> HardwareValue {
-        HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: ValueDomain::from_domain_kind(DomainKind::Sync(self.domain.inner)),
-            expr: IrExpression::Register(self.ir),
+    pub fn suggest_domain(&mut self, suggest: Spanned<SyncDomain<DomainSignal>>) -> Spanned<SyncDomain<DomainSignal>> {
+        match self.domain {
+            Ok(Some(domain)) => domain,
+            Ok(None) | Err(_) => {
+                self.domain = Ok(Some(suggest));
+                suggest
+            }
         }
     }
+
+    pub fn domain(
+        &mut self,
+        diags: &Diagnostics,
+        span: Span,
+    ) -> Result<Spanned<SyncDomain<DomainSignal>>, ErrorGuaranteed> {
+        get_domain(diags, "register", &mut self.domain, self.id.span(), span)
+    }
+
+    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
+        let domain = self.domain(diags, span)?;
+        Ok(HardwareValue {
+            ty: self.ty.inner.clone(),
+            domain: ValueDomain::Sync(domain.inner),
+            expr: IrExpression::Register(self.ir),
+        })
+    }
+}
+
+fn get_domain<D: Copy>(
+    diags: &Diagnostics,
+    kind: &str,
+    slot: &mut Result<Option<D>, ErrorGuaranteed>,
+    decl_span: Span,
+    usage_span: Span,
+) -> Result<D, ErrorGuaranteed> {
+    (*slot)?.ok_or_else(|| {
+        let diag = Diagnostic::new(format!("{kind} domain is not yet known"))
+            .add_error(usage_span, format!("{kind} used here before domain could be inferred"))
+            .add_info(decl_span, "declared here without domain")
+            .footer(Level::Help, "explicitly add a domain to the declaration")
+            .finish();
+        let e = diags.report(diag);
+        *slot = Err(e);
+        e
+    })
 }
 
 fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {

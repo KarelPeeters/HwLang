@@ -107,6 +107,10 @@ impl<K: IndexType, T> Arena<K, T> {
         self.values.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn check(&self) -> RandomCheck {
         self.check
     }

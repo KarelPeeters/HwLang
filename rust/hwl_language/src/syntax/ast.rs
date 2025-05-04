@@ -189,12 +189,23 @@ pub struct ModulePortInBlock {
 pub enum ModulePortSingleKind {
     Port {
         direction: Spanned<PortDirection>,
-        kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
+        kind: PortSingleKindInner,
     },
     Interface {
         span_keyword: Span,
         domain: Spanned<DomainKind<Box<Expression>>>,
         interface: Box<Expression>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum PortSingleKindInner {
+    Clock {
+        span_clock: Span,
+    },
+    Normal {
+        domain: Spanned<DomainKind<Box<Expression>>>,
+        ty: Box<Expression>,
     },
 }
 
@@ -210,12 +221,7 @@ pub enum ModulePortInBlockKind {
     },
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum WireKind<S, T> {
-    Clock,
-    Normal { domain: S, ty: T },
-}
-
+// TODO rename to HardwareDomain and include clock here?
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DomainKind<S> {
     Const,
@@ -412,8 +418,7 @@ pub struct RegOutPortMarker {
 pub struct RegDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    // TODO make optional and infer
-    pub sync: Spanned<SyncDomain<Box<Expression>>>,
+    pub sync: Option<Spanned<SyncDomain<Box<Expression>>>>,
     pub ty: Box<Expression>,
     pub init: Box<Expression>,
 }
@@ -422,9 +427,24 @@ pub struct RegDeclaration {
 pub struct WireDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    // TODO make optional and infer
-    pub kind: Spanned<WireKind<Spanned<DomainKind<Box<Expression>>>, Box<Expression>>>,
-    pub value: Option<Box<Expression>>,
+    pub kind: WireDeclarationKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum WireDeclarationKind {
+    Clock {
+        span_clock: Span,
+        value: Option<Box<Expression>>,
+    },
+    NormalWithValue {
+        domain: Option<Spanned<DomainKind<Box<Expression>>>>,
+        ty: Option<Box<Expression>>,
+        value: Box<Expression>,
+    },
+    NormalWithoutValue {
+        domain: Option<Spanned<DomainKind<Box<Expression>>>>,
+        ty: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone)]

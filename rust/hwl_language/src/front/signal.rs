@@ -1,9 +1,11 @@
 use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
+use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::domain::ValueDomain;
 use crate::front::types::HardwareType;
 use crate::front::value::HardwareValue;
-use crate::mid::ir::{IrAssignmentTargetBase, IrExpression};
+use crate::mid::ir::IrAssignmentTargetBase;
 use crate::syntax::ast::Spanned;
+use crate::syntax::pos::Span;
 
 // TODO expand to all possible values again?
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -49,15 +51,6 @@ impl<V> Polarized<V> {
 }
 
 impl Polarized<Signal> {
-    pub fn domain(&self, s: &CompileItemContext) -> Spanned<ValueDomain> {
-        let &Polarized { inverted, signal } = self;
-        let signal_domain = signal.domain(s);
-        match inverted {
-            false => signal_domain,
-            true => signal_domain.as_ref().map_inner(ValueDomain::invert),
-        }
-    }
-
     pub fn to_diagnostic_string(self, s: &CompileItemContext) -> String {
         let Polarized { inverted, signal } = self;
         let signal_str = signal.to_diagnostic_string(s);
@@ -98,11 +91,37 @@ impl Signal {
         }
     }
 
-    pub fn domain(self, state: &CompileItemContext) -> Spanned<ValueDomain> {
+    pub fn suggest_domain(
+        self,
+        state: &mut CompileItemContext,
+        suggest_domain: Spanned<ValueDomain>,
+    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        let diags = state.refs.diags;
         match self {
-            Signal::Port(port) => state.ports[port].domain.map_inner(ValueDomain::from_port_domain),
-            Signal::Wire(wire) => state.wires[wire].domain,
-            Signal::Register(reg) => state.registers[reg].domain.map_inner(ValueDomain::Sync),
+            Signal::Port(port) => Ok(state.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
+            Signal::Wire(wire) => Ok(state.wires[wire].suggest_domain(suggest_domain)),
+            Signal::Register(reg) => {
+                let reg_info = &mut state.registers[reg];
+                if let Some(domain) = reg_info.domain? {
+                    Ok(domain.map_inner(ValueDomain::Sync))
+                } else if let ValueDomain::Sync(suggest_domain_inner) = suggest_domain.inner {
+                    let reg_domain = reg_info.suggest_domain(Spanned::new(suggest_domain.span, suggest_domain_inner));
+                    Ok(reg_domain.map_inner(ValueDomain::Sync))
+                } else {
+                    Err(diags.report_internal_error(suggest_domain.span, "suggesting non-sync domain for register"))
+                }
+            }
+        }
+    }
+
+    pub fn domain(self, state: &mut CompileItemContext, span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        let diags = state.refs.diags;
+        match self {
+            Signal::Port(port) => Ok(state.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
+            Signal::Wire(wire) => state.wires[wire].domain(diags, span),
+            Signal::Register(reg) => state.registers[reg]
+                .domain(diags, span)
+                .map(|d| d.map_inner(ValueDomain::Sync)),
         }
     }
 
@@ -114,32 +133,16 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_expression(self, state: &CompileItemContext) -> HardwareValue {
+    pub fn as_hardware_value(
+        self,
+        state: &mut CompileItemContext,
+        span: Span,
+    ) -> Result<HardwareValue, ErrorGuaranteed> {
+        let diags = state.refs.diags;
         match self {
-            Signal::Port(port) => {
-                let port_info = &state.ports[port];
-                HardwareValue {
-                    ty: port_info.ty.inner.clone(),
-                    domain: ValueDomain::from_port_domain(port_info.domain.inner),
-                    expr: IrExpression::Port(port_info.ir),
-                }
-            }
-            Signal::Wire(wire) => {
-                let wire_info = &state.wires[wire];
-                HardwareValue {
-                    ty: wire_info.ty.inner.clone(),
-                    domain: wire_info.domain.inner,
-                    expr: IrExpression::Wire(wire_info.ir),
-                }
-            }
-            Signal::Register(reg) => {
-                let reg_info = &state.registers[reg];
-                HardwareValue {
-                    ty: reg_info.ty.inner.clone(),
-                    domain: ValueDomain::Sync(reg_info.domain.inner),
-                    expr: IrExpression::Register(reg_info.ir),
-                }
-            }
+            Signal::Port(port) => Ok(state.ports[port].as_hardware_value()),
+            Signal::Wire(wire) => state.wires[wire].as_hardware_value(diags, span),
+            Signal::Register(reg) => state.registers[reg].as_hardware_value(diags, span),
         }
     }
 }

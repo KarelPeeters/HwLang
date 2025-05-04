@@ -741,7 +741,10 @@ impl CompileItemContext<'_, '_> {
                     format!("value has type `{}`", target_ty.to_diagnostic_string()),
                 )
                 .footer(Level::Help, "add missing cases")
-                .footer(Level::Help, "add a default case using `_` or `val _` to cover all remaining values")
+                .footer(
+                    Level::Help,
+                    "add a default case using `_` or `val _` to cover all remaining values",
+                )
                 .finish();
             return Err(diags.report(diag));
         }

@@ -70,6 +70,7 @@ impl SyncDomain<Polarized<Port>> {
     }
 }
 
+// TODO create separate HardwareDomain enum?
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,

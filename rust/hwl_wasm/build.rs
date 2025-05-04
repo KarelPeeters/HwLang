@@ -5,6 +5,9 @@ use itertools::Itertools;
 use std::ffi::OsStr;
 use std::path::Path;
 
+// TODO move the things used from hwl_language into a separate crate,
+//   so the cargo build does not appear to fail whenever _anything_ in hwl_language fails to build
+
 fn main() {
     // collect stdlib
     // TODO move std to a better location

@@ -53,7 +53,7 @@ pub trait ExpressionContext {
 
     fn report_assignment(
         &mut self,
-        diags: &Diagnostics,
+        ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
     ) -> Result<(), ErrorGuaranteed>;
@@ -139,11 +139,13 @@ impl ExpressionContext for CompileTimeExpressionContext {
 
     fn report_assignment(
         &mut self,
-        diags: &Diagnostics,
+        ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
     ) -> Result<(), ErrorGuaranteed> {
         let _ = vars;
+        let diags = ctx.refs.diags;
+
         Err(diags.report_internal_error(
             target.span,
             "assigning to signal in compile-time context should not be possible",
@@ -211,7 +213,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
 // TODO move report_assignment into BlockKind
 //   probably as part of the "coverage" tracking for combinatorial loops (=don't read before write)
 pub struct IrBuilderExpressionContext<'a> {
-    report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+    report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     block_kind: BlockKind<'a>,
     ir_variables: IrVariables,
     condition_domains: Vec<Spanned<ValueDomain>>,
@@ -248,7 +250,7 @@ pub enum ExtraRegisters<'a> {
 impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
         block_kind: BlockKind<'a>,
-        report_assignment: &'a mut dyn FnMut(Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+        report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
     ) -> Self {
         Self {
             block_kind,
@@ -383,14 +385,14 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
 
     fn report_assignment(
         &mut self,
-        diags: &Diagnostics,
+        ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
     ) -> Result<(), ErrorGuaranteed> {
         // TODO remove this callback indirection,
         //   there's only one user that cares about it (module) and they just want a recording
-        let err1 = (self.report_assignment)(target);
-        let err2 = vars.signal_report_write(diags, target);
+        let err1 = (self.report_assignment)(ctx, target);
+        let err2 = vars.signal_report_write(ctx.refs.diags, target);
 
         err1?;
         err2?;
