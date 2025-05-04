@@ -9,6 +9,7 @@ pub fn print(value: any) {
     __builtin("fn", "print", value);
 }
 
+// TODO add default parameter values
 pub fn assert(cond: bool, msg: str) {
     __builtin("fn", "assert", cond, msg);
 }

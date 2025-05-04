@@ -1,5 +1,5 @@
 import std.types.[bool, int_range, int, uint, natural, uint_bits, Option];
-import std.util.print;
+import std.util.[print, assert];
 
 // TODO get this early return working in hardware
 fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int_range(0..n)) {
@@ -11,8 +11,36 @@ fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int_range(0..n)) {
     return Option.None;
 }
 
-fn index_to_one_hot(n: uint, index: uint(0..n)) -> [n]bool {
-    var result = [0] * n;
-    result[index] = 1;
+fn index_to_one_hot(n: uint, index: int_range(0..n)) -> [n]bool {
+    var result = [false] * n;
+    result[index] = true;
     return result;
+}
+
+// example of in-file test case
+const {
+    // TODO implement enum equality in the language (if tys the same, then compare variant, then content)
+    fn option_eq(T: type, a: Option(T), b: Option(T)) -> bool {
+        match (a) {
+            .None => {
+                match (b) {
+                    .None => { return true; }
+                    .Some(_) => { return false; }
+                }
+            }
+            .Some(val a) => {
+                match (b) {
+                    .None => { return false; }
+                    .Some(val b) => { return a == b; }
+                }
+            }
+        }
+    }
+
+    const N  = 4;
+    type T = int_range(0..N);
+    for (i in 0..N) {
+        assert(option_eq(T, index_of_first_set_bit(N, index_to_one_hot(N, i)), Option(T).Some(i)), "test");
+    }
+    assert(option_eq(T, index_of_first_set_bit(N, [false]*N), Option(T).None), "test");
 }
