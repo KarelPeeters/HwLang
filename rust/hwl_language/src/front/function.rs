@@ -274,7 +274,7 @@ impl<'a> ParamArgMacher<'a> {
                 Some(&arg_index) => {
                     let arg = &self.args.inner[arg_index];
                     assert!(arg.name.is_some());
-                    assert!(!self.arg_used[param_index]);
+                    assert!(!self.arg_used[arg_index]);
                     self.arg_used[arg_index] = true;
                     Ok(arg.value.as_ref())
                 }
