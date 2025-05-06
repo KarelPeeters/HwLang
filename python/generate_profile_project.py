@@ -13,7 +13,7 @@ import std.types.[
 
     for i in range(n):
         result += f"""
-module passthrough_{i} generics(w: int) ports(
+module passthrough_{i}(w: int) ports(
     clk: in clock,
     rst: in async bool,
     sync(clk, rst) {{
@@ -32,7 +32,7 @@ module passthrough_{i} generics(w: int) ports(
 """
         else:
             result += f"""
-    instance passthrough_{i - 1} generics(w=w) ports(
+    instance passthrough_{i - 1}(w=w) ports(
         .clk(clk),
         .rst(rst),
         .select(select),
@@ -63,7 +63,7 @@ pub module top ports(
     }}
 ) body {{
     wire select: sync(clk, rst) bool = true;
-    instance passthrough_{n - 1} generics(w=4) ports(
+    instance passthrough_{n - 1}(w=4) ports(
         .clk(clk),
         .rst(rst),
         .select(select),
