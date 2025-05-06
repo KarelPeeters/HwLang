@@ -4,7 +4,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, Error
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::ElaboratedModuleInfo;
-use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
+use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::Type;
 use crate::front::value::{CompileValue, Value};
@@ -12,7 +12,7 @@ use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
     EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModule,
-    MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
+    ModuleInstanceItem, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
@@ -258,34 +258,6 @@ impl<'s> CompileItemContext<'_, 's> {
         }
     }
 
-    pub fn rebuild_params_scope(
-        &mut self,
-        item: AstRefItem,
-        vars: &mut VariableValues,
-        params: &Option<Vec<(Identifier, CompileValue)>>,
-    ) -> Result<Scope<'s>, ErrorGuaranteed> {
-        let file_scope = self.refs.shared.file_scope(item.file())?;
-        let full_span = self.refs.fixed.parsed[item].info().span_full;
-
-        let mut scope_params = Scope::new_child(full_span, file_scope);
-        if let Some(params) = &params {
-            for (id, value) in params {
-                let var = vars.var_new_immutable_init(
-                    &mut self.variables,
-                    MaybeIdentifier::Identifier(id.clone()),
-                    id.span,
-                    Ok(Value::Compile(value.clone())),
-                );
-                let declared = DeclaredValueSingle::Value {
-                    span: id.span,
-                    value: ScopedEntry::Named(NamedValue::Variable(var)),
-                };
-                scope_params.declare_already_checked(id.string.clone(), declared);
-            }
-        }
-        Ok(scope_params)
-    }
-
     pub fn eval_declaration<V>(
         &mut self,
         scope: &Scope,
@@ -472,6 +444,8 @@ impl<'s> CompileItemContext<'_, 's> {
         params: Option<Vec<(Identifier, CompileValue)>>,
         body: Spanned<&FunctionItemBody>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
         match body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
                 let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
@@ -486,7 +460,9 @@ impl<'s> CompileItemContext<'_, 's> {
                     ElaboratedModule,
                     |item_params| {
                         // elaborate ports
-                        let (connectors, header) = refs.elaborate_module_ports_new(ast_ref, item_params)?;
+                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
+                        let (connectors, header) =
+                            refs.elaborate_module_ports_new(ast_ref, item_params, scope_captured)?;
 
                         // reserve ir module key, will be filled in later during body elaboration
                         let ir_module = { refs.shared.ir_modules.lock().unwrap().push(None) };
@@ -509,12 +485,13 @@ impl<'s> CompileItemContext<'_, 's> {
             }
             &FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
+                let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
 
                 let refs = self.refs;
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
                     item_params,
                     ElaboratedInterface,
-                    |item_params| refs.elaborate_interface_new(ast_ref, item_params),
+                    |_| refs.elaborate_interface_new(ast_ref, scope_captured),
                 )?;
 
                 Ok(CompileValue::Interface(result_id))

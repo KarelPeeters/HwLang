@@ -1,6 +1,7 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
-use crate::front::item::ElaboratedItemParams;
+use crate::front::function::CapturedScope;
+use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection, Spanned};
@@ -69,30 +70,30 @@ impl CompileRefs<'_, '_> {
     pub fn elaborate_interface_new(
         self,
         ast_ref: AstRefInterface,
-        params: ElaboratedItemParams,
+        scope_params: CapturedScope,
     ) -> Result<ElaboratedInterfaceInfo, ErrorGuaranteed> {
-        let ElaboratedItemParams { unique: _, params } = params;
-        let ItemDefInterface {
-            span: _,
+        let &ItemDefInterface {
+            span,
             vis: _,
-            id: interface_id,
+            id: ref interface_id,
             params: _,
-            span_body: _,
-            port_types,
-            views,
+            span_body,
+            ref port_types,
+            ref views,
         } = &self.fixed.parsed[ast_ref];
         let diags = self.diags;
 
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let mut scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
+        let scope_params = scope_params.to_scope(&mut ctx.variables, &mut vars, self, span)?;
 
         // elaborate port types
+        let mut scope_ports = Scope::new_child(span_body, &scope_params);
         let mut port_map = IndexMap::new();
 
         ctx.compile_elaborate_extra_list(
-            &mut scope_params,
+            &mut scope_ports,
             &mut vars,
             port_types,
             &mut |ctx, scope_params, vars, (port_id, ty)| {
@@ -138,7 +139,7 @@ impl CompileRefs<'_, '_> {
             let mut any_view_err = Ok(());
 
             ctx.compile_elaborate_extra_list(
-                &mut scope_params,
+                &mut scope_ports,
                 &mut vars,
                 port_dirs,
                 &mut (|_, _, _, (port_id, dir)| {

@@ -11,6 +11,7 @@ use crate::front::context::{
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::{EvaluatedId, ValueInner};
+use crate::front::function::CapturedScope;
 use crate::front::item::{ElaboratedItemParams, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Polarized, Signal};
@@ -79,6 +80,7 @@ pub struct ElaboratedModuleHeader {
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
     ports_ir: Arena<IrPort, IrPortInfo>,
+    captured_scope_params: CapturedScope,
     scope_ports: ScopeContent,
     variables: ArenaVariables,
     vars: VariableValuesContent,
@@ -97,6 +99,7 @@ impl CompileRefs<'_, '_> {
         self,
         ast_ref: AstRefModule,
         params: ElaboratedItemParams,
+        captured_scope_params: CapturedScope,
     ) -> Result<(ArenaConnectors, ElaboratedModuleHeader), ErrorGuaranteed> {
         let ElaboratedItemParams { unique: _, params } = params;
         let &ast::ItemDefModule {
@@ -111,7 +114,7 @@ impl CompileRefs<'_, '_> {
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
+        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span)?;
 
         // elaborate ports
         // TODO we actually need a full context here?
@@ -125,6 +128,7 @@ impl CompileRefs<'_, '_> {
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
             ports_ir,
+            captured_scope_params,
             scope_ports,
             variables: ctx.variables,
             vars: vars.into_content(),
@@ -132,13 +136,14 @@ impl CompileRefs<'_, '_> {
         Ok((connectors, header))
     }
 
-    pub fn elaborate_module_body_new(&self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
+    pub fn elaborate_module_body_new(self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ElaboratedModuleHeader {
             ast_ref,
             params,
             ports,
             port_interfaces,
             ports_ir,
+            captured_scope_params,
             scope_ports,
             variables,
             vars,
@@ -155,10 +160,10 @@ impl CompileRefs<'_, '_> {
         self.check_should_stop(id.span())?;
 
         // rebuild scopes
-        let mut ctx = CompileItemContext::new_restore(*self, None, ports, port_interfaces, variables);
+        let mut ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces, variables);
         let mut vars = VariableValues::restore_root_from_content(&ctx.variables, vars);
 
-        let scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
+        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span)?;
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
