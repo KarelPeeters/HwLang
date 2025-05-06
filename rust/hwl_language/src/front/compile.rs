@@ -272,7 +272,7 @@ impl StackEntry {
 
 impl<'a, 's> CompileItemContext<'a, 's> {
     pub fn new_empty(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
-        Self::new_restore(refs, origin, Arena::new(), Arena::new())
+        Self::new_restore(refs, origin, Arena::new(), Arena::new(), Arena::new())
     }
 
     pub fn new_restore(
@@ -280,10 +280,11 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         origin: Option<AstRefItem>,
         ports: ArenaPorts,
         port_interfaces: ArenaPortInterfaces,
+        variables: ArenaVariables,
     ) -> Self {
         CompileItemContext {
             refs,
-            variables: Arena::new(),
+            variables,
             ports,
             port_interfaces,
             wires: Arena::new(),

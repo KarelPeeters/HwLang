@@ -2,8 +2,8 @@ use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
 use crate::front::compile::{
-    ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs, Port, PortInfo, PortInterfaceInfo, Register,
-    RegisterInfo, Wire, WireInfo,
+    ArenaPortInterfaces, ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs, Port, PortInfo,
+    PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo,
 };
 use crate::front::context::{
     BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
@@ -16,7 +16,7 @@ use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Polarized, Signal};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined, Value};
-use crate::front::variables::VariableValues;
+use crate::front::variables::{VariableValues, VariableValuesContent};
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrModule,
     IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrPorts, IrRegister,
@@ -80,6 +80,8 @@ pub struct ElaboratedModuleHeader {
     port_interfaces: ArenaPortInterfaces,
     ports_ir: Arena<IrPort, IrPortInfo>,
     scope_ports: ScopeContent,
+    variables: ArenaVariables,
+    vars: VariableValuesContent,
 }
 
 pub struct ElaboratedModuleInfo {
@@ -124,6 +126,8 @@ impl CompileRefs<'_, '_> {
             port_interfaces: ctx.port_interfaces,
             ports_ir,
             scope_ports,
+            variables: ctx.variables,
+            vars: vars.into_content(),
         };
         Ok((connectors, header))
     }
@@ -136,6 +140,8 @@ impl CompileRefs<'_, '_> {
             port_interfaces,
             ports_ir,
             scope_ports,
+            variables,
+            vars,
         } = ports;
         let &ast::ItemDefModule {
             span: def_span,
@@ -149,8 +155,8 @@ impl CompileRefs<'_, '_> {
         self.check_should_stop(id.span())?;
 
         // rebuild scopes
-        let mut ctx = CompileItemContext::new_restore(*self, None, ports, port_interfaces);
-        let mut vars = VariableValues::new_root(&ctx.variables);
+        let mut ctx = CompileItemContext::new_restore(*self, None, ports, port_interfaces, variables);
+        let mut vars = VariableValues::restore_root_from_content(&ctx.variables, vars);
 
         let scope_params = ctx.rebuild_params_scope(ast_ref.item(), &mut vars, &params)?;
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
