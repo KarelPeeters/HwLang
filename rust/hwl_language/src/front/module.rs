@@ -1631,8 +1631,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         }
         for (&wire, drivers) in wire_drivers {
             let wire_info = &self.ctx.wires[wire];
-            let driver_err =
-                self.check_exactly_one_driver("wire", &wire_info.id.string(), wire_info.id.span(), drivers);
+            let driver_err = self.check_exactly_one_driver("wire", wire_info.id.string(), wire_info.id.span(), drivers);
             any_err = any_err.and(driver_err.map(|_| ()));
         }
 
@@ -1642,7 +1641,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             //  (still emit a warning)
             let reg_info = &self.ctx.registers[reg];
             let driver_err =
-                self.check_exactly_one_driver("register", &reg_info.id.string(), reg_info.id.span(), drivers);
+                self.check_exactly_one_driver("register", reg_info.id.string(), reg_info.id.span(), drivers);
 
             let maybe_err = match any_err.and(driver_err) {
                 Err(e) => Err(e),

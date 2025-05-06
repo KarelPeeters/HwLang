@@ -492,7 +492,7 @@ impl CompileItemContext<'_, '_> {
         let (variant_id, variant_content) = &enum_info.variants[variant_index];
         let variant_content = variant_content.as_ref().unwrap();
 
-        let mut matcher = ParamArgMacher::new(self.refs.diags, span_call, &args, false, NamedRule::OnlyPositional)?;
+        let mut matcher = ParamArgMacher::new(self.refs.diags, span_call, args, false, NamedRule::OnlyPositional)?;
         let content = matcher.resolve_param(variant_id, variant_content.as_ref())?;
         matcher.finish()?;
 
@@ -986,7 +986,7 @@ impl FunctionValue {
             FunctionValue::StructNew(elab) => Key::StructNew(*elab),
             FunctionValue::StructNewInfer(ref_struct) => Key::StructNewInfer(*ref_struct),
             FunctionValue::EnumNew(elab, index) => Key::EnumNew(*elab, *index),
-            FunctionValue::EnumNewInfer(ref_struct, variant) => Key::EnumNewInfer(*ref_struct, &variant),
+            FunctionValue::EnumNewInfer(ref_struct, variant) => Key::EnumNewInfer(*ref_struct, variant),
         }
     }
 }

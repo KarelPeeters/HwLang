@@ -222,10 +222,10 @@ impl Type {
                     Type::Any
                 }
             }
-            (Type::Enum(a_item, a_variants), Type::Enum(b_item, b_variants)) => {
+            (&Type::Enum(a_item, ref a_variants), &Type::Enum(b_item, ref b_variants)) => {
                 if a_item == b_item {
                     debug_assert_eq!(a_variants, b_variants);
-                    Type::Enum(a_item.clone(), a_variants.clone())
+                    Type::Enum(a_item, a_variants.clone())
                 } else {
                     Type::Any
                 }
@@ -291,7 +291,7 @@ impl Type {
                 .map(Type::as_hardware_type)
                 .try_collect()
                 .map(|fields| HardwareType::Struct(*item, fields)),
-            Type::Enum(item, variants) => {
+            &Type::Enum(item, ref variants) => {
                 let variants = variants
                     .iter()
                     .map(|v| v.as_ref().map(Type::as_hardware_type).transpose())
@@ -305,7 +305,7 @@ impl Type {
                 let data_size = usize::try_from(data_size).map_err(|_| NonHardwareType)?;
 
                 Ok(HardwareType::Enum(HardwareEnum {
-                    elab: item.clone(),
+                    elab: item,
                     variants,
                     data_size,
                 }))
@@ -571,7 +571,7 @@ impl HardwareType {
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range);
                 let bits: Vec<bool> = (0..repr.size_bits())
-                    .map(|_| bits.next().ok_or_else(|| err_internal()))
+                    .map(|_| bits.next().ok_or_else(err_internal))
                     .try_collect()?;
 
                 let result = repr.value_from_bits(&bits).map_err(|_| err_internal())?;
@@ -622,7 +622,7 @@ impl HardwareType {
 
                 // discard padding
                 for _ in 0..item.padding_for_variant(tag_value) {
-                    bits.next().ok_or_else(|| err_internal())?;
+                    bits.next().ok_or_else(err_internal)?;
                 }
 
                 Ok(CompileValue::Enum(

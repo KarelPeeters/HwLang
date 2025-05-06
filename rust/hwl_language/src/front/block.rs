@@ -647,8 +647,8 @@ impl CompileItemContext<'_, '_> {
 
                             let pattern = match value.inner {
                                 CompileValue::Bool(value) => {
-                                    cover_bool_true |= value == true;
-                                    cover_bool_false |= value == false;
+                                    cover_bool_true |= value;
+                                    cover_bool_false |= !value;
                                     cover_all |= cover_bool_true && cover_bool_false;
                                     PatternEqual::Bool(value)
                                 }
@@ -1090,7 +1090,7 @@ impl CompileItemContext<'_, '_> {
             diags,
             ctx,
             &mut self.large,
-            &mut self.variables,
+            &self.variables,
             vars_outer,
             stmt_span,
             merge_children,

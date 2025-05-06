@@ -188,7 +188,7 @@ impl ElaboratedEnumInfo {
     }
 }
 
-impl<'s> CompileItemContext<'_, 's> {
+impl CompileItemContext<'_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let file_scope = self.refs.shared.file_scope(item.file())?;

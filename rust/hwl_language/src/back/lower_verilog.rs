@@ -325,7 +325,7 @@ fn lower_module_ports(
         swrite!(f, "{start_str}{main_str}{end_str} // {comment_str}")
     }
 
-    if ports.len() > 0 {
+    if !ports.is_empty() {
         swriteln!(f);
     }
 

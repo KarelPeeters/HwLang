@@ -158,7 +158,7 @@ pub enum ElaborationSet {
     AsMuchAsPossible,
 }
 
-impl<'s> CompileRefs<'_, 's> {
+impl CompileRefs<'_, '_> {
     pub fn check_should_stop(&self, span: Span) -> Result<(), ErrorGuaranteed> {
         // TODO report only one error, now all threads report the same error
         //   put an Option<ErrorGuaranteed> somewhere in a mutex?
