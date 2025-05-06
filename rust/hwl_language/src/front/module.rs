@@ -23,7 +23,7 @@ use crate::mid::ir::{
     IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ConditionalItem, ExpressionKind, ForStatement, ModulePortBlock, ModulePortInBlock,
+    self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModulePortBlock, ModulePortInBlock,
     ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection,
     PortSingleKindInner, ResetKind, WireDeclarationKind,
 };
@@ -164,7 +164,7 @@ impl CompileRefs<'_, '_> {
         ctx: &mut CompileItemContext,
         scope_params: &'p Scope<'p>,
         vars: &mut VariableValues,
-        ports: &Spanned<Vec<ConditionalItem<ModulePortItem>>>,
+        ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
     ) -> Result<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>), ErrorGuaranteed> {
         let diags = self.diags;
@@ -333,22 +333,13 @@ impl CompileRefs<'_, '_> {
                             Ok(())
                         };
 
-                    for port_item_in_block in &ports.statements {
-                        ctx.compile_visit_conditional_items(
-                            scope_ports,
-                            vars,
-                            port_item_in_block,
-                            &mut visit_port_item_in_block,
-                        )?;
-                    }
+                    ctx.compile_elaborate_extra_list(scope_ports, vars, ports, &mut visit_port_item_in_block)?;
                 }
             }
             Ok(())
         };
 
-        for port_item in &ports.inner {
-            ctx.compile_visit_conditional_items(&mut scope_ports, vars, port_item, &mut visit_port_item)?;
-        }
+        ctx.compile_elaborate_extra_list(&mut scope_ports, vars, &ports.inner, &mut visit_port_item)?;
 
         assert!(ctx.ports.len() >= connectors.len());
         assert_eq!(ctx.ports.len(), ports_ir.len());

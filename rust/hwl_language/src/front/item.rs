@@ -10,8 +10,8 @@ use crate::front::types::Type;
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
-    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConditionalItem, ConstDeclaration,
-    EnumDeclaration, EnumVariant, Expression, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModule,
+    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
+    EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModule,
     MaybeIdentifier, ModuleInstanceItem, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
@@ -158,8 +158,8 @@ pub enum FunctionItemBody {
     TypeAliasExpr(Box<Expression>),
     Module(UniqueDeclaration, AstRefModule),
     Interface(UniqueDeclaration, AstRefInterface),
-    Struct(UniqueDeclaration, Vec<ConditionalItem<StructField>>),
-    Enum(UniqueDeclaration, Vec<ConditionalItem<EnumVariant>>),
+    Struct(UniqueDeclaration, ExtraList<StructField>),
+    Enum(UniqueDeclaration, ExtraList<EnumVariant>),
 }
 
 #[derive(Debug)]
@@ -560,7 +560,7 @@ impl<'s> CompileItemContext<'_, 's> {
         vars: &mut VariableValues,
         unique: UniqueDeclaration,
         span_body: Span,
-        fields: &[ConditionalItem<StructField>],
+        fields: &ExtraList<StructField>,
     ) -> Result<ElaboratedStructInfo, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -590,9 +590,7 @@ impl<'s> CompileItemContext<'_, 's> {
         };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        for field in fields {
-            self.compile_visit_conditional_items(&mut scope, vars, field, &mut visit_field)?;
-        }
+        self.compile_elaborate_extra_list(&mut scope, vars, fields, &mut visit_field)?;
         any_field_err?;
 
         Ok(ElaboratedStructInfo {
@@ -608,7 +606,7 @@ impl<'s> CompileItemContext<'_, 's> {
         vars: &mut VariableValues,
         unique: UniqueDeclaration,
         span_body: Span,
-        variants: &[ConditionalItem<EnumVariant>],
+        variants: &ExtraList<EnumVariant>,
     ) -> Result<ElaboratedEnumInfo, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -640,9 +638,7 @@ impl<'s> CompileItemContext<'_, 's> {
         };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        for variant in variants {
-            self.compile_visit_conditional_items(&mut scope, vars, variant, &mut visit_variant)?;
-        }
+        self.compile_elaborate_extra_list(&mut scope, vars, variants, &mut visit_variant)?;
         any_variant_err?;
 
         Ok(ElaboratedEnumInfo {

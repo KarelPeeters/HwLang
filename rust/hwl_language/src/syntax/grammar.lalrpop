@@ -118,7 +118,7 @@ Item: Item = {
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
-        <start_ports:@L> "ports" "(" <ports:ModulePorts> ")" <end_ports:@R>
+        <start_ports:@L> "ports" "(" <ports:ExtraList<ModulePortItem>> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
         let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
@@ -135,7 +135,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
-            <port_types:Separated<ConditionalItem<InterfacePortType>,",">>
+            <port_types:ExtraList<InterfacePortType>>
             <views:InterfaceView*>
         "}"
     <end:@R> => {
@@ -148,7 +148,7 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    "interface" <id:MaybeId> "{" <port_dirs:Separated<ConditionalItem<InterfacePortDir>,",">> "}" => {
+    "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" => {
         InterfaceView { id, port_dirs }
     }
 }
@@ -378,13 +378,13 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
-        <start_body:@L> "{" <fields: Separated<ConditionalItem<StructField>,",">> "}"
+        <start_body:@L> "{" <fields: ExtraList<StructField>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end), span_body: loc.span(start_body, end) }),
 
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
-        "{" <variants: Separated<ConditionalItem<EnumVariant>,",">> "}"
+        "{" <variants: ExtraList<EnumVariant>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
 
@@ -411,7 +411,7 @@ VariableMutable: bool = {
 
 // parameters
 Parameters: Parameters = {
-    <start:@L> "(" <items:Separated<ConditionalItem<Parameter>,",">> ")" <end:@R>
+    <start:@L> "(" <items:ExtraList<Parameter>> ")" <end:@R>
         => Parameters { items, span: loc.span(start, end) },
 }
 
@@ -419,12 +419,11 @@ Parameter: Parameter = {
     <id:Id> ":" <ty:Expr> => Parameter { id, ty },
 }
 
-ModulePorts: Vec<ConditionalItem<ModulePortItem>> = Separated<ConditionalItem<ModulePortItem>,",">;
-
 ModulePortItem: ModulePortItem = {
     <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
         => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
-    <start:@L> <domain:Spanned<DomainKind>> <ports:BlockSeparated<ConditionalItem<ModulePortInBlock>,",">> <end:@R>
+    // TODO allow const domain here again, it conflicts with const blocks
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock>> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
@@ -452,9 +451,36 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ConditionalItem<I>: ConditionalItem<I> = {
-    I => ConditionalItem::Inner(<>),
-    IfStatement<BlockSeparated<ConditionalItem<I>,",">> => ConditionalItem::If(<>),
+ExtraList<I>: ExtraList<I> = {
+    <items:Spanned<ExtraListItems<I>>> => {
+        ExtraList { items: items.inner, span: items.span }
+    }
+}
+
+ExtraBlock<I>: ExtraList<I> = {
+    "{" <items:ExtraList<I>> "}" => <>,
+}
+
+ExtraListItems<I>: Vec<ExtraItem<I>> = {
+    <items:ExtraItem<I>*> <last:I?> => {
+        let mut items = items;
+        if let Some(last) = last {
+            items.push(ExtraItem::Inner(last));
+        }
+        items
+    }
+}
+
+ExtraItem<I>: ExtraItem<I> = {
+    // leaf inner
+    <I> "," => ExtraItem::Inner(<>),
+
+    // control flow
+    IfStatement<ExtraBlock<I>> => ExtraItem::If(<>),
+    // TODO add match statement
+
+    // declarations, these already include a trailing ";" if necessary
+    <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
 }
 
 WireDeclarationKind: WireDeclarationKind = {
@@ -481,8 +507,12 @@ PortDirection: PortDirection = {
 
 DomainKind: DomainKind<Box<Expression>> = {
     "const" => DomainKind::Const,
-    "async" => DomainKind::Async,
-    <SyncDomain> => DomainKind::Sync(<>),
+    AsyncOrSyncDomain,
+}
+
+AsyncOrSyncDomain: DomainKind<Box<Expression>> = {
+   "async" => DomainKind::Async,
+   <SyncDomain> => DomainKind::Sync(<>),
 }
 
 SyncDomain: SyncDomain<Box<Expression>> = {
@@ -780,12 +810,12 @@ GroupedList<P>: Spanned<Vec<P>> = {
 }
 
 Separated<T, S>: Vec<T> = {
-    <mut v:(<T> S)*> <e:T?> => match e {
-        None => v,
-        Some(e) => {
+    <v:(<T> S)*> <e:T?> => {
+        let mut v = v;
+        if let Some(e) = e {
             v.push(e);
-            v
         }
+        v
     }
 }
 

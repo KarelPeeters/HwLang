@@ -31,6 +31,7 @@ pub enum Item {
     Interface(ItemDefInterface),
 }
 
+// TODO rename, not all of these are actually declarations
 #[derive(Debug, Clone)]
 pub enum CommonDeclaration<V> {
     Named(CommonDeclarationNamed<V>),
@@ -86,7 +87,7 @@ pub struct StructDeclaration {
     pub span_body: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub fields: Vec<ConditionalItem<StructField>>,
+    pub fields: ExtraList<StructField>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +103,7 @@ pub struct EnumDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub variants: Vec<ConditionalItem<EnumVariant>>,
+    pub variants: ExtraList<EnumVariant>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +130,7 @@ pub struct ItemDefModule {
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub ports: Spanned<Vec<ConditionalItem<ModulePortItem>>>,
+    pub ports: Spanned<ExtraList<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
 }
 
@@ -140,20 +141,20 @@ pub struct ItemDefInterface {
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub span_body: Span,
-    pub port_types: Vec<ConditionalItem<(Identifier, Box<Expression>)>>,
+    pub port_types: ExtraList<(Identifier, Box<Expression>)>,
     pub views: Vec<InterfaceView>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceView {
     pub id: MaybeIdentifier,
-    pub port_dirs: Vec<ConditionalItem<(Identifier, Spanned<PortDirection>)>>,
+    pub port_dirs: ExtraList<(Identifier, Spanned<PortDirection>)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Parameters {
     pub span: Span,
-    pub items: Vec<ConditionalItem<Parameter>>,
+    pub items: ExtraList<Parameter>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,10 +165,17 @@ pub struct Parameter {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConditionalItem<I> {
+pub struct ExtraList<I> {
+    pub span: Span,
+    pub items: Vec<ExtraItem<I>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExtraItem<I> {
     Inner(I),
-    If(IfStatement<Block<ConditionalItem<I>>>),
-    // TODO add `match` here too once that exists
+    If(IfStatement<ExtraList<I>>),
+    // TODO add `match`
+    Declaration(CommonDeclaration<()>),
 }
 
 #[derive(Debug, Clone)]
@@ -187,7 +195,7 @@ pub struct ModulePortSingle {
 pub struct ModulePortBlock {
     pub span: Span,
     pub domain: Spanned<DomainKind<Box<Expression>>>,
-    pub ports: Block<ConditionalItem<ModulePortInBlock>>,
+    pub ports: ExtraList<ModulePortInBlock>,
 }
 
 #[derive(Debug, Clone)]

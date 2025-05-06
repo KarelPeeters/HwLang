@@ -552,60 +552,59 @@ impl CompileItemContext<'_, '_> {
         args: Args<Option<Identifier>, Spanned<Value>>,
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
-        self.refs.check_should_stop(function.decl_span)?;
+        let UserFunctionValue {
+            decl_span,
+            scope_captured,
+            params,
+            body,
+        } = function;
+        let decl_span = *decl_span;
+
+        self.refs.check_should_stop(decl_span)?;
 
         // recreate captured scope
-        let span_scope = function.params.span.join(function.body.span);
-        let scope_captured = function
-            .scope_captured
-            .to_scope(&mut self.variables, vars, self.refs, span_scope)?;
+        let span_scope = params.span.join(body.span);
+        let scope_captured = scope_captured.to_scope(&mut self.variables, vars, self.refs, span_scope)?;
 
         // map params into scope
         let mut scope = Scope::new_child(span_scope, &scope_captured);
         let mut param_values = vec![];
 
-        let compile = function.body.inner.params_must_be_compile();
-        let mut matcher = ParamArgMacher::new(
-            diags,
-            function.params.span,
-            &args,
-            compile,
-            NamedRule::PositionalAndNamed,
-        )?;
-        for param_item in &function.params.items {
-            self.compile_visit_conditional_items(&mut scope, vars, param_item, &mut |ctx, scope, vars, param| {
-                let Parameter { id, ty } = param;
+        let compile = body.inner.params_must_be_compile();
+        let mut matcher = ParamArgMacher::new(diags, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
 
-                let ty = ctx.eval_expression_as_ty(scope, vars, ty)?;
-                let value = matcher.resolve_param(id, ty.as_ref());
+        self.compile_elaborate_extra_list(&mut scope, vars, &params.items, &mut |ctx, scope, vars, param| {
+            let Parameter { id, ty } = param;
 
-                // record value into vec
-                if let Ok(value) = value {
-                    param_values.push((param.id.clone(), value.inner.clone()));
-                }
+            let ty = ctx.eval_expression_as_ty(scope, vars, ty)?;
+            let value = matcher.resolve_param(id, ty.as_ref());
 
-                // declare param in scope
-                let param_var = vars.var_new_immutable_init(
-                    &mut ctx.variables,
-                    MaybeIdentifier::Identifier(param.id.clone()),
-                    param.id.span,
-                    value.map(|v| v.inner.clone()),
-                );
-                let entry = DeclaredValueSingle::Value {
-                    span: param.id.span,
-                    value: ScopedEntry::Named(NamedValue::Variable(param_var)),
-                };
-                scope.declare_already_checked(param.id.string.clone(), entry);
+            // record value into vec
+            if let Ok(value) = value {
+                param_values.push((param.id.clone(), value.inner.clone()));
+            }
 
-                Ok(())
-            })?;
-        }
+            // declare param in scope
+            let param_var = vars.var_new_immutable_init(
+                &mut ctx.variables,
+                MaybeIdentifier::Identifier(param.id.clone()),
+                param.id.span,
+                value.map(|v| v.inner.clone()),
+            );
+            let entry = DeclaredValueSingle::Value {
+                span: param.id.span,
+                value: ScopedEntry::Named(NamedValue::Variable(param_var)),
+            };
+            scope.declare_already_checked(param.id.string.clone(), entry);
+
+            Ok(())
+        })?;
         matcher.finish()?;
 
         // run the body
-        let entry = StackEntry::FunctionRun(function.decl_span);
+        let entry = StackEntry::FunctionRun(decl_span);
         self.recurse(entry, |s| {
-            match &function.body.inner {
+            match &body.inner {
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                     // evaluate return type
                     let ret_ty = ret_ty
@@ -629,7 +628,7 @@ impl CompileItemContext<'_, '_> {
                         .map(|(id, v)| (id, v.unwrap_compile()))
                         .collect_vec();
 
-                    let item_body = Spanned::new(function.body.span, item_body);
+                    let item_body = Spanned::new(body.span, item_body);
                     let value = s.eval_item_function_body(&scope, vars, Some(param_values), item_body)?;
                     Ok((None, Value::Compile(value)))
                 }

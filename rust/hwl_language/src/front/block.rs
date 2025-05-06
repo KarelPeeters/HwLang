@@ -14,9 +14,9 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::front::variables::{merge_variable_branches, VariableValues};
 use crate::mid::ir::{IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConditionalItem, ConstBlock, ExpressionKind, ForStatement, Identifier,
-    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, Spanned,
-    VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ExtraItem, ExtraList, ForStatement,
+    Identifier, IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
+    ReturnStatement, Spanned, VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -1229,24 +1229,28 @@ impl CompileItemContext<'_, '_> {
         Ok(BlockEnd::Normal)
     }
 
-    pub fn compile_visit_conditional_items<'a, I>(
+    pub fn compile_elaborate_extra_list<'a, I>(
         &mut self,
         scope: &mut Scope,
         vars: &mut VariableValues,
-        c: &'a ConditionalItem<I>,
+        list: &'a ExtraList<I>,
         f: &mut impl FnMut(&mut Self, &mut Scope, &mut VariableValues, &'a I) -> Result<(), ErrorGuaranteed>,
     ) -> Result<(), ErrorGuaranteed> {
-        match c {
-            ConditionalItem::Inner(inner) => f(self, scope, vars, inner),
-            ConditionalItem::If(if_stmt) => {
-                if let Some(block) = self.compile_if_statement_choose_block(scope, vars, if_stmt)? {
-                    for item in &block.statements {
-                        self.compile_visit_conditional_items(scope, vars, item, f)?;
+        let ExtraList { span: _, items } = list;
+        for item in items {
+            match item {
+                ExtraItem::Inner(inner) => f(self, scope, vars, inner)?,
+                ExtraItem::If(if_stmt) => {
+                    if let Some(list_inner) = self.compile_if_statement_choose_block(scope, vars, if_stmt)? {
+                        self.compile_elaborate_extra_list(scope, vars, list_inner, f)?;
                     }
                 }
-                Ok(())
+                ExtraItem::Declaration(decl) => {
+                    self.eval_and_declare_declaration(scope, vars, decl);
+                }
             }
         }
+        Ok(())
     }
 
     pub fn compile_if_statement_choose_block<'a, B>(
