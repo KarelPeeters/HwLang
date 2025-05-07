@@ -40,8 +40,9 @@ use crate::util::iter::IterExt;
 use crate::util::{result_pair, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
+use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, zip_eq, Either};
+use itertools::{enumerate, Either};
 use std::fmt::Debug;
 use std::hash::Hash;
 // TODO split this file into header/body
@@ -1109,54 +1110,77 @@ impl BodyElaborationContext<'_, '_, '_> {
             module_ir,
             ref connectors,
         } = self.ctx.refs.shared.elaboration_arenas.module_info(elaborated_module)?;
-
         let module_ast = &refs.fixed.parsed[ast_ref];
 
-        // eval and check port connections
-        // TODO use function parameter matching for ports too?
-        //   we need at least reordering and proper error messages
-        if connectors.len() != port_connections.inner.len() {
-            let diag = Diagnostic::new("mismatched port connections for module instance")
-                .add_error(
-                    port_connections.span,
-                    format!("ports connected here, got {} connections", port_connections.inner.len()),
-                )
-                .add_info(
-                    module_ast.ports.span,
-                    format!("module ports declared here, expected {} connections", connectors.len()),
-                )
-                .finish();
-            return Err(diags.report(diag));
+        // check that connections unique
+        let mut id_to_connection_and_used: IndexMap<&String, (&Spanned<PortConnection>, bool)> = IndexMap::new();
+        for connection in &port_connections.inner {
+            match id_to_connection_and_used.entry(&connection.inner.id.string) {
+                Entry::Vacant(entry) => {
+                    entry.insert((connection, false));
+                }
+                Entry::Occupied(entry) => {
+                    let (prev_connection, _) = entry.get();
+                    let diag = Diagnostic::new("duplicate connection")
+                        .add_info(prev_connection.span, "previous connection here")
+                        .add_error(connection.span, "connected again here")
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+            }
         }
 
-        let mut any_port_err = Ok(());
-
+        // match connectors to connections
+        // TODO it's a bit weird that these are evaluated in declaration instead of connection order,
+        //   but that's much more convenient for domain resolution
         let mut single_to_signal = IndexMap::new();
         let mut ir_connections = vec![];
 
-        for (connector, connection) in zip_eq(connectors.keys(), &port_connections.inner) {
-            match self.elaborate_instance_port_connection(
-                scope,
-                vars,
-                stmt_index,
-                connectors,
-                &single_to_signal,
-                connector,
-                connection,
-            ) {
-                Ok(connections) => {
+        for (connector, connector_info) in connectors {
+            match id_to_connection_and_used.get_mut(&connector_info.id.string) {
+                Some((connection, connection_used)) => {
+                    if *connection_used {
+                        // this should have already been caught during module header elaboration
+                        return Err(diags.report_internal_error(connection.span, "connection used twice"));
+                    }
+                    *connection_used = true;
+
+                    let connections = self.elaborate_instance_port_connection(
+                        scope,
+                        vars,
+                        stmt_index,
+                        connectors,
+                        &single_to_signal,
+                        connector,
+                        connection,
+                    )?;
+
                     for (single, signal, ir_connection) in connections {
                         single_to_signal.insert_first(single, signal);
                         ir_connections.push(ir_connection);
                     }
                 }
-                Err(e) => {
-                    any_port_err = Err(e);
+                None => {
+                    let diag = Diagnostic::new("missing connection for port")
+                        .add_info(connector_info.id.span, "port declared here")
+                        .add_error(port_connections.span, "connections here")
+                        .finish();
+                    return Err(diags.report(diag));
                 }
             }
         }
 
-        any_port_err?;
+        let any_unused = id_to_connection_and_used.values().any(|&(_, u)| !u);
+        if any_unused {
+            let mut diag = Diagnostic::new("connections that don't match any port");
+            for (connection, used) in id_to_connection_and_used.values() {
+                if !*used {
+                    diag = diag.add_error(connection.span, "non-matching connection");
+                }
+            }
+            let diag = diag.add_info(module_ast.ports.span, "ports declared here").finish();
+            return Err(diags.report(diag));
+        }
 
         Ok(IrModuleInstance {
             name: name.as_ref().map(|name| name.string.clone()),
