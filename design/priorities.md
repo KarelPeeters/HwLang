@@ -6,6 +6,11 @@
 * add something to cast domains
 * allow type inference for vars/vals in more cases, eg. array literals should just work
 * allow hardware return/break/continue
+* pass expected type to struct constructors
+* add functions to structs/enums/interfaces
+  * static (without self param), used for constructors and to replicate generic packages
+  * non-static (with self param)
+  * with `inout`/`ref` self param, to mutate it in-place
 
 * external modules
 * some way to configure constants, used for ram models vs cells

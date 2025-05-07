@@ -14,3 +14,5 @@ valgrind --tool=cachegrind --cachegrind-out-file=cachegrind.out \
 
 valgrind --tool=callgrind --callgrind-out-file=callgrind.out \
   $COMMAND
+
+samply record ./target/release/hwl_bin ../python/profile_test/ -j1
