@@ -614,6 +614,26 @@ impl CompileItemContext<'_, '_> {
                 result_value
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
+            ExpressionKind::UnsafeValueWithDomain(value, domain) => {
+                let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
+                let domain = self.eval_domain(scope, domain);
+
+                let value = value?;
+                let domain = domain?;
+
+                match value.inner {
+                    // casting compile values is useless but not harmful
+                    Value::Compile(value) => Value::Compile(value),
+                    Value::Hardware(value) => {
+                        // TODO warn if this call is redundant, eg. if the domain would already be safely assignable
+                        Value::Hardware(HardwareValue {
+                            ty: value.ty,
+                            domain: ValueDomain::from_domain_kind(domain.inner),
+                            expr: value.expr,
+                        })
+                    }
+                }
+            }
             ExpressionKind::RegisterDelay(reg_delay) => {
                 let &RegisterDelay {
                     span_keyword,
@@ -1251,11 +1271,22 @@ impl CompileItemContext<'_, '_> {
                 ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {
                     return Err(diags.report_todo(expr_span, "runtime assert"));
                 }
-                ("fn", "unsafe_cast_clock", [Value::Hardware(v)]) => match v.ty {
+                ("fn", "unsafe_bool_to_clock", [Value::Hardware(v)]) => match v.ty {
                     HardwareType::Bool => {
                         return Ok(Value::Hardware(HardwareValue {
                             ty: HardwareType::Clock,
                             domain: ValueDomain::Clock,
+                            expr: v.expr.clone(),
+                        }));
+                    }
+                    _ => {}
+                },
+                ("fn", "unsafe_clock_to_bool", [Value::Hardware(v)]) => match v.ty {
+                    HardwareType::Clock => {
+                        // TODO what domain should this return?
+                        return Ok(Value::Hardware(HardwareValue {
+                            ty: HardwareType::Bool,
+                            domain: ValueDomain::Async,
                             expr: v.expr.clone(),
                         }));
                     }

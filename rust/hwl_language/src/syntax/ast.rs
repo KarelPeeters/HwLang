@@ -609,6 +609,7 @@ pub enum ExpressionKind {
     // Calls
     Call(Box<Expression>, Args),
     Builtin(Spanned<Vec<Expression>>),
+    UnsafeValueWithDomain(Box<Expression>, Spanned<DomainKind<Box<Expression>>>),
     RegisterDelay(RegisterDelay),
 }
 

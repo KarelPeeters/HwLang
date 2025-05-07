@@ -53,6 +53,7 @@ extern {
         "while" => TokenType::While,
         "pub" => TokenType::Public,
         "__builtin" => TokenType::Builtin,
+        "unsafe_value_with_domain" => TokenType::UnsafeValueWithDomain,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -688,11 +689,17 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
 }
 
 ExprLevelCall<allow_struct>: ExpressionKind = {
-    "__builtin" "(" <args:Spanned<Separated<Expr,",">>> ")"
-        => ExpressionKind::Builtin(args),
-    // TODO allow "if" here?
+    // normal call
     <target:BoxSpanned<ExprLevelDot<allow_struct>>> "(" <args:Args> ")"
         => ExpressionKind::Call(target, args),
+
+    // builtins
+    "__builtin" "(" <args:Spanned<Separated<Expr,",">>> ")"
+        => ExpressionKind::Builtin(args),
+    "unsafe_value_with_domain" "(" <value:BoxExpr> "," <domain:Spanned<DomainKind>> ")"
+        => ExpressionKind::UnsafeValueWithDomain(value, domain),
+
+    // reg expression
     <span_keyword:Span<"reg">> "(" <value:BoxExpr> "," <init:BoxExpr> ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 

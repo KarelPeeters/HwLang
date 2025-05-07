@@ -43,17 +43,9 @@ macro_rules! pattern_whitespace {
     };
 }
 
-macro_rules! pattern_id_start {
-    () => {
-        '_' | 'a'..='z' | 'A'..='Z'
-    };
-}
+macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
 
-macro_rules! pattern_id_continue {
-    () => {
-        '_' | 'a'..='z' | 'A'..='Z' | '0'..='9'
-    };
-}
+macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' }; }
 
 macro_rules! pattern_decimal_digit {
     () => {
@@ -464,8 +456,12 @@ declare_tokens! {
         For("for", TC::Keyword),
         While("while", TC::Keyword),
         Public("pub", TC::Keyword),
-        Builtin("__builtin", TC::Keyword),
         As("as", TC::Keyword),
+
+        // builtins
+        // TODO separate category?
+        Builtin("__builtin", TC::Keyword),
+        UnsafeValueWithDomain("unsafe_value_with_domain", TC::Keyword),
 
         // misc symbols
         Semi(";", TC::Symbol),
