@@ -19,7 +19,7 @@ export function activate(context: ExtensionContext) {
 	// Otherwise the run options are used
 
 	// TODO get this from a proper location
-    const binary_path = "C:/Documents/Programming/HDL/hwlang/rust/target/debug/hwl_lsp_server.exe";
+	const binary_path = "/home/karel/Documents/hwlang/rust/target/debug/hwl_lsp_server";
 
 	const serverOptions: ServerOptions = {
 		// run: { module: serverModule, transport: TransportKind.ipc },
