@@ -136,6 +136,7 @@ enum NamedRule {
     PositionalAndNamed,
 }
 
+// TODO make generic over the "value", this should be reused for instance connections in the future
 impl<'a> ParamArgMacher<'a> {
     fn new(
         diags: &'a Diagnostics,
@@ -231,7 +232,8 @@ impl<'a> ParamArgMacher<'a> {
         &mut self,
         id: &'a Identifier,
         ty: Spanned<&Type>,
-    ) -> Result<Spanned<&'a Value>, ErrorGuaranteed> {
+        default: Option<Spanned<Value>>,
+    ) -> Result<Spanned<Value>, ErrorGuaranteed> {
         let diags = self.diags;
 
         let param_index = self.next_param_index;
@@ -267,25 +269,31 @@ impl<'a> ParamArgMacher<'a> {
             }
 
             self.arg_used[arg_index] = true;
-            Ok(arg.value.as_ref())
+            Ok(arg.value.clone())
         } else {
-            // named match
             match self.arg_name_to_index.get(id.string.as_str()) {
                 Some(&arg_index) => {
+                    // named match
                     let arg = &self.args.inner[arg_index];
                     assert!(arg.name.is_some());
                     assert!(!self.arg_used[arg_index]);
                     self.arg_used[arg_index] = true;
-                    Ok(arg.value.as_ref())
+                    Ok(arg.value.clone())
                 }
                 None => {
-                    let diag = Diagnostic::new(format!("missing argument for parameter `{}`", id.string))
-                        .add_info(id.span, "parameter defined here")
-                        .add_error(self.args.span, "missing argument here")
-                        .finish();
-                    let e = diags.report(diag);
-                    self.any_err = Err(e);
-                    Err(e)
+                    if let Some(default) = default {
+                        // default value
+                        Ok(default)
+                    } else {
+                        // nothing matched, report error
+                        let diag = Diagnostic::new(format!("missing argument for parameter `{}`", id.string))
+                            .add_info(id.span, "parameter defined without default value here")
+                            .add_error(self.args.span, "missing argument here")
+                            .finish();
+                        let e = diags.report(diag);
+                        self.any_err = Err(e);
+                        Err(e)
+                    }
                 }
             }
         };
@@ -293,13 +301,14 @@ impl<'a> ParamArgMacher<'a> {
         // check type match
         let value = value.and_then(|value| {
             let reason = TypeContainsReason::Parameter { param_ty: ty.span };
-            check_type_contains_value(diags, reason, ty.inner, value, false, false)?;
+            check_type_contains_value(diags, reason, ty.inner, value.as_ref(), false, false)?;
             Ok(value)
         });
 
         if let Err(e) = value {
             self.any_err = Err(e);
         }
+
         value
     }
 
@@ -421,7 +430,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut field_values = vec![];
         for (field_id, field_ty) in fields.values() {
-            if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref()) {
+            if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
                 field_values.push(v);
             }
         }
@@ -493,7 +502,7 @@ impl CompileItemContext<'_, '_> {
         let variant_content = variant_content.as_ref().unwrap();
 
         let mut matcher = ParamArgMacher::new(self.refs.diags, span_call, args, false, NamedRule::OnlyPositional)?;
-        let content = matcher.resolve_param(variant_id, variant_content.as_ref())?;
+        let content = matcher.resolve_param(variant_id, variant_content.as_ref(), None)?;
         matcher.finish()?;
 
         let variant_tys = enum_info
@@ -574,13 +583,26 @@ impl CompileItemContext<'_, '_> {
         let mut matcher = ParamArgMacher::new(diags, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
 
         self.compile_elaborate_extra_list(&mut scope, vars, &params.items, &mut |ctx, scope, vars, param| {
-            let Parameter { id, ty } = param;
+            let Parameter {
+                id,
+                ty,
+                default: default_value,
+            } = param;
 
             let ty = ctx.eval_expression_as_ty(scope, vars, ty)?;
-            let value = matcher.resolve_param(id, ty.as_ref());
+            let default = default_value
+                .as_ref()
+                .map(|default| {
+                    let value =
+                        ctx.eval_expression_as_compile(scope, vars, &ty.inner, default, "parameter default value")?;
+                    Ok(value.map_inner(Value::Compile))
+                })
+                .transpose()?;
+
+            let value = matcher.resolve_param(id, ty.as_ref(), default);
 
             // record value into vec
-            if let Ok(value) = value {
+            if let Ok(value) = &value {
                 param_values.push((param.id.clone(), value.inner.clone()));
             }
 
@@ -589,7 +611,7 @@ impl CompileItemContext<'_, '_> {
                 &mut ctx.variables,
                 MaybeIdentifier::Identifier(param.id.clone()),
                 param.id.span,
-                value.map(|v| v.inner.clone()),
+                value.map(|v| v.inner),
             );
             let entry = DeclaredValueSingle::Value {
                 span: param.id.span,

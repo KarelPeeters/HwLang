@@ -416,7 +416,7 @@ Parameters: Parameters = {
 }
 
 Parameter: Parameter = {
-    <id:Id> ":" <ty:Expr> => Parameter { id, ty },
+    <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> => Parameter { id, ty, default },
 }
 
 ModulePortItem: ModulePortItem = {

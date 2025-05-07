@@ -10,7 +10,7 @@ pub fn print(value: any) {
 }
 
 // TODO add default parameter values
-pub fn assert(cond: bool, msg: str) {
+pub fn assert(cond: bool, msg: str = "assertion failed") {
     __builtin("fn", "assert", cond, msg);
 }
 

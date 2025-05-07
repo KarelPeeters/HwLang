@@ -161,7 +161,7 @@ pub struct Parameters {
 pub struct Parameter {
     pub id: Identifier,
     pub ty: Expression,
-    // TODO add default value
+    pub default: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
