@@ -119,7 +119,7 @@ Item: Item = {
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
-        <start_ports:@L> "ports" "(" <ports:ExtraList<ModulePortItem>> ")" <end_ports:@R>
+        <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
         let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
@@ -420,11 +420,14 @@ Parameter: Parameter = {
     <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> => Parameter { id, ty, default },
 }
 
-ModulePortItem: ModulePortItem = {
+ModulePortItemPort: ModulePortItem = {
     <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
         => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
+}
+
+ModulePortItemBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
-    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock>> <end:@R>
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock, (), "false">> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
 }
 
@@ -452,18 +455,21 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ExtraList<I>: ExtraList<I> = {
-    <items:Spanned<ExtraListItems<I>>> => {
+ExtraList<I> = ExtraListImpl<I, (), "false">;
+ExtraListE<I, E> = ExtraListImpl<I, E, "true">;
+
+ExtraListImpl<I, E, has_e>: ExtraList<I> = {
+    <items:Spanned<ExtraListItems<I, E, has_e>>> => {
         ExtraList { items: items.inner, span: items.span }
     }
 }
 
-ExtraBlock<I>: ExtraList<I> = {
-    "{" <items:ExtraList<I>> "}" => <>,
+ExtraBlock<I, E, has_e>: ExtraList<I> = {
+    "{" <items:ExtraListImpl<I, E, has_e>> "}" => <>,
 }
 
-ExtraListItems<I>: Vec<ExtraItem<I>> = {
-    <items:ExtraItem<I>*> <last:I?> => {
+ExtraListItems<I, E, has_e>: Vec<ExtraItem<I>> = {
+    <items:ExtraItem<I, E, has_e>*> <last:I?> => {
         let mut items = items;
         if let Some(last) = last {
             items.push(ExtraItem::Inner(last));
@@ -472,12 +478,13 @@ ExtraListItems<I>: Vec<ExtraItem<I>> = {
     }
 }
 
-ExtraItem<I>: ExtraItem<I> = {
+ExtraItem<I, E, has_e>: ExtraItem<I> = {
     // leaf inner
     <I> "," => ExtraItem::Inner(<>),
+    <E> if has_e == "true" => ExtraItem::Inner(<>),
 
     // control flow
-    IfStatement<ExtraBlock<I>> => ExtraItem::If(<>),
+    IfStatement<ExtraBlock<I, E, has_e>> => ExtraItem::If(<>),
     // TODO add match statement
 
     // declarations, these already include a trailing ";" if necessary
