@@ -11,7 +11,7 @@ let watcher: fs.FSWatcher;
 
 function register_watcher(context: ExtensionContext) {
     // Watch the parent folder instead of the binary itself so delete+move is detected too.
-    watcher = fs.watch(path.dirname(binary_path), (eventType, filename) => {
+    watcher = fs.watch(path.dirname(binary_path), (eventType, _filename) => {
         if (eventType === 'change' && client) {
             client.stop().then(() => client.start());
         }
