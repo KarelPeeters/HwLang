@@ -1,14 +1,14 @@
 {
-	"name": "lsp-sample",
-	"description": "A language server example",
-	"author": "Microsoft Corporation",
+	"name": "hwl-lsp-client",
+	"description": "The VSCode LSP client for HWLang",
+	"author": "Karep Peeters",
 	"license": "MIT",
-	"version": "1.0.0",
+	"version": "0.0.1",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/Microsoft/vscode-extension-samples"
+		"url": "https://github.com/KarelPeeters/HwLang"
 	},
-	"publisher": "vscode-samples",
+	"publisher": "KarelPeeters",
 	"categories": [],
 	"keywords": [
 		"multi-root ready"
@@ -70,5 +70,8 @@
 		"eslint": "^8.57.0",
 		"mocha": "^10.3.0",
 		"typescript": "^5.3.3"
+	},
+	"dependencies": {
+		"@vscode/vsce": "^3.3.2"
 	}
 }
