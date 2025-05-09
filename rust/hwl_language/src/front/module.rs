@@ -186,6 +186,7 @@ impl CompileRefs<'_, '_> {
         let mut connectors: ArenaConnectors = Arena::new();
         let mut port_to_single: IndexMap<Port, ConnectorSingle> = IndexMap::new();
         let mut ports_ir = Arena::new();
+        let mut used_ir_names = IndexMap::new();
 
         let mut next_single = 0;
         let mut next_single = move || {
@@ -221,9 +222,10 @@ impl CompileRefs<'_, '_> {
                                 ),
                             };
 
-                            let entry = result_pair(domain, ty).map(|(domain, ty)| {
+                            let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
                                 push_connector_single(
                                     ctx,
+                                    &mut used_ir_names,
                                     &mut ports_ir,
                                     &mut connectors,
                                     &mut port_to_single,
@@ -262,6 +264,7 @@ impl CompileRefs<'_, '_> {
                             let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
                                 push_connector_interface(
                                     ctx,
+                                    &mut used_ir_names,
                                     &mut ports_ir,
                                     &mut connectors,
                                     &mut port_to_single,
@@ -291,9 +294,10 @@ impl CompileRefs<'_, '_> {
                                 ModulePortInBlockKind::Port { direction, ty } => {
                                     let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
 
-                                    let entry = result_pair(domain, ty).map(|(domain, ty)| {
+                                    let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
                                         push_connector_single(
                                             ctx,
+                                            &mut used_ir_names,
                                             &mut ports_ir,
                                             &mut connectors,
                                             &mut port_to_single,
@@ -330,6 +334,7 @@ impl CompileRefs<'_, '_> {
                                     let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
                                         push_connector_interface(
                                             ctx,
+                                            &mut used_ir_names,
                                             &mut ports_ir,
                                             &mut connectors,
                                             &mut port_to_single,
@@ -453,6 +458,7 @@ impl CompileRefs<'_, '_> {
 
 fn push_connector_single(
     ctx: &mut CompileItemContext,
+    used_ir_names: &mut IndexMap<String, Span>,
     ports_ir: &mut IrPorts,
     connectors: &mut ArenaConnectors,
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
@@ -461,7 +467,10 @@ fn push_connector_single(
     direction: Spanned<PortDirection>,
     domain: Spanned<PortDomain<Port>>,
     ty: Spanned<HardwareType>,
-) -> ScopedEntry {
+) -> Result<ScopedEntry, ErrorGuaranteed> {
+    let diags = ctx.refs.diags;
+    claim_ir_name(diags, used_ir_names, &id.string, id.span)?;
+
     let ir_port = ports_ir.push(IrPortInfo {
         name: id.string.clone(),
         direction: direction.inner,
@@ -493,11 +502,13 @@ fn push_connector_single(
     });
     port_to_single.insert_first(port, single);
 
-    ScopedEntry::Named(NamedValue::Port(port))
+    let entry = ScopedEntry::Named(NamedValue::Port(port));
+    Ok(entry)
 }
 
 fn push_connector_interface(
     ctx: &mut CompileItemContext,
+    used_ir_names: &mut IndexMap<String, Span>,
     ports_ir: &mut IrPorts,
     connectors: &mut ArenaConnectors,
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
@@ -506,6 +517,7 @@ fn push_connector_interface(
     domain: Spanned<DomainKind<Polarized<Port>>>,
     view: ElaboratedInterfaceView,
 ) -> Result<ScopedEntry, ErrorGuaranteed> {
+    let diags = ctx.refs.diags;
     let ElaboratedInterfaceView {
         interface,
         view: view_name,
@@ -519,13 +531,15 @@ fn push_connector_interface(
     let mut singles = vec![];
 
     for (port_index, (_, port)) in enumerate(&interface.ports) {
-        let name = format!("{}_{}", id.string, port.id.string);
+        let name = format!("{}.{}", id.string, port.id.string);
+        let ir_name = format!("{}_{}", id.string, port.id.string);
+        claim_ir_name(diags, used_ir_names, &ir_name, id.span)?;
 
         let direction = port_dirs[port_index].1;
         let ty = port.ty.as_ref_ok()?;
 
         let ir_port = ports_ir.push(IrPortInfo {
-            name: name.clone(),
+            name: ir_name,
             direction: direction.inner,
             ty: ty.inner.as_ir(),
             debug_span: id.span,
@@ -565,6 +579,29 @@ fn push_connector_interface(
     });
 
     Ok(ScopedEntry::Named(NamedValue::PortInterface(port_interface)))
+}
+
+fn claim_ir_name(
+    diags: &Diagnostics,
+    used_ir_names: &mut IndexMap<String, Span>,
+    name: &str,
+    span: Span,
+) -> Result<(), ErrorGuaranteed> {
+    match used_ir_names.entry(name.to_owned()) {
+        Entry::Vacant(entry) => {
+            entry.insert(span);
+            Ok(())
+        }
+        Entry::Occupied(entry) => {
+            let diag = Diagnostic::new(format!(
+                "port with name `{name}` conflicts with earlier port with the same name"
+            ))
+            .add_error(span, "new port defined here")
+            .add_info(*entry.get(), "previous port defined here")
+            .finish();
+            Err(diags.report(diag))
+        }
+    }
 }
 
 struct BodyElaborationContext<'c, 'a, 's> {
@@ -1161,7 +1198,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     }
                 }
                 None => {
-                    let diag = Diagnostic::new("missing connection for port")
+                    let diag = Diagnostic::new(format!("missing connection for port {}", connector_info.id.string))
                         .add_info(connector_info.id.span, "port declared here")
                         .add_error(port_connections.span, "connections here")
                         .finish();
