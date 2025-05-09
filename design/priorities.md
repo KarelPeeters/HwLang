@@ -1,5 +1,7 @@
 # Frontend features
 
+* add "elaboration trace" to all error messages, to know where the error actually happened
+
 * range fixes (ensure always increasing, never crashing)
   * also allow non-contiguous ranges, switch to non-inclusive ranges, add int range tracking to match
   * implication fixes (if empty drop the block instead of stopping)

@@ -9,7 +9,8 @@ pub fn print(value: any) {
     __builtin("fn", "print", value);
 }
 
-// TODO add default parameter values
+// TODO report the call location, not the body of this function
+// TODO include elaboration stack trace in all errors
 pub fn assert(cond: bool, msg: str = "assertion failed") {
     __builtin("fn", "assert", cond, msg);
 }

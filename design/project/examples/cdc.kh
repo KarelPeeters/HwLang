@@ -1,0 +1,111 @@
+// Implementations based on:
+// * https://zipcpu.com/blog/2017/10/20/cdc.html
+// * https://zipcpu.com/blog/2020/10/03/tfrvalue.html
+
+
+// TODO try to decrease LSP token highlighting latency
+// TODO write/generate textmate grammar, at least for tokenization
+// TODO get colors to kind of match builtin themes, eg. python/vhdl
+//   in particular not every identifier should be highlighted,
+//   and maybe we want a separate color for builtin types
+
+import std.types.[bool, int, uint, natural, int_range, Option];
+import std.util.assert;
+
+module cdc_sync_ff(N: int_range(2..) = 2) ports(
+    in_data: in async bool,
+    out_clk: in clock,
+    out_rst: in async bool,
+    out_data: out sync(out_clk, out_rst) bool,
+) body {
+    reg buffer: [N]bool = [false] * N;
+
+    clocked(out_clk, async out_rst) {
+        val in_data_domain = unsafe_value_with_domain(in_data, sync(out_clk, out_rst));
+        buffer = [*buffer[1..], in_data_domain];
+    }
+
+    comb {
+        out_data = buffer[0];
+    }
+}
+
+// TODO better annotations for partially synced signals like `y` here
+// TODO better annotations for reset signals, maybe reset polarity should be included in the type system
+module cdc_async_reset(N: int_range(2..) = 2) ports(
+    in_reset: in async bool,
+    out_clk: in clock,
+    out_reset: out sync(out_clk, in_reset) bool,
+) body {
+    // TODO allow using expressions in ports
+    wire w_true = true;
+    instance cdc_sync_ff(N) ports(
+        .in_data(w_true),
+        .out_clk(out_clk),
+        .out_rst(in_reset),
+        .out_data(out_reset)
+    );
+}
+
+interface axi_stream(T: type) {
+    data: Option(T),
+    ready: bool,
+
+    interface input { data: in, ready: out }
+    interface output { data: out, ready: in }
+}
+
+module cdc_handshake(T: type, N: int_range(2..) = 2) ports(
+    in_clk: in clock,
+    in_rst: in async bool,
+    in_stream: interface sync(in_clk, in_rst) axi_stream(T).input,
+
+    out_clk: in clock,
+    out_rst: in async bool,
+    out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
+) body {
+    // TODO actual implementation
+    comb {
+        in_stream.ready = false;
+        out_stream.data = Option.None;
+    }
+    // instance cdc_sync_ff() ports(.clk(clk_x));
+    // clocked(x_clk, async x_rst) {
+    // }
+    // clocked(y_clk, async y_rst) {
+    // }
+}
+
+// TODO get common syntax for clock+reset (maybe via a builtin interface?), it's getting a bit repetitive
+// TODO add filling on both sides and maybe almost_full/empty signals
+module cdc_fifo(T: type, N: natural) ports(
+    in_clk: in clock,
+    in_rst: in async bool,
+    in_stream: interface sync(in_clk, in_rst) axi_stream(T).input,
+
+    out_clk: in clock,
+    out_rst: in async bool,
+    out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
+) body {
+    // TODO actual implementation
+    comb {
+        in_stream.ready = false;
+        out_stream.data = Option.None;
+    }
+}
+
+// TODO add LSP action to see generated RTL for a single module, and maybe even for the entire module tree
+// TODO add LSP "go to declaration"
+// TODO add LSP auto-import
+// TODO add LSP auto-format
+const {
+    cdc_sync_ff(2);
+    cdc_sync_ff(4);
+
+    cdc_async_reset();
+
+    cdc_handshake(bool);
+    cdc_handshake(int_range(0..7));
+
+    cdc_fifo(bool, 8);
+}

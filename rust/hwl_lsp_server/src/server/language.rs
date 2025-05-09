@@ -114,7 +114,7 @@ pub fn semantic_token_map(category: TokenCategory) -> Option<SemanticTokenType> 
         TokenCategory::WhiteSpace => None,
         TokenCategory::Comment => Some(SemanticTokenType::COMMENT),
         // TODO better categorization of ids?
-        TokenCategory::Identifier => Some(SemanticTokenType::VARIABLE),
+        TokenCategory::Identifier => None,
         TokenCategory::IntegerLiteral => Some(SemanticTokenType::NUMBER),
         TokenCategory::StringLiteral => Some(SemanticTokenType::STRING),
         TokenCategory::Keyword => Some(SemanticTokenType::KEYWORD),
