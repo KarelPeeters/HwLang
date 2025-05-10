@@ -64,3 +64,9 @@ fn resolve_param_if_certain_earlier() {
 //     let src = "const b = false; fn f(a: bool, if(a) { b: bool } else { b: uint }) { val _ = b; }";
 //     test_resolve(src, 77, FindDefinition::Found(&[39..40, 56..57]));
 // }
+
+#[test]
+fn resolve_in_const_clock() {
+    let src = "const a = 1; const { val _ = a; }";
+    test_resolve(src, 29, FindDefinition::Found(&[6..7]));
+}

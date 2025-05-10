@@ -1,14 +1,14 @@
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
     BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
-    CommonDeclarationNamedKind, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind,
-    ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair, IfStatement,
-    ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface, ItemDefModule, MatchBranch, MatchPattern,
-    MatchStatement, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, WhileStatement,
-    WireDeclaration, WireDeclarationKind,
+    CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
+    ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair,
+    IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface, ItemDefModule, MatchBranch,
+    MatchPattern, MatchStatement, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock,
+    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration,
+    RegOutPortMarker, RegisterDelay, ReturnStatement, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
+    VariableDeclaration, WhileStatement, WireDeclaration, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use indexmap::IndexMap;
@@ -422,7 +422,10 @@ fn visit_common_declaration<'a, V>(
 
             scope_parent.maybe_declare(id);
         }
-        CommonDeclaration::ConstBlock(_) => {}
+        CommonDeclaration::ConstBlock(block) => {
+            let ConstBlock { span_keyword: _, block } = block;
+            visit_block_statements(scope_parent, pos, block)?;
+        }
     }
 
     Ok(())
