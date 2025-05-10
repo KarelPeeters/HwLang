@@ -241,7 +241,7 @@ ModuleStatementKind: ModuleStatementKind = {
     // TODO allow "if" here?
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:BoxExpr>
-        "ports" "(" <port_connections:Spanned<Separated<Spanned<PortConnection>,",">>> ")"
+        "ports" <port_connections:Spanned<InstancePortConnections>>
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
@@ -252,6 +252,10 @@ ModuleStatementKind: ModuleStatementKind = {
         };
         ModuleStatementKind::Instance(instance)
     },
+}
+
+InstancePortConnections: Vec<Spanned<PortConnection>> = {
+    "(" <Separated<Spanned<PortConnection>,",">> ")"
 }
 
 ClockedBlockReset: ClockedBlockReset<Box<Expression>> = {

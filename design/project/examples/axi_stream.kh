@@ -1,0 +1,33 @@
+import std.types.bool;
+
+// TODO consider using Option(T) instead of data/valid
+pub interface axi_stream(T: type) {
+    data: T,
+    valid: bool,
+    ready: bool,
+
+    interface input {
+        data: in,
+        valid: in,
+        ready: out,
+    }
+
+    interface output {
+        data: out,
+        valid: out,
+        ready: in,
+    }
+}
+
+pub module axi_passthrough(T: type) ports (
+    clk: in clock,
+    rst: in async bool,
+    input: interface sync(clk, rst) axi_stream(T).input,
+    output: interface sync(clk, rst) axi_stream(T).output,
+) body {
+    comb {
+        output.data = input.data;
+        output.valid = input.valid;
+        input.ready = output.ready;
+    }
+}

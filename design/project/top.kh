@@ -5,37 +5,7 @@ import std.types.[
 import std.math.[gcd, min, max];
 import std.util.[print, assert];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
-
-module axi_passthrough(T: type) ports (
-    clk: in clock,
-    rst: in async bool,
-    input: interface sync(clk, rst) axi_stream(T).input,
-    output: interface sync(clk, rst) axi_stream(T).output,
-) body {
-    comb {
-        output.data = input.data;
-        output.valid = input.valid;
-        input.ready = output.ready;
-    }
-}
-
-interface axi_stream(T: type) {
-    data: T,
-    valid: bool,
-    ready: bool,
-
-    interface input {
-        data: in,
-        valid: in,
-        ready: out,
-    }
-
-    interface output {
-        data: out,
-        valid: out,
-        ready: in,
-    }
-}
+import examples.axi_stream.[axi_stream, axi_passthrough];
 
 pub module top ports(
     clk: in clock,

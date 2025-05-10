@@ -1199,7 +1199,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 None => {
                     let diag = Diagnostic::new(format!("missing connection for port {}", connector_info.id.string))
                         .add_info(connector_info.id.span, "port declared here")
-                        .add_error(port_connections.span, "connections here")
+                        .add_error(Span::single_at(port_connections.span.end), "connections here")
                         .finish();
                     return Err(diags.report(diag));
                 }
