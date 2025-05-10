@@ -555,7 +555,7 @@ pub struct ModuleInstance {
 #[derive(Debug, Clone)]
 pub struct PortConnection {
     pub id: Identifier,
-    pub expr: Expression,
+    pub expr: Option<Expression>,
 }
 
 // TODO we're using Box<Spanned<ExpressionKind>> a lot, but maybe

@@ -750,9 +750,15 @@ fn visit_block_module(scope_parent: &DeclScope, pos: Pos, block: &Block<ModuleSt
                 visit_expression(&scope, pos, module)?;
                 for conn in &port_connections.inner {
                     let PortConnection { id, expr } = &conn.inner;
+
                     // TODO try resolving port name, needs type info
                     let _ = id;
-                    visit_expression(&scope, pos, expr)?;
+
+                    if let Some(expr) = expr {
+                        visit_expression(&scope, pos, expr)?;
+                    } else {
+                        visit_id_usage(&scope, pos, id)?;
+                    }
                 }
             }
 

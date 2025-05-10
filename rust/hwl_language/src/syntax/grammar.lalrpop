@@ -258,6 +258,10 @@ InstancePortConnections: Vec<Spanned<PortConnection>> = {
     "(" <Separated<Spanned<PortConnection>,",">> ")"
 }
 
+PortConnection: PortConnection = {
+    <id:Id> <expr:("=" <Expr>)?> => PortConnection { id, expr },
+}
+
 ClockedBlockReset: ClockedBlockReset<Box<Expression>> = {
     <kind:Spanned<ResetKind>> <signal:BoxExpr> => ClockedBlockReset { kind, signal },
 }
@@ -265,13 +269,6 @@ ClockedBlockReset: ClockedBlockReset<Box<Expression>> = {
 ResetKind: ResetKind = {
     "sync" => ResetKind::Sync,
     "async" => ResetKind::Async,
-}
-
-// TODO better port syntax, maybe including directionality, eg ==> and <== or -> and <-?
-//   now it's different from both generics and struct literals
-// TODO add shorthand when port and connected expression are the same string
-PortConnection: PortConnection = {
-    "." <id:Id> "(" <expr:Expr> ")" => PortConnection { id, expr },
 }
 
 BlockStatementKind: BlockStatementKind = {

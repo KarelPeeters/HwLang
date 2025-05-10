@@ -1243,6 +1243,16 @@ impl BodyElaborationContext<'_, '_, '_> {
         } = &connection.inner;
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
+        // if no expression, the id is both the connector and the expression
+        let dummy_expr;
+        let value_expr = match value_expr {
+            Some(value_expr) => value_expr,
+            None => {
+                dummy_expr = Spanned::new(connection_id.span, ExpressionKind::Id(connection_id.clone()));
+                &dummy_expr
+            }
+        };
+
         // check id match
         if connector_id.string != connection_id.string {
             let diag = Diagnostic::new("mismatched port connection")
