@@ -37,7 +37,7 @@ use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
-use crate::util::{result_pair, ResultExt};
+use crate::util::{result_pair, result_pair_split, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::map::Entry;
@@ -58,7 +58,7 @@ type ArenaConnectors = Arena<Connector, ConnectorInfo>;
 
 pub struct ConnectorInfo {
     id: Identifier,
-    kind: ConnectorKind,
+    kind: Result<ConnectorKind, ErrorGuaranteed>,
 }
 
 enum ConnectorKind {
@@ -222,20 +222,18 @@ impl CompileRefs<'_, '_> {
                                 ),
                             };
 
-                            let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
-                                push_connector_single(
-                                    ctx,
-                                    &mut used_ir_names,
-                                    &mut ports_ir,
-                                    &mut connectors,
-                                    &mut port_to_single,
-                                    &mut next_single,
-                                    id,
-                                    direction,
-                                    domain,
-                                    ty,
-                                )
-                            });
+                            let entry = push_connector_single(
+                                ctx,
+                                &mut used_ir_names,
+                                &mut ports_ir,
+                                &mut connectors,
+                                &mut port_to_single,
+                                &mut next_single,
+                                id,
+                                direction,
+                                domain,
+                                ty,
+                            );
                             scope_ports.declare(diags, id, entry);
                         }
                         ModulePortSingleKind::Interface {
@@ -261,19 +259,17 @@ impl CompileRefs<'_, '_> {
                                     )),
                                 });
 
-                            let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
-                                push_connector_interface(
-                                    ctx,
-                                    &mut used_ir_names,
-                                    &mut ports_ir,
-                                    &mut connectors,
-                                    &mut port_to_single,
-                                    &mut next_single,
-                                    id,
-                                    domain,
-                                    view,
-                                )
-                            });
+                            let entry = push_connector_interface(
+                                ctx,
+                                &mut used_ir_names,
+                                &mut ports_ir,
+                                &mut connectors,
+                                &mut port_to_single,
+                                &mut next_single,
+                                id,
+                                domain,
+                                interface_view,
+                            );
                             scope_ports.declare(diags, id, entry);
                         }
                     }
@@ -292,22 +288,21 @@ impl CompileRefs<'_, '_> {
 
                             match kind {
                                 ModulePortInBlockKind::Port { direction, ty } => {
+                                    let domain = domain.map(|d| d.map_inner(PortDomain::Kind));
                                     let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
 
-                                    let entry = result_pair(domain, ty).and_then(|(domain, ty)| {
-                                        push_connector_single(
-                                            ctx,
-                                            &mut used_ir_names,
-                                            &mut ports_ir,
-                                            &mut connectors,
-                                            &mut port_to_single,
-                                            &mut next_single,
-                                            id,
-                                            *direction,
-                                            domain.map_inner(PortDomain::Kind),
-                                            ty,
-                                        )
-                                    });
+                                    let entry = push_connector_single(
+                                        ctx,
+                                        &mut used_ir_names,
+                                        &mut ports_ir,
+                                        &mut connectors,
+                                        &mut port_to_single,
+                                        &mut next_single,
+                                        id,
+                                        *direction,
+                                        domain,
+                                        ty,
+                                    );
                                     scope_ports.declare(diags, id, entry);
                                 }
                                 ModulePortInBlockKind::Interface {
@@ -331,19 +326,17 @@ impl CompileRefs<'_, '_> {
                                             )),
                                         });
 
-                                    let entry = result_pair(domain, interface_view).and_then(|(domain, view)| {
-                                        push_connector_interface(
-                                            ctx,
-                                            &mut used_ir_names,
-                                            &mut ports_ir,
-                                            &mut connectors,
-                                            &mut port_to_single,
-                                            &mut next_single,
-                                            id,
-                                            domain,
-                                            view,
-                                        )
-                                    });
+                                    let entry = push_connector_interface(
+                                        ctx,
+                                        &mut used_ir_names,
+                                        &mut ports_ir,
+                                        &mut connectors,
+                                        &mut port_to_single,
+                                        &mut next_single,
+                                        id,
+                                        domain,
+                                        interface_view,
+                                    );
                                     scope_ports.declare(diags, id, entry);
                                 }
                             }
@@ -357,9 +350,6 @@ impl CompileRefs<'_, '_> {
         };
 
         ctx.compile_elaborate_extra_list(&mut scope_ports, vars, &ports.inner, &mut visit_port_item)?;
-
-        assert!(ctx.ports.len() >= connectors.len());
-        assert_eq!(ctx.ports.len(), ports_ir.len());
 
         Ok((connectors, scope_ports, ports_ir))
     }
@@ -465,45 +455,49 @@ fn push_connector_single(
     next_single: &mut impl FnMut() -> ConnectorSingle,
     id: &Identifier,
     direction: Spanned<PortDirection>,
-    domain: Spanned<PortDomain<Port>>,
-    ty: Spanned<HardwareType>,
+    domain: Result<Spanned<PortDomain<Port>>, ErrorGuaranteed>,
+    ty: Result<Spanned<HardwareType>, ErrorGuaranteed>,
 ) -> Result<ScopedEntry, ErrorGuaranteed> {
     let diags = ctx.refs.diags;
     claim_ir_name(diags, used_ir_names, &id.string, id.span)?;
 
-    let ir_port = ports_ir.push(IrPortInfo {
-        name: id.string.clone(),
-        direction: direction.inner,
-        ty: ty.inner.as_ir(),
-        debug_span: id.span,
-        debug_info_ty: ty.inner.to_diagnostic_string(),
-        debug_info_domain: domain.inner.to_diagnostic_string(ctx),
-    });
+    let kind_and_entry = result_pair(domain, ty).map(|(domain, ty)| {
+        let ir_port = ports_ir.push(IrPortInfo {
+            name: id.string.clone(),
+            direction: direction.inner,
+            ty: ty.inner.as_ir(),
+            debug_span: id.span,
+            debug_info_ty: ty.inner.to_diagnostic_string(),
+            debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+        });
 
-    let port = ctx.ports.push(PortInfo {
-        span: id.span,
-        name: id.string.clone(),
-        direction,
-        domain,
-        ty: ty.clone(),
-        ir: ir_port,
-    });
+        let port = ctx.ports.push(PortInfo {
+            span: id.span,
+            name: id.string.clone(),
+            direction,
+            domain,
+            ty: ty.clone(),
+            ir: ir_port,
+        });
 
-    let connector_domain = domain.map_inner(|d| d.map_inner(|p| *port_to_single.get(&p).unwrap()));
-    let single = next_single();
-    connectors.push(ConnectorInfo {
-        id: id.clone(),
-        kind: ConnectorKind::Port {
+        let single = next_single();
+        port_to_single.insert_first(port, single);
+
+        let connector_domain = domain.map_inner(|d| d.map_inner(|p| *port_to_single.get(&p).unwrap()));
+        let kind = ConnectorKind::Port {
             direction,
             domain: connector_domain,
             ty,
             single,
-        },
-    });
-    port_to_single.insert_first(port, single);
+        };
 
-    let entry = ScopedEntry::Named(NamedValue::Port(port));
-    Ok(entry)
+        let entry = ScopedEntry::Named(NamedValue::Port(port));
+        (kind, entry)
+    });
+
+    let (kind, entry) = result_pair_split(kind_and_entry);
+    connectors.push(ConnectorInfo { id: id.clone(), kind });
+    entry
 }
 
 fn push_connector_interface(
@@ -514,71 +508,77 @@ fn push_connector_interface(
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
     next_single: &mut impl FnMut() -> ConnectorSingle,
     id: &Identifier,
-    domain: Spanned<DomainKind<Polarized<Port>>>,
-    view: ElaboratedInterfaceView,
+    domain: Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed>,
+    view: Result<ElaboratedInterfaceView, ErrorGuaranteed>,
 ) -> Result<ScopedEntry, ErrorGuaranteed> {
     let diags = ctx.refs.diags;
-    let ElaboratedInterfaceView {
-        interface,
-        view: view_name,
-    } = &view;
-    let interface = ctx.refs.shared.elaboration_arenas.interface_info(*interface)?;
-    let view_info = interface.views.get(view_name).unwrap();
 
-    let port_dirs = view_info.port_dirs.as_ref_ok()?;
+    let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
+        let ElaboratedInterfaceView {
+            interface,
+            view: view_name,
+        } = &view;
+        let interface = ctx.refs.shared.elaboration_arenas.interface_info(*interface)?;
+        let view_info = interface.views.get(view_name).unwrap();
 
-    let mut declared_ports = vec![];
-    let mut singles = vec![];
+        let port_dirs = view_info.port_dirs.as_ref_ok()?;
 
-    for (port_index, (_, port)) in enumerate(&interface.ports) {
-        let name = format!("{}.{}", id.string, port.id.string);
-        let ir_name = format!("{}_{}", id.string, port.id.string);
-        claim_ir_name(diags, used_ir_names, &ir_name, id.span)?;
+        let mut declared_ports = vec![];
+        let mut singles = vec![];
 
-        let direction = port_dirs[port_index].1;
-        let ty = port.ty.as_ref_ok()?;
+        for (port_index, (_, port)) in enumerate(&interface.ports) {
+            let name = format!("{}.{}", id.string, port.id.string);
+            let ir_name = format!("{}_{}", id.string, port.id.string);
+            claim_ir_name(diags, used_ir_names, &ir_name, id.span)?;
 
-        let ir_port = ports_ir.push(IrPortInfo {
-            name: ir_name,
-            direction: direction.inner,
-            ty: ty.inner.as_ir(),
-            debug_span: id.span,
-            debug_info_ty: ty.inner.to_diagnostic_string(),
-            debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+            let direction = port_dirs[port_index].1;
+            let ty = port.ty.as_ref_ok()?;
+
+            let ir_port = ports_ir.push(IrPortInfo {
+                name: ir_name,
+                direction: direction.inner,
+                ty: ty.inner.as_ir(),
+                debug_span: id.span,
+                debug_info_ty: ty.inner.to_diagnostic_string(),
+                debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+            });
+            let port = ctx.ports.push(PortInfo {
+                span: id.span,
+                name,
+                direction,
+                domain: domain.map_inner(PortDomain::Kind),
+                ty: ty.clone(),
+                ir: ir_port,
+            });
+
+            declared_ports.push(port);
+
+            let single = next_single();
+            singles.push(single);
+            port_to_single.insert_first(port, single);
+        }
+
+        let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
+            id: id.clone(),
+            view: view.clone(),
+            domain,
+            ports: declared_ports,
         });
-        let port = ctx.ports.push(PortInfo {
-            span: id.span,
-            name,
-            direction,
-            domain: domain.map_inner(PortDomain::Kind),
-            ty: ty.clone(),
-            ir: ir_port,
-        });
-
-        declared_ports.push(port);
-
-        let single = next_single();
-        singles.push(single);
-        port_to_single.insert_first(port, single);
-    }
-
-    let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
-        id: id.clone(),
-        view: view.clone(),
-        domain,
-        ports: declared_ports,
-    });
-    let connector_domain = domain.map_inner(|d| d.map_signal(|p| p.map_inner(|p| *port_to_single.get(&p).unwrap())));
-    connectors.push(ConnectorInfo {
-        id: id.clone(),
-        kind: ConnectorKind::Interface {
+        let connector_domain =
+            domain.map_inner(|d| d.map_signal(|p| p.map_inner(|p| *port_to_single.get(&p).unwrap())));
+        let kind = ConnectorKind::Interface {
             domain: connector_domain,
             view,
             singles,
-        },
+        };
+
+        let entry = ScopedEntry::Named(NamedValue::PortInterface(port_interface));
+        Ok((kind, entry))
     });
 
-    Ok(ScopedEntry::Named(NamedValue::PortInterface(port_interface)))
+    let (kind, entry) = result_pair_split(kind_and_entry);
+    connectors.push(ConnectorInfo { id: id.clone(), kind });
+    entry
 }
 
 fn claim_ir_name(
@@ -1206,17 +1206,17 @@ impl BodyElaborationContext<'_, '_, '_> {
             }
         }
 
-        let any_unused = id_to_connection_and_used.values().any(|&(_, u)| !u);
-        if any_unused {
-            let mut diag = Diagnostic::new("connections that don't match any port");
-            for (connection, used) in id_to_connection_and_used.values() {
-                if !*used {
-                    diag = diag.add_error(connection.span, "non-matching connection");
-                }
+        let mut any_unused_err = Ok(());
+        for (_, &(connection, used)) in id_to_connection_and_used.iter() {
+            if !used {
+                let diag = Diagnostic::new("connection does not match any port")
+                    .add_error(connection.span, "invalid connection here")
+                    .add_info(module_ast.ports.span, "ports declared here")
+                    .finish();
+                any_unused_err = Err(diags.report(diag));
             }
-            let diag = diag.add_info(module_ast.ports.span, "ports declared here").finish();
-            return Err(diags.report(diag));
         }
+        any_unused_err?;
 
         Ok(IrModuleInstance {
             name: name.as_ref().map(|name| name.string.clone()),
@@ -1308,7 +1308,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
 
         // evaluate the connection differently depending on the port direction
-        match kind {
+        match kind.as_ref_ok()? {
             &ConnectorKind::Port {
                 direction,
                 domain,
