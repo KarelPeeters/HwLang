@@ -127,14 +127,6 @@ Item: Item = {
     },
 
     <start:@L>
-        "instance" <instance_end:@R> <module:BoxExpr>";"
-    <end:@R> => {
-        let span = loc.span(start, end);
-        let span_keyword = loc.span(start, instance_end);
-        Item::Instance(ModuleInstanceItem { span, span_keyword, module })
-    },
-
-    <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
             <port_types:ExtraList<InterfacePortType>>
             <views:InterfaceView*>

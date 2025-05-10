@@ -12,7 +12,7 @@ use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
     EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModule,
-    ModuleInstanceItem, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
+    Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
 use crate::syntax::pos::Span;
@@ -200,17 +200,6 @@ impl CompileItemContext<'_, '_> {
             Item::Import(item_inner) => {
                 let reason = "import items should have been resolved in a separate pass already";
                 Err(diags.report_internal_error(item_inner.span, reason))
-            }
-            Item::Instance(instance) => {
-                let &ModuleInstanceItem {
-                    span: _,
-                    span_keyword,
-                    ref module,
-                } = instance;
-                let mut vars = VariableValues::new_root(&self.variables);
-                let _: ElaboratedModule =
-                    self.eval_expression_as_module(file_scope, &mut vars, span_keyword, module)?;
-                Ok(CompileValue::UNIT)
             }
             Item::CommonDeclaration(decl) => {
                 let mut vars = VariableValues::new_root(&self.variables);

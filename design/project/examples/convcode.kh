@@ -161,19 +161,20 @@ fn uint_not(n: uint, v: uint_bits(n)) -> uint_bits(n) {
     return ty.from_bits([!x for x in ty.to_bits(n)]);
 }
 
-// TODO file-level block scopes, keeping variables local to this block
-const example_length = 3;
-const example_generator = Generator(example_length).new(
-    generator_0=[true, true, true],
-    generator_1=[true, false, true]
-);
-const example_analog_bits = 8;
-const example_depth = 4;
+const {
+    const example_length = 3;
+    const example_generator = Generator(example_length).new(
+        generator_0=[true, true, true],
+        generator_1=[true, false, true]
+    );
+    const example_analog_bits = 8;
+    const example_depth = 4;
 
-instance convcode_encoder(
-    length=example_length, generator=example_generator
-);
-instance convcode_decoder(
-    length=example_length, generator=example_generator,
-    analog_bits=example_analog_bits, depth=example_depth
-);
+    convcode_encoder(
+        length=example_length, generator=example_generator
+    );
+    convcode_decoder(
+        length=example_length, generator=example_generator,
+        analog_bits=example_analog_bits, depth=example_depth
+    );
+}

@@ -22,7 +22,6 @@ pub enum Visibility<S> {
 pub enum Item {
     // non-declaring items
     Import(ItemImport),
-    Instance(ModuleInstanceItem),
     // common declarations that are allowed anywhere
     CommonDeclaration(Spanned<CommonDeclaration<Visibility<Span>>>),
     // declarations that are only allowed top-level
@@ -968,11 +967,6 @@ impl Item {
             Item::Import(item) => ItemInfo {
                 span_full: item.span,
                 span_short: item.span,
-                declaration: None,
-            },
-            Item::Instance(item) => ItemInfo {
-                span_full: item.span,
-                span_short: item.span_keyword,
                 declaration: None,
             },
             Item::CommonDeclaration(item) => ItemInfo {

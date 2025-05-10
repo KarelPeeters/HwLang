@@ -92,9 +92,11 @@ pub module axi_gearbox_v2(
     }
 }
 
-instance axi_gearbox_v2(input_width=8, output_width=16);
-instance axi_gearbox_v2(input_width=16, output_width=8);
+const {
+    axi_gearbox_v2(input_width=8, output_width=16);
+    axi_gearbox_v2(input_width=16, output_width=8);
 
-// TODO why do these fail?
-//instance axi_gearbox_v2(input_width=8, output_width=3);
-//instance axi_gearbox_v2(input_width=3, output_width=8);
+    // TODO why do these fail?
+    //axi_gearbox_v2(input_width=8, output_width=3);
+    //axi_gearbox_v2(input_width=3, output_width=8);
+}
