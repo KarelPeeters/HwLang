@@ -43,7 +43,7 @@ impl LocationBuilder {
 
 pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, ParseError> {
     // construct a tokenizer to match the format lalrpop is expecting
-    let tokenizer = Tokenizer::new(file, src)
+    let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
         .filter(|token| match token {
             Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),

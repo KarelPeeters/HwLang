@@ -17,12 +17,13 @@ pub enum TokenError {
     InvalidToken { pos: Pos },
     InvalidIntLiteral { span: Span },
     BlockCommentMissingEnd { start: Pos, eof: Pos },
-    BlockCommentUnexpectedEnd { pos: Pos },
     StringLiteralMissingEnd { start: Pos, eof: Pos },
 }
 
-pub fn tokenize(file: FileId, source: &str) -> Result<Vec<Token<&str>>, TokenError> {
-    Tokenizer::new(file, source).into_iter().try_collect()
+pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Result<Vec<Token<&str>>, TokenError> {
+    Tokenizer::new(file, source, emit_incomplete_token)
+        .into_iter()
+        .try_collect()
 }
 
 // TODO implement recovery by matching without start anchor?
@@ -33,6 +34,8 @@ pub struct Tokenizer<'s> {
     file: FileId,
     curr_byte: usize,
     left: std::str::Chars<'s>,
+    emit_incomplete_token: bool,
+    incomplete_err: Option<TokenError>,
     errored: bool,
     fixed_tokens_grouped_by_length: &'static [Vec<FixedTokenInfo>],
 }
@@ -54,11 +57,13 @@ macro_rules! pattern_decimal_digit {
 }
 
 impl<'s> Tokenizer<'s> {
-    pub fn new(file: FileId, source: &'s str) -> Self {
+    pub fn new(file: FileId, source: &'s str, emit_incomplete_token: bool) -> Self {
         Tokenizer {
             file,
             curr_byte: 0,
             left: source.chars(),
+            emit_incomplete_token,
+            incomplete_err: None,
             errored: false,
             fixed_tokens_grouped_by_length: &FIXED_TOKENS_GROUPED_BY_LENGTH,
         }
@@ -199,16 +204,17 @@ impl<'s> Tokenizer<'s> {
                 match self.peek() {
                     Some('"') => {
                         self.skip(1);
-                        TokenType::StringLiteral(&start_left_str[..self.curr_byte - start.byte])
                     }
                     None => {
-                        return Err(TokenError::StringLiteralMissingEnd {
+                        self.skip_while(|_| true);
+                        self.incomplete_err = Some(TokenError::StringLiteralMissingEnd {
                             start,
                             eof: self.curr_pos(),
                         });
                     }
                     _ => unreachable!(),
                 }
+                TokenType::StringLiteral(&start_left_str[..self.curr_byte - start.byte])
             }
             ['/', '*', _] => {
                 // block comments are allowed to nest
@@ -229,10 +235,12 @@ impl<'s> Tokenizer<'s> {
                         }
                         (None, _) => {
                             // hit end of source
-                            return Err(TokenError::BlockCommentMissingEnd {
+                            self.skip_while(|_| true);
+                            self.incomplete_err = Some(TokenError::BlockCommentMissingEnd {
                                 start,
                                 eof: self.curr_pos(),
                             });
+                            break;
                         }
                     }
                 }
@@ -308,7 +316,24 @@ impl<'s> Tokenizer<'s> {
             !self.errored,
             "Cannot continue calling next on tokenizer that returned an error"
         );
-        self.next_inner().inspect_err(|_| self.errored = true)
+
+        let result = if self.emit_incomplete_token {
+            if let Some(err) = self.incomplete_err.take() {
+                Err(err)
+            } else {
+                self.next_inner()
+            }
+        } else {
+            assert!(self.incomplete_err.is_none());
+            let result = self.next_inner();
+            if let Some(err) = self.incomplete_err.take() {
+                Err(err)
+            } else {
+                result
+            }
+        };
+
+        result.inspect_err(|_| self.errored = true)
     }
 }
 
@@ -557,9 +582,6 @@ impl TokenError {
                 .add_info(Span::empty_at(start), "block comment started here")
                 .add_error(Span::empty_at(eof), "end of file reached")
                 .finish(),
-            TokenError::BlockCommentUnexpectedEnd { pos } => Diagnostic::new("unexpected end of block comment")
-                .add_error(Span::empty_at(pos), "end of comment here")
-                .finish(),
             TokenError::StringLiteralMissingEnd { start, eof } => Diagnostic::new("string literal missing end")
                 .add_info(Span::empty_at(start), "string literal started here")
                 .add_error(Span::empty_at(eof), "end of file reached")
@@ -572,14 +594,28 @@ impl TokenError {
 mod test {
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
-    use crate::syntax::token::{tokenize, Token, TokenType};
+    use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
     use std::collections::HashSet;
+
+    fn tokenize_iter(file: FileId, source: &str, emit_incomplete_token: bool) -> Vec<Result<Token<&str>, TokenError>> {
+        let mut result = vec![];
+        for token in Tokenizer::new(file, source, emit_incomplete_token) {
+            match token {
+                Ok(token) => result.push(Ok(token)),
+                Err(err) => {
+                    result.push(Err(err));
+                    break;
+                }
+            }
+        }
+        result
+    }
 
     #[test]
     fn basic_tokenize() {
         let file = FileId::dummy();
 
-        assert_eq!(Ok(vec![]), tokenize(file, ""));
+        assert_eq!(Ok(vec![]), tokenize(file, "", false));
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::WhiteSpace("\n"),
@@ -588,9 +624,9 @@ mod test {
                     end: Pos { file, byte: 1 }
                 },
             }]),
-            tokenize(file, "\n")
+            tokenize(file, "\n", false)
         );
-        assert!(tokenize(file, "test foo function \"foo\"").is_ok());
+        assert!(tokenize(file, "test foo function \"foo\"", false).is_ok());
     }
 
     #[test]
@@ -605,7 +641,7 @@ mod test {
                     end: Pos { file, byte: 4 }
                 },
             }]),
-            tokenize(file, "/**/")
+            tokenize(file, "/**/", false)
         );
 
         assert_eq!(
@@ -616,10 +652,59 @@ mod test {
                     end: Pos { file, byte: 8 }
                 },
             }]),
-            tokenize(file, "/*/**/*/")
+            tokenize(file, "/*/**/*/", false)
         );
 
-        assert!(tokenize(file, "/*/**/").is_err());
+        assert!(tokenize(file, "/*/**/", false).is_err());
+    }
+
+    #[test]
+    fn not_closed() {
+        let file = FileId::dummy();
+
+        // comment
+        let expected = vec![Err(TokenError::BlockCommentMissingEnd {
+            start: Pos { file, byte: 0 },
+            eof: Pos { file, byte: 2 },
+        })];
+        assert_eq!(tokenize_iter(file, "/*", false), expected);
+
+        let expected = vec![
+            Ok(Token {
+                ty: TokenType::BlockComment("/*"),
+                span: Span {
+                    start: Pos { file, byte: 0 },
+                    end: Pos { file, byte: 2 },
+                },
+            }),
+            Err(TokenError::BlockCommentMissingEnd {
+                start: Pos { file, byte: 0 },
+                eof: Pos { file, byte: 2 },
+            }),
+        ];
+        assert_eq!(tokenize_iter(file, "/*", true), expected);
+
+        // string
+        let expected = vec![Err(TokenError::StringLiteralMissingEnd {
+            start: Pos { file, byte: 0 },
+            eof: Pos { file, byte: 1 },
+        })];
+        assert_eq!(tokenize_iter(file, "\"", false), expected);
+
+        let expected = vec![
+            Ok(Token {
+                ty: TokenType::StringLiteral("\""),
+                span: Span {
+                    start: Pos { file, byte: 0 },
+                    end: Pos { file, byte: 1 },
+                },
+            }),
+            Err(TokenError::StringLiteralMissingEnd {
+                start: Pos { file, byte: 0 },
+                eof: Pos { file, byte: 1 },
+            }),
+        ];
+        assert_eq!(tokenize_iter(file, "\"", true), expected);
     }
 
     #[test]
@@ -638,7 +723,7 @@ mod test {
         for info in TokenType::FIXED_TOKENS {
             let file = FileId::dummy();
 
-            let result = tokenize(file, info.literal);
+            let result = tokenize(file, info.literal, false);
             let span = Span::new(
                 Pos { file, byte: 0 },
                 Pos {

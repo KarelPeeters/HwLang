@@ -7,5 +7,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &str| target(data));
 
 fn target(data: &str) {
-    let _ = tokenize(FileId::dummy(), data);
+    let _ = tokenize(FileId::dummy(), data, false);
 }

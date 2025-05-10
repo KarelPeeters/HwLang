@@ -183,7 +183,7 @@ fn main_inner(args: Args) -> ExitCode {
         let start_tokenize = Instant::now();
         let mut total_tokens = 0;
         for file in source.files() {
-            total_tokens += Tokenizer::new(file, &source[file].source).into_iter().count();
+            total_tokens += Tokenizer::new(file, &source[file].source, false).into_iter().count();
         }
         let time_tokenize = start_tokenize.elapsed();
 
