@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use hwl_language::syntax::source::FileId;
-use hwl_language::{
+use crate::syntax::source::FileId;
+use crate::{
     syntax::parse_file_content,
     util::io::{recurse_for_each_file, IoErrorWithPath},
 };
