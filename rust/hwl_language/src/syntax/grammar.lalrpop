@@ -198,43 +198,40 @@ ModuleStatementKind: ModuleStatementKind = {
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
-    <start:@L> "reg" <id:MaybeId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:BoxExpr> "=" <init:BoxExpr> ";" <end:@R> => {
-        let decl = RegDeclaration { span: loc.span(start, end), id, sync, ty, init };
+    "reg" <id:MaybeId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:BoxExpr> "=" <init:BoxExpr> ";" => {
+        let decl = RegDeclaration { id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    <start:@L> "wire" <id:MaybeId> <kind:WireDeclarationKind> ";" <end:@R> => {
-        let decl = WireDeclaration { span: loc.span(start, end), id, kind };
+    "wire" <id:MaybeId> <kind:WireDeclarationKind> ";" => {
+        let decl = WireDeclaration { id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
-    <start:@L> "reg" "out" <id:Id> "=" <init:BoxExpr> ";" <end:@R> => {
-        let decl = RegOutPortMarker { span: loc.span(start, end), id, init };
+    "reg" "out" <id:Id> "=" <init:BoxExpr> ";" => {
+        let decl = RegOutPortMarker { id, init };
         ModuleStatementKind::RegOutPortMarker(decl)
     },
     // combinatorial block
-    <start:@L> "comb" <end_keyword:@R> <block:Block<BlockStatement>> <end:@R> => {
+    <span_keyword:Span<"comb">> <end_keyword:@R> <block:Block<BlockStatement>> => {
         let inner = CombinatorialBlock {
             block,
-            span: loc.span(start, end),
-            span_keyword: loc.span(start, end_keyword),
+            span_keyword,
         };
         ModuleStatementKind::CombinatorialBlock(inner)
     },
     // clocked block
     // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
     //   registers declared inside of the block do still inherit their clock/reset from the block though
-    <start:@L>
-        "clocked" <start_domain:@L> <end_keyword:@R> "("
+    <span_keyword:Span<"clocked">> <start_domain:@L> <end_keyword:@R> "("
         <clock:BoxExpr> <reset:("," <Spanned<ClockedBlockReset>>)?>
-        ")" <end_domain:@R> <block:Block<BlockStatement>>
-    <end:@R> => {
+    ")" <end_domain:@R> <block:Block<BlockStatement>>
+    => {
         let inner = ClockedBlock {
             clock,
             reset,
             block,
-            span: loc.span(start, end),
-            span_keyword: loc.span(start, end_keyword),
+            span_keyword,
             span_domain: loc.span(start_domain, end_domain),
         };
         ModuleStatementKind::ClockedBlock(inner)
@@ -475,12 +472,12 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
     <I> "," => ExtraItem::Inner(<>),
     <E> if has_e == "true" => ExtraItem::Inner(<>),
 
+    // declarations, these already include a trailing ";" if necessary
+    <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
+    
     // control flow
     IfStatement<ExtraBlock<I, E, has_e>> => ExtraItem::If(<>),
     // TODO add match statement
-
-    // declarations, these already include a trailing ";" if necessary
-    <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
 }
 
 WireDeclarationKind: WireDeclarationKind = {
@@ -681,7 +678,7 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     "(" ")" => ExpressionKind::TupleLiteral(vec![]),
 
     // array comprehension
-    "[" <body:Box<ArrayLiteralElement>> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
+    "[" <body:ArrayLiteralElement> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:Box<ExprLevelNoIn>> "]"
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
     ExprLevelCall<allow_struct>,
@@ -725,12 +722,13 @@ Arg: Arg = {
         Arg { name, value, span: loc.span(start, end) },
 }
 
-ArrayLiteralElement: ArrayLiteralElement<Expression> = {
+ArrayLiteralElement: ArrayLiteralElement<Box<Expression>> = {
     // TODO allow multiple stars to flatten multi-dimensional arrays?
-    <spread:Span<"*">> <value:Expr> => ArrayLiteralElement::Spread(spread, value),
-    <value:Expr> => ArrayLiteralElement::Single(value),
+    <spread:Span<"*">> <value:BoxExpr> => ArrayLiteralElement::Spread(spread, value),
+    <value:BoxExpr> => ArrayLiteralElement::Single(value),
 }
 
+// TODO remove this, and remove allow_struct in general
 ExprLevelStructInit<allow_struct>: ExpressionKind = {
     //  struct
     // TODO allow struct type params?

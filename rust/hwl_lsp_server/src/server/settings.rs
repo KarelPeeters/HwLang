@@ -1,6 +1,6 @@
 use crate::server::language::semantic_token_legend;
 use lsp_types::{
-    InitializeParams, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions,
+    InitializeParams, OneOf, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     WorkDoneProgressOptions,
 };
@@ -76,6 +76,7 @@ impl Settings {
                     full: Some(SemanticTokensFullOptions::Bool(true)),
                 },
             )),
+            definition_provider: Some(OneOf::Left(true)),
             ..Default::default()
         };
 

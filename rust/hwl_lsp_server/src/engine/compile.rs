@@ -1,4 +1,4 @@
-use crate::engine::encode::encode_span_to_lsp;
+use crate::engine::encode::span_to_lsp;
 use crate::engine::vfs::VfsResult;
 use crate::server::document::abs_path_to_uri;
 use crate::server::settings::PositionEncoding;
@@ -162,7 +162,7 @@ fn diagnostic_to_lsp(
             related_information.push(DiagnosticRelatedInformation {
                 location: Location {
                     uri: abs_path_to_uri(abs_path_map.get(&file).unwrap())?,
-                    range: encode_span_to_lsp(encoding, &file_info.offsets, &file_info.source, span),
+                    range: span_to_lsp(encoding, &file_info.offsets, &file_info.source, span),
                 },
                 message: format!("{}: {}", level_to_str(level), label),
             });
@@ -179,7 +179,7 @@ fn diagnostic_to_lsp(
     }
 
     let diag = lsp_types::Diagnostic {
-        range: encode_span_to_lsp(
+        range: span_to_lsp(
             encoding,
             &top_file_info.offsets,
             &top_file_info.source,

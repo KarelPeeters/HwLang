@@ -31,6 +31,9 @@ impl ServerState {
             request::SemanticTokensFullRequest::METHOD => {
                 handle_request!(self, params, request::SemanticTokensFullRequest)
             }
+            request::GotoDefinition::METHOD => {
+                handle_request!(self, params, request::GotoDefinition)
+            }
             request::Shutdown::METHOD => handle_request!(self, params, request::Shutdown),
             _ => Err(RequestError::MethodNotImplemented),
         }

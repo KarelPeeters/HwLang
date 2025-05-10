@@ -172,9 +172,9 @@ pub struct ExtraList<I> {
 #[derive(Debug, Clone)]
 pub enum ExtraItem<I> {
     Inner(I),
-    If(IfStatement<ExtraList<I>>),
-    // TODO add `match`
     Declaration(CommonDeclaration<()>),
+    // TODO add `match`
+    If(IfStatement<ExtraList<I>>),
 }
 
 #[derive(Debug, Clone)]
@@ -425,14 +425,12 @@ pub struct ReturnStatement {
 
 #[derive(Debug, Clone)]
 pub struct RegOutPortMarker {
-    pub span: Span,
     pub id: Identifier,
     pub init: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
 pub struct RegDeclaration {
-    pub span: Span,
     pub id: MaybeIdentifier,
     pub sync: Option<Spanned<SyncDomain<Box<Expression>>>>,
     pub ty: Box<Expression>,
@@ -441,7 +439,6 @@ pub struct RegDeclaration {
 
 #[derive(Debug, Clone)]
 pub struct WireDeclaration {
-    pub span: Span,
     pub id: MaybeIdentifier,
     pub kind: WireDeclarationKind,
 }
@@ -498,14 +495,12 @@ pub struct Assignment {
 
 #[derive(Debug, Clone)]
 pub struct CombinatorialBlock {
-    pub span: Span,
     pub span_keyword: Span,
     pub block: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClockedBlock {
-    pub span: Span,
     pub span_keyword: Span,
     pub span_domain: Span,
     pub clock: Box<Expression>,
@@ -588,19 +583,17 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
+    ArrayLiteral(Vec<ArrayLiteralElement<Box<Expression>>>),
     TupleLiteral(Vec<Expression>),
-    StructLiteral(StructLiteral),
     RangeLiteral(RangeLiteral),
     ArrayComprehension(ArrayComprehension),
 
     // Operations
     UnaryOp(Spanned<UnaryOp>, Box<Expression>),
     BinaryOp(Spanned<BinaryOp>, Box<Expression>, Box<Expression>),
-    TernarySelect(Box<Expression>, Box<Expression>, Box<Expression>),
 
     // Indexing
-    ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Box<Expression>),
+    ArrayType(Spanned<Vec<ArrayLiteralElement<Box<Expression>>>>, Box<Expression>),
     ArrayIndex(Box<Expression>, Spanned<Vec<Expression>>),
     DotIdIndex(Box<Expression>, Identifier),
     DotIntIndex(Box<Expression>, Spanned<String>),
@@ -687,6 +680,15 @@ impl<V> ArrayLiteralElement<Spanned<V>> {
     }
 }
 
+impl<V> ArrayLiteralElement<Box<Spanned<V>>> {
+    pub fn span(&self) -> Span {
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
 impl<V> ArrayLiteralElement<V> {
     pub fn map_inner<W>(&self, f: impl FnOnce(&V) -> W) -> ArrayLiteralElement<W> {
         match self {
@@ -714,7 +716,7 @@ impl<T, E> ArrayLiteralElement<Result<T, E>> {
 
 #[derive(Debug, Clone)]
 pub struct ArrayComprehension {
-    pub body: Box<ArrayLiteralElement<Expression>>,
+    pub body: ArrayLiteralElement<Box<Expression>>,
     pub index: MaybeIdentifier,
     pub span_keyword: Span,
     pub iter: Box<Expression>,

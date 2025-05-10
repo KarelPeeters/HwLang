@@ -745,6 +745,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let Block { span: _, statements } = body;
         for stmt in statements {
+            let stmt_span = stmt.span;
             match &stmt.inner {
                 // non declarations, skip
                 ModuleStatementKind::CombinatorialBlock(_) => {}
@@ -771,7 +772,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     scope.maybe_declare(diags, decl.id.as_ref(), entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let elab_tuple = self.elaborate_module_declaration_wire(scope, vars, decl);
+                    let elab_tuple = self.elaborate_module_declaration_wire(scope, vars, stmt_span, decl);
 
                     let entry = match elab_tuple {
                         Ok((wire, process)) => {
@@ -799,12 +800,12 @@ impl BodyElaborationContext<'_, '_, '_> {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
                     //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(scope, vars, decl, is_root_block) {
+                    match self.elaborate_module_declaration_reg_out_port(scope, vars, stmt_span, decl, is_root_block) {
                         Ok((port, reg_init)) => {
                             let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
                             if let Ok(port_drivers) = port_drivers.as_ref_mut_ok() {
                                 assert!(port_drivers.is_empty());
-                                port_drivers.insert_first(Driver::OutputPortConnectionToReg, decl.span);
+                                port_drivers.insert_first(Driver::OutputPortConnectionToReg, stmt_span);
                             }
 
                             self.drivers.reg_drivers.insert_first(reg_init.reg, Ok(IndexMap::new()));
@@ -912,7 +913,6 @@ impl BodyElaborationContext<'_, '_, '_> {
         block: &CombinatorialBlock,
     ) -> Result<IrCombinatorialProcess, ErrorGuaranteed> {
         let &CombinatorialBlock {
-            span: _,
             span_keyword,
             ref block,
         } = block;
@@ -943,7 +943,6 @@ impl BodyElaborationContext<'_, '_, '_> {
         block: &ClockedBlock,
     ) -> Result<ChildClockedProcess, ErrorGuaranteed> {
         let &ClockedBlock {
-            span: _,
             span_keyword,
             span_domain,
             ref clock,
@@ -1758,12 +1757,13 @@ impl BodyElaborationContext<'_, '_, '_> {
         &mut self,
         scope_body: &Scope,
         vars_body: &VariableValues,
+        decl_span: Span,
         decl: &WireDeclaration,
     ) -> Result<(Wire, Option<Spanned<IrCombinatorialProcess>>), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
-        let WireDeclaration { span: _, id, kind } = decl;
+        let WireDeclaration { id, kind } = decl;
 
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut vars_inner = VariableValues::new_child(vars_body);
@@ -1837,7 +1837,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let domain = match domain {
                     Some(domain) => ctx
                         .check_valid_domain_crossing(
-                            decl.span,
+                            decl_span,
                             domain.map_inner(ValueDomain::from_domain_kind),
                             value_domain,
                             "wire declaration value",
@@ -1849,7 +1849,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             ValueDomain::Async => DomainKind::Async,
                             ValueDomain::Sync(s) => DomainKind::Sync(s),
                             ValueDomain::Clock => {
-                                return Err(diags.report_todo(decl.span, "inferring clock domain/type"))
+                                return Err(diags.report_todo(decl_span, "inferring clock domain/type"))
                             }
                         };
                         Ok(Spanned::new(value.span, domain))
@@ -1949,13 +1949,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let RegDeclaration {
-            span: _,
-            id,
-            sync,
-            ty,
-            init,
-        } = decl;
+        let RegDeclaration { id, sync, ty, init } = decl;
 
         // evaluate
         let sync = sync
@@ -2010,17 +2004,18 @@ impl BodyElaborationContext<'_, '_, '_> {
         &mut self,
         scope_body: &Scope,
         vars_body: &VariableValues,
+        decl_span: Span,
         decl: &RegOutPortMarker,
         is_root_block: bool,
     ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
-        let RegOutPortMarker { span: _, id, init } = decl;
+        let RegOutPortMarker { id, init } = decl;
 
         if !is_root_block {
             return Err(diags.report_simple(
                 "register output markers are only allowed at the top level of a module",
-                decl.span,
+                decl_span,
                 "register output in child block",
             ));
         }

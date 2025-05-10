@@ -33,6 +33,7 @@ use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use annotate_snippets::Level;
 use itertools::{enumerate, Either};
+use std::borrow::Borrow;
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
@@ -283,7 +284,6 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::TupleLiteral(values) => {
                 self.eval_tuple_literal(ctx, ctx_block, scope, vars, expected_ty, values)?
             }
-            ExpressionKind::StructLiteral(_) => return Err(diags.report_todo(expr.span, "expr kind StructLiteral")),
             ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: &Expression, name: &str, op_span: Span| {
                     let bound = self.eval_expression_as_compile(
@@ -472,9 +472,6 @@ impl CompileItemContext<'_, '_> {
                 let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
                 let result = eval_binary_expression(diags, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
-            }
-            ExpressionKind::TernarySelect(_, _, _) => {
-                return Err(diags.report_todo(expr.span, "expr kind TernarySelect"))
             }
             ExpressionKind::ArrayIndex(base, indices) => {
                 self.eval_array_index_expression(ctx, ctx_block, scope, vars, base, indices)?
@@ -950,7 +947,7 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    fn eval_array_literal<C: ExpressionContext>(
+    fn eval_array_literal<C: ExpressionContext, E: Borrow<Expression>>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut <C as ExpressionContext>::Block,
@@ -958,7 +955,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr_span: Span,
-        values: &[ArrayLiteralElement<Expression>],
+        values: &[ArrayLiteralElement<E>],
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -981,7 +978,7 @@ impl CompileItemContext<'_, '_> {
                 };
 
                 v.map_inner(|value_inner| {
-                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
+                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner.borrow())
                 })
                 .transpose()
             })

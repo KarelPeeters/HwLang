@@ -348,7 +348,7 @@ impl DiagnosticSnippetBuilder {
 impl DiagnosticAddable for DiagnosticSnippetBuilder {
     fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
         assert!(
-            self.span.contains(span),
+            self.span.contains_span(span),
             "DiagnosticSnippetBuilder labels must fall within snippet span"
         );
         self.annotations.push(Annotation {

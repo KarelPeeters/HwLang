@@ -1240,13 +1240,13 @@ impl CompileItemContext<'_, '_> {
         for item in items {
             match item {
                 ExtraItem::Inner(inner) => f(self, scope, vars, inner)?,
+                ExtraItem::Declaration(decl) => {
+                    self.eval_and_declare_declaration(scope, vars, decl);
+                }
                 ExtraItem::If(if_stmt) => {
                     if let Some(list_inner) = self.compile_if_statement_choose_block(scope, vars, if_stmt)? {
                         self.compile_elaborate_extra_list(scope, vars, list_inner, f)?;
                     }
-                }
-                ExtraItem::Declaration(decl) => {
-                    self.eval_and_declare_declaration(scope, vars, decl);
                 }
             }
         }

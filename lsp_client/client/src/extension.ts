@@ -43,10 +43,10 @@ export function activate(context: ExtensionContext) {
 
     // Create the language client and start the client.
     client = new LanguageClient(
-        'languageServerExample',
-        'Language Server Example',
+        'hwl-lsp',
+        'HwLang LSP',
         serverOptions,
-        clientOptions
+        clientOptions           
     );
 
     // Start the client. This will also launch the server

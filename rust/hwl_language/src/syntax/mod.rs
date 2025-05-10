@@ -7,9 +7,11 @@ use annotate_snippets::Level;
 use grammar_wrapper::grammar;
 use itertools::enumerate;
 use pos::Pos;
+
 pub mod ast;
 pub mod parsed;
 pub mod pos;
+pub mod resolve;
 pub mod source;
 pub mod token;
 

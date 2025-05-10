@@ -60,7 +60,23 @@ impl Span {
         )
     }
 
-    pub fn contains(self, other: Span) -> bool {
+    pub fn cmp_touches_pos(self, pos: Pos) -> std::cmp::Ordering {
+        assert_eq!(self.start.file, pos.file);
+        if self.start.byte >= pos.byte {
+            std::cmp::Ordering::Greater
+        } else if self.end.byte <= pos.byte {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+
+    pub fn touches_pos(self, pos: Pos) -> bool {
+        assert_eq!(self.start.file, pos.file);
+        self.start.byte <= pos.byte && pos.byte <= self.end.byte
+    }
+
+    pub fn contains_span(self, other: Span) -> bool {
         assert_eq!(self.start.file, other.start.file);
         self.start.byte <= other.start.byte && other.end.byte <= self.end.byte
     }
