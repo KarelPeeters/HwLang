@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock, IrClockedProcess, IrDatabase,
-    IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrPortInfo,
-    IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrClockedProcess,
+    IrDatabase, IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection,
+    IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -32,7 +32,7 @@ impl IrModuleInfo {
                         locals,
                         clock_signal,
                         clock_block,
-                        async_reset_signal_and_block,
+                        async_reset,
                     } = process;
 
                     clock_signal
@@ -46,17 +46,18 @@ impl IrModuleInfo {
                     )?;
                     clock_block.validate(diags, self, locals)?;
 
-                    if let Some((reset_signal, reset_block)) = async_reset_signal_and_block {
-                        reset_signal
-                            .inner
-                            .validate(diags, self, no_variables, reset_signal.span)?;
-                        check_type_match(
-                            diags,
-                            reset_signal.span,
-                            &IrType::Bool,
-                            &reset_signal.inner.ty(self, no_variables),
-                        )?;
-                        reset_block.validate(diags, self, locals)?;
+                    if let Some(async_reset) = async_reset {
+                        let IrAsyncResetInfo { signal, resets } = async_reset;
+                        signal.inner.validate(diags, self, no_variables, signal.span)?;
+                        check_type_match(diags, signal.span, &IrType::Bool, &signal.inner.ty(self, no_variables))?;
+
+                        // TODO check drivers, ie. only driven and reset in one process
+                        for reset in resets {
+                            let (reg, value) = &reset.inner;
+                            let reg_info = &self.registers[*reg];
+                            let empty_locals = IrVariables::new();
+                            check_type_match(diags, reset.span, &reg_info.ty, &value.ty(self, &empty_locals))?
+                        }
                     }
                 }
                 IrModuleChild::CombinatorialProcess(process) => {

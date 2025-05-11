@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::types::HardwareType;
 use crate::mid::ir::{
-    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
-    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
+    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
+    IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance,
     IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType,
     IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
@@ -439,7 +439,7 @@ fn lower_module_statements(
                     locals,
                     clock_signal,
                     clock_block,
-                    async_reset_signal_and_block,
+                    async_reset,
                 } = process;
 
                 let outer_name_map = NameMap {
@@ -451,15 +451,15 @@ fn lower_module_statements(
                 };
 
                 let clock_edge = lower_edge_to_str(diags, large, outer_name_map, clock_signal.as_ref())?;
-                let async_reset_signal_and_block = async_reset_signal_and_block
+                let async_reset = async_reset
                     .as_ref()
-                    .map(|(reset_signal, reset_block)| {
-                        let reset_edge = lower_edge_to_str(diags, large, outer_name_map, reset_signal.as_ref())?;
-                        Ok((reset_edge, reset_block))
+                    .map(|info| {
+                        let reset_edge = lower_edge_to_str(diags, large, outer_name_map, info.signal.as_ref())?;
+                        Ok((reset_edge, info))
                     })
                     .transpose()?;
 
-                match &async_reset_signal_and_block {
+                match &async_reset {
                     Some((reset_edge, _)) => swriteln!(
                         f,
                         "{I}always @({} {}, {} {}) begin",
@@ -492,20 +492,21 @@ fn lower_module_statements(
                 newline.before_item(f);
 
                 // reset header
-                let indent_clocked = match &async_reset_signal_and_block {
+                let indent_clocked = match &async_reset {
                     None => Indent::new(2),
-                    Some((reset_edge, reset_block)) => {
+                    Some((reset_edge, reset_info)) => {
                         // reset, using outer name map (no shadowing)
                         swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.value);
-                        lower_block(
-                            diags,
-                            large,
-                            outer_name_map,
-                            reset_block,
-                            f,
-                            Indent::new(3),
-                            &mut newline,
-                        )?;
+
+                        let IrAsyncResetInfo { signal: _, resets } = reset_info;
+                        for reset in resets {
+                            let (reg, value) = &reset.inner;
+                            let reg_name = reg_name_map.get(reg).unwrap();
+                            swrite!(f, "{I}{I}{I}{reg_name} <= ");
+                            lower_expression(diags, large, outer_name_map, reset.span, value, f)?;
+                            swriteln!(f, ";");
+                        }
+
                         swriteln!(f, "{I}{I}end else begin");
                         Indent::new(3)
                     }
@@ -539,7 +540,7 @@ fn lower_module_statements(
                 }
 
                 // reset tail
-                if async_reset_signal_and_block.is_some() {
+                if async_reset.is_some() {
                     swriteln!(f, "{I}{I}end");
                 }
 

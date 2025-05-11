@@ -4,7 +4,7 @@ use std::vec;
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, ResetKind, Spanned};
+use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
@@ -142,13 +142,13 @@ pub struct IrClockedProcess {
     pub locals: IrVariables,
     pub clock_signal: Spanned<IrExpression>,
     pub clock_block: IrBlock,
-    pub async_reset_signal_and_block: Option<(Spanned<IrExpression>, IrBlock)>,
+    pub async_reset: Option<IrAsyncResetInfo>,
 }
 
-pub struct IrResetInfo {
-    pub kind: ResetKind,
+#[derive(Debug)]
+pub struct IrAsyncResetInfo {
     pub signal: Spanned<IrExpression>,
-    pub block: IrBlock,
+    pub resets: Vec<Spanned<(IrRegister, IrExpression)>>,
 }
 
 #[derive(Debug)]

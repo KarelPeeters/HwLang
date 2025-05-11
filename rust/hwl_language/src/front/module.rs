@@ -19,9 +19,9 @@ use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined, Value};
 use crate::front::variables::{VariableValues, VariableValuesContent};
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrIfStatement, IrModule,
-    IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo, IrPorts, IrRegister,
-    IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
+    IrIfStatement, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
+    IrPorts, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
     self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModulePortBlock, ModulePortInBlock,
@@ -42,7 +42,7 @@ use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, Either};
+use itertools::{enumerate, Either, Itertools};
 use std::fmt::Debug;
 use std::hash::Hash;
 // TODO split this file into header/body
@@ -642,7 +642,7 @@ impl ChildClockedProcess {
             reset,
         } = self;
 
-        let (clock_block, async_reset_signal_and_block) = match reset {
+        let (clock_block, async_reset) = match reset {
             None => {
                 // nothing to do here
                 (clock_block, None)
@@ -655,25 +655,37 @@ impl ChildClockedProcess {
                 } = reset;
                 let reset_signal_ir = reset_signal.map_inner(|s| ctx.domain_signal_to_ir(s));
 
-                // create reset statements
-                let mut reset_statements = vec![];
-                for init in reg_inits {
-                    let ExtraRegisterInit { span, reg, init } = init;
-                    let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
-                    reset_statements.push(Spanned::new(span, stmt));
-                }
-                let reset_block = IrBlock {
-                    statements: reset_statements,
-                };
-
-                // put them in the right place
                 match kind.inner {
                     ResetKind::Async => {
                         // async reset becomes a separate block, sensitive to the signal
-                        (clock_block, Some((reset_signal_ir, reset_block)))
+                        let resets = reg_inits
+                            .into_iter()
+                            .map(|init| {
+                                let ExtraRegisterInit { span, reg, init } = init;
+                                Spanned::new(span, (reg, init))
+                            })
+                            .collect_vec();
+
+                        let info = IrAsyncResetInfo {
+                            signal: reset_signal_ir,
+                            resets,
+                        };
+                        (clock_block, Some(info))
                     }
                     ResetKind::Sync => {
-                        // async reset becomes an extra if branch inside the clocked block
+                        // sync reset just becomes an if branch inside the clocked block
+                        let reset_statements = reg_inits
+                            .into_iter()
+                            .map(|init| {
+                                let ExtraRegisterInit { span, reg, init } = init;
+                                let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
+                                Spanned::new(span, stmt)
+                            })
+                            .collect_vec();
+                        let reset_block = IrBlock {
+                            statements: reset_statements,
+                        };
+
                         let if_stmt = IrIfStatement {
                             condition: reset_signal_ir.inner,
                             then_block: reset_block,
@@ -692,7 +704,7 @@ impl ChildClockedProcess {
             locals,
             clock_signal: clock_signal.map_inner(|s| ctx.domain_signal_to_ir(s)),
             clock_block,
-            async_reset_signal_and_block,
+            async_reset,
         }
     }
 }

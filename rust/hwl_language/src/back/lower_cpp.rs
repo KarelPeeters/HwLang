@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
-    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrBlock,
-    IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
+    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
+    IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
@@ -127,11 +127,16 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     locals,
                     clock_signal,
                     clock_block,
-                    async_reset_signal_and_block,
+                    async_reset,
                 } = proc;
 
                 // reset function
-                if let Some((reset_signal, reset_block)) = async_reset_signal_and_block {
+                if let Some(async_reset) = async_reset {
+                    let IrAsyncResetInfo {
+                        signal: reset_signal,
+                        resets,
+                    } = async_reset;
+
                     let func_step_reset = format!("module_{module_index}_child_{child_index}_clocked_async_reset");
                     swriteln!(f_step_all, "{I}{func_step_reset}({step_args});");
 
@@ -151,8 +156,16 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     swriteln!(ctx.f, "{I}}}");
                     swriteln!(ctx.f);
 
-                    //   reset doesn't need locals
-                    ctx.generate_block(indent, reset_block, Stage::Next)?;
+                    for reset in resets {
+                        let (reg, value) = &reset.inner;
+                        let indent = Indent::new(2);
+
+                        let reg_str = reg_str(*reg, &ctx.module_info.registers[*reg]);
+                        let next = Stage::Next;
+                        // TODO we actually shouldn't read anything here, maybe assert that
+                        let value = ctx.eval(indent, reset.span, value, Stage::Next)?;
+                        swriteln!(ctx.f, "{indent}{next}_signals.{reg_str} = {value};");
+                    }
 
                     swriteln!(f_step, "}}");
                     swriteln!(f_step);
