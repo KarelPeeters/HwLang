@@ -297,7 +297,7 @@ fn lower_module_ports(
         };
         let dir_str = match direction {
             PortDirection::Input => "input",
-            PortDirection::Output => "output",
+            PortDirection::Output => "output reg",
         };
 
         if is_actual_port {
@@ -305,7 +305,7 @@ fn lower_module_ports(
         }
         port_lines.push((
             is_actual_port,
-            format!("{dir_str} wire {ty_str}{lower_name}"),
+            format!("{dir_str} {ty_str}{lower_name}"),
             format!("{debug_info_domain} {debug_info_ty}"),
         ));
 
@@ -409,7 +409,7 @@ fn lower_module_statements(
 ) -> Result<(), ErrorGuaranteed> {
     let diags = ctx.diags;
 
-    for child in children {
+    for (child_index, child) in enumerate(children) {
         newline.start_new_block();
         newline.before_item(f);
 
@@ -559,7 +559,7 @@ fn lower_module_statements(
                     let name_safe = LoweredName(name.clone());
                     swrite!(f, "{I}{inner_module_name} {name_safe}(");
                 } else {
-                    swrite!(f, "{I}{inner_module_name}(");
+                    swrite!(f, "{I}{inner_module_name} instance_{child_index}(");
                 }
 
                 if port_connections.is_empty() {
