@@ -31,10 +31,10 @@ pub module top ports(
     instance child(
         T=int_range(0..256)
     ) ports(
-        .clk(clk),
-        .rst(rst),
-        .x(d1),
-        .y(y),
+        clk,
+        rst,
+        x=d1,
+        y,
     );
 }
 
@@ -60,4 +60,23 @@ module child(T: type) ports(
     comb {
         y = x;
     }
+}
+
+struct Pair(T: type) {
+    x: T,
+    y: T,
+}
+
+enum Either(L: type, R: type) {
+    Left(L),
+    Right(R),
+}
+
+interface AxiStream(T: type) {
+    data: T,
+    valid: bool,
+    ready: bool,
+
+    interface input { data: in, valid: in, ready: out }
+    interface output { data: out, valid: out, ready: in }
 }
