@@ -387,7 +387,7 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
     // TODO allow specifying "const" before function params to make error messages nicer
     <start:@L>
         "fn" <id:MaybeId> <params:Parameters>
-        <ret_ty:("->" <SpannedPushArena<ExprLevelArrayNoStruct>>)?>
+        <ret_ty:("->" <ExprNoBlock>)?>
         <body:Block<BlockStatement>>
     <end:@R>
         => CommonDeclarationNamedKind::Function(FunctionDeclaration { id, params, ret_ty, body, span: loc.span(start, end) }),
@@ -522,9 +522,9 @@ SyncDomain: SyncDomain<Expression> = {
 }
 
 // expressions
-// TODO add "ExprNoBlock" here
-Expr: Expression = Spanned<PushArena<ExprLevelIn>>;
-ExprNoIn: Expression = Spanned<PushArena<ExprLevelRange>>;
+Expr: Expression = SpannedPushArena<ExprLevelIn>;
+ExprNoIn: Expression = SpannedPushArena<ExprLevelRange>;
+ExprNoBlock: Expression = SpannedPushArena<ExprLevelArrayImpl<"no">>;
 
 PushArena<T>: ExpressionKindIndex = {
     T => arena_expr.push(<>)
@@ -664,18 +664,16 @@ ExprLevelPower: ExpressionKind = {
     ExprLevelArray,
 }
 
-// TODO real implementation again, only matters once we have struct literals and if we decide to use {} for them
 ExprLevelArray = ExprLevelArrayImpl<"true">;
-ExprLevelArrayNoStruct = ExprLevelArrayImpl<"no">;
 
-ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
+ExprLevelArrayImpl<allow_block>: ExpressionKind = {
     // TODO find better array type syntax
     // TODO we can expand this one to allow `[4][3][2]ty` without causing ambiguity, maybe even remove `[2,3]ty`
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:SpannedPushArena<ExprLevelCall<allow_struct>>>
+    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:SpannedPushArena<ExprLevelCall<allow_block>>>
         => ExpressionKind::ArrayType(args, target),
     // array index
-    <target:SpannedPushArena<ExprLevelCall<allow_struct>>> "[" <args:Spanned<Separated<Expr,",">>> "]"
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "[" <args:Spanned<Separated<Expr,",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
@@ -690,12 +688,12 @@ ExprLevelArrayImpl<allow_struct>: ExpressionKind = {
     "[" <body:ArrayLiteralElement> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:ExprNoIn> "]"
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
-    ExprLevelCall<allow_struct>,
+    ExprLevelCall<allow_block>,
 }
 
-ExprLevelCall<allow_struct>: ExpressionKind = {
+ExprLevelCall<allow_block>: ExpressionKind = {
     // normal call
-    <target:SpannedPushArena<ExprLevelDot<allow_struct>>> "(" <args:Args> ")"
+    <target:SpannedPushArena<ExprLevelDot<allow_block>>> "(" <args:Args> ")"
         => ExpressionKind::Call(target, args),
 
     // builtins
@@ -708,16 +706,16 @@ ExprLevelCall<allow_struct>: ExpressionKind = {
     <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 
-    ExprLevelDot<allow_struct>,
+    ExprLevelDot<allow_block>,
 }
 
-ExprLevelDot<allow_struct>: ExpressionKind = {
-    <target:SpannedPushArena<ExprLevelCall<allow_struct>>> "." <index: Id>
+ExprLevelDot<allow_block>: ExpressionKind = {
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index: Id>
         => ExpressionKind::DotIdIndex(target, index),
-    <target:SpannedPushArena<ExprLevelCall<allow_struct>>> "." <index: Spanned<TokenIntLiteralDecimal>>
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index: Spanned<TokenIntLiteralDecimal>>
         => ExpressionKind::DotIntIndex(target, index.map_inner(|s| s.to_owned())),
 
-    ExprLevelAtomic<allow_struct>,
+    ExprLevelAtomic<allow_block>,
 }
 
 // TODO allow "if" here
@@ -737,26 +735,15 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     <value:Expr> => ArrayLiteralElement::Single(value),
 }
 
-// TODO remove this, and remove allow_struct in general
-ExprLevelStructInit<allow_struct>: ExpressionKind = {
-    //  struct
-    // TODO allow struct type params?
-    // <struct_ty:Id> "{" "}" => {},
-//    <struct_ty:ExprLevelCall> "{" <fields:Separated<StructLiteralField,",">> "}" => {},
-//        ExpressionKind::StructLiteral(StructLiteral { struct_ty, fields }),
-    ExprLevelAtomic<allow_struct>,
-}
-
 StructLiteralField: StructLiteralField = {
     <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: loc.span(start, end) },
 }
 
-// TODO rename "allow_struct" to "allow_block", struct literals didn't end up getting dedicated syntax
-ExprLevelAtomic<allow_struct>: ExpressionKind = {
+ExprLevelAtomic<allow_block>: ExpressionKind = {
     // parentheses grouping
     "(" <expr:Expr> ")" => ExpressionKind::Wrapped(expr),
     // block expression
-    "{" <statements:BlockStatement*> <expression:Expr> "}" if allow_struct == "true"
+    "{" <statements:BlockStatement*> <expression:Expr> "}" if allow_block == "true"
         => ExpressionKind::Block(BlockExpression { statements, expression }),
     // misc
     <id:Id> => ExpressionKind::Id(id),
