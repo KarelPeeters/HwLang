@@ -1,6 +1,3 @@
-use std::collections::HashSet;
-use std::vec;
-
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
@@ -9,6 +6,9 @@ use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
+use indexmap::IndexSet;
+use itertools::Itertools;
+use std::vec;
 use unwrap_match::unwrap_match;
 
 // TODO add an "optimization" pass that does some basic stuff like:
@@ -27,20 +27,15 @@ pub type IrModules = Arena<IrModule, IrModuleInfo>;
 
 // TODO check for circular instantiations
 pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<IrModule> {
-    let mut result = vec![];
-    // using a hashmap here is fine, we don't rely on its ordering anywhere
-    let mut seen = HashSet::new();
+    let mut seen = IndexSet::new();
     let mut todo = vec![top];
 
     while let Some(module) = todo.pop() {
-        if seen.contains(&module) {
+        if !seen.insert(module) {
             continue;
         }
 
-        seen.insert(module);
-        result.push(module);
-
-        for child in modules[module].children.iter().rev() {
+        for child in &modules[module].children {
             match child {
                 IrModuleChild::ModuleInstance(inst) => {
                     todo.push(inst.module);
@@ -50,8 +45,7 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<Ir
         }
     }
 
-    result.reverse();
-    result
+    seen.into_iter().rev().collect_vec()
 }
 
 /// Variant of [Type] that can only represent types that are valid in hardware.
