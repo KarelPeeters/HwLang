@@ -67,7 +67,7 @@ pub enum FunctionBody {
     FunctionBodyBlock {
         // TODO avoid ast clones, just refer to the ast item here
         body: Block<BlockStatement>,
-        ret_ty: Option<Box<Expression>>,
+        ret_ty: Option<Expression>,
     },
     ItemBody(FunctionItemBody),
 }
@@ -583,16 +583,12 @@ impl CompileItemContext<'_, '_> {
         let mut matcher = ParamArgMacher::new(diags, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
 
         self.compile_elaborate_extra_list(&mut scope, vars, &params.items, &mut |ctx, scope, vars, param| {
-            let Parameter {
-                id,
-                ty,
-                default: default_value,
-            } = param;
+            let &Parameter { ref id, ty, default } = param;
 
             let ty = ctx.eval_expression_as_ty(scope, vars, ty)?;
-            let default = default_value
+            let default = default
                 .as_ref()
-                .map(|default| {
+                .map(|&default| {
                     let value =
                         ctx.eval_expression_as_compile(scope, vars, &ty.inner, default, "parameter default value")?;
                     Ok(value.map_inner(Value::Compile))
@@ -630,7 +626,6 @@ impl CompileItemContext<'_, '_> {
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                     // evaluate return type
                     let ret_ty = ret_ty
-                        .as_ref()
                         .map(|ret_ty| s.eval_expression_as_ty(&scope, vars, ret_ty))
                         .transpose()?;
 

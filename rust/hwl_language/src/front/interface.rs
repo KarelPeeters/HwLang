@@ -97,6 +97,7 @@ impl CompileRefs<'_, '_> {
             &mut vars,
             port_types,
             &mut |ctx, scope_params, vars, (port_id, ty)| {
+                let ty = *ty;
                 let ty_eval = ctx.eval_expression_as_ty(scope_params, vars, ty).and_then(|ty| {
                     match ty.inner.as_hardware_type() {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),

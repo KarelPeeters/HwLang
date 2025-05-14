@@ -1,5 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
-use crate::syntax::ast::FileContent;
+use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::IndexType;
@@ -26,6 +26,11 @@ impl ParsedDatabase {
         }
 
         Self { file_ast }
+    }
+
+    pub fn get_expr(&self, expr: Expression) -> &ExpressionKind {
+        let file_content = self[expr.span.start.file].as_ref().unwrap();
+        &file_content.arena_expressions[expr.inner]
     }
 }
 

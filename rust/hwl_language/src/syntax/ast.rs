@@ -1,13 +1,17 @@
 use crate::front::value::Value;
+use crate::new_index_type;
 use crate::syntax::pos::Span;
+use crate::util::arena::Arena;
 use crate::util::iter::IterExt;
 
-// TODO remove "clone" from everything, and use ast lifetimes everywhere
+new_index_type!(pub ExpressionKindIndex);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FileContent {
     pub span: Span,
     pub items: Vec<Item>,
+
+    pub arena_expressions: Arena<ExpressionKindIndex, ExpressionKind>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -17,7 +21,7 @@ pub enum Visibility<S> {
 }
 
 // TODO add "doc comment" field to items?
-// TODO rename to ItemDef
+// TODO rename to ItemDef or maybe FileItem
 #[derive(Debug, Clone)]
 pub enum Item {
     // non-declaring items
@@ -140,7 +144,7 @@ pub struct ItemDefInterface {
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub span_body: Span,
-    pub port_types: ExtraList<(Identifier, Box<Expression>)>,
+    pub port_types: ExtraList<(Identifier, Expression)>,
     pub views: Vec<InterfaceView>,
 }
 
@@ -193,7 +197,7 @@ pub struct ModulePortSingle {
 #[derive(Debug, Clone)]
 pub struct ModulePortBlock {
     pub span: Span,
-    pub domain: Spanned<DomainKind<Box<Expression>>>,
+    pub domain: Spanned<DomainKind<Expression>>,
     pub ports: ExtraList<ModulePortInBlock>,
 }
 
@@ -212,8 +216,8 @@ pub enum ModulePortSingleKind {
     },
     Interface {
         span_keyword: Span,
-        domain: Spanned<DomainKind<Box<Expression>>>,
-        interface: Box<Expression>,
+        domain: Spanned<DomainKind<Expression>>,
+        interface: Expression,
     },
 }
 
@@ -223,8 +227,8 @@ pub enum PortSingleKindInner {
         span_clock: Span,
     },
     Normal {
-        domain: Spanned<DomainKind<Box<Expression>>>,
-        ty: Box<Expression>,
+        domain: Spanned<DomainKind<Expression>>,
+        ty: Expression,
     },
 }
 
@@ -232,11 +236,11 @@ pub enum PortSingleKindInner {
 pub enum ModulePortInBlockKind {
     Port {
         direction: Spanned<PortDirection>,
-        ty: Box<Expression>,
+        ty: Expression,
     },
     Interface {
         span_keyword: Span,
-        interface: Box<Expression>,
+        interface: Expression,
     },
 }
 
@@ -314,7 +318,7 @@ pub struct Block<S> {
 #[derive(Debug, Clone)]
 pub struct BlockExpression {
     pub statements: Vec<BlockStatement>,
-    pub expression: Box<Expression>,
+    pub expression: Expression,
 }
 
 pub type ModuleStatement = Spanned<ModuleStatementKind>;
@@ -347,7 +351,7 @@ pub enum BlockStatementKind {
     // basic statements
     Assignment(Assignment),
     // TODO remove expressions, maybe with exception for function calls?
-    Expression(Box<Expression>),
+    Expression(Expression),
 
     // control flow
     Block(Block<BlockStatement>),
@@ -374,13 +378,13 @@ pub struct IfStatement<B> {
 pub struct IfCondBlockPair<B> {
     pub span: Span,
     pub span_if: Span,
-    pub cond: Box<Expression>,
+    pub cond: Expression,
     pub block: B,
 }
 
 #[derive(Debug, Clone)]
 pub struct MatchStatement<B> {
-    pub target: Box<Expression>,
+    pub target: Expression,
     pub span_branches: Span,
     pub branches: Vec<MatchBranch<B>>,
 }
@@ -392,7 +396,7 @@ pub struct MatchBranch<B> {
 }
 
 #[derive(Debug, Clone)]
-pub enum MatchPattern<E = Box<Expression>, R = Box<Expression>, V = Identifier, I = Identifier> {
+pub enum MatchPattern<E = Expression, R = Expression, V = Identifier, I = Identifier> {
     Dummy,
     Val(I),
 
@@ -404,7 +408,7 @@ pub enum MatchPattern<E = Box<Expression>, R = Box<Expression>, V = Identifier, 
 #[derive(Debug, Clone)]
 pub struct WhileStatement {
     pub span_keyword: Span,
-    pub cond: Box<Expression>,
+    pub cond: Expression,
     pub body: Block<BlockStatement>,
 }
 
@@ -412,29 +416,29 @@ pub struct WhileStatement {
 pub struct ForStatement<S> {
     pub span_keyword: Span,
     pub index: MaybeIdentifier,
-    pub index_ty: Option<Box<Expression>>,
-    pub iter: Box<Expression>,
+    pub index_ty: Option<Expression>,
+    pub iter: Expression,
     pub body: Block<S>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ReturnStatement {
     pub span_return: Span,
-    pub value: Option<Box<Expression>>,
+    pub value: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
 pub struct RegOutPortMarker {
     pub id: Identifier,
-    pub init: Box<Expression>,
+    pub init: Expression,
 }
 
 #[derive(Debug, Clone)]
 pub struct RegDeclaration {
     pub id: MaybeIdentifier,
-    pub sync: Option<Spanned<SyncDomain<Box<Expression>>>>,
-    pub ty: Box<Expression>,
-    pub init: Box<Expression>,
+    pub sync: Option<Spanned<SyncDomain<Expression>>>,
+    pub ty: Expression,
+    pub init: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -447,16 +451,16 @@ pub struct WireDeclaration {
 pub enum WireDeclarationKind {
     Clock {
         span_clock: Span,
-        value: Option<Box<Expression>>,
+        value: Option<Expression>,
     },
     NormalWithValue {
-        domain: Option<Spanned<DomainKind<Box<Expression>>>>,
-        ty: Option<Box<Expression>>,
-        value: Box<Expression>,
+        domain: Option<Spanned<DomainKind<Expression>>>,
+        ty: Option<Expression>,
+        value: Expression,
     },
     NormalWithoutValue {
-        domain: Option<Spanned<DomainKind<Box<Expression>>>>,
-        ty: Box<Expression>,
+        domain: Option<Spanned<DomainKind<Expression>>>,
+        ty: Expression,
     },
 }
 
@@ -465,15 +469,15 @@ pub struct TypeDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub body: Box<Expression>,
+    pub body: Expression,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConstDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub ty: Option<Box<Expression>>,
-    pub value: Box<Expression>,
+    pub ty: Option<Expression>,
+    pub value: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -481,16 +485,16 @@ pub struct VariableDeclaration {
     pub span: Span,
     pub mutable: bool,
     pub id: MaybeIdentifier,
-    pub ty: Option<Box<Expression>>,
-    pub init: Option<Box<Expression>>,
+    pub ty: Option<Expression>,
+    pub init: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
     pub op: Spanned<Option<BinaryOp>>,
-    pub target: Box<Expression>,
-    pub value: Box<Expression>,
+    pub target: Expression,
+    pub value: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -503,9 +507,9 @@ pub struct CombinatorialBlock {
 pub struct ClockedBlock {
     pub span_keyword: Span,
     pub span_domain: Span,
-    pub clock: Box<Expression>,
+    pub clock: Expression,
     /// No reset means this block does not have a reset.
-    pub reset: Option<Spanned<ClockedBlockReset<Box<Expression>>>>,
+    pub reset: Option<Spanned<ClockedBlockReset<Expression>>>,
     pub block: Block<BlockStatement>,
 }
 
@@ -541,26 +545,26 @@ pub enum ResetKind {
 pub struct ModuleInstanceItem {
     pub span: Span,
     pub span_keyword: Span,
-    pub module: Box<Expression>,
+    pub module: Expression,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub span_keyword: Span,
-    pub module: Box<Expression>,
+    pub module: Expression,
     pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PortConnection {
     pub id: Identifier,
-    pub expr: Option<Expression>,
+    pub expr: Expression,
 }
 
 // TODO we're using Box<Spanned<ExpressionKind>> a lot, but maybe
 //   Spanned<Box<ExpressionKind>> is better?
-pub type Expression = Spanned<ExpressionKind>;
+pub type Expression = Spanned<ExpressionKindIndex>;
 
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
@@ -573,7 +577,7 @@ pub enum ExpressionKind {
     TypeFunction,
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
-    Wrapped(Box<Expression>),
+    Wrapped(Expression),
     Block(BlockExpression),
     Id(Identifier),
 
@@ -583,33 +587,33 @@ pub enum ExpressionKind {
     StringLiteral(String),
 
     // Structures
-    ArrayLiteral(Vec<ArrayLiteralElement<Box<Expression>>>),
+    ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
     TupleLiteral(Vec<Expression>),
     RangeLiteral(RangeLiteral),
     ArrayComprehension(ArrayComprehension),
 
     // Operations
-    UnaryOp(Spanned<UnaryOp>, Box<Expression>),
-    BinaryOp(Spanned<BinaryOp>, Box<Expression>, Box<Expression>),
+    UnaryOp(Spanned<UnaryOp>, Expression),
+    BinaryOp(Spanned<BinaryOp>, Expression, Expression),
 
     // Indexing
-    ArrayType(Spanned<Vec<ArrayLiteralElement<Box<Expression>>>>, Box<Expression>),
-    ArrayIndex(Box<Expression>, Spanned<Vec<Expression>>),
-    DotIdIndex(Box<Expression>, Identifier),
-    DotIntIndex(Box<Expression>, Spanned<String>),
+    ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Expression),
+    ArrayIndex(Expression, Spanned<Vec<Expression>>),
+    DotIdIndex(Expression, Identifier),
+    DotIntIndex(Expression, Spanned<String>),
 
     // Calls
-    Call(Box<Expression>, Args),
+    Call(Expression, Args),
     Builtin(Spanned<Vec<Expression>>),
-    UnsafeValueWithDomain(Box<Expression>, Spanned<DomainKind<Box<Expression>>>),
+    UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
 }
 
 #[derive(Debug, Clone)]
 pub struct RegisterDelay {
     pub span_keyword: Span,
-    pub value: Box<Expression>,
-    pub init: Box<Expression>,
+    pub value: Expression,
+    pub init: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -665,7 +669,7 @@ impl<N, T> Args<N, T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ArrayLiteralElement<V> {
     Single(V),
     Spread(Span, V),
@@ -690,10 +694,10 @@ impl<V> ArrayLiteralElement<Box<Spanned<V>>> {
 }
 
 impl<V> ArrayLiteralElement<V> {
-    pub fn map_inner<W>(&self, f: impl FnOnce(&V) -> W) -> ArrayLiteralElement<W> {
+    pub fn map_inner<W>(self, f: impl FnOnce(V) -> W) -> ArrayLiteralElement<W> {
         match self {
             ArrayLiteralElement::Single(value) => ArrayLiteralElement::Single(f(value)),
-            ArrayLiteralElement::Spread(span, value) => ArrayLiteralElement::Spread(*span, f(value)),
+            ArrayLiteralElement::Spread(span, value) => ArrayLiteralElement::Spread(span, f(value)),
         }
     }
 
@@ -716,15 +720,15 @@ impl<T, E> ArrayLiteralElement<Result<T, E>> {
 
 #[derive(Debug, Clone)]
 pub struct ArrayComprehension {
-    pub body: ArrayLiteralElement<Box<Expression>>,
+    pub body: ArrayLiteralElement<Expression>,
     pub index: MaybeIdentifier,
     pub span_keyword: Span,
-    pub iter: Box<Expression>,
+    pub iter: Expression,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructLiteral {
-    pub struct_ty: Box<Expression>,
+    pub struct_ty: Expression,
     pub fields: Vec<StructLiteralField>,
 }
 
@@ -739,24 +743,24 @@ pub struct StructLiteralField {
 pub enum RangeLiteral {
     ExclusiveEnd {
         op_span: Span,
-        start: Option<Box<Expression>>,
-        end: Option<Box<Expression>>,
+        start: Option<Expression>,
+        end: Option<Expression>,
     },
     InclusiveEnd {
         op_span: Span,
-        start: Option<Box<Expression>>,
-        end: Box<Expression>,
+        start: Option<Expression>,
+        end: Expression,
     },
     Length {
         op_span: Span,
-        start: Box<Expression>,
-        len: Box<Expression>,
+        start: Expression,
+        len: Expression,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct SyncExpression {
-    pub clock: Box<Expression>,
+    pub clock: Expression,
     pub body: Block<BlockStatement>,
 }
 
@@ -789,14 +793,20 @@ pub struct Identifier {
 }
 
 // TODO move to parser utilities module
-pub fn build_binary_op(op_span: Span, op: BinaryOp, left: Expression, right: Expression) -> ExpressionKind {
+pub fn build_binary_op(
+    arena_expressions: &mut Arena<ExpressionKindIndex, ExpressionKind>,
+    op_span: Span,
+    op: BinaryOp,
+    left: Spanned<ExpressionKind>,
+    right: Spanned<ExpressionKind>,
+) -> ExpressionKind {
     ExpressionKind::BinaryOp(
         Spanned {
             span: op_span,
             inner: op,
         },
-        Box::new(left),
-        Box::new(right),
+        left.map_inner(|e| arena_expressions.push(e)),
+        right.map_inner(|e| arena_expressions.push(e)),
     )
 }
 
@@ -829,7 +839,7 @@ pub enum BinaryOp {
     In,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum UnaryOp {
     Plus,
     Neg,

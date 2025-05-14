@@ -12,7 +12,7 @@ use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
     IrWire,
 };
-use crate::syntax::ast::{self, PortDirection, Visibility};
+use crate::syntax::ast::{self, Expression, ExpressionKind, PortDirection, Visibility};
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
 use crate::syntax::pos::Span;
@@ -158,7 +158,7 @@ pub enum ElaborationSet {
     AsMuchAsPossible,
 }
 
-impl CompileRefs<'_, '_> {
+impl<'a, 's> CompileRefs<'a, 's> {
     pub fn check_should_stop(&self, span: Span) -> Result<(), ErrorGuaranteed> {
         // TODO report only one error, now all threads report the same error
         //   put an Option<ErrorGuaranteed> somewhere in a mutex?
@@ -191,6 +191,10 @@ impl CompileRefs<'_, '_> {
                 }
             }
         }
+    }
+
+    pub fn get_expr(&self, expr: Expression) -> &'a ExpressionKind {
+        self.fixed.parsed.get_expr(expr)
     }
 }
 

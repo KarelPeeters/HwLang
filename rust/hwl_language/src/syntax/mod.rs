@@ -1,7 +1,9 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::syntax::ast::FileContent;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
+use crate::util::arena::Arena;
 use crate::util::iter::IterExt;
 use annotate_snippets::Level;
 use grammar_wrapper::grammar;
@@ -43,7 +45,7 @@ impl LocationBuilder {
     }
 }
 
-pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, ParseError> {
+pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseError> {
     // construct a tokenizer to match the format lalrpop is expecting
     let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
@@ -57,13 +59,24 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<ast::FileContent, P
     let location_builder = LocationBuilder { file };
 
     // actual parsing
-    let result = grammar::FileContentParser::new().parse(&location_builder, src, tokenizer);
+    // TODO create and pass arena
+    // TODO wrap in content
+    let mut arena_expressions = Arena::new();
+    let result = grammar::FileItemsParser::new().parse(&location_builder, &mut arena_expressions, tokenizer);
 
-    // convert the error back to our own formats
-    result.map_err(|e| {
-        e.map_location(|byte| Pos { file, byte })
-            .map_token(|token| token.map(str::to_owned))
-    })
+    match result {
+        Ok(file_items) => {
+            let span_full = Span::new(Pos { file, byte: 0 }, Pos { file, byte: src.len() });
+            Ok(FileContent {
+                span: span_full,
+                items: file_items,
+                arena_expressions,
+            })
+        }
+        Err(e) => Err(e
+            .map_location(|byte| Pos { file, byte })
+            .map_token(|token| token.map(str::to_owned))),
+    }
 }
 
 pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {

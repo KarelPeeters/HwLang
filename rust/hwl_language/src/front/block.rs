@@ -224,16 +224,12 @@ impl CompileItemContext<'_, '_> {
                     let mutable = *mutable;
 
                     // eval ty
-                    let ty = ty
-                        .as_ref()
-                        .map(|ty| self.eval_expression_as_ty(scope, vars, ty))
-                        .transpose();
+                    let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                        init.as_ref()
-                            .map(|init| self.eval_expression(ctx, &mut ctx_block, scope, vars, init_expected_ty, init))
+                        init.map(|init| self.eval_expression(ctx, &mut ctx_block, scope, vars, init_expected_ty, init))
                             .transpose()
                     });
 
@@ -276,7 +272,7 @@ impl CompileItemContext<'_, '_> {
                     self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
                     BlockEnd::Normal
                 }
-                BlockStatementKind::Expression(expr) => {
+                &BlockStatementKind::Expression(expr) => {
                     let _: Spanned<Value> = self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, expr)?;
                     BlockEnd::Normal
                 }
@@ -312,7 +308,7 @@ impl CompileItemContext<'_, '_> {
                 BlockStatementKind::While(stmt_while) => {
                     let &WhileStatement {
                         span_keyword,
-                        ref cond,
+                        cond,
                         ref body,
                     } = stmt_while;
 
@@ -381,7 +377,6 @@ impl CompileItemContext<'_, '_> {
                         )
                     })?;
                     let value = value
-                        .as_ref()
                         .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, expected_return_ty, value))
                         .transpose()?;
 
@@ -437,7 +432,7 @@ impl CompileItemContext<'_, '_> {
         let &IfCondBlockPair {
             span: _,
             span_if,
-            ref cond,
+            cond,
             ref block,
         } = initial_if;
         let cond = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Bool, cond)?;
@@ -578,10 +573,10 @@ impl CompileItemContext<'_, '_> {
         stmt: &MatchStatement<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let MatchStatement {
+        let &MatchStatement {
             target,
             span_branches,
-            branches,
+            ref branches,
         } = stmt;
 
         // eval target
@@ -629,9 +624,9 @@ impl CompileItemContext<'_, '_> {
                         cover_all = true;
                         Ok(MatchPattern::Val(i))
                     }
-                    MatchPattern::Equal(value) => {
+                    &MatchPattern::Equal(value) => {
                         // TODO support tuples, arrays, structs, enums (by value), all recursively
-                        if let ExpressionKind::Dummy = &value.inner {
+                        if let ExpressionKind::Dummy = self.refs.get_expr(value) {
                             cover_all = true;
                             Ok(MatchPattern::Dummy)
                         } else {
@@ -669,7 +664,7 @@ impl CompileItemContext<'_, '_> {
                             Ok(MatchPattern::Equal(pattern))
                         }
                     }
-                    MatchPattern::In(value) => {
+                    &MatchPattern::In(value) => {
                         if !matches!(target_ty, Type::Int(_)) {
                             return Err(diags.report_simple(
                                 "range patterns are only supported for int values",
@@ -782,7 +777,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             let diag = Diagnostic::new("match does not cover all values")
-                .add_error(*span_branches, msg)
+                .add_error(span_branches, msg)
                 .add_info(
                     target.span,
                     format!("value has type `{}`", target_ty.to_diagnostic_string()),
@@ -1142,7 +1137,7 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
         let ctx_block = &mut result_block;
 
-        let ForStatement {
+        let &ForStatement {
             span_keyword: _,
             index: _,
             index_ty,
@@ -1151,7 +1146,6 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
 
         let index_ty = index_ty
-            .as_ref()
             .map(|index_ty| self.eval_expression_as_ty(scope, vars, index_ty))
             .transpose();
         let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter);
@@ -1267,11 +1261,11 @@ impl CompileItemContext<'_, '_> {
         } = if_stmt;
 
         let mut eval_pair = |pair: &'a IfCondBlockPair<B>| {
-            let IfCondBlockPair {
+            let &IfCondBlockPair {
                 span: _,
                 span_if,
                 cond,
-                block,
+                ref block,
             } = pair;
 
             let mut vars_inner = VariableValues::new_child(vars);
@@ -1283,7 +1277,7 @@ impl CompileItemContext<'_, '_> {
                 "compile-time if condition",
             )?;
 
-            let reason = TypeContainsReason::IfCondition(*span_if);
+            let reason = TypeContainsReason::IfCondition(span_if);
             let cond = check_type_is_bool_compile(diags, reason, cond)?;
 
             if cond {

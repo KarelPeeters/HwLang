@@ -33,7 +33,6 @@ use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use annotate_snippets::Level;
 use itertools::{enumerate, Either};
-use std::borrow::Borrow;
 use std::cmp::{max, min};
 use std::ops::Sub;
 use unwrap_match::unwrap_match;
@@ -121,7 +120,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<Spanned<Value>, ErrorGuaranteed> {
         assert_eq!(self.variables.check(), vars.check());
         Ok(self
@@ -139,7 +138,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<Spanned<ValueWithImplications>, ErrorGuaranteed> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
         match value {
@@ -164,11 +163,11 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<ValueInner, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let result_simple: Value = match &expr.inner {
+        let result_simple = match self.refs.get_expr(expr) {
             ExpressionKind::Dummy => {
                 // if dummy expressions were allowed, the caller would have checked for them already
                 return Err(diags.report_simple(
@@ -179,11 +178,14 @@ impl CompileItemContext<'_, '_> {
             }
             ExpressionKind::Undefined => Value::Compile(CompileValue::Undefined),
             ExpressionKind::Type => Value::Compile(CompileValue::Type(Type::Type)),
-            ExpressionKind::Wrapped(inner) => {
+            &ExpressionKind::Wrapped(inner) => {
                 return self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, inner);
             }
             ExpressionKind::Block(block_expr) => {
-                let BlockExpression { statements, expression } = block_expr;
+                let &BlockExpression {
+                    ref statements,
+                    expression,
+                } = block_expr;
 
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
@@ -285,7 +287,7 @@ impl CompileItemContext<'_, '_> {
                 self.eval_tuple_literal(ctx, ctx_block, scope, vars, expected_ty, values)?
             }
             ExpressionKind::RangeLiteral(literal) => {
-                let mut eval_bound = |bound: &Expression, name: &str, op_span: Span| {
+                let mut eval_bound = |bound: Expression, name: &str, op_span: Span| {
                     let bound = self.eval_expression_as_compile(
                         scope,
                         vars,
@@ -303,11 +305,8 @@ impl CompileItemContext<'_, '_> {
                         ref start,
                         ref end,
                     } => {
-                        let start = start
-                            .as_ref()
-                            .map(|start| eval_bound(start, "start", op_span))
-                            .transpose();
-                        let end = end.as_ref().map(|end| eval_bound(end, "end", op_span)).transpose();
+                        let start = start.map(|start| eval_bound(start, "start", op_span)).transpose();
+                        let end = end.map(|end| eval_bound(end, "end", op_span)).transpose();
 
                         let range = IncRange {
                             start_inc: start?,
@@ -315,15 +314,8 @@ impl CompileItemContext<'_, '_> {
                         };
                         Value::Compile(CompileValue::IntRange(range))
                     }
-                    RangeLiteral::InclusiveEnd {
-                        op_span,
-                        ref start,
-                        ref end,
-                    } => {
-                        let start = start
-                            .as_ref()
-                            .map(|start| eval_bound(start, "start", op_span))
-                            .transpose();
+                    RangeLiteral::InclusiveEnd { op_span, start, end } => {
+                        let start = start.map(|start| eval_bound(start, "start", op_span)).transpose();
                         let end = eval_bound(end, "end", op_span);
 
                         let range = IncRange {
@@ -332,11 +324,7 @@ impl CompileItemContext<'_, '_> {
                         };
                         Value::Compile(CompileValue::IntRange(range))
                     }
-                    RangeLiteral::Length {
-                        op_span,
-                        ref start,
-                        ref len,
-                    } => {
+                    RangeLiteral::Length { op_span, start, len } => {
                         // TODO support runtime starts here too (so they can be full values),
                         //   for now those are special-cased in the array indexing evaluation.
                         //   Maybe we want real support for mixed compile/runtime compounds,
@@ -354,13 +342,12 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             ExpressionKind::ArrayComprehension(array_comprehension) => {
-                let ArrayComprehension {
+                let &ArrayComprehension {
                     body,
-                    index,
+                    ref index,
                     span_keyword,
                     iter,
                 } = array_comprehension;
-                let span_keyword = *span_keyword;
 
                 let expected_ty_inner = match expected_ty {
                     Type::Array(inner, _) => inner,
@@ -394,7 +381,7 @@ impl CompileItemContext<'_, '_> {
                 array_literal_combine_values(diags, &mut self.large, expr.span, expected_ty_inner, values)?
             }
 
-            ExpressionKind::UnaryOp(op, operand) => match op.inner {
+            &ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Plus => {
                     let operand =
                         self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
@@ -467,20 +454,20 @@ impl CompileItemContext<'_, '_> {
                     }
                 }
             },
-            &ExpressionKind::BinaryOp(op, ref left, ref right) => {
+            &ExpressionKind::BinaryOp(op, left, right) => {
                 let left = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, left);
                 let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
                 let result = eval_binary_expression(diags, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
             }
-            ExpressionKind::ArrayIndex(base, indices) => {
+            &ExpressionKind::ArrayIndex(base, ref indices) => {
                 self.eval_array_index_expression(ctx, ctx_block, scope, vars, base, indices)?
             }
-            ExpressionKind::ArrayType(lens, base) => {
+            &ExpressionKind::ArrayType(ref lens, base) => {
                 let lens = lens
                     .inner
                     .iter()
-                    .map(|len| {
+                    .map(|&len| {
                         let len = match len {
                             ArrayLiteralElement::Single(len) => len,
                             ArrayLiteralElement::Spread(_, _) => {
@@ -509,10 +496,10 @@ impl CompileItemContext<'_, '_> {
                     .fold(base.inner, |acc, len| Type::Array(Box::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
-            ExpressionKind::DotIdIndex(base, index) => {
+            &ExpressionKind::DotIdIndex(base, ref index) => {
                 return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expected_ty, expr.span, base, index);
             }
-            ExpressionKind::DotIntIndex(base, index) => {
+            &ExpressionKind::DotIntIndex(base, ref index) => {
                 let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
 
                 let index_int = BigUint::from_str_radix(&index.inner, 10)
@@ -570,11 +557,11 @@ impl CompileItemContext<'_, '_> {
                     ValueInner::PortInterface(_) => return Err(err_not_tuple("port interface")),
                 }
             }
-            ExpressionKind::Call(target, args) => {
+            &ExpressionKind::Call(target, ref args) => {
                 // evaluate target and args
                 let target = self.eval_expression_as_compile(scope, vars, &Type::Any, target, "call target")?;
                 let args =
-                    args.try_map_inner_all(|arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
+                    args.try_map_inner_all(|&arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
 
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
@@ -611,7 +598,7 @@ impl CompileItemContext<'_, '_> {
                 result_value
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
-            ExpressionKind::UnsafeValueWithDomain(value, domain) => {
+            &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
                 let domain = self.eval_domain(scope, domain);
 
@@ -634,8 +621,8 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::RegisterDelay(reg_delay) => {
                 let &RegisterDelay {
                     span_keyword,
-                    ref value,
-                    ref init,
+                    value,
+                    init,
                 } = reg_delay;
 
                 // eval
@@ -710,7 +697,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr_span: Span,
-        base: &Expression,
+        base: Expression,
         index: &Identifier,
     ) -> Result<ValueInner, ErrorGuaranteed> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
@@ -859,24 +846,24 @@ impl CompileItemContext<'_, '_> {
             return eval_enum(elab, variant_tys);
         }
         if let Some(&FunctionItemBody::Enum(unique, _)) = base_item_function {
-            if let Type::Enum(expected, variant_tys) = expected_ty {
+            return if let Type::Enum(expected, variant_tys) = expected_ty {
                 let expected_info = self.refs.shared.elaboration_arenas.enum_info(*expected)?;
                 if expected_info.unique == unique {
-                    return eval_enum(*expected, variant_tys);
+                    eval_enum(*expected, variant_tys)
                 } else {
-                    return Err(diags.report(error_unique_mismatch(
+                    Err(diags.report(error_unique_mismatch(
                         "struct",
                         base.span,
                         expected_info.unique.span_id(),
                         unique.span_id(),
-                    )));
+                    )))
                 }
             } else {
                 // TODO check if there is any possible variant for this index string,
                 //   otherwise we'll get confusing and delayed error messages
                 let func = FunctionValue::EnumNewInfer(unique, index_str.to_owned());
-                return Ok(ValueInner::Value(Value::Compile(CompileValue::Function(func))));
-            }
+                Ok(ValueInner::Value(Value::Compile(CompileValue::Function(func))))
+            };
         }
 
         // struct fields
@@ -947,7 +934,7 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    fn eval_array_literal<C: ExpressionContext, E: Borrow<Expression>>(
+    fn eval_array_literal<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
         ctx_block: &mut <C as ExpressionContext>::Block,
@@ -955,7 +942,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr_span: Span,
-        values: &[ArrayLiteralElement<E>],
+        values: &[ArrayLiteralElement<Expression>],
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -978,7 +965,7 @@ impl CompileItemContext<'_, '_> {
                 };
 
                 v.map_inner(|value_inner| {
-                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner.borrow())
+                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
                 })
                 .transpose()
             })
@@ -1008,7 +995,7 @@ impl CompileItemContext<'_, '_> {
         let values = values
             .iter()
             .enumerate()
-            .map(|(i, v)| {
+            .map(|(i, &v)| {
                 let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
                 self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_i, v)
             })
@@ -1083,7 +1070,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
-        base: &Expression,
+        base: Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -1092,7 +1079,7 @@ impl CompileItemContext<'_, '_> {
         let steps = indices
             .inner
             .iter()
-            .map(|index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
+            .map(|&index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
             .try_collect_all_vec();
 
         let base = base?;
@@ -1107,16 +1094,13 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
-        index: &Expression,
+        index: Expression,
     ) -> Result<Spanned<ArrayStep>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         // special case range with length, it can have a hardware start index
-        let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
-            op_span,
-            ref start,
-            ref len,
-        }) = &index.inner
+        let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, len }) =
+            self.refs.get_expr(index)
         {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
@@ -1201,7 +1185,7 @@ impl CompileItemContext<'_, '_> {
         let args_eval = args
             .inner
             .iter()
-            .map(|arg| {
+            .map(|&arg| {
                 Ok(self
                     .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg)?
                     .inner)
@@ -1308,7 +1292,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
-        expr: &Expression,
+        expr: Expression,
         reason: &str,
     ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -1339,7 +1323,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         vars: &mut VariableValues,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<Spanned<Type>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -1364,7 +1348,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         vars: &mut VariableValues,
-        expr: &Expression,
+        expr: Expression,
         reason: &str,
     ) -> Result<Spanned<HardwareType>, ErrorGuaranteed> {
         let diags = self.refs.diags;
@@ -1390,7 +1374,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -1398,7 +1382,7 @@ impl CompileItemContext<'_, '_> {
         let build_err =
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {}", actual));
 
-        let result = match &expr.inner {
+        let result = match self.refs.get_expr(expr) {
             ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
                 EvaluatedId::Value(_) => return Err(build_err("value")),
                 EvaluatedId::Named(s) => match s {
@@ -1424,12 +1408,12 @@ impl CompileItemContext<'_, '_> {
                     }
                 },
             },
-            ExpressionKind::ArrayIndex(inner_target, indices) => {
+            &ExpressionKind::ArrayIndex(inner_target, ref indices) => {
                 let inner_target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, inner_target);
                 let array_steps = indices
                     .inner
                     .iter()
-                    .map(|index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
+                    .map(|&index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
                     .try_collect_all_vec();
 
                 let inner_target = inner_target?;
@@ -1448,7 +1432,7 @@ impl CompileItemContext<'_, '_> {
                     array_steps,
                 }
             }
-            ExpressionKind::DotIdIndex(base, index) => match &base.inner {
+            &ExpressionKind::DotIdIndex(base, ref index) => match self.refs.get_expr(base) {
                 ExpressionKind::Id(base) => match self.eval_id(scope, base)?.inner {
                     EvaluatedId::Named(NamedValue::PortInterface(base)) => {
                         // get port
@@ -1501,7 +1485,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_expression_as_domain_signal(
         &mut self,
         scope: &Scope,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let build_err =
@@ -1513,12 +1497,12 @@ impl CompileItemContext<'_, '_> {
     pub fn try_eval_expression_as_domain_signal<E>(
         &mut self,
         scope: &Scope,
-        expr: &Expression,
+        expr: Expression,
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
         // TODO expand to allow general expressions again (which then probably create implicit signals)?
-        let result = match &expr.inner {
-            ExpressionKind::UnaryOp(
+        let result = match &self.refs.get_expr(expr) {
+            &&ExpressionKind::UnaryOp(
                 Spanned {
                     span: _,
                     inner: UnaryOp::Not,
@@ -1526,8 +1510,7 @@ impl CompileItemContext<'_, '_> {
                 inner,
             ) => {
                 let inner = self
-                    .eval_expression_as_domain_signal(scope, inner)
-                    .map_err(|e| Either::Right(e))?
+                    .try_eval_expression_as_domain_signal(scope, inner, build_err)?
                     .inner;
                 Ok(inner.invert())
             }
@@ -1557,13 +1540,11 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_domain_sync(
         &mut self,
         scope: &Scope,
-        domain: &SyncDomain<Box<Expression>>,
+        domain: SyncDomain<Expression>,
     ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
         let SyncDomain { clock, reset } = domain;
         let clock = self.eval_expression_as_domain_signal(scope, clock);
-        let reset = reset
-            .as_ref()
-            .map(|reset| self.eval_expression_as_domain_signal(scope, reset));
+        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, reset));
         Ok(SyncDomain {
             clock: clock?.inner,
             reset: reset.transpose()?.map(|r| r.inner),
@@ -1573,9 +1554,9 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_domain(
         &mut self,
         scope: &Scope,
-        domain: &Spanned<DomainKind<Box<Expression>>>,
+        domain: Spanned<DomainKind<Expression>>,
     ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
-        let result = match &domain.inner {
+        let result = match domain.inner {
             DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
             DomainKind::Sync(domain) => self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
@@ -1590,7 +1571,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_port_domain(
         &mut self,
         scope: &Scope,
-        domain: &Spanned<DomainKind<Box<Expression>>>,
+        domain: Spanned<DomainKind<Expression>>,
     ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let result = self.eval_domain(scope, domain)?;
@@ -1619,7 +1600,7 @@ impl CompileItemContext<'_, '_> {
         ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
-        iter: &Expression,
+        iter: Expression,
     ) -> Result<ForIterator, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -1684,7 +1665,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         span_keyword: Span,
-        expr: &Expression,
+        expr: Expression,
     ) -> Result<ElaboratedModule, ErrorGuaranteed> {
         let diags = self.refs.diags;
 

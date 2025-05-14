@@ -215,7 +215,7 @@ impl CompileRefs<'_, '_> {
                                         inner: HardwareType::Clock,
                                     }),
                                 ),
-                                PortSingleKindInner::Normal { domain, ty } => (
+                                &PortSingleKindInner::Normal { domain, ty } => (
                                     ctx.eval_port_domain(scope_ports, domain)
                                         .map(|d| d.map_inner(PortDomain::Kind)),
                                     ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port"),
@@ -236,7 +236,7 @@ impl CompileRefs<'_, '_> {
                             );
                             scope_ports.declare(diags, id, entry);
                         }
-                        ModulePortSingleKind::Interface {
+                        &ModulePortSingleKind::Interface {
                             span_keyword: _,
                             domain,
                             interface,
@@ -275,7 +275,11 @@ impl CompileRefs<'_, '_> {
                     }
                 }
                 ModulePortItem::Block(port_item) => {
-                    let ModulePortBlock { span: _, domain, ports } = port_item;
+                    let &ModulePortBlock {
+                        span: _,
+                        domain,
+                        ref ports,
+                    } = port_item;
 
                     let domain = ctx.eval_port_domain(scope_ports, domain);
 
@@ -287,7 +291,7 @@ impl CompileRefs<'_, '_> {
                             let ModulePortInBlock { span: _, id, kind } = port_item_in_block;
 
                             match kind {
-                                ModulePortInBlockKind::Port { direction, ty } => {
+                                &ModulePortInBlockKind::Port { direction, ty } => {
                                     let domain = domain.map(|d| d.map_inner(PortDomain::Kind));
                                     let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
 
@@ -299,13 +303,13 @@ impl CompileRefs<'_, '_> {
                                         &mut port_to_single,
                                         &mut next_single,
                                         id,
-                                        *direction,
+                                        direction,
                                         domain,
                                         ty,
                                     );
                                     scope_ports.declare(diags, id, entry);
                                 }
-                                ModulePortInBlockKind::Interface {
+                                &ModulePortInBlockKind::Interface {
                                     span_keyword: _,
                                     interface,
                                 } => {
@@ -957,8 +961,8 @@ impl BodyElaborationContext<'_, '_, '_> {
         let &ClockedBlock {
             span_keyword,
             span_domain,
-            ref clock,
-            ref reset,
+            clock,
+            reset,
             ref block,
         } = block;
         let diags = self.ctx.refs.diags;
@@ -971,7 +975,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 reset
                     .as_ref()
                     .map_inner(|reset| {
-                        let &ClockedBlockReset { kind, ref signal } = reset;
+                        let &ClockedBlockReset { kind, signal } = reset;
                         let signal = self.ctx.eval_expression_as_domain_signal(scope, signal)?;
                         Ok(ClockedBlockReset { kind, signal })
                     })
@@ -1079,16 +1083,14 @@ impl BodyElaborationContext<'_, '_, '_> {
         let &ForStatement {
             span_keyword,
             ref index,
-            ref index_ty,
-            ref iter,
+            index_ty,
+            iter,
             ref body,
         } = for_stmt.inner;
         let iter_span = iter.span;
 
         let mut vars_inner = VariableValues::new_child(vars);
-        let index_ty = index_ty
-            .as_ref()
-            .map(|index_ty| self.ctx.eval_expression_as_ty(scope, &mut vars_inner, index_ty));
+        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(scope, &mut vars_inner, index_ty));
 
         let mut ctx = CompileTimeExpressionContext {
             span: for_stmt.span,
@@ -1144,14 +1146,14 @@ impl BodyElaborationContext<'_, '_, '_> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
-        let ast::ModuleInstance {
-            name,
+        let &ast::ModuleInstance {
+            ref name,
             span_keyword,
             module,
-            port_connections,
+            ref port_connections,
         } = instance;
 
-        let elaborated_module = self.ctx.eval_expression_as_module(scope, vars, *span_keyword, module)?;
+        let elaborated_module = self.ctx.eval_expression_as_module(scope, vars, span_keyword, module)?;
         let &ElaboratedModuleInfo {
             ast_ref,
             unique: _,
@@ -1249,21 +1251,11 @@ impl BodyElaborationContext<'_, '_, '_> {
     ) -> Result<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>, ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
 
-        let PortConnection {
-            id: connection_id,
+        let &PortConnection {
+            id: ref connection_id,
             expr: value_expr,
         } = &connection.inner;
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
-
-        // if no expression, the id is both the connector and the expression
-        let dummy_expr;
-        let value_expr = match value_expr {
-            Some(value_expr) => value_expr,
-            None => {
-                dummy_expr = Spanned::new(connection_id.span, ExpressionKind::Id(connection_id.clone()));
-                &dummy_expr
-            }
-        };
 
         // check id match
         if connector_id.string != connection_id.string {
@@ -1320,7 +1312,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
 
         // always try to evaluate as signal for domain replacing purposes
-        let signal = match &value_expr.inner {
+        let signal = match &self.ctx.refs.get_expr(value_expr) {
             ExpressionKind::Dummy => ConnectionSignal::Dummy(value_expr.span),
             _ => match self.ctx.try_eval_expression_as_domain_signal(scope, value_expr, |_| ()) {
                 Ok(signal) => ConnectionSignal::Signal(signal.inner),
@@ -1349,7 +1341,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let ir_connection = match direction.inner {
                     PortDirection::Input => {
                         // better dummy port error message
-                        if let ExpressionKind::Dummy = value_expr.inner {
+                        if let ExpressionKind::Dummy = self.ctx.refs.get_expr(value_expr) {
                             return Err(diags.report_simple(
                                 "dummy connections are only allowed for output ports",
                                 value_expr.span,
@@ -1463,7 +1455,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             )
                         };
 
-                        match &value_expr.inner {
+                        match &self.ctx.refs.get_expr(value_expr) {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
                             ExpressionKind::Id(id) => {
                                 let named = self.ctx.eval_id(scope, id)?;
@@ -1793,7 +1785,6 @@ impl BodyElaborationContext<'_, '_, '_> {
         let (domain, ty, value) = match kind {
             &WireDeclarationKind::Clock { span_clock, ref value } => {
                 let value_tuple = value
-                    .as_ref()
                     .map(|value| {
                         let block_kind = BlockKind::WireValue { span_value: value.span };
                         let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
@@ -1824,14 +1815,10 @@ impl BodyElaborationContext<'_, '_, '_> {
                     value_tuple,
                 )
             }
-            WireDeclarationKind::NormalWithValue { domain, ty, value } => {
+            &WireDeclarationKind::NormalWithValue { domain, ty, value } => {
                 // eval domain and ty
-                let domain = domain
-                    .as_ref()
-                    .map(|domain| ctx.eval_domain(scope_body, domain))
-                    .transpose();
+                let domain = domain.map(|domain| ctx.eval_domain(scope_body, domain)).transpose();
                 let ty = ty
-                    .as_ref()
                     .map(|ty| ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire"))
                     .transpose();
 
@@ -1900,11 +1887,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let value_tuple = (process_block, ctx_expr.finish(), value_eval);
                 (Some(domain), ty, Some(value_tuple))
             }
-            WireDeclarationKind::NormalWithoutValue { domain, ty } => {
-                let domain = domain
-                    .as_ref()
-                    .map(|domain| ctx.eval_domain(scope_body, domain))
-                    .transpose();
+            &WireDeclarationKind::NormalWithoutValue { domain, ty } => {
+                let domain = domain.map(|domain| ctx.eval_domain(scope_body, domain)).transpose();
                 let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire");
 
                 let domain = domain?;
@@ -1971,14 +1955,12 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let RegDeclaration { id, sync, ty, init } = decl;
+        let &RegDeclaration { ref id, sync, ty, init } = decl;
 
         // evaluate
         let sync = sync
-            .as_ref()
             .map(|sync| {
-                sync.as_ref()
-                    .map_inner(|sync| ctx.eval_domain_sync(scope_body, sync))
+                sync.map_inner(|sync| ctx.eval_domain_sync(scope_body, sync))
                     .transpose()
             })
             .transpose();
@@ -2032,7 +2014,7 @@ impl BodyElaborationContext<'_, '_, '_> {
     ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
-        let RegOutPortMarker { id, init } = decl;
+        let &RegOutPortMarker { ref id, init } = decl;
 
         if !is_root_block {
             return Err(diags.report_simple(

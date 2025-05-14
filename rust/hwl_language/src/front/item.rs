@@ -155,7 +155,7 @@ impl ElaboratedItemParams {
 #[derive(Debug, Clone)]
 pub enum FunctionItemBody {
     // TODO change this to be a type alias, or maybe change the others to be ast references too?
-    TypeAliasExpr(Box<Expression>),
+    TypeAliasExpr(Expression),
     Module(UniqueDeclaration, AstRefModule),
     Interface(UniqueDeclaration, AstRefInterface),
     Struct(UniqueDeclaration, ExtraList<StructField>),
@@ -275,24 +275,26 @@ impl CompileItemContext<'_, '_> {
 
         match decl {
             CommonDeclarationNamedKind::Type(decl) => {
-                let TypeDeclaration {
+                let &TypeDeclaration {
                     span: _,
-                    id,
-                    params,
+                    ref id,
+                    ref params,
                     body,
                 } = decl;
                 let body_span = body.span;
 
-                let body = FunctionItemBody::TypeAliasExpr(body.clone());
+                let body = FunctionItemBody::TypeAliasExpr(body);
                 self.eval_maybe_generic_item(id.span(), body_span, scope, vars, params, body)
             }
             CommonDeclarationNamedKind::Const(decl) => {
-                let ConstDeclaration { span: _, id, ty, value } = decl;
+                let &ConstDeclaration {
+                    span: _,
+                    ref id,
+                    ty,
+                    value,
+                } = decl;
 
-                let ty = ty
-                    .as_ref()
-                    .map(|ty| self.eval_expression_as_ty(scope, vars, ty))
-                    .transpose()?;
+                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose()?;
 
                 let expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
                 let value = self.eval_expression_as_compile(scope, vars, expected_ty, value, "const value")?;
@@ -334,17 +336,17 @@ impl CompileItemContext<'_, '_> {
                 self.eval_maybe_generic_item(id.span(), *span, scope, vars, params, body)
             }
             CommonDeclarationNamedKind::Function(decl) => {
-                let FunctionDeclaration {
+                let &FunctionDeclaration {
                     span: _,
-                    id,
-                    params,
+                    ref id,
+                    ref params,
                     ret_ty,
-                    body,
+                    ref body,
                 } = decl;
 
                 let body_inner = FunctionBody::FunctionBodyBlock {
                     body: body.clone(),
-                    ret_ty: ret_ty.as_ref().map(|ret_ty| Box::new(ret_ty.clone())),
+                    ret_ty,
                 };
                 let function = UserFunctionValue {
                     decl_span: id.span(),
@@ -436,7 +438,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         match body.inner {
-            FunctionItemBody::TypeAliasExpr(expr) => {
+            &FunctionItemBody::TypeAliasExpr(expr) => {
                 let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
@@ -535,7 +537,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut any_field_err = Ok(());
         let mut visit_field = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, field: &StructField| {
-            let StructField { span: _, id, ty } = field;
+            let &StructField { span: _, ref id, ty } = field;
 
             let ty = s.eval_expression_as_ty(scope, vars, ty)?;
 
@@ -583,7 +585,6 @@ impl CompileItemContext<'_, '_> {
             let EnumVariant { span: _, id, content } = variant;
 
             let content = content
-                .as_ref()
                 .map(|content| s.eval_expression_as_ty(scope, vars, content))
                 .transpose()?;
 

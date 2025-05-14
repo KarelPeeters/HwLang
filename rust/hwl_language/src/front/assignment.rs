@@ -51,7 +51,7 @@ impl CompileItemContext<'_, '_> {
         stmt: &Assignment,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let Assignment {
+        let &Assignment {
             span: _,
             op,
             target: target_expr,
@@ -103,7 +103,7 @@ impl CompileItemContext<'_, '_> {
                     target,
                     var,
                     target_expected_ty,
-                    *op,
+                    op,
                     right_eval,
                 )?;
                 return Ok(());
