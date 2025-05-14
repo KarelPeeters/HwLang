@@ -33,12 +33,12 @@ module passthrough_{i}(w: int) ports(
         else:
             result += f"""
     instance passthrough_{i - 1}(w=w) ports(
-        .clk(clk),
-        .rst(rst),
-        .select(select),
-        .data_a(data_a),
-        .data_b(data_b),
-        .data_out(data_out)
+        clk,
+        rst,
+        select,
+        data_a,
+        data_b,
+        data_out,
     );"""
         result += f"""
 }}
@@ -64,12 +64,12 @@ pub module top ports(
 ) body {{
     wire select: sync(clk, rst) bool = true;
     instance passthrough_{n - 1}(w=4) ports(
-        .clk(clk),
-        .rst(rst),
-        .select(select),
-        .data_a(data_a),
-        .data_b(data_b),
-        .data_out(data_out)
+        clk,
+        rst,
+        select,
+        data_a,
+        data_b,
+        data_out,
     );
 }}"""
 
