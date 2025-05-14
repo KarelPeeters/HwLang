@@ -437,12 +437,12 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        match body.inner {
-            &FunctionItemBody::TypeAliasExpr(expr) => {
+        match *body.inner {
+            FunctionItemBody::TypeAliasExpr(expr) => {
                 let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
-            &FunctionItemBody::Module(unique, ast_ref) => {
+            FunctionItemBody::Module(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
 
@@ -474,7 +474,7 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Module(result_id))
             }
-            &FunctionItemBody::Interface(unique, ast_ref) => {
+            FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
                 let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
 
@@ -487,7 +487,7 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Interface(result_id))
             }
-            &FunctionItemBody::Struct(unique, ref fields) => {
+            FunctionItemBody::Struct(unique, ref fields) => {
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
@@ -503,7 +503,7 @@ impl CompileItemContext<'_, '_> {
                     .collect_vec();
                 Ok(CompileValue::Type(Type::Struct(result_id, fields)))
             }
-            &FunctionItemBody::Enum(unique, ref variants) => {
+            FunctionItemBody::Enum(unique, ref variants) => {
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(

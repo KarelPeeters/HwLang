@@ -282,11 +282,11 @@ impl ResolveContext<'_> {
                 self.visit_domain(scope_ports, domain.inner)?;
                 self.visit_extra_list(scope_ports, ports, &mut |scope_ports, port| {
                     let ModulePortInBlock { span: _, id, kind } = port;
-                    match kind {
-                        &ModulePortInBlockKind::Port { direction: _, ty } => {
+                    match *kind {
+                        ModulePortInBlockKind::Port { direction: _, ty } => {
                             self.visit_expression(scope_ports, ty)?;
                         }
-                        &ModulePortInBlockKind::Interface {
+                        ModulePortInBlockKind::Interface {
                             span_keyword: _,
                             interface,
                         } => {
@@ -681,13 +681,13 @@ impl ResolveContext<'_> {
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let WireDeclaration { id, kind } = decl;
 
-                    match kind {
-                        &WireDeclarationKind::Clock { span_clock: _, value } => {
+                    match *kind {
+                        WireDeclarationKind::Clock { span_clock: _, value } => {
                             if let Some(value) = value {
                                 self.visit_expression(&scope, value)?;
                             }
                         }
-                        &WireDeclarationKind::NormalWithValue { domain, ty, value } => {
+                        WireDeclarationKind::NormalWithValue { domain, ty, value } => {
                             if let Some(domain) = domain {
                                 self.visit_domain(&scope, domain.inner)?;
                             }
@@ -696,7 +696,7 @@ impl ResolveContext<'_> {
                             }
                             self.visit_expression(&scope, value)?;
                         }
-                        &WireDeclarationKind::NormalWithoutValue { domain, ty } => {
+                        WireDeclarationKind::NormalWithoutValue { domain, ty } => {
                             if let Some(domain) = domain {
                                 self.visit_domain(&scope, domain.inner)?;
                             }
@@ -825,8 +825,8 @@ impl ResolveContext<'_> {
                     self.visit_expression(scope, elem)?;
                 }
             }
-            ExpressionKind::RangeLiteral(expr) => match expr {
-                &RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
+            ExpressionKind::RangeLiteral(expr) => match *expr {
+                RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
                     if let Some(start) = start {
                         self.visit_expression(scope, start)?;
                     }
@@ -834,13 +834,13 @@ impl ResolveContext<'_> {
                         self.visit_expression(scope, end)?;
                     }
                 }
-                &RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
+                RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
                     if let Some(start) = start {
                         self.visit_expression(scope, start)?;
                     }
                     self.visit_expression(scope, end)?;
                 }
-                &RangeLiteral::Length { op_span: _, start, len } => {
+                RangeLiteral::Length { op_span: _, start, len } => {
                     self.visit_expression(scope, start)?;
                     self.visit_expression(scope, len)?;
                 }

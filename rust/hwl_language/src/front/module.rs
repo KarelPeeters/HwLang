@@ -202,10 +202,10 @@ impl CompileRefs<'_, '_> {
             match port_item {
                 ModulePortItem::Single(port_item) => {
                     let ModulePortSingle { span: _, id, kind } = port_item;
-                    match kind {
-                        &ModulePortSingleKind::Port { direction, ref kind } => {
-                            let (domain, ty) = match kind {
-                                &PortSingleKindInner::Clock { span_clock } => (
+                    match *kind {
+                        ModulePortSingleKind::Port { direction, ref kind } => {
+                            let (domain, ty) = match *kind {
+                                PortSingleKindInner::Clock { span_clock } => (
                                     Ok(Spanned {
                                         span: span_clock,
                                         inner: PortDomain::Clock,
@@ -215,7 +215,7 @@ impl CompileRefs<'_, '_> {
                                         inner: HardwareType::Clock,
                                     }),
                                 ),
-                                &PortSingleKindInner::Normal { domain, ty } => (
+                                PortSingleKindInner::Normal { domain, ty } => (
                                     ctx.eval_port_domain(scope_ports, domain)
                                         .map(|d| d.map_inner(PortDomain::Kind)),
                                     ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port"),
@@ -236,7 +236,7 @@ impl CompileRefs<'_, '_> {
                             );
                             scope_ports.declare(diags, id, entry);
                         }
-                        &ModulePortSingleKind::Interface {
+                        ModulePortSingleKind::Interface {
                             span_keyword: _,
                             domain,
                             interface,
@@ -290,8 +290,8 @@ impl CompileRefs<'_, '_> {
                          port_item_in_block: &ModulePortInBlock| {
                             let ModulePortInBlock { span: _, id, kind } = port_item_in_block;
 
-                            match kind {
-                                &ModulePortInBlockKind::Port { direction, ty } => {
+                            match *kind {
+                                ModulePortInBlockKind::Port { direction, ty } => {
                                     let domain = domain.map(|d| d.map_inner(PortDomain::Kind));
                                     let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
 
@@ -309,7 +309,7 @@ impl CompileRefs<'_, '_> {
                                     );
                                     scope_ports.declare(diags, id, entry);
                                 }
-                                &ModulePortInBlockKind::Interface {
+                                ModulePortInBlockKind::Interface {
                                     span_keyword: _,
                                     interface,
                                 } => {
@@ -1782,8 +1782,8 @@ impl BodyElaborationContext<'_, '_, '_> {
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let (domain, ty, value) = match kind {
-            &WireDeclarationKind::Clock { span_clock, ref value } => {
+        let (domain, ty, value) = match *kind {
+            WireDeclarationKind::Clock { span_clock, ref value } => {
                 let value_tuple = value
                     .map(|value| {
                         let block_kind = BlockKind::WireValue { span_value: value.span };
@@ -1815,7 +1815,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     value_tuple,
                 )
             }
-            &WireDeclarationKind::NormalWithValue { domain, ty, value } => {
+            WireDeclarationKind::NormalWithValue { domain, ty, value } => {
                 // eval domain and ty
                 let domain = domain.map(|domain| ctx.eval_domain(scope_body, domain)).transpose();
                 let ty = ty
@@ -1887,7 +1887,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let value_tuple = (process_block, ctx_expr.finish(), value_eval);
                 (Some(domain), ty, Some(value_tuple))
             }
-            &WireDeclarationKind::NormalWithoutValue { domain, ty } => {
+            WireDeclarationKind::NormalWithoutValue { domain, ty } => {
                 let domain = domain.map(|domain| ctx.eval_domain(scope_body, domain)).transpose();
                 let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire");
 
