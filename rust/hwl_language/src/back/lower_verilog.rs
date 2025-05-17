@@ -3,9 +3,9 @@ use crate::front::types::HardwareType;
 use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
     IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance,
-    IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType,
-    IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrIntArithmeticOp, IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::parsed::ParsedDatabase;
@@ -15,7 +15,7 @@ use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
-use crate::util::{Indent, ResultExt};
+use crate::util::{separator_non_trailing, Indent, ResultExt};
 use crate::{swrite, swriteln, throw};
 use indexmap::{IndexMap, IndexSet};
 use itertools::enumerate;
@@ -42,6 +42,7 @@ pub fn lower_to_verilog(
     source: &SourceDatabase,
     parsed: &ParsedDatabase,
     modules: &IrModules,
+    external_modules: &IndexSet<String>,
     top_module: IrModule,
 ) -> Result<LoweredVerilog, ErrorGuaranteed> {
     // the fact that we're not using `parsed` is good, all information should be contained in `compiled`
@@ -53,7 +54,9 @@ pub fn lower_to_verilog(
         source,
         modules,
         module_map: IndexMap::new(),
-        top_name_scope: LoweredNameScope::default(),
+        top_name_scope: LoweredNameScope {
+            used: external_modules.clone(),
+        },
         lowered_modules: vec![],
     };
 
@@ -81,7 +84,7 @@ struct LowerContext<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct LoweredName(String);
+struct LoweredName<S: AsRef<str> = String>(S);
 
 #[derive(Debug, Clone)]
 struct LoweredModule {
@@ -403,7 +406,7 @@ fn lower_module_statements(
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
     wire_name_map: &IndexMap<IrWire, LoweredName>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    children: &[IrModuleChild],
+    children: &[Spanned<IrModuleChild>],
     newline: &mut NewlineGenerator,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
@@ -415,7 +418,7 @@ fn lower_module_statements(
 
         let mut newline = NewlineGenerator::new();
 
-        match &child {
+        match &child.inner {
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 
@@ -546,8 +549,8 @@ fn lower_module_statements(
 
                 swriteln!(f, "{I}end");
             }
-            IrModuleChild::ModuleInstance(instance) => {
-                let IrModuleInstance {
+            IrModuleChild::ModuleInternalInstance(instance) => {
+                let IrModuleInternalInstance {
                     name,
                     module,
                     port_connections,
@@ -558,62 +561,121 @@ fn lower_module_statements(
 
                 if let Some(name) = name {
                     let name_safe = LoweredName(name.clone());
-                    swrite!(f, "{I}{inner_module_name} {name_safe}(");
+                    swrite!(f, "{I}{inner_module_name} {name_safe}");
                 } else {
-                    swrite!(f, "{I}{inner_module_name} instance_{child_index}(");
+                    swrite!(f, "{I}{inner_module_name} instance_{child_index}");
                 }
 
-                if port_connections.is_empty() {
-                    swriteln!(f, ");");
-                } else {
-                    swriteln!(f);
+                let name_map = NameMap {
+                    ports: port_name_map,
+                    registers_outer: reg_name_map,
+                    registers_inner: &IndexMap::default(),
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+                let port_name = |port_index| {
+                    // TODO avoid clone here
+                    let (_port, name) = inner_module.ports.get_index(port_index).unwrap();
+                    name.clone()
+                };
+                lower_port_connections(f, diags, large, name_map, port_name, port_connections)?;
+            }
+            IrModuleChild::ModuleExternalInstance(instance) => {
+                let IrModuleExternalInstance {
+                    name,
+                    module_name,
+                    generic_args,
+                    port_names,
+                    port_connections,
+                } = instance;
 
-                    let name_map = NameMap {
-                        ports: port_name_map,
-                        registers_outer: reg_name_map,
-                        registers_inner: &IndexMap::default(),
-                        wires: wire_name_map,
-                        variables: &IndexMap::new(),
-                    };
+                swrite!(f, "{I}{module_name}");
 
-                    for (port_index, connection) in enumerate(port_connections) {
-                        let port_name = inner_module.ports.get_index(port_index).unwrap().1;
-                        swrite!(f, "{I}{I}.{port_name}(");
-
-                        match &connection.inner {
-                            IrPortConnection::Input(expr) => {
-                                lower_expression(diags, large, name_map, expr.span, &expr.inner, f)?;
-                            }
-                            &IrPortConnection::Output(signal) => {
-                                match signal {
-                                    None => {
-                                        // write nothing, causing empty `()`
-                                    }
-                                    Some(IrWireOrPort::Wire(signal_wire)) => {
-                                        let wire_name = name_map.wires.get(&signal_wire).unwrap();
-                                        swrite!(f, "{wire_name}");
-                                    }
-                                    Some(IrWireOrPort::Port(signal_port)) => {
-                                        let port_name = name_map.ports.get(&signal_port).unwrap();
-                                        swrite!(f, "{port_name}");
-                                    }
-                                }
-                            }
+                if let Some(generic_args) = generic_args {
+                    if generic_args.is_empty() {
+                        swrite!(f, " #()");
+                    } else {
+                        swriteln!(f, " #(");
+                        for (arg_index, (arg_name, arg_value)) in enumerate(generic_args) {
+                            let arg_name = LoweredName(arg_name);
+                            let sep = separator_non_trailing(",", arg_index, generic_args.len());
+                            swriteln!(f, "{I}{I}.{arg_name}({arg_value}){sep}");
                         }
-
-                        if port_index == port_connections.len() - 1 {
-                            swriteln!(f, ")");
-                        } else {
-                            swriteln!(f, "),");
-                        }
+                        swrite!(f, "{I})");
                     }
-
-                    swriteln!(f, "{I});");
                 }
+
+                if let Some(name) = name {
+                    swrite!(f, " {}", LoweredName(name));
+                } else {
+                    swrite!(f, " instance_{child_index}");
+                }
+
+                let name_map = NameMap {
+                    ports: port_name_map,
+                    registers_outer: reg_name_map,
+                    registers_inner: &IndexMap::default(),
+                    wires: wire_name_map,
+                    variables: &IndexMap::new(),
+                };
+                let port_name = |port_index: usize| LoweredName(&port_names[port_index]);
+                lower_port_connections(f, diags, large, name_map, port_name, port_connections)?;
             }
         }
     }
 
+    Ok(())
+}
+
+fn lower_port_connections<S: AsRef<str>>(
+    f: &mut String,
+    diags: &Diagnostics,
+    large: &IrLargeArena,
+    name_map: NameMap,
+    port_name: impl Fn(usize) -> LoweredName<S>,
+    port_connections: &Vec<Spanned<IrPortConnection>>,
+) -> Result<(), ErrorGuaranteed> {
+    swrite!(f, "(");
+
+    if port_connections.is_empty() {
+        swriteln!(f, ");");
+        return Ok(());
+    }
+    swriteln!(f);
+
+    for (port_index, connection) in enumerate(port_connections) {
+        let port_name = port_name(port_index);
+        swrite!(f, "{I}{I}.{port_name}(");
+
+        match &connection.inner {
+            IrPortConnection::Input(expr) => {
+                lower_expression(diags, large, name_map, expr.span, &expr.inner, f)?;
+            }
+            &IrPortConnection::Output(signal) => {
+                match signal {
+                    None => {
+                        // write nothing, resulting in an empty `()`
+                    }
+                    Some(IrWireOrPort::Wire(signal_wire)) => {
+                        let wire_name = name_map.wires.get(&signal_wire).unwrap();
+                        swrite!(f, "{wire_name}");
+                    }
+                    Some(IrWireOrPort::Port(signal_port)) => {
+                        let port_name = name_map.ports.get(&signal_port).unwrap();
+                        swrite!(f, "{port_name}");
+                    }
+                }
+            }
+        }
+
+        swriteln!(
+            f,
+            "){}",
+            separator_non_trailing(",", port_index, port_connections.len())
+        );
+    }
+
+    swriteln!(f, "{I});");
     Ok(())
 }
 
@@ -1129,15 +1191,16 @@ fn diag_big_int_to_u32(diags: &Diagnostics, span: Span, value: &BigInt, message:
     })
 }
 
-impl Display for LoweredName {
+impl<S: AsRef<str>> Display for LoweredName<S> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // TODO use hashset or at least binary search for this
-        if VERILOG_KEYWORDS.contains(&self.0.as_str()) {
+        let s = self.0.as_ref();
+        if VERILOG_KEYWORDS.contains(s) {
             // emit escaped identifier,
             //   including extra trailing space just to be sure
-            f.write_str(&format!("\\{} ", self.0))
+            f.write_str(&format!("\\{} ", s))
         } else {
-            f.write_str(&self.0)
+            // TODO check for invalid chars and escape those, or at least throw an error
+            f.write_str(s)
         }
     }
 }

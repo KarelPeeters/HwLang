@@ -107,6 +107,7 @@ create_exception!(hwl, HwlException, PyException);
 create_exception!(hwl, SourceSetException, HwlException);
 create_exception!(hwl, DiagnosticException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
+create_exception!(hwl, GenerateVerilogException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -397,6 +398,15 @@ impl Module {
         let source = &source_ref.source;
         let dummy_span = source_ref.dummy_span;
 
+        let module = match self.module {
+            ElaboratedModule::Internal(module) => module,
+            ElaboratedModule::External(_) => {
+                return Err(GenerateVerilogException::new_err(
+                    "cannot generate verilog for external module",
+                ))
+            }
+        };
+
         // take out the old compiler
         // TODO this is really weird, don't do this
         let state = {
@@ -408,14 +418,22 @@ impl Module {
 
         // get the right ir module
         let diags = Diagnostics::new();
-        let ir_module = map_diag_error(source, &diags, state.elaboration_arenas.module_info(self.module))?.module_ir;
+        let ir_module =
+            map_diag_error(source, &diags, state.elaboration_arenas.module_internal_info(module))?.module_ir;
 
         // check that all modules are resolved
-        let ir_modules = state.finish_ir_modules(&diags, dummy_span);
-        let ir_modules = map_diag_error(source, &diags, ir_modules)?;
+        let ir_database = state.finish_ir_database(&diags, dummy_span);
+        let ir_database = map_diag_error(source, &diags, ir_database)?;
 
         // actual lowering
-        let lowered = lower_to_verilog(&diags, source, parsed, &ir_modules, ir_module);
+        let lowered = lower_to_verilog(
+            &diags,
+            source,
+            parsed,
+            &ir_database.ir_modules,
+            &ir_database.external_modules,
+            ir_module,
+        );
         let lowered = map_diag_error(source, &diags, lowered)?;
         Ok(ModuleVerilog {
             module_name: lowered.top_module_name,

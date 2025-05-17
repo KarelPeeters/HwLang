@@ -4,11 +4,12 @@ use crate::syntax::ast::{
     CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
     ExpressionKind, ExpressionKindIndex, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
     Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface,
-    ItemDefModule, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ModuleInstance, ModulePortBlock,
-    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration,
-    RegOutPortMarker, RegisterDelay, ReturnStatement, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
-    VariableDeclaration, WhileStatement, WireDeclaration, WireDeclarationKind,
+    ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
+    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
+    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement,
+    StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, WhileStatement, WireDeclaration,
+    WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::util::arena::Arena;
@@ -189,8 +190,8 @@ impl ResolveContext<'_> {
                 let mut scope_dummy = DeclScope::new_child(&scope_file);
                 self.visit_common_declaration(&mut scope_dummy, &decl.inner)
             }
-            Item::Module(decl) => {
-                let ItemDefModule {
+            Item::ModuleInternal(decl) => {
+                let ItemDefModuleInternal {
                     span: _,
                     vis: _,
                     id: _,
@@ -210,6 +211,28 @@ impl ResolveContext<'_> {
                 })?;
 
                 self.visit_block_module(&scope_ports, body)?;
+                Ok(())
+            }
+            Item::ModuleExternal(decl) => {
+                let ItemDefModuleExternal {
+                    span: _,
+                    span_ext: _,
+                    vis: _,
+                    id: _,
+                    params,
+                    ports,
+                } = decl;
+
+                let mut scope_params = DeclScope::new_child(&scope_file);
+                if let Some(params) = params {
+                    self.visit_parameters(&mut scope_params, params)?;
+                }
+
+                let mut scope_ports = DeclScope::new_child(&scope_params);
+                self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |scope_ports, port| {
+                    self.visit_port_item(scope_ports, port)?
+                })?;
+
                 Ok(())
             }
             Item::Interface(decl) => {

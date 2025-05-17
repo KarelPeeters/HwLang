@@ -97,12 +97,21 @@ macro_rules! impl_ast_ref_alias {
     };
 }
 
-impl_ast_ref_alias!(AstRefModule, ast::Item::Module, ast::ItemDefModule);
+impl_ast_ref_alias!(
+    AstRefModuleInternal,
+    ast::Item::ModuleInternal,
+    ast::ItemDefModuleInternal
+);
+impl_ast_ref_alias!(
+    AstRefModuleExternal,
+    ast::Item::ModuleExternal,
+    ast::ItemDefModuleExternal
+);
 impl_ast_ref_alias!(AstRefInterface, ast::Item::Interface, ast::ItemDefInterface);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AstRefModulePort {
-    module: AstRefModule,
+    module: AstRefModuleInternal,
     port_item_index: usize,
     port_in_block_index: Option<usize>,
 }

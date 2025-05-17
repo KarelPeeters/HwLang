@@ -19,8 +19,9 @@ use unwrap_match::unwrap_match;
 // TODO dropping this type takes a long time (maybe due to the web of vecs caused by blocks/statements/...?)
 #[derive(Debug)]
 pub struct IrDatabase {
-    pub modules: IrModules,
     pub top_module: IrModule,
+    pub modules: IrModules,
+    pub external_modules: IndexSet<String>,
 }
 
 pub type IrModules = Arena<IrModule, IrModuleInfo>;
@@ -36,11 +37,13 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<Ir
         }
 
         for child in &modules[module].children {
-            match child {
-                IrModuleChild::ModuleInstance(inst) => {
+            match &child.inner {
+                IrModuleChild::ModuleInternalInstance(inst) => {
                     todo.push(inst.module);
                 }
-                IrModuleChild::ClockedProcess(_) | IrModuleChild::CombinatorialProcess(_) => {}
+                IrModuleChild::ModuleExternalInstance(_)
+                | IrModuleChild::ClockedProcess(_)
+                | IrModuleChild::CombinatorialProcess(_) => {}
             }
         }
     }
@@ -70,7 +73,7 @@ pub struct IrModuleInfo {
     pub wires: Arena<IrWire, IrWireInfo>,
     pub large: IrLargeArena,
 
-    pub children: Vec<IrModuleChild>,
+    pub children: Vec<Spanned<IrModuleChild>>,
 
     pub debug_info_id: MaybeIdentifier,
     pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
@@ -116,7 +119,8 @@ pub struct IrVariableInfo {
 pub enum IrModuleChild {
     ClockedProcess(IrClockedProcess),
     CombinatorialProcess(IrCombinatorialProcess),
-    ModuleInstance(IrModuleInstance),
+    ModuleInternalInstance(IrModuleInternalInstance),
+    ModuleExternalInstance(IrModuleExternalInstance),
 }
 
 // TODO change the execution model and block representation:
@@ -152,9 +156,18 @@ pub struct IrCombinatorialProcess {
 }
 
 #[derive(Debug)]
-pub struct IrModuleInstance {
+pub struct IrModuleInternalInstance {
     pub name: Option<String>,
     pub module: IrModule,
+    pub port_connections: Vec<Spanned<IrPortConnection>>,
+}
+
+#[derive(Debug)]
+pub struct IrModuleExternalInstance {
+    pub name: Option<String>,
+    pub module_name: String,
+    pub generic_args: Option<Vec<(String, BigInt)>>,
+    pub port_names: Vec<String>,
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 

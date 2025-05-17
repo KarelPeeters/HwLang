@@ -30,7 +30,8 @@ pub enum Item {
     CommonDeclaration(Spanned<CommonDeclaration<Visibility<Span>>>),
     // declarations that are only allowed top-level
     // TODO maybe we should also just allow module declarations anywhere?
-    Module(ItemDefModule),
+    ModuleInternal(ItemDefModuleInternal),
+    ModuleExternal(ItemDefModuleExternal),
     Interface(ItemDefInterface),
 }
 
@@ -128,13 +129,23 @@ pub struct FunctionDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct ItemDefModule {
+pub struct ItemDefModuleInternal {
     pub span: Span,
     pub vis: Visibility<Span>,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub ports: Spanned<ExtraList<ModulePortItem>>,
     pub body: Block<ModuleStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemDefModuleExternal {
+    pub span: Span,
+    pub vis: Visibility<Span>,
+    pub span_ext: Span,
+    pub id: Identifier,
+    pub params: Option<Parameters>,
+    pub ports: Spanned<ExtraList<ModulePortItem>>,
 }
 
 #[derive(Debug, Clone)]
@@ -992,12 +1003,20 @@ impl Item {
                     CommonDeclaration::ConstBlock(_) => None,
                 },
             },
-            Item::Module(item) => ItemInfo {
+            Item::ModuleInternal(item) => ItemInfo {
                 span_full: item.span,
                 span_short: item.id.span(),
                 declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
                     id: item.id.as_ref(),
+                }),
+            },
+            Item::ModuleExternal(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.id.span,
+                declaration: Some(ItemDeclarationInfo {
+                    vis: item.vis,
+                    id: MaybeIdentifier::Identifier(&item.id),
                 }),
             },
             Item::Interface(item) => ItemInfo {

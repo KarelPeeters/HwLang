@@ -1,8 +1,9 @@
 use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrClockedProcess,
-    IrDatabase, IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection,
-    IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
+    IrDatabase, IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables,
+    IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -26,7 +27,7 @@ impl IrModuleInfo {
         let no_variables = &IrVariables::new();
 
         for child in &self.children {
-            match child {
+            match &child.inner {
                 IrModuleChild::ClockedProcess(process) => {
                     let IrClockedProcess {
                         locals,
@@ -63,10 +64,16 @@ impl IrModuleInfo {
                 IrModuleChild::CombinatorialProcess(process) => {
                     process.block.validate(diags, self, &process.locals)?;
                 }
-                IrModuleChild::ModuleInstance(instance) => {
-                    let child_module_info = &db.modules[instance.module];
+                IrModuleChild::ModuleInternalInstance(instance) => {
+                    let &IrModuleInternalInstance {
+                        name: _,
+                        module,
+                        ref port_connections,
+                    } = instance;
+                    // TODO check name unique
+                    let child_module_info = &db.modules[module];
 
-                    for ((_, port_info), connection) in zip_eq(&child_module_info.ports, &instance.port_connections) {
+                    for ((_, port_info), connection) in zip_eq(&child_module_info.ports, port_connections) {
                         let IrPortInfo {
                             name: _,
                             direction,
@@ -92,6 +99,30 @@ impl IrModuleInfo {
                             }
                         };
                         check_type_match(diags, connection.span, ty, &conn_ty)?;
+                    }
+                }
+                IrModuleChild::ModuleExternalInstance(instance) => {
+                    // TODO check name unique
+                    let IrModuleExternalInstance {
+                        name: _,
+                        module_name,
+                        generic_args,
+                        port_names,
+                        port_connections,
+                    } = instance;
+
+                    if !db.external_modules.contains(module_name) {
+                        let msg = format!("external module `{}` not found in external modules", module_name);
+                        return Err(diags.report_internal_error(child.span, msg));
+                    }
+
+                    // TODO ideally we could access the generic and port types here,
+                    //   but that would require some generics support in the IR, which we want to avoid
+                    let _ = generic_args;
+                    let _ = port_connections;
+
+                    if port_names.len() != port_connections.len() {
+                        return Err(diags.report_internal_error(child.span, "port length mismatch"));
                     }
                 }
             }

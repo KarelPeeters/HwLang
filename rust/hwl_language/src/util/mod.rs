@@ -200,3 +200,11 @@ impl Display for Indent {
         Ok(())
     }
 }
+
+pub fn separator_non_trailing(s: &str, i: usize, len: usize) -> &str {
+    if i == len - 1 {
+        ""
+    } else {
+        s
+    }
+}

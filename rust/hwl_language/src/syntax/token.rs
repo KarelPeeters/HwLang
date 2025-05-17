@@ -482,6 +482,7 @@ declare_tokens! {
         While("while", TC::Keyword),
         Public("pub", TC::Keyword),
         As("as", TC::Keyword),
+        External("external", TC::Keyword),
 
         // builtins
         // TODO separate category?

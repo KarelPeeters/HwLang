@@ -12,7 +12,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, Error
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::{EvaluatedId, ValueInner};
 use crate::front::function::CapturedScope;
-use crate::front::item::{ElaboratedItemParams, UniqueDeclaration};
+use crate::front::item::{ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Polarized, Signal};
 use crate::front::types::{HardwareType, Type, Typed};
@@ -20,8 +20,9 @@ use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined,
 use crate::front::variables::{VariableValues, VariableValuesContent};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
-    IrIfStatement, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrPort, IrPortConnection, IrPortInfo,
-    IrPorts, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
+    IrPortConnection, IrPortInfo, IrPorts, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort,
 };
 use crate::syntax::ast::{
     self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModulePortBlock, ModulePortInBlock,
@@ -32,9 +33,10 @@ use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
     PortConnection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration,
 };
-use crate::syntax::parsed::AstRefModule;
+use crate::syntax::parsed::{AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
+use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, result_pair_split, ResultExt};
@@ -75,42 +77,47 @@ enum ConnectorKind {
     },
 }
 
-pub struct ElaboratedModuleHeader {
-    ast_ref: AstRefModule,
-    params: Option<Vec<(Identifier, CompileValue)>>,
+pub struct ElaboratedModuleHeader<A> {
+    ast_ref: A,
+    debug_info_params: Option<Vec<(Identifier, CompileValue)>>,
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
-    ports_ir: Arena<IrPort, IrPortInfo>,
+    pub ports_ir: Arena<IrPort, IrPortInfo>,
     captured_scope_params: CapturedScope,
     scope_ports: ScopeContent,
     variables: ArenaVariables,
     vars: VariableValuesContent,
 }
 
-pub struct ElaboratedModuleInfo {
-    pub ast_ref: AstRefModule,
+pub struct ElaboratedModuleInternalInfo {
+    pub ast_ref: AstRefModuleInternal,
     pub unique: UniqueDeclaration,
 
     pub module_ir: IrModule,
     pub connectors: ArenaConnectors,
 }
 
+pub struct ElaboratedModuleExternalInfo {
+    pub ast_ref: AstRefModuleExternal,
+    pub module_name: String,
+    pub generic_args: Option<Vec<(String, BigInt)>>,
+    pub port_names: Vec<String>,
+    pub connectors: ArenaConnectors,
+}
+
 impl CompileRefs<'_, '_> {
-    pub fn elaborate_module_ports_new(
+    pub fn elaborate_module_ports_new<A>(
         self,
-        ast_ref: AstRefModule,
+        ast_ref: A,
+        def_span: Span,
         params: ElaboratedItemParams,
         captured_scope_params: CapturedScope,
-    ) -> Result<(ArenaConnectors, ElaboratedModuleHeader), ErrorGuaranteed> {
-        let ElaboratedItemParams { unique: _, params } = params;
-        let &ast::ItemDefModule {
-            span: def_span,
-            vis: _,
-            id: _,
-            params: _,
-            ref ports,
-            body: _,
-        } = &self.fixed.parsed[ast_ref];
+        ports: &Spanned<ExtraList<ModulePortItem>>,
+    ) -> Result<(ArenaConnectors, ElaboratedModuleHeader<A>), ErrorGuaranteed> {
+        let ElaboratedItemParams {
+            unique: _,
+            params: debug_info_params,
+        } = params;
 
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
@@ -123,9 +130,9 @@ impl CompileRefs<'_, '_> {
             self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
         let scope_ports = scope_ports.into_content();
 
-        let header: ElaboratedModuleHeader = ElaboratedModuleHeader {
+        let header = ElaboratedModuleHeader {
             ast_ref,
-            params,
+            debug_info_params,
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
             ports_ir,
@@ -137,10 +144,13 @@ impl CompileRefs<'_, '_> {
         Ok((connectors, header))
     }
 
-    pub fn elaborate_module_body_new(self, ports: ElaboratedModuleHeader) -> Result<IrModuleInfo, ErrorGuaranteed> {
+    pub fn elaborate_module_body_new(
+        self,
+        ports: ElaboratedModuleHeader<AstRefModuleInternal>,
+    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let ElaboratedModuleHeader {
             ast_ref,
-            params,
+            debug_info_params,
             ports,
             port_interfaces,
             ports_ir,
@@ -149,7 +159,7 @@ impl CompileRefs<'_, '_> {
             variables,
             vars,
         } = ports;
-        let &ast::ItemDefModule {
+        let &ast::ItemDefModuleInternal {
             span: def_span,
             vis: _,
             ref id,
@@ -168,7 +178,7 @@ impl CompileRefs<'_, '_> {
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
-        self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, params.clone(), ports_ir, body)
+        self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, debug_info_params, ports_ir, body)
     }
 
     fn elaborate_module_ports_impl<'p>(
@@ -364,7 +374,7 @@ impl CompileRefs<'_, '_> {
         vars: &VariableValues,
         scope_header: &Scope,
         def_id: &MaybeIdentifier,
-        params: Option<Vec<(Identifier, CompileValue)>>,
+        debug_info_params: Option<Vec<(Identifier, CompileValue)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         body: &Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
@@ -404,6 +414,7 @@ impl CompileRefs<'_, '_> {
 
         // create process for registered output ports
         // TODO is it worth trying to avoid this and using the "reg" port markers in verilog?
+        // TODO should this be a single combinatorial process or multiple?
         if !ctx.out_port_register_connections.is_empty() {
             let mut statements = vec![];
 
@@ -423,8 +434,8 @@ impl CompileRefs<'_, '_> {
                 locals: IrVariables::new(),
                 block: IrBlock { statements },
             };
-            ctx.children
-                .push(Child::Finished(IrModuleChild::CombinatorialProcess(process)));
+            let child = Child::Finished(IrModuleChild::CombinatorialProcess(process));
+            ctx.children.push(Spanned::new(body.span, child));
         }
 
         // return result
@@ -432,9 +443,12 @@ impl CompileRefs<'_, '_> {
         let processes = ctx
             .children
             .into_iter()
-            .map(|c| match c {
-                Child::Finished(c) => c,
-                Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
+            .map(|c| {
+                let c_inner = match c.inner {
+                    Child::Finished(c) => c,
+                    Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
+                };
+                Spanned::new(c.span, c_inner)
             })
             .collect();
 
@@ -445,7 +459,7 @@ impl CompileRefs<'_, '_> {
             large: ctx_item.large,
             children: processes,
             debug_info_id: def_id.clone(),
-            debug_info_generic_args: params,
+            debug_info_generic_args: debug_info_params,
         })
     }
 }
@@ -621,7 +635,7 @@ struct BodyElaborationContext<'c, 'a, 's> {
 
     pass_1_next_statement_index: usize,
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
-    children: Vec<Child>,
+    children: Vec<Spanned<Child>>,
     delayed_error: Result<(), ErrorGuaranteed>,
 }
 
@@ -795,8 +809,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                             let mut drivers = IndexMap::new();
                             if let Some(process) = process {
                                 drivers.insert_first(Driver::WireDeclaration, process.span);
-                                self.children
-                                    .push(Child::Finished(IrModuleChild::CombinatorialProcess(process.inner)));
+                                let child = Child::Finished(IrModuleChild::CombinatorialProcess(process.inner));
+                                self.children.push(Spanned::new(stmt_span, child));
                             }
                             self.drivers.wire_drivers.insert_first(wire, Ok(drivers));
 
@@ -885,9 +899,10 @@ impl BodyElaborationContext<'_, '_, '_> {
 
                     let ir_process = self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block);
                     match ir_process {
-                        Ok(ir_process) => self
-                            .children
-                            .push(Child::Finished(IrModuleChild::CombinatorialProcess(ir_process))),
+                        Ok(ir_process) => {
+                            let child = Child::Finished(IrModuleChild::CombinatorialProcess(ir_process));
+                            self.children.push(Spanned::new(stmt.span, child))
+                        }
                         Err(e) => self.delayed_error = Err(e),
                     }
                 }
@@ -898,7 +913,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                     match ir_process {
                         Ok(ir_process) => {
                             let child_index = self.children.len();
-                            self.children.push(Child::Clocked(ir_process));
+                            let child = Child::Clocked(ir_process);
+                            self.children.push(Spanned::new(stmt.span, child));
                             self.clocked_block_statement_index_to_process_index
                                 .insert_first(stmt_index, child_index);
                         }
@@ -907,12 +923,12 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
                 ModuleStatementKind::Instance(instance) => {
                     let mut vars_inner = self.new_vars_for_process(vars, signals);
-                    let instance_ir = self.elaborate_instance(scope, &mut vars_inner, stmt_index, instance);
+                    let child_ir = self.elaborate_instance(scope, &mut vars_inner, stmt_index, instance);
 
-                    match instance_ir {
-                        Ok(instance_ir) => {
-                            self.children
-                                .push(Child::Finished(IrModuleChild::ModuleInstance(instance_ir)));
+                    match child_ir {
+                        Ok(child_ir) => {
+                            let child = Child::Finished(child_ir);
+                            self.children.push(Spanned::new(stmt.span, child));
                         }
                         Err(e) => self.delayed_error = Err(e),
                     }
@@ -1141,7 +1157,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         vars: &mut VariableValues,
         stmt_index: usize,
         instance: &ast::ModuleInstance,
-    ) -> Result<IrModuleInstance, ErrorGuaranteed> {
+    ) -> Result<IrModuleChild, ErrorGuaranteed> {
         let refs = self.ctx.refs;
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
@@ -1153,16 +1169,39 @@ impl BodyElaborationContext<'_, '_, '_> {
             ref port_connections,
         } = instance;
 
-        let elaborated_module = self.ctx.eval_expression_as_module(scope, vars, span_keyword, module)?;
-        let &ElaboratedModuleInfo {
-            ast_ref,
-            unique: _,
-            module_ir,
-            ref connectors,
-        } = self.ctx.refs.shared.elaboration_arenas.module_info(elaborated_module)?;
-        let module_ast = &refs.fixed.parsed[ast_ref];
+        let elaborated_module = ctx.eval_expression_as_module(scope, vars, span_keyword, module)?;
 
-        // check that connections unique
+        let (instance_info, connectors, def_ports_span) = match elaborated_module {
+            ElaboratedModule::Internal(module) => {
+                let ElaboratedModuleInternalInfo {
+                    ast_ref,
+                    unique: _,
+                    module_ir,
+                    connectors,
+                } = ctx.refs.shared.elaboration_arenas.module_internal_info(module)?;
+                (
+                    ElaboratedModule::Internal(*module_ir),
+                    connectors,
+                    refs.fixed.parsed[*ast_ref].ports.span,
+                )
+            }
+            ElaboratedModule::External(module) => {
+                let ElaboratedModuleExternalInfo {
+                    ast_ref,
+                    module_name,
+                    generic_args,
+                    port_names,
+                    connectors,
+                } = ctx.refs.shared.elaboration_arenas.module_external_info(module)?;
+                (
+                    ElaboratedModule::External((module_name, generic_args, port_names)),
+                    connectors,
+                    refs.fixed.parsed[*ast_ref].ports.span,
+                )
+            }
+        };
+
+        // check that connections are unique
         let mut id_to_connection_and_used: IndexMap<&String, (&Spanned<PortConnection>, bool)> = IndexMap::new();
         for connection in &port_connections.inner {
             match id_to_connection_and_used.entry(&connection.inner.id.string) {
@@ -1212,8 +1251,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
                 None => {
                     let diag = Diagnostic::new(format!("missing connection for port {}", connector_info.id.string))
-                        .add_info(connector_info.id.span, "port declared here")
                         .add_error(Span::single_at(port_connections.span.end), "connections here")
+                        .add_info(connector_info.id.span, "port declared here")
                         .finish();
                     return Err(diags.report(diag));
                 }
@@ -1225,18 +1264,31 @@ impl BodyElaborationContext<'_, '_, '_> {
             if !used {
                 let diag = Diagnostic::new("connection does not match any port")
                     .add_error(connection.span, "invalid connection here")
-                    .add_info(module_ast.ports.span, "ports declared here")
+                    .add_info(def_ports_span, "ports declared here")
                     .finish();
                 any_unused_err = Err(diags.report(diag));
             }
         }
         any_unused_err?;
 
-        Ok(IrModuleInstance {
-            name: name.as_ref().map(|name| name.string.clone()),
-            module: module_ir,
-            port_connections: ir_connections,
-        })
+        let name = name.as_ref().map(|name| name.string.clone());
+        let ir_instance = match instance_info {
+            ElaboratedModule::Internal(module_ir) => IrModuleChild::ModuleInternalInstance(IrModuleInternalInstance {
+                name,
+                module: module_ir,
+                port_connections: ir_connections,
+            }),
+            ElaboratedModule::External((module_name, generic_args, port_names)) => {
+                IrModuleChild::ModuleExternalInstance(IrModuleExternalInstance {
+                    name,
+                    module_name: module_name.clone(),
+                    generic_args: generic_args.clone(),
+                    port_names: port_names.clone(),
+                    port_connections: ir_connections,
+                })
+            }
+        };
+        Ok(ir_instance)
     }
 
     fn elaborate_instance_port_connection(
@@ -1432,8 +1484,8 @@ impl BodyElaborationContext<'_, '_, '_> {
                                 locals: ctx.finish(),
                                 block: ctx_block,
                             };
-                            self.children
-                                .push(Child::Finished(IrModuleChild::CombinatorialProcess(process)));
+                            let child = Child::Finished(IrModuleChild::CombinatorialProcess(process));
+                            self.children.push(Spanned::new(connection.span, child));
 
                             IrExpression::Wire(extra_ir_wire)
                         } else {
@@ -2283,7 +2335,7 @@ fn report_assignment_internal_error<'a>(
 fn pull_register_init_into_process(
     ctx: &mut CompileItemContext,
     clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
-    children: &mut Vec<Child>,
+    children: &mut Vec<Spanned<Child>>,
     register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     reg: Register,
     driver: Driver,
@@ -2298,7 +2350,7 @@ fn pull_register_init_into_process(
 
     if let Driver::ClockedBlock(stmt_index) = driver {
         if let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index) {
-            if let Child::Clocked(process) = &mut children[process_index] {
+            if let Child::Clocked(process) = &mut children[process_index].inner {
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
                     let init_ir = init.inner.as_ir_expression_or_undefined(

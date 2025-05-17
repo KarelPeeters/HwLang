@@ -50,7 +50,9 @@ impl ServerState {
                 &|| false,
                 NON_ZERO_USIZE_ONE,
             );
-            let _ = compiled.and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, c.top_module));
+            let _ = compiled.and_then(|c| {
+                lower_to_verilog(&diags, &source, &parsed, &c.modules, &c.external_modules, c.top_module)
+            });
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI

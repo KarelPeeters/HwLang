@@ -3,7 +3,7 @@ use crate::front::compile::{CompileItemContext, WorkItem};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
-use crate::front::module::ElaboratedModuleInfo;
+use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::Type;
@@ -11,11 +11,13 @@ use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
-    EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModule,
-    Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
+    EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModuleExternal,
+    ItemDefModuleInternal, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
 };
-use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModule};
+use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::Span;
+use crate::util::big_int::BigInt;
+use crate::util::iter::IterExt;
 use crate::util::sync::ComputeOnceMap;
 use crate::util::ResultExt;
 use indexmap::map::Entry;
@@ -25,7 +27,15 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ElaboratedModule(usize);
+pub enum ElaboratedModule<I = ElaboratedModuleInternal, E = ElaboratedModuleExternal> {
+    Internal(I),
+    External(E),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedModuleInternal(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedModuleExternal(usize);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedInterface(usize);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -34,7 +44,8 @@ pub struct ElaboratedStruct(usize);
 pub struct ElaboratedEnum(usize);
 
 pub struct ElaborationArenas {
-    elaborated_modules: ElaborateItemArena<ElaboratedModule, ElaboratedModuleInfo>,
+    elaborated_modules_internal: ElaborateItemArena<ElaboratedModuleInternal, ElaboratedModuleInternalInfo>,
+    elaborated_modules_external: ElaborateItemArena<ElaboratedModuleExternal, ElaboratedModuleExternalInfo>,
     elaborated_interfaces: ElaborateItemArena<ElaboratedInterface, ElaboratedInterfaceInfo>,
     elaborated_structs: ElaborateItemArena<ElaboratedStruct, ElaboratedStructInfo>,
     elaborated_enums: ElaborateItemArena<ElaboratedEnum, ElaboratedEnumInfo>,
@@ -53,7 +64,8 @@ impl UniqueDeclaration {
 impl ElaborationArenas {
     pub fn new() -> Self {
         ElaborationArenas {
-            elaborated_modules: ElaborateItemArena::new(),
+            elaborated_modules_internal: ElaborateItemArena::new(),
+            elaborated_modules_external: ElaborateItemArena::new(),
             elaborated_interfaces: ElaborateItemArena::new(),
             elaborated_structs: ElaborateItemArena::new(),
             elaborated_enums: ElaborateItemArena::new(),
@@ -61,8 +73,18 @@ impl ElaborationArenas {
         }
     }
 
-    pub fn module_info(&self, elab: ElaboratedModule) -> Result<&ElaboratedModuleInfo, ErrorGuaranteed> {
-        self.elaborated_modules.get(elab)
+    pub fn module_internal_info(
+        &self,
+        elab: ElaboratedModuleInternal,
+    ) -> Result<&ElaboratedModuleInternalInfo, ErrorGuaranteed> {
+        self.elaborated_modules_internal.get(elab)
+    }
+
+    pub fn module_external_info(
+        &self,
+        elab: ElaboratedModuleExternal,
+    ) -> Result<&ElaboratedModuleExternalInfo, ErrorGuaranteed> {
+        self.elaborated_modules_external.get(elab)
     }
 
     pub fn interface_info(&self, elab: ElaboratedInterface) -> Result<&ElaboratedInterfaceInfo, ErrorGuaranteed> {
@@ -80,7 +102,6 @@ impl ElaborationArenas {
     fn next_unique_declaration(&self, span_id: Span) -> UniqueDeclaration {
         let id = self.next_unique_declaration.fetch_add(1, Ordering::Relaxed);
         assert!(id < usize::MAX / 2, "(close to) overflowing");
-
         UniqueDeclaration(id, span_id)
     }
 }
@@ -156,7 +177,8 @@ impl ElaboratedItemParams {
 pub enum FunctionItemBody {
     // TODO change this to be a type alias, or maybe change the others to be ast references too?
     TypeAliasExpr(Expression),
-    Module(UniqueDeclaration, AstRefModule),
+    ModuleInternal(UniqueDeclaration, AstRefModuleInternal),
+    ModuleExternal(UniqueDeclaration, AstRefModuleExternal),
     Interface(UniqueDeclaration, AstRefInterface),
     Struct(UniqueDeclaration, ExtraList<StructField>),
     Enum(UniqueDeclaration, ExtraList<EnumVariant>),
@@ -206,25 +228,45 @@ impl CompileItemContext<'_, '_> {
                 let value = self.eval_declaration(file_scope, &mut vars, &decl.inner)?;
                 Ok(value.unwrap_or(CompileValue::UNIT))
             }
-            Item::Module(module) => {
-                let ItemDefModule {
+            Item::ModuleInternal(module) => {
+                let ItemDefModuleInternal {
                     span: _,
                     vis: _,
                     id,
                     params,
-                    ports: _,
+                    ports,
                     body,
                 } = module;
-                let item = AstRefModule::new_unchecked(item, module);
-                let body_span = body.span;
+                let item = AstRefModuleInternal::new_unchecked(item, module);
+                let body_span = ports.span.join(body.span);
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
-                let body = FunctionItemBody::Module(unique, item);
+                let body = FunctionItemBody::ModuleInternal(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
                 let mut vars = VariableValues::new_root(&self.variables);
                 self.eval_maybe_generic_item(id.span(), body_span, scope, &mut vars, params, body)
             }
+            Item::ModuleExternal(module) => {
+                let ItemDefModuleExternal {
+                    span: _,
+                    span_ext: _,
+                    vis: _,
+                    id,
+                    params,
+                    ports,
+                } = module;
+                let item = AstRefModuleExternal::new_unchecked(item, module);
+                let body_span = ports.span;
+
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span);
+                let body = FunctionItemBody::ModuleExternal(unique, item);
+
+                let scope = self.refs.shared.file_scope(item.file())?;
+                let mut vars = VariableValues::new_root(&self.variables);
+                self.eval_maybe_generic_item(id.span, body_span, scope, &mut vars, params, body)
+            }
+
             Item::Interface(interface) => {
                 let ItemDefInterface {
                     span: _,
@@ -442,28 +484,36 @@ impl CompileItemContext<'_, '_> {
                 let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
-            FunctionItemBody::Module(unique, ast_ref) => {
+            FunctionItemBody::ModuleInternal(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
 
-                let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules.elaborate(
+                let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_internal.elaborate(
                     item_params,
-                    ElaboratedModule,
+                    ElaboratedModuleInternal,
                     |item_params| {
                         // elaborate ports
                         let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
-                        let (connectors, header) =
-                            refs.elaborate_module_ports_new(ast_ref, item_params, scope_captured)?;
+
+                        let ast = &refs.fixed.parsed[ast_ref];
+
+                        let (connectors, header) = refs.elaborate_module_ports_new(
+                            ast_ref,
+                            ast.span,
+                            item_params,
+                            scope_captured,
+                            &ast.ports,
+                        )?;
 
                         // reserve ir module key, will be filled in later during body elaboration
-                        let ir_module = { refs.shared.ir_modules.lock().unwrap().push(None) };
+                        let ir_module = { refs.shared.ir_database.lock().unwrap().ir_modules.push(None) };
 
                         // queue body elaboration for later
                         refs.shared
                             .work_queue
                             .push(WorkItem::ElaborateModuleBody(header, ir_module));
 
-                        Ok(ElaboratedModuleInfo {
+                        Ok(ElaboratedModuleInternalInfo {
                             unique,
                             ast_ref,
                             module_ir: ir_module,
@@ -472,7 +522,74 @@ impl CompileItemContext<'_, '_> {
                     },
                 )?;
 
-                Ok(CompileValue::Module(result_id))
+                Ok(CompileValue::Module(ElaboratedModule::Internal(result_id)))
+            }
+            FunctionItemBody::ModuleExternal(unique, ast_ref) => {
+                let item_params = ElaboratedItemParams { unique, params };
+                let refs = self.refs;
+                let ast = &refs.fixed.parsed[ast_ref];
+
+                let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_external.elaborate(
+                    item_params,
+                    ElaboratedModuleExternal,
+                    |item_params| {
+                        // save generic args for later
+                        let generic_args = item_params
+                            .params
+                            .as_ref()
+                            .map(|item_params| {
+                                item_params
+                                    .iter()
+                                    .map(|(id, value)| {
+                                        let value = match value {
+                                            &CompileValue::Bool(value) => {
+                                                if value {
+                                                    BigInt::ONE
+                                                } else {
+                                                    BigInt::ZERO
+                                                }
+                                            }
+                                            CompileValue::Int(value) => value.clone(),
+                                            _ => {
+                                                return Err(diags.report_todo(
+                                                    ast.params.as_ref().map_or(ast.span, |p| p.span),
+                                                    "external module generic parameters that are not bool or int",
+                                                ))
+                                            }
+                                        };
+
+                                        Ok((id.string.clone(), value))
+                                    })
+                                    .try_collect_all_vec()
+                            })
+                            .transpose()?;
+
+                        // elaborate ports
+                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
+                        let (connectors, header) = refs.elaborate_module_ports_new(
+                            ast_ref,
+                            ast.span,
+                            item_params,
+                            scope_captured,
+                            &ast.ports,
+                        )?;
+                        let port_names = header
+                            .ports_ir
+                            .values()
+                            .map(|port_info| port_info.name.clone())
+                            .collect_vec();
+
+                        Ok(ElaboratedModuleExternalInfo {
+                            ast_ref,
+                            module_name: ast.id.string.clone(),
+                            generic_args,
+                            port_names,
+                            connectors,
+                        })
+                    },
+                )?;
+
+                Ok(CompileValue::Module(ElaboratedModule::External(result_id)))
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };

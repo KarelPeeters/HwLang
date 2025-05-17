@@ -1,7 +1,7 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
-use crate::front::item::ElaborationArenas;
+use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
@@ -9,12 +9,11 @@ use crate::front::signal::Signal;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
 use crate::mid::ir::{
-    IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrPort, IrRegister,
-    IrWire,
+    IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire,
 };
 use crate::syntax::ast::{self, Expression, ExpressionKind, PortDirection, Visibility};
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
-use crate::syntax::parsed::{AstRefItem, AstRefModule, ParsedDatabase};
+use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
@@ -23,7 +22,7 @@ use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, zip_eq, Itertools};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
@@ -72,8 +71,8 @@ pub fn compile(
             let result = ctx.eval_item(top_item.item())?;
 
             match result {
-                &CompileValue::Module(elab) => {
-                    let info = shared.elaboration_arenas.module_info(elab)?;
+                &CompileValue::Module(ElaboratedModule::Internal(elab)) => {
+                    let info = shared.elaboration_arenas.module_internal_info(elab)?;
                     Ok((top_item, info.module_ir))
                 }
                 _ => Err(diags.report_internal_error(parsed[top_item].id.span(), "top items should be modules")),
@@ -138,11 +137,12 @@ pub fn compile(
     // return result (at this point all modules should have been fully elaborated)
     let (top_item, top_ir_module) = top_item_and_ir_module?;
 
-    let modules = shared.finish_ir_modules(diags, parsed[top_item].span)?;
+    let db_partial = shared.finish_ir_database(diags, parsed[top_item].span)?;
 
     let db = IrDatabase {
-        modules,
         top_module: top_ir_module,
+        modules: db_partial.ir_modules,
+        external_modules: db_partial.external_modules.into_iter().sorted().collect(),
     };
 
     // TODO add an option to always do this?
@@ -185,7 +185,7 @@ impl<'a> CompileRefs<'a, '_> {
                     let ir_module_info = self.elaborate_module_body_new(header);
 
                     // store result
-                    let slot = &mut self.shared.ir_modules.lock().unwrap()[ir_module];
+                    let slot = &mut self.shared.ir_database.lock().unwrap().ir_modules[ir_module];
                     assert!(slot.is_none());
                     *slot = Some(ir_module_info);
                 }
@@ -207,7 +207,7 @@ pub struct CompileFixed<'a> {
 
 pub enum WorkItem {
     EvaluateItem(AstRefItem),
-    ElaborateModuleBody(ElaboratedModuleHeader, IrModule),
+    ElaborateModuleBody(ElaboratedModuleHeader<AstRefModuleInternal>, IrModule),
 }
 
 /// long-term shared between threads
@@ -220,7 +220,12 @@ pub struct CompileShared {
     pub elaboration_arenas: ElaborationArenas,
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
-    pub ir_modules: Mutex<Arena<IrModule, Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
+    pub ir_database: Mutex<PartialIrDatabase<Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
+}
+
+pub struct PartialIrDatabase<M> {
+    pub external_modules: IndexSet<String>,
+    pub ir_modules: Arena<IrModule, M>,
 }
 
 pub type FileScopes = IndexMap<FileId, Result<Scope<'static>, ErrorGuaranteed>>;
@@ -673,7 +678,7 @@ fn find_top_module(
     diags: &Diagnostics,
     fixed: CompileFixed,
     shared: &CompileShared,
-) -> Result<AstRefModule, ErrorGuaranteed> {
+) -> Result<AstRefModuleInternal, ErrorGuaranteed> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
     let top_file = fixed.source[fixed.source.root_directory()]
@@ -689,8 +694,8 @@ fn find_top_module(
 
     match top_entry.value {
         &ScopedEntry::Item(item) => match &fixed.parsed[item] {
-            ast::Item::Module(module) => match &module.params {
-                None => Ok(AstRefModule::new_unchecked(item, module)),
+            ast::Item::ModuleInternal(module) => match &module.params {
+                None => Ok(AstRefModuleInternal::new_unchecked(item, module)),
                 Some(_) => {
                     Err(diags.report_simple("`top` cannot have generic parameters", module.id.span(), "defined here"))
                 }
@@ -714,18 +719,40 @@ impl CompileShared {
         let CompileFixed { source, parsed } = fixed;
         let file_scopes = populate_file_scopes(diags, fixed);
 
-        // find non-import items
+        // pass over all items, to:
+        // * collect all non-import items for the compute arena
+        // * find all external modules
         // TODO make also skip trivial items already, eg. functions and generic modules
         let mut items = vec![];
+        let mut external_modules: IndexMap<String, Vec<Span>> = IndexMap::new();
         for file in source.files() {
             if let Ok(file_ast) = &parsed[file] {
                 for (item_ref, item) in file_ast.items_with_ref() {
                     if !matches!(item, ast::Item::Import(_)) {
                         items.push(item_ref);
                     }
+                    if let ast::Item::ModuleExternal(module) = item {
+                        external_modules
+                            .entry(module.id.string.clone())
+                            .or_default()
+                            .push(module.id.span);
+                    }
                 }
             }
         }
+
+        // check for duplicate external modules
+        for (name, spans) in &external_modules {
+            if spans.len() > 1 {
+                let mut diag = Diagnostic::new(format!("external module with name `{name}` declared twice"));
+                for &span in spans {
+                    diag = diag.add_error(span, "defined here");
+                }
+                diags.report(diag.finish());
+            }
+        }
+        let external_modules = external_modules.into_keys().collect();
+
         let item_values = ComputeOnceArena::new(items.iter().copied());
 
         // populate work queue
@@ -743,7 +770,10 @@ impl CompileShared {
             work_queue,
             item_values,
             elaboration_arenas: ElaborationArenas::new(),
-            ir_modules: Mutex::new(Arena::new()),
+            ir_database: Mutex::new(PartialIrDatabase {
+                ir_modules: Arena::new(),
+                external_modules,
+            }),
         }
     }
 
@@ -751,16 +781,28 @@ impl CompileShared {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 
-    pub fn finish_ir_modules(self, diags: &Diagnostics, dummy_span: Span) -> Result<IrModules, ErrorGuaranteed> {
+    pub fn finish_ir_database(
+        self,
+        diags: &Diagnostics,
+        dummy_span: Span,
+    ) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
         if self.work_queue.pop().is_some() {
             diags.report_internal_error(dummy_span, "not all work items have been processed");
         }
 
-        let ir_modules = self.ir_modules.into_inner().unwrap();
-        ir_modules.try_map_values(|_, v| match v {
+        let PartialIrDatabase {
+            external_modules,
+            ir_modules,
+        } = self.ir_database.into_inner().unwrap();
+        let ir_modules = ir_modules.try_map_values(|_, v| match v {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(e),
             None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
+        })?;
+
+        Ok(PartialIrDatabase {
+            ir_modules,
+            external_modules,
         })
     }
 }

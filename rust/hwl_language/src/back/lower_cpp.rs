@@ -3,8 +3,8 @@ use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
     IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInstance, IrModules, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
+    IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules,
+    IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{Identifier, MaybeIdentifier};
@@ -13,7 +13,7 @@ use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
-use crate::util::Indent;
+use crate::util::{separator_non_trailing, Indent};
 use crate::{swrite, swriteln};
 use itertools::enumerate;
 use std::fmt::{Display, Formatter};
@@ -83,7 +83,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         swriteln!(
             f_structs_to_ptr,
             "{I}{I}{I}&this->{name}{}",
-            end_comma(port_i, ports.len())
+            separator_non_trailing(",", port_i, ports.len())
         );
     }
 
@@ -121,7 +121,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
     for (child_index, child) in enumerate(children) {
         let indent = Indent::new(1);
 
-        match child {
+        match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
                     locals,
@@ -228,8 +228,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(f_step, "}}");
                 swriteln!(f_step);
             }
-            IrModuleChild::ModuleInstance(instance) => {
-                let &IrModuleInstance {
+            IrModuleChild::ModuleInternalInstance(instance) => {
+                let &IrModuleInternalInstance {
                     name: _,
                     module: child_module,
                     ref port_connections,
@@ -285,7 +285,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                         },
                     };
 
-                    let end = end_comma(connection_index, port_connections.len());
+                    let end = separator_non_trailing(",", connection_index, port_connections.len());
                     swriteln!(f_step_ports, "{I}{I}{connection_str}{end}")
                 }
                 swriteln!(f_step_ports, "{I}}};");
@@ -300,6 +300,13 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(f_step_all, "{I}{I}{next}_signals.{field_name},");
                 swriteln!(f_step_all, "{I}{I}{func_child_ports}({next}_signals, {next}_ports)");
                 swriteln!(f_step_all, "{I});");
+            }
+            IrModuleChild::ModuleExternalInstance(_) => {
+                return Err(diags.report_simple(
+                    "external modules are not supported in the C++ simulator",
+                    child.span,
+                    "external module instantiated here",
+                ));
             }
         }
     }
@@ -464,7 +471,12 @@ impl CodegenBlockContext<'_> {
 
                     swrite!(self.f, "{indent}{result_ty_str} {tmp_result} = {{");
                     for (i, element_eval) in enumerate(elements_eval) {
-                        swrite!(self.f, "{}{}", element_eval, end_comma(i, elements.len()));
+                        swrite!(
+                            self.f,
+                            "{}{}",
+                            element_eval,
+                            separator_non_trailing(",", i, elements.len())
+                        );
                     }
                     swriteln!(self.f, "}};");
 
@@ -894,11 +906,3 @@ fn name_str(prefix: &str, index: Idx, id: MaybeIdentifier<&Identifier>) -> Strin
 }
 
 const I: &str = Indent::I;
-
-fn end_comma(i: usize, len: usize) -> &'static str {
-    if i == len - 1 {
-        ""
-    } else {
-        ", "
-    }
-}

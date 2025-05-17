@@ -54,6 +54,7 @@ extern {
         "pub" => TokenType::Public,
         "__builtin" => TokenType::Builtin,
         "unsafe_value_with_domain" => TokenType::UnsafeValueWithDomain,
+        "external" => TokenType::External,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -119,11 +120,17 @@ Item: Item = {
     <start:@L>
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
-        <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
+        <ports:ModulePorts>
         "body" <body:Block<ModuleStatement>>
     <end:@R> => {
-        let ports = Spanned { span: loc.span(start_ports, end_ports), inner: ports };
-        Item::Module(ItemDefModule { vis, id, params, ports, body, span: loc.span(start, end) })
+        Item::ModuleInternal(ItemDefModuleInternal { vis, id, params, ports, body, span: loc.span(start, end) })
+    },
+    <start:@L>
+        <vis:Vis> <span_ext:Span<"external">> "module" <id:Id>
+        <params:(<Parameters>)?>
+        <ports:ModulePorts>
+    <end:@R> => {
+        Item::ModuleExternal(ItemDefModuleExternal { vis, span_ext, id, params, ports, span: loc.span(start, end) })
     },
 
     <start:@L>
@@ -412,6 +419,11 @@ Parameters: Parameters = {
 
 Parameter: Parameter = {
     <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> => Parameter { id, ty, default },
+}
+
+ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
+    <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
+        => Spanned { span: loc.span(start_ports, end_ports), inner: ports },
 }
 
 ModulePortItemPort: ModulePortItem = {
