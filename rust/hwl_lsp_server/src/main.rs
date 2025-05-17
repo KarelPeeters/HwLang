@@ -9,6 +9,9 @@ use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
 use std::path::Path;
 
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> Result<(), TopError> {
     std::panic::catch_unwind(main_inner).unwrap_or_else(|e| {
         let s = match e.downcast::<String>() {

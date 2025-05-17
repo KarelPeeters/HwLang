@@ -10,6 +10,7 @@ hwl_language.workspace = true
 
 clap.workspace = true
 ctrlc.workspace = true
+mimalloc.workspace = true
 num_cpus.workspace = true
 
 [lints]
