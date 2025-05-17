@@ -10,51 +10,6 @@ pub struct BigUint(Storage, PhantomData<()>);
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BigInt(Storage, PhantomData<()>);
 
-impl BigUint {
-    pub const ZERO: Self = BigUint(Storage::ZERO, PhantomData);
-    pub const ONE: Self = BigUint(Storage::ONE, PhantomData);
-    pub const TWO: Self = BigUint(Storage::TWO, PhantomData);
-
-    fn new(storage: Storage) -> Self {
-        storage.debug_assert_valid();
-        debug_assert!(matches!(storage.sign(), Sign::Positive | Sign::Zero));
-        BigUint(storage, PhantomData)
-    }
-
-    fn storage(&self) -> &Storage {
-        &self.0
-    }
-
-    fn into_storage(self) -> Storage {
-        self.0
-    }
-}
-
-impl BigInt {
-    pub const ZERO: Self = BigInt(Storage::ZERO, PhantomData);
-    pub const ONE: Self = BigInt(Storage::ONE, PhantomData);
-
-    fn new(storage: Storage) -> Self {
-        storage.debug_assert_valid();
-        BigInt(storage, PhantomData)
-    }
-
-    fn storage(&self) -> &Storage {
-        &self.0
-    }
-
-    fn into_storage(self) -> Storage {
-        self.0
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Sign {
-    Negative,
-    Zero,
-    Positive,
-}
-
 // TODO benchmark i128 vs i64
 type IStorage = i128;
 
@@ -62,6 +17,13 @@ type IStorage = i128;
 enum Storage {
     Small(IStorage),
     Big(num_bigint::BigInt),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Sign {
+    Negative,
+    Zero,
+    Positive,
 }
 
 impl Storage {
@@ -111,6 +73,24 @@ impl Storage {
 }
 
 impl BigUint {
+    pub const ZERO: Self = BigUint(Storage::ZERO, PhantomData);
+    pub const ONE: Self = BigUint(Storage::ONE, PhantomData);
+    pub const TWO: Self = BigUint(Storage::TWO, PhantomData);
+
+    fn new(storage: Storage) -> Self {
+        storage.debug_assert_valid();
+        debug_assert!(matches!(storage.sign(), Sign::Positive | Sign::Zero));
+        BigUint(storage, PhantomData)
+    }
+
+    fn storage(&self) -> &Storage {
+        &self.0
+    }
+
+    fn into_storage(self) -> Storage {
+        self.0
+    }
+
     pub fn into_num_biguint(self) -> num_bigint::BigUint {
         num_bigint::BigUint::try_from(self.into_storage().into_num_bigint()).unwrap()
     }
@@ -173,42 +153,23 @@ impl BigUint {
     }
 }
 
-impl From<BigUint> for BigInt {
-    fn from(value: BigUint) -> Self {
-        BigInt::new(value.into_storage())
-    }
-}
-
-impl From<&BigUint> for BigInt {
-    fn from(value: &BigUint) -> Self {
-        BigInt::new(value.storage().clone())
-    }
-}
-
-impl TryFrom<BigInt> for BigUint {
-    type Error = BigInt;
-    fn try_from(value: BigInt) -> Result<Self, Self::Error> {
-        match value.sign() {
-            Sign::Negative => Err(value),
-            Sign::Zero | Sign::Positive => Ok(BigUint::new(value.into_storage())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a BigInt> for BigUint {
-    type Error = &'a BigInt;
-    fn try_from(value: &'a BigInt) -> Result<Self, Self::Error> {
-        match value.sign() {
-            Sign::Negative => Err(value),
-            Sign::Zero | Sign::Positive => Ok(BigUint::new(value.storage().clone())),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct DivideByZero;
-
 impl BigInt {
+    pub const ZERO: Self = BigInt(Storage::ZERO, PhantomData);
+    pub const ONE: Self = BigInt(Storage::ONE, PhantomData);
+
+    fn new(storage: Storage) -> Self {
+        storage.debug_assert_valid();
+        BigInt(storage, PhantomData)
+    }
+
+    fn storage(&self) -> &Storage {
+        &self.0
+    }
+
+    fn into_storage(self) -> Storage {
+        self.0
+    }
+
     pub fn into_num_bigint(self) -> num_bigint::BigInt {
         self.into_storage().into_num_bigint()
     }
@@ -274,6 +235,41 @@ impl BigInt {
         ))
     }
 }
+
+impl From<BigUint> for BigInt {
+    fn from(value: BigUint) -> Self {
+        BigInt::new(value.into_storage())
+    }
+}
+
+impl From<&BigUint> for BigInt {
+    fn from(value: &BigUint) -> Self {
+        BigInt::new(value.storage().clone())
+    }
+}
+
+impl TryFrom<BigInt> for BigUint {
+    type Error = BigInt;
+    fn try_from(value: BigInt) -> Result<Self, Self::Error> {
+        match value.sign() {
+            Sign::Negative => Err(value),
+            Sign::Zero | Sign::Positive => Ok(BigUint::new(value.into_storage())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a BigInt> for BigUint {
+    type Error = &'a BigInt;
+    fn try_from(value: &'a BigInt) -> Result<Self, Self::Error> {
+        match value.sign() {
+            Sign::Negative => Err(value),
+            Sign::Zero | Sign::Positive => Ok(BigUint::new(value.storage().clone())),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DivideByZero;
 
 impl std::ops::Neg for &BigUint {
     type Output = BigInt;
