@@ -1,8 +1,5 @@
 // Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
-import std.types.[
-    bool, int_range, int, uint, natural,
-    int_bits, uint_bits, any,
-];
+import std.types.[bool, int, uint, natural, any];
 import std.util.[typeof, print];
 import std.math.[gcd, min, max, clog2];
 
@@ -26,7 +23,7 @@ pub module axi_gearbox_v2(
     const shift_bits = clog2((buffer_size - input_width) / step + 1) + 1;
 
     reg buffer: sync(clk, rst) [buffer_size]bool = undef;
-    reg level: sync(clk, rst) int_range(0..(buffer_size / step)) = 0;
+    reg level: sync(clk, rst) int(0..(buffer_size / step)) = 0;
 
     comb {
         output.data = buffer[..output_width];
@@ -48,7 +45,7 @@ pub module axi_gearbox_v2(
             data[..input_width] = input.data;
             mask[..input_width / step] = [true] * (input_width / step);
 
-            var shift = uint_bits(shift_bits).to_bits(level);
+            var shift = uint(shift_bits).to_bits(level);
             for (i in 0..shift_bits) {
                 if (shift[i]) {
                     // note: the range `..` we use here and the `downto` in the original have opposite directions!

@@ -9,10 +9,10 @@
 //   in particular not every identifier should be highlighted,
 //   and maybe we want a separate color for builtin types
 
-import std.types.[bool, int, uint, natural, int_range, Option];
+import std.types.[bool, int, uint, natural, Option];
 import std.util.assert;
 
-module cdc_sync_ff(N: int_range(2..) = 2) ports(
+module cdc_sync_ff(N: int(2..) = 2) ports(
     in_data: in async bool,
     out_clk: in clock,
     out_rst: in async bool,
@@ -32,7 +32,7 @@ module cdc_sync_ff(N: int_range(2..) = 2) ports(
 
 // TODO better annotations for partially synced signals like `y` here
 // TODO better annotations for reset signals, maybe reset polarity should be included in the type system
-module cdc_async_reset(N: int_range(2..) = 2) ports(
+module cdc_async_reset(N: int(2..) = 2) ports(
     in_reset: in async bool,
     out_clk: in clock,
     out_reset: out sync(out_clk, in_reset) bool,
@@ -55,7 +55,7 @@ interface axi_stream(T: type) {
     interface output { data: out, ready: in }
 }
 
-module cdc_handshake(T: type, N: int_range(2..) = 2) ports(
+module cdc_handshake(T: type, N: int(2..) = 2) ports(
     in_clk: in clock,
     in_rst: in async bool,
     in_stream: interface sync(in_clk, in_rst) axi_stream(T).input,
@@ -105,7 +105,7 @@ const {
     cdc_async_reset();
 
     cdc_handshake(bool);
-    cdc_handshake(int_range(0..7));
+    cdc_handshake(int(0..7));
 
     cdc_fifo(bool, 8);
 }

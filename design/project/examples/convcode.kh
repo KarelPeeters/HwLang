@@ -1,4 +1,4 @@
-import std.types.[bool, int_range, int, natural, uint, uint_bits];
+import std.types.[bool, int, uint, natural];
 import std.math.[clog2];
 import std.util.[typeof, print];
 
@@ -60,8 +60,8 @@ pub module convcode_decoder(
     rst: in async bool,
 
     sync(clk, rst) {
-        input_data_0: in uint_bits(analog_bits),
-        input_data_1: in uint_bits(analog_bits),
+        input_data_0: in uint(analog_bits),
+        input_data_1: in uint(analog_bits),
         input_valid: in bool,
 
         output_data: out bool,
@@ -72,7 +72,7 @@ pub module convcode_decoder(
     const prob_bits = clog2(length) + analog_bits + 2;
     const codebook: [num_states, 2]bool = [
         {
-            val code = uint_bits(length).to_bits(i);
+            val code = uint(length).to_bits(i);
             var output = [false, false];
             for (j in 0..length) {
                 output[0] ^= code[j] & generator.generator_0[length - 1 - j];
@@ -82,8 +82,8 @@ pub module convcode_decoder(
         } for i in 0..num_states
     ];
 
-    type t_half_probs = [num_states/2]uint_bits(prob_bits);
-    type t_probs = [num_states]uint_bits(prob_bits);
+    type t_half_probs = [num_states/2]uint(prob_bits);
+    type t_probs = [num_states]uint(prob_bits);
     type t_half_paths = [num_states/2, depth]bool;
     type t_paths = [num_states, depth]bool;
 
@@ -117,7 +117,7 @@ pub module convcode_decoder(
 
             // calculate new probabilities and paths
             // TODO infer type for this array automatically
-            val book_probs: [4]uint_bits(prob_bits) = [
+            val book_probs: [4]uint(prob_bits) = [
                 uint_not(analog_bits, input_data_0) + uint_not(analog_bits, input_data_1),
                 input_data_0 + uint_not(analog_bits, input_data_1),
                 uint_not(analog_bits, input_data_0) + input_data_1,
@@ -127,7 +127,7 @@ pub module convcode_decoder(
             var paths_new: t_paths = [*half_paths, *half_paths];
             for (i in 0..num_states) {
                 // TODO the modulo here is awkward
-                probs_new[i] = (probs_new[i] + book_probs[uint_bits(2).from_bits(codebook[i])]) % 2**prob_bits;
+                probs_new[i] = (probs_new[i] + book_probs[uint(2).from_bits(codebook[i])]) % 2**prob_bits;
             }
 
             // update probabilities and paths
@@ -156,8 +156,8 @@ pub module convcode_decoder(
 
 // TODO this is a weird construct, what does this even mean in context?
 // TODO should we allow arithmetic on bool arrays?
-fn uint_not(n: uint, v: uint_bits(n)) -> uint_bits(n) {
-    type ty = uint_bits(n);
+fn uint_not(n: uint, v: uint(n)) -> uint(n) {
+    type ty = uint(n);
     return ty.from_bits([!x for x in ty.to_bits(n)]);
 }
 

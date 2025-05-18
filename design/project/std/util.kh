@@ -24,6 +24,6 @@ pub fn unsafe_clock_to_bool(value: any) -> bool {
 }
 
 // TODO make this `b.to_int()` instead of `bool_to_int(b)`?
-pub fn bool_to_int(b: bool) -> int_range(0..=1) {
-    return int_range(0..=1).from_bits([b]);
+pub fn bool_to_int(b: bool) -> int(0..=1) {
+    return int(0..=1).from_bits([b]);
 }

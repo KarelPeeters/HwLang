@@ -27,7 +27,6 @@ use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::ops::RangeBounds;
 
 #[derive(Debug)]
 pub enum BlockEnd<S = BlockEndStopping> {

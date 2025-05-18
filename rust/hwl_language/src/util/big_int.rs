@@ -30,6 +30,7 @@ impl Storage {
     const ZERO: Self = Storage::Small(0);
     const ONE: Self = Storage::Small(1);
     const TWO: Self = Storage::Small(2);
+    const NEG_ONE: Self = Storage::Small(-1);
 
     fn from_maybe_big(value: num_bigint::BigInt) -> Self {
         match IStorage::try_from(&value) {
@@ -70,6 +71,13 @@ impl Storage {
             },
         }
     }
+
+    fn is_zero(&self) -> bool {
+        match self {
+            &Storage::Small(value) => value == 0,
+            Storage::Big(_) => false,
+        }
+    }
 }
 
 impl BigUint {
@@ -91,6 +99,10 @@ impl BigUint {
         self.0
     }
 
+    pub fn is_zero(&self) -> bool {
+        self.storage().is_zero()
+    }
+
     pub fn into_num_biguint(self) -> num_bigint::BigUint {
         num_bigint::BigUint::try_from(self.into_storage().into_num_bigint()).unwrap()
     }
@@ -100,16 +112,17 @@ impl BigUint {
         Ok(BigUint::new(Storage::from_maybe_big(big.into())))
     }
 
-    pub fn pow_2_to(index: &BigUint) -> BigUint {
-        if let &Storage::Small(index) = index.storage() {
-            if let Ok(index) = u32::try_from(index) {
-                if let Some(result) = (1 as IStorage).checked_shl(index) {
+    pub fn pow_2_to(exp: &BigUint) -> BigUint {
+        if let &Storage::Small(index) = exp.storage() {
+            if let Ok(exp) = u32::try_from(index) {
+                let one: IStorage = 1;
+                if let Some(result) = one.checked_shl(exp) {
                     return BigUint::new(Storage::Small(result));
                 }
             }
         }
 
-        BigUint::TWO.pow(index)
+        BigUint::TWO.pow(exp)
     }
 
     pub fn pow(&self, exp: &BigUint) -> BigUint {
@@ -156,6 +169,8 @@ impl BigUint {
 impl BigInt {
     pub const ZERO: Self = BigInt(Storage::ZERO, PhantomData);
     pub const ONE: Self = BigInt(Storage::ONE, PhantomData);
+    pub const TWO: Self = BigInt(Storage::TWO, PhantomData);
+    pub const NEG_ONE: Self = BigInt(Storage::NEG_ONE, PhantomData);
 
     fn new(storage: Storage) -> Self {
         storage.debug_assert_valid();
@@ -168,6 +183,10 @@ impl BigInt {
 
     fn into_storage(self) -> Storage {
         self.0
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.storage().is_zero()
     }
 
     pub fn into_num_bigint(self) -> num_bigint::BigInt {

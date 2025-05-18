@@ -1,8 +1,8 @@
-import std.types.[bool, int_range, int, uint, natural, uint_bits, Option];
+import std.types.[bool, int, uint, natural, Option];
 import std.util.[print, assert];
 
 // TODO get this early return working in hardware
-fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int_range(0..n)) {
+fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int(0..n)) {
     for (i in 0..n) {
         if (x[i]) {
             return Option.Some(i);
@@ -11,7 +11,7 @@ fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int_range(0..n)) {
     return Option.None;
 }
 
-fn index_to_one_hot(n: uint, index: int_range(0..n)) -> [n]bool {
+fn index_to_one_hot(n: uint, index: int(0..n)) -> [n]bool {
     var result = [false] * n;
     result[index] = true;
     return result;
@@ -38,7 +38,7 @@ const {
     }
 
     const N  = 4;
-    type T = int_range(0..N);
+    type T = int(0..N);
     for (i in 0..N) {
         assert(option_eq(T, index_of_first_set_bit(N, index_to_one_hot(N, i)), Option(T).Some(i)));
     }

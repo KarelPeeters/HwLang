@@ -22,13 +22,15 @@ use crate::mid::ir::{
     IrIntCompareOp, IrLargeArena, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
-    ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression, ExpressionKind,
-    Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, RegisterDelay, Spanned, SyncDomain, UnaryOp,
+    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
+    ExpressionKind, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, RegisterDelay, Spanned,
+    SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::vec_concat;
+use crate::util::data::{vec_concat, VecExt};
+
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use annotate_snippets::Level;
@@ -566,6 +568,10 @@ impl CompileItemContext<'_, '_> {
                 // report errors for invalid target and args
                 //   (only after both have been evaluated to get all diagnostics)
                 let target_inner = match target.inner {
+                    CompileValue::Type(Type::Int(range)) => {
+                        let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
+                        return Ok(ValueInner::Value(Value::Compile(CompileValue::Type(Type::Int(result)))));
+                    }
                     CompileValue::Function(f) => f,
                     _ => {
                         let e = diags.report_simple(
@@ -1216,9 +1222,8 @@ impl CompileItemContext<'_, '_> {
                 ("type", "bool", []) => return Ok(Value::Compile(CompileValue::Type(Type::Bool))),
                 ("type", "str", []) => return Ok(Value::Compile(CompileValue::Type(Type::String))),
                 ("type", "Range", []) => return Ok(Value::Compile(CompileValue::Type(Type::Range))),
-                // TODO maybe int/uint should just bit builtins
-                ("type", "int_range", [Value::Compile(CompileValue::IntRange(range))]) => {
-                    return Ok(Value::Compile(CompileValue::Type(Type::Int(range.clone()))));
+                ("type", "int", []) => {
+                    return Ok(Value::Compile(CompileValue::Type(Type::Int(IncRange::OPEN))));
                 }
                 ("fn", "typeof", [value]) => return Ok(Value::Compile(CompileValue::Type(value.ty()))),
                 ("fn", "print", [value]) => {
@@ -1679,6 +1684,129 @@ impl CompileItemContext<'_, '_> {
             _ => Err(diags.report_internal_error(eval.span, "expected module, should have already been checked")),
         }
     }
+}
+
+fn eval_int_ty_call(
+    diags: &Diagnostics,
+    span_call: Span,
+    target_range: Spanned<IncRange<BigInt>>,
+    args: Args<Option<Identifier>, Spanned<Value>>,
+) -> Result<IncRange<BigInt>, ErrorGuaranteed> {
+    // ensure single unnamed compile-time arg
+    let arg = args.inner.single().ok_or_else(|| {
+        diags.report_simple(
+            "expected single argument for int type",
+            args.span,
+            "got multiple args here",
+        )
+    })?;
+
+    let Arg { span: _, name, value } = arg;
+    if let Some(name) = name {
+        return Err(diags.report_simple(
+            "expected unnamed argument for int type",
+            name.span,
+            "got named arg here",
+        ));
+    }
+    let arg = match value.inner {
+        Value::Compile(value_inner) => Spanned::new(value.span, value_inner),
+        Value::Hardware(_) => {
+            return Err(diags.report_simple(
+                "expected compile-time argument for int type",
+                value.span,
+                "got hardware value here",
+            ))
+        }
+    };
+
+    // int calls should only work for `int` and `uint`, detect which of these it is here
+    let target_signed = match target_range.inner {
+        IncRange {
+            start_inc: None,
+            end_inc: None,
+        } => true,
+        IncRange {
+            start_inc: Some(BigInt::ZERO),
+            end_inc: None,
+        } => false,
+        _ => {
+            let diag = Diagnostic::new("base type must be int or uint for int type constraining")
+                .add_error(span_call, "attempt to constrain int type here")
+                .add_info(
+                    target_range.span,
+                    format!(
+                        "base type `{}` here",
+                        Type::Int(target_range.inner).to_diagnostic_string()
+                    ),
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+    };
+
+    let result = match arg.inner {
+        CompileValue::Int(width) => {
+            // int arg, this is the number of bits in `int(bits)` or `uint(bits)`
+            let width = BigUint::try_from(width).map_err(|width| {
+                diags.report_simple(
+                    format!("the bitwidth of an integer type cannot be negative, got `{width}`"),
+                    arg.span,
+                    "got negative bitwidth here",
+                )
+            })?;
+
+            if target_signed {
+                match BigUint::try_from(width - 1) {
+                    Ok(width_m1) => {
+                        let pow = BigUint::pow_2_to(&width_m1);
+                        IncRange {
+                            start_inc: Some(-&pow),
+                            end_inc: Some(pow - 1),
+                        }
+                    }
+                    Err(_) => {
+                        // width was zero, for signed numbers this means that we can only represent -1
+                        IncRange {
+                            start_inc: Some(BigInt::NEG_ONE),
+                            end_inc: Some(BigInt::NEG_ONE),
+                        }
+                    }
+                }
+            } else {
+                IncRange {
+                    start_inc: Some(BigInt::ZERO),
+                    end_inc: Some(BigUint::pow_2_to(&width) - 1),
+                }
+            }
+        }
+        CompileValue::IntRange(new_range) => {
+            // int range arg, this is the new range
+            if !target_range.inner.contains_range(&new_range) {
+                let base_ty_name = match target_signed {
+                    true => "int",
+                    false => "uint",
+                };
+                let diag = Diagnostic::new("int range must be a subrange of the base type")
+                    .add_error(arg.span, format!("new range `{}` is not a subrange", new_range))
+                    .add_info(arg.span, format!("base type {base_ty_name}"))
+                    .finish();
+                return Err(diags.report(diag));
+            }
+
+            new_range
+        }
+        _ => {
+            let diag = Diagnostic::new("int type constraining must be an int or int range")
+                .add_error(
+                    arg.span,
+                    format!("got invalid value `{}` here", arg.inner.to_diagnostic_string()),
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+    };
+    Ok(result)
 }
 
 pub enum ForIterator {

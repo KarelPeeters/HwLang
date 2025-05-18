@@ -1,7 +1,4 @@
-import std.types.[
-    bool, int_range, int, uint, natural,
-    int_bits, uint_bits, any,
-];
+import std.types.[bool, int, uint, natural, any, Option];
 import std.math.[gcd, min, max];
 import std.util.[typeof, print];
 
@@ -11,13 +8,13 @@ pub module top ports(
 
     sync(clk, rst) {
         enable: in bool,
-        x: in int_range(0..256),
-        y: out int_range(0..256),
+        x: in int(0..256),
+        y: out int(0..256),
         t: out bool,
     }
 ) body {
-    reg d0: sync(clk, rst) int_range(0..256) = 0;
-    reg d1: sync(clk, rst) int_range(0..256) = 0;
+    reg d0: sync(clk, rst) int(0..256) = 0;
+    reg d1: sync(clk, rst) int(0..256) = 0;
     reg out t = false;
 
     clocked(clk, async rst) {
@@ -29,7 +26,7 @@ pub module top ports(
     }
 
     instance child(
-        T=int_range(0..256)
+        T=int(0..256)
     ) ports(
         clk,
         rst,

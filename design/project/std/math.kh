@@ -1,4 +1,4 @@
-import std.types.[bool, int_range, int, uint, natural, uint_bits];
+import std.types.[bool, int, uint, natural];
 
 // TODO get multiple returns working in hardware
 pub fn min(x: int, y: int) -> int {

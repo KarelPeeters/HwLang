@@ -672,6 +672,46 @@ impl<T> IncRange<T> {
 
         Ok(ClosedIncRange { start_inc, end_inc })
     }
+
+    pub fn contains(&self, other: &T) -> bool
+    where
+        T: Ord,
+    {
+        let IncRange { start_inc, end_inc } = self;
+        match (start_inc, end_inc) {
+            (None, None) => true,
+            (Some(start_inc), None) => start_inc <= other,
+            (None, Some(end_inc)) => other <= end_inc,
+            (Some(start_inc), Some(end_inc)) => start_inc <= other && other <= end_inc,
+        }
+    }
+
+    pub fn contains_range(&self, other: &IncRange<T>) -> bool
+    where
+        T: Ord,
+    {
+        let IncRange {
+            start_inc: self_start_inc,
+            end_inc: self_end_inc,
+        } = self;
+        let IncRange {
+            start_inc: other_start_inc,
+            end_inc: other_end_inc,
+        } = other;
+
+        let start_contains = match (self_start_inc, other_start_inc) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(self_start_inc), Some(other_start_inc)) => self_start_inc <= other_start_inc,
+        };
+        let end_contains = match (self_end_inc, other_end_inc) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(self_end_inc), Some(other_end_inc)) => self_end_inc >= other_end_inc,
+        };
+
+        start_contains && end_contains
+    }
 }
 
 impl<T> ClosedIncRange<T> {
@@ -710,7 +750,7 @@ impl<T> ClosedIncRange<T> {
 
     pub fn contains(&self, value: &T) -> bool
     where
-        T: PartialOrd,
+        T: Ord,
     {
         let ClosedIncRange { start_inc, end_inc } = self;
         start_inc <= value && value <= end_inc
@@ -718,7 +758,7 @@ impl<T> ClosedIncRange<T> {
 
     pub fn contains_range(&self, other: &ClosedIncRange<T>) -> bool
     where
-        T: PartialOrd,
+        T: Ord,
     {
         let ClosedIncRange { start_inc, end_inc } = self;
         let ClosedIncRange {
