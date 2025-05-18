@@ -423,7 +423,7 @@ fn lower_module_statements(
                 };
 
                 newline.start_new_block();
-                lower_block(diags, large, name_map, block, f, Indent::new(2), &mut newline)?;
+                lower_block(large, name_map, block, f, Indent::new(2), &mut newline)?;
                 swriteln!(f, "{I}end");
             }
             IrModuleChild::ClockedProcess(process) => {
@@ -442,11 +442,11 @@ fn lower_module_statements(
                     variables: &IndexMap::new(),
                 };
 
-                let clock_edge = lower_edge_to_str(diags, large, outer_name_map, clock_signal.as_ref())?;
+                let clock_edge = lower_edge_to_str(large, outer_name_map, clock_signal.as_ref())?;
                 let async_reset = async_reset
                     .as_ref()
                     .map(|info| {
-                        let reset_edge = lower_edge_to_str(diags, large, outer_name_map, info.signal.as_ref())?;
+                        let reset_edge = lower_edge_to_str(large, outer_name_map, info.signal.as_ref())?;
                         Ok((reset_edge, info))
                     })
                     .transpose()?;
@@ -495,7 +495,7 @@ fn lower_module_statements(
                             let (reg, value) = &reset.inner;
                             let reg_name = reg_name_map.get(reg).unwrap();
                             swrite!(f, "{I}{I}{I}{reg_name} <= ");
-                            lower_expression(diags, large, outer_name_map, reset.span, value, f)?;
+                            lower_expression(large, outer_name_map, value, f)?;
                             swriteln!(f, ";");
                         }
 
@@ -513,15 +513,7 @@ fn lower_module_statements(
 
                 // block itself, using inner name map (with shadowing)
                 newline.start_new_block();
-                lower_block(
-                    diags,
-                    large,
-                    inner_name_map,
-                    clock_block,
-                    f,
-                    indent_clocked,
-                    &mut newline,
-                )?;
+                lower_block(large, inner_name_map, clock_block, f, indent_clocked, &mut newline)?;
 
                 // write-back shadow registers
                 newline.start_new_block();
@@ -567,7 +559,7 @@ fn lower_module_statements(
                     let (_port, name) = inner_module.ports.get_index(port_index).unwrap();
                     name.clone()
                 };
-                lower_port_connections(f, diags, large, name_map, port_name, port_connections)?;
+                lower_port_connections(f, large, name_map, port_name, port_connections)?;
             }
             IrModuleChild::ModuleExternalInstance(instance) => {
                 let IrModuleExternalInstance {
@@ -608,7 +600,7 @@ fn lower_module_statements(
                     variables: &IndexMap::new(),
                 };
                 let port_name = |port_index: usize| LoweredName(&port_names[port_index]);
-                lower_port_connections(f, diags, large, name_map, port_name, port_connections)?;
+                lower_port_connections(f, large, name_map, port_name, port_connections)?;
             }
         }
     }
@@ -618,7 +610,6 @@ fn lower_module_statements(
 
 fn lower_port_connections<S: AsRef<str>>(
     f: &mut String,
-    diags: &Diagnostics,
     large: &IrLargeArena,
     name_map: NameMap,
     port_name: impl Fn(usize) -> LoweredName<S>,
@@ -638,7 +629,7 @@ fn lower_port_connections<S: AsRef<str>>(
 
         match &connection.inner {
             IrPortConnection::Input(expr) => {
-                lower_expression(diags, large, name_map, expr.span, &expr.inner, f)?;
+                lower_expression(large, name_map, &expr.inner, f)?;
             }
             &IrPortConnection::Output(signal) => {
                 match signal {
@@ -771,7 +762,6 @@ fn collect_written_registers(block: &IrBlock, result: &mut IndexSet<IrRegister>)
 }
 
 fn lower_block(
-    diag: &Diagnostics,
     large: &IrLargeArena,
     name_map: NameMap,
     block: &IrBlock,
@@ -787,14 +777,14 @@ fn lower_block(
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
                 swrite!(f, "{indent}");
-                lower_assign_target(diag, large, name_map, stmt.span, target, f)?;
+                lower_assign_target(large, name_map, target, f)?;
                 swrite!(f, " = ");
-                lower_expression(diag, large, name_map, stmt.span, source, f)?;
+                lower_expression(large, name_map, source, f)?;
                 swriteln!(f, ";");
             }
             IrStatement::Block(inner) => {
                 swriteln!(f, "{indent}begin");
-                lower_block(diag, large, name_map, inner, f, indent.nest(), newline)?;
+                lower_block(large, name_map, inner, f, indent.nest(), newline)?;
                 swriteln!(f, "{indent}end");
             }
             IrStatement::If(IrIfStatement {
@@ -803,14 +793,14 @@ fn lower_block(
                 else_block,
             }) => {
                 swrite!(f, "{indent}if (");
-                lower_expression(diag, large, name_map, stmt.span, condition, f)?;
+                lower_expression(large, name_map, condition, f)?;
                 swriteln!(f, ") begin");
-                lower_block(diag, large, name_map, then_block, f, indent.nest(), newline)?;
+                lower_block(large, name_map, then_block, f, indent.nest(), newline)?;
                 swrite!(f, "{indent}end");
 
                 if let Some(else_block) = else_block {
                     swriteln!(f, " else begin");
-                    lower_block(diag, large, name_map, else_block, f, indent.nest(), newline)?;
+                    lower_block(large, name_map, else_block, f, indent.nest(), newline)?;
                     swrite!(f, "{indent}end");
                 }
 
@@ -827,10 +817,8 @@ fn lower_block(
 }
 
 fn lower_assign_target(
-    diag: &Diagnostics,
     large: &IrLargeArena,
     name_map: NameMap,
-    span: Span,
     target: &IrAssignmentTarget,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
@@ -850,13 +838,13 @@ fn lower_assign_target(
         match step {
             IrTargetStep::ArrayIndex(start) => {
                 swrite!(f, "[");
-                lower_expression(diag, large, name_map, span, start, f)?;
+                lower_expression(large, name_map, start, f)?;
                 swrite!(f, "]");
             }
 
             IrTargetStep::ArraySlice(start, len) => {
                 swrite!(f, "[");
-                lower_expression(diag, large, name_map, span, start, f)?;
+                lower_expression(large, name_map, start, f)?;
                 swrite!(f, "+:{}", lower_uint_str(len));
                 swrite!(f, "]");
             }
@@ -868,10 +856,8 @@ fn lower_assign_target(
 
 // TODO allow this to use intermediate variables and to generate multi-line expressions
 fn lower_expression(
-    diags: &Diagnostics,
     large: &IrLargeArena,
     name_map: NameMap,
-    span: Span,
     expr: &IrExpression,
     f: &mut String,
 ) -> Result<(), ErrorGuaranteed> {
@@ -888,7 +874,7 @@ fn lower_expression(
             match &large[expr] {
                 IrExpressionLarge::BoolNot(inner) => {
                     swrite!(f, "(!");
-                    lower_expression(diags, large, name_map, span, inner, f)?;
+                    lower_expression(large, name_map, inner, f)?;
                     swrite!(f, ")");
                 }
                 IrExpressionLarge::BoolBinary(op, ref left, ref right) => {
@@ -901,9 +887,9 @@ fn lower_expression(
                     };
 
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, left, f)?;
+                    lower_expression(large, name_map, left, f)?;
                     swrite!(f, " {} ", op_str);
-                    lower_expression(diags, large, name_map, span, right, f)?;
+                    lower_expression(large, name_map, right, f)?;
                     swrite!(f, ")");
                 }
                 IrExpressionLarge::IntArithmetic(op, ty, left, right) => {
@@ -919,9 +905,9 @@ fn lower_expression(
 
                     let _ = ty;
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, left, f)?;
+                    lower_expression(large, name_map, left, f)?;
                     swrite!(f, " {} ", op_str);
-                    lower_expression(diags, large, name_map, span, right, f)?;
+                    lower_expression(large, name_map, right, f)?;
                     swrite!(f, ")");
                 }
                 IrExpressionLarge::IntCompare(op, left, right) => {
@@ -936,9 +922,9 @@ fn lower_expression(
                     };
 
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, left, f)?;
+                    lower_expression(large, name_map, left, f)?;
                     swrite!(f, " {} ", op_str);
-                    lower_expression(diags, large, name_map, span, right, f)?;
+                    lower_expression(large, name_map, right, f)?;
                     swrite!(f, ")");
                 }
 
@@ -952,7 +938,7 @@ fn lower_expression(
                             swrite!(f, ", ");
                         }
 
-                        lower_expression(diags, large, name_map, span, elem, f)?;
+                        lower_expression(large, name_map, elem, f)?;
                     }
                     swrite!(f, "}}");
                 }
@@ -972,7 +958,7 @@ fn lower_expression(
                             IrArrayLiteralElement::Spread(inner) => inner,
                             IrArrayLiteralElement::Single(inner) => inner,
                         };
-                        lower_expression(diags, large, name_map, span, inner, f)?;
+                        lower_expression(large, name_map, inner, f)?;
                     }
                     swrite!(f, "}}");
                 }
@@ -980,35 +966,35 @@ fn lower_expression(
                 IrExpressionLarge::TupleIndex { base, index } => {
                     // TODO this is completely wrong
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, base, f)?;
+                    lower_expression(large, name_map, base, f)?;
                     swrite!(f, "[{}])", index);
                 }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     // TODO this is probably incorrect in general, we need to store the array in a variable first
                     // TODO we're incorrectly using array indices as bit indices here
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, base, f)?;
+                    lower_expression(large, name_map, base, f)?;
                     swrite!(f, "[");
-                    lower_expression(diags, large, name_map, span, index, f)?;
+                    lower_expression(large, name_map, index, f)?;
                     swrite!(f, "])");
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
                     // TODO this is probably incorrect in general, we need to store the array in a variable first
                     // TODO we're incorrectly using array indices as bit indices here
                     swrite!(f, "(");
-                    lower_expression(diags, large, name_map, span, base, f)?;
+                    lower_expression(large, name_map, base, f)?;
                     swrite!(f, "[");
-                    lower_expression(diags, large, name_map, span, start, f)?;
+                    lower_expression(large, name_map, start, f)?;
                     swrite!(f, "+:{}])", lower_uint_str(len));
                 }
 
                 IrExpressionLarge::ToBits(_ty, value) => {
                     // in verilog everything is just a bit vector, so we don't need to do anything
-                    lower_expression(diags, large, name_map, span, value, f)?;
+                    lower_expression(large, name_map, value, f)?;
                 }
                 IrExpressionLarge::FromBits(_ty, value) => {
                     // in verilog everything is just a bit vector, so we don't need to do anything
-                    lower_expression(diags, large, name_map, span, value, f)?;
+                    lower_expression(large, name_map, value, f)?;
                 }
                 IrExpressionLarge::ExpandIntRange(target, value) => {
                     // just add zero of the right width to expand the range
@@ -1016,14 +1002,14 @@ fn lower_expression(
                     // TODO this is probably wrong for signed values, and definitely for zero-width values
                     let target_repr = IntRepresentation::for_range(target);
                     swrite!(f, "({}'d0 + ", target_repr.size_bits());
-                    lower_expression(diags, large, name_map, span, value, f)?;
+                    lower_expression(large, name_map, value, f)?;
                     swrite!(f, ")");
                 }
                 IrExpressionLarge::ConstrainIntRange(target, value) => {
                     // TODO this not correct, we're not actually lowering the bit width
                     let target_repr = IntRepresentation::for_range(target);
                     let _ = target_repr;
-                    lower_expression(diags, large, name_map, span, value, f)?;
+                    lower_expression(large, name_map, value, f)?;
                 }
             }
         }
@@ -1059,7 +1045,6 @@ struct EdgeString {
 }
 
 fn lower_edge_to_str(
-    diags: &Diagnostics,
     large: &IrLargeArena,
     name_map: NameMap,
     expr: Spanned<&IrExpression>,
@@ -1087,7 +1072,7 @@ fn lower_edge_to_str(
     // lower expression
     let mut s = String::new();
     let f = &mut s;
-    lower_expression(diags, large, name_map, expr.span, curr, f)?;
+    lower_expression(large, name_map, curr, f)?;
 
     Ok(EdgeString {
         edge,

@@ -72,6 +72,7 @@ get_first = "allow"
 needless_range_loop = "allow"
 ptr_arg = "allow"
 single_match = "allow"
+single_range_in_vec_init = "allow"
 
 # These should be investigated and fixed and some point.
 result_large_err = "allow"
