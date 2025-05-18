@@ -1303,20 +1303,9 @@ impl BodyElaborationContext<'_, '_, '_> {
         } = &connection.inner;
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
-        // check id match
+        // double-check id match
         if connector_id.string != connection_id.string {
-            let diag = Diagnostic::new("mismatched port connection")
-                .add_error(
-                    connection_id.span,
-                    format!("connected here to `{}`", connection_id.string),
-                )
-                .add_info(
-                    connector_id.span,
-                    format!("expected connection to `{}`", connector_id.string),
-                )
-                .footer(Level::Note, "port connection re-ordering is not yet supported")
-                .finish();
-            return Err(diags.report(diag));
+            return Err(diags.report_internal_error(connection.span, "connection name mismatch"));
         }
 
         // replace signals that are earlier ports with their connected value
