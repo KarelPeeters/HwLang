@@ -705,12 +705,20 @@ impl ResolveContext<'_> {
                     let WireDeclaration { id, kind } = decl;
 
                     match *kind {
-                        WireDeclarationKind::Clock { span_clock: _, value } => {
-                            if let Some(value) = value {
+                        WireDeclarationKind::Clock {
+                            span_clock: _,
+                            span_assign_and_value,
+                        } => {
+                            if let Some((_, value)) = span_assign_and_value {
                                 self.visit_expression(&scope, value)?;
                             }
                         }
-                        WireDeclarationKind::NormalWithValue { domain, ty, value } => {
+                        WireDeclarationKind::NormalWithValue {
+                            domain,
+                            ty,
+                            span_assign: _,
+                            value,
+                        } => {
                             if let Some(domain) = domain {
                                 self.visit_domain(&scope, domain.inner)?;
                             }

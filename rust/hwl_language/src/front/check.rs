@@ -21,7 +21,6 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let valid = match (target.inner, source.inner) {
-            // TODO is clock->clock actually okay?
             (ValueDomain::Clock, ValueDomain::Clock) => Ok(()),
             (ValueDomain::Clock, _) => Err("non-clock to clock"),
             (ValueDomain::Sync(_), ValueDomain::Clock) => Err("clock to sync"),
@@ -75,7 +74,11 @@ impl CompileItemContext<'_, '_> {
                 .add_error(crossing_span, "invalid domain crossing here")
                 .add_info(target.span, format!("target domain is {target_str}"))
                 .add_info(source.span, format!("source domain is {source_str}"))
-                .footer(Level::Info, required_reason)
+                .footer(Level::Info, format!("crossing due to {required_reason}"))
+                .footer(
+                    Level::Help,
+                    "to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`",
+                )
                 .finish();
             diags.report(diag)
         })
@@ -448,17 +451,10 @@ pub fn check_hardware_type_for_bit_operation(
     diags: &Diagnostics,
     ty: Spanned<&Type>,
 ) -> Result<HardwareType, ErrorGuaranteed> {
-    let ty_hw = ty.inner.as_hardware_type().map_err(|_| {
+    ty.inner.as_hardware_type().map_err(|_| {
         let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
             .add_error(ty.span, format!("actual type `{}`", ty.inner.to_diagnostic_string()))
             .finish();
         diags.report(diag)
-    })?;
-
-    // TODO this feels strange, maybe clock should not actually be a hardware type, only a domain?
-    if let HardwareType::Clock = ty_hw {
-        return Err(diags.report_todo(ty.span, "interaction between to/from bits and clocks"));
-    }
-
-    Ok(ty_hw)
+    })
 }

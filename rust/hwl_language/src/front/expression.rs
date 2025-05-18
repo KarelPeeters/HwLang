@@ -1257,23 +1257,13 @@ impl CompileItemContext<'_, '_> {
                 ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {
                     return Err(diags.report_todo(expr_span, "runtime assert"));
                 }
-                ("fn", "unsafe_bool_to_clock", [Value::Hardware(v)]) => match v.ty {
-                    HardwareType::Bool => {
-                        return Ok(Value::Hardware(HardwareValue {
-                            ty: HardwareType::Clock,
-                            domain: ValueDomain::Clock,
-                            expr: v.expr.clone(),
-                        }));
-                    }
-                    _ => {}
-                },
-                ("fn", "unsafe_clock_to_bool", [Value::Hardware(v)]) => match v.ty {
-                    HardwareType::Clock => {
-                        // TODO what domain should this return?
+                ("fn", "unsafe_bool_to_clock", [v]) => match v.ty() {
+                    Type::Bool => {
+                        let expr = v.as_hardware_value(diags, &mut self.large, expr_span, &HardwareType::Bool)?;
                         return Ok(Value::Hardware(HardwareValue {
                             ty: HardwareType::Bool,
-                            domain: ValueDomain::Async,
-                            expr: v.expr.clone(),
+                            domain: ValueDomain::Clock,
+                            expr: expr.expr.clone(),
                         }));
                     }
                     _ => {}

@@ -216,14 +216,8 @@ impl CompileRefs<'_, '_> {
                         ModulePortSingleKind::Port { direction, ref kind } => {
                             let (domain, ty) = match *kind {
                                 PortSingleKindInner::Clock { span_clock } => (
-                                    Ok(Spanned {
-                                        span: span_clock,
-                                        inner: PortDomain::Clock,
-                                    }),
-                                    Ok(Spanned {
-                                        span: span_clock,
-                                        inner: HardwareType::Clock,
-                                    }),
+                                    Ok(Spanned::new(span_clock, PortDomain::Clock)),
+                                    Ok(Spanned::new(span_clock, HardwareType::Bool)),
                                 ),
                                 PortSingleKindInner::Normal { domain, ty } => (
                                     ctx.eval_port_domain(scope_ports, domain)
@@ -1835,9 +1829,12 @@ impl BodyElaborationContext<'_, '_, '_> {
         let mut vars_inner = VariableValues::new_child(vars_body);
 
         let (domain, ty, value) = match *kind {
-            WireDeclarationKind::Clock { span_clock, ref value } => {
-                let value_tuple = value
-                    .map(|value| {
+            WireDeclarationKind::Clock {
+                span_clock,
+                ref span_assign_and_value,
+            } => {
+                let value_tuple = span_assign_and_value
+                    .map(|(span_assign, value)| {
                         let block_kind = BlockKind::WireValue { span_value: value.span };
                         let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
                         let mut process_block = ctx_expr.new_ir_block();
@@ -1847,7 +1844,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             &mut process_block,
                             scope_body,
                             &mut vars_inner,
-                            &Type::Clock,
+                            &Type::Bool,
                             value,
                         )?;
 
@@ -1855,7 +1852,18 @@ impl BodyElaborationContext<'_, '_, '_> {
                             span_target: id.span(),
                             span_target_ty: span_clock,
                         };
-                        check_type_contains_value(diags, reason, &Type::Clock, value.as_ref(), false, false)?;
+                        let check_ty =
+                            check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false);
+
+                        let check_domain = ctx.check_valid_domain_crossing(
+                            span_assign,
+                            Spanned::new(id.span(), ValueDomain::Clock),
+                            Spanned::new(value.span, value.inner.domain()),
+                            "wire declaration value",
+                        );
+
+                        check_ty?;
+                        check_domain?;
 
                         Ok((process_block, ctx_expr.finish(), value))
                     })
@@ -1863,11 +1871,16 @@ impl BodyElaborationContext<'_, '_, '_> {
 
                 (
                     Some(Spanned::new(span_clock, ValueDomain::Clock)),
-                    Spanned::new(span_clock, HardwareType::Clock),
+                    Spanned::new(span_clock, HardwareType::Bool),
                     value_tuple,
                 )
             }
-            WireDeclarationKind::NormalWithValue { domain, ty, value } => {
+            WireDeclarationKind::NormalWithValue {
+                domain,
+                ty,
+                span_assign,
+                value,
+            } => {
                 // eval domain and ty
                 let domain = domain.map(|domain| ctx.eval_domain(scope_body, domain)).transpose();
                 let ty = ty
@@ -1898,7 +1911,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let domain = match domain {
                     Some(domain) => ctx
                         .check_valid_domain_crossing(
-                            decl_span,
+                            span_assign,
                             domain.map_inner(ValueDomain::from_domain_kind),
                             value_domain,
                             "wire declaration value",
@@ -1909,9 +1922,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             ValueDomain::CompileTime | ValueDomain::Const => DomainKind::Const,
                             ValueDomain::Async => DomainKind::Async,
                             ValueDomain::Sync(s) => DomainKind::Sync(s),
-                            ValueDomain::Clock => {
-                                return Err(diags.report_todo(decl_span, "inferring clock domain/type"))
-                            }
+                            ValueDomain::Clock => return Err(diags.report_todo(decl_span, "infer clock domain")),
                         };
                         Ok(Spanned::new(value.span, domain))
                     }

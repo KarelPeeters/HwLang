@@ -74,6 +74,7 @@ impl SyncDomain<Polarized<Port>> {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ValueDomain<V = Polarized<Signal>> {
     CompileTime,
+    // TODO should clock domains refer to the "original" clock signal so multiple aliases are allowed?
     Clock,
     Const,
     // TODO allow separate sync/async per edge, necessary for "async" reset

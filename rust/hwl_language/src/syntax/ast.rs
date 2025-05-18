@@ -462,11 +462,12 @@ pub struct WireDeclaration {
 pub enum WireDeclarationKind {
     Clock {
         span_clock: Span,
-        value: Option<Expression>,
+        span_assign_and_value: Option<(Span, Expression)>,
     },
     NormalWithValue {
         domain: Option<Spanned<DomainKind<Expression>>>,
         ty: Option<Expression>,
+        span_assign: Span,
         value: Expression,
     },
     NormalWithoutValue {

@@ -22,7 +22,6 @@ pub enum Type {
     Any,
     // Lattice bottom type
     Undefined,
-    Clock,
     Bool,
     String,
     Int(IncRange<BigInt>),
@@ -41,7 +40,6 @@ pub enum Type {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
-    Clock,
     Bool,
     Int(ClosedIncRange<BigInt>),
     Tuple(Vec<HardwareType>),
@@ -145,7 +143,6 @@ impl Type {
 
             // simple matches
             (Type::Type, Type::Type) => Type::Type,
-            (Type::Clock, Type::Clock) => Type::Clock,
             (Type::Bool, Type::Bool) => Type::Bool,
             (Type::String, Type::String) => Type::String,
             // TODO should we even allow unions for these?
@@ -234,7 +231,6 @@ impl Type {
             // simple mismatches
             (
                 Type::Type
-                | Type::Clock
                 | Type::Bool
                 | Type::String
                 | Type::Range
@@ -248,7 +244,6 @@ impl Type {
                 | Type::Struct(_, _)
                 | Type::Enum(_, _),
                 Type::Type
-                | Type::Clock
                 | Type::Bool
                 | Type::String
                 | Type::Range
@@ -272,7 +267,6 @@ impl Type {
     // TODO centralize error messages for this, everyone is just doing them manually for now
     pub fn as_hardware_type(&self) -> Result<HardwareType, NonHardwareType> {
         match self {
-            Type::Clock => Ok(HardwareType::Clock),
             Type::Bool => Ok(HardwareType::Bool),
             Type::Int(range) => match range.clone().try_into_closed() {
                 Ok(closed_range) => Ok(HardwareType::Int(closed_range)),
@@ -328,7 +322,6 @@ impl Type {
             Type::Any => "any".to_string(),
             Type::Undefined => "undefined".to_string(),
 
-            Type::Clock => "clock".to_string(),
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
             Type::Int(range) => format!("int({})", range),
@@ -363,7 +356,6 @@ impl Type {
 impl HardwareType {
     pub fn as_type(&self) -> Type {
         match self {
-            HardwareType::Clock => Type::Clock,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(range.clone().into_range()),
             HardwareType::Tuple(inner) => Type::Tuple(inner.iter().map(HardwareType::as_type).collect_vec()),
@@ -384,7 +376,6 @@ impl HardwareType {
 
     pub fn as_ir(&self) -> IrType {
         match self {
-            HardwareType::Clock => IrType::Bool,
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.clone()),
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(HardwareType::as_ir).collect_vec()),
@@ -407,7 +398,6 @@ impl HardwareType {
 
     pub fn every_bit_pattern_is_valid(&self) -> bool {
         match self {
-            HardwareType::Clock => true,
             HardwareType::Bool => true,
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range);
@@ -520,8 +510,6 @@ impl HardwareType {
                 Ok(())
             }
 
-            // clock cannot be converted
-            (HardwareType::Clock, _) => Err(err_internal()),
             // type mismatches
             (
                 HardwareType::Bool
@@ -566,7 +554,6 @@ impl HardwareType {
         };
 
         match self {
-            HardwareType::Clock => Err(err_internal()),
             HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(err_internal())?)),
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range);

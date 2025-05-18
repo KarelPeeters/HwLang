@@ -19,9 +19,6 @@ pub fn assert(cond: bool, msg: str = "assertion failed") {
 pub fn unsafe_bool_to_clock(value: bool) -> any {
     return __builtin("fn", "unsafe_bool_to_clock", value);
 }
-pub fn unsafe_clock_to_bool(value: any) -> bool {
-    return __builtin("fn", "unsafe_clock_to_bool", value);
-}
 
 // TODO make this `b.to_int()` instead of `bool_to_int(b)`?
 pub fn bool_to_int(b: bool) -> int(0..=1) {

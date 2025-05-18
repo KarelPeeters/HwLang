@@ -498,17 +498,18 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
 }
 
 WireDeclarationKind: WireDeclarationKind = {
-    ":" <span_clock:Span<"clock">> <value:("=" <Expr>)?> => WireDeclarationKind::Clock { span_clock, value },
+    ":" <span_clock:Span<"clock">> <span_assign_and_value:(<Span<"=">> <Expr>)?>
+        => WireDeclarationKind::Clock { span_clock, span_assign_and_value },
     
-    // manually expanded because ":" be present iff at least one of domain or ty is present
-    ":" <domain:Spanned<DomainKind>> <ty:Expr> "=" <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: Some(ty), value },
-    ":" <domain:Spanned<DomainKind>> "=" <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: None, value },
-    ":" <ty:Expr> "=" <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: None, ty: Some(ty), value },
-    "=" <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: None, ty: None, value },
+    // manually expanded because ":" should be present iff at least one of domain or ty is present
+    ":" <domain:Spanned<DomainKind>> <ty:Expr> <span_assign:Span<"=">> <value:Expr>
+        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: Some(ty), span_assign, value },
+    ":" <domain:Spanned<DomainKind>> <span_assign:Span<"=">> <value:Expr>
+        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: None, span_assign, value },
+    ":" <ty:Expr> <span_assign:Span<"=">> <value:Expr>
+        => WireDeclarationKind::NormalWithValue { domain: None, ty: Some(ty), span_assign, value },
+    <span_assign:Span<"=">> <value:Expr>
+        => WireDeclarationKind::NormalWithValue { domain: None, ty: None, span_assign, value },
     
     ":" <domain:(Spanned<DomainKind>)?> <ty:Expr>
         => WireDeclarationKind::NormalWithoutValue { domain, ty },
