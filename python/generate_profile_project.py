@@ -4,12 +4,7 @@ from pathlib import Path
 
 def generate_source(n: int):
     assert n >= 0
-    result = """
-import std.types.[
-    bool, int_range, int, uint, natural,
-    int_bits, uint_bits, any,
-];
-"""
+    result = "import std.types.[bool, int, uint, natural, any];\n"
 
     for i in range(n):
         result += f"""
