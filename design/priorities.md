@@ -5,8 +5,7 @@
 * range fixes (ensure always increasing, never crashing)
   * also allow non-contiguous ranges, switch to non-inclusive ranges, add int range tracking to match
   * implication fixes (if empty drop the block instead of stopping)
-* add something to cast domains
-* allow type inference for vars/vals in more cases, eg. array literals should just work
+
 * allow hardware return/break/continue
 * pass expected type to struct constructors
 * add functions to structs/enums/interfaces
@@ -14,8 +13,8 @@
   * non-static (with self param)
   * with `inout`/`ref` self param, to mutate it in-place
 
-* external modules
 * some way to configure constants, used for ram models vs cells
+  * actually no: reject global pseudo-mutable state, just use generic params
 * better top module specification
 
 * for utilities, we need something more more convenient than a module and more powerful then an interface + functions

@@ -31,10 +31,7 @@ pub module convcode_encoder(
     clocked(clk, async rst) {
         if (input_valid) {
             // update delay line
-            // TODO better error message if this var is missing a type hint
-            // TODO don't require type hints for things with clear types, eg. bools
-            // TODO don't require type hints for vals, they can't change value later anyway
-            val delay_line_extra: [length]bool = [*delay_line, input_data];
+            val delay_line_extra = [*delay_line, input_data];
             delay_line = delay_line_extra[1..];
 
             // do convolution
@@ -116,7 +113,6 @@ pub module convcode_decoder(
             output_data = outputs_max[0];
 
             // calculate new probabilities and paths
-            // TODO infer type for this array automatically
             val book_probs: [4]uint(prob_bits) = [
                 uint_not(analog_bits, input_data_0) + uint_not(analog_bits, input_data_1),
                 input_data_0 + uint_not(analog_bits, input_data_1),
