@@ -46,13 +46,13 @@ impl Storage {
         }
     }
 
-    fn debug_assert_valid(&self) {
+    fn check_valid(&self) {
         match self {
             Storage::Small(_) => {}
             Storage::Big(inner) => {
-                // values that can be represented as StorageSmall should be,
+                // values that can be represented as Storage::Small should be,
                 //   this ensures that each value has a unique representation
-                debug_assert!(IStorage::try_from(inner).is_err());
+                assert!(IStorage::try_from(inner).is_err());
             }
         }
     }
@@ -66,17 +66,14 @@ impl Storage {
             },
             Storage::Big(value) => match value.sign() {
                 num_bigint::Sign::Minus => Sign::Negative,
-                num_bigint::Sign::NoSign => Sign::Zero,
+                num_bigint::Sign::NoSign => unreachable!(),
                 num_bigint::Sign::Plus => Sign::Positive,
             },
         }
     }
 
     fn is_zero(&self) -> bool {
-        match self {
-            &Storage::Small(value) => value == 0,
-            Storage::Big(_) => false,
-        }
+        self.sign() == Sign::Zero
     }
 }
 
@@ -86,8 +83,8 @@ impl BigUint {
     pub const TWO: Self = BigUint(Storage::TWO, PhantomData);
 
     fn new(storage: Storage) -> Self {
-        storage.debug_assert_valid();
-        debug_assert!(matches!(storage.sign(), Sign::Positive | Sign::Zero));
+        storage.check_valid();
+        assert_ne!(storage.sign(), Sign::Negative);
         BigUint(storage, PhantomData)
     }
 
@@ -117,7 +114,9 @@ impl BigUint {
             if let Ok(exp) = u32::try_from(index) {
                 let one: IStorage = 1;
                 if let Some(result) = one.checked_shl(exp) {
-                    return BigUint::new(Storage::Small(result));
+                    if result > 0 {
+                        return BigUint::new(Storage::Small(result));
+                    }
                 }
             }
         }
@@ -173,7 +172,7 @@ impl BigInt {
     pub const NEG_ONE: Self = BigInt(Storage::NEG_ONE, PhantomData);
 
     fn new(storage: Storage) -> Self {
-        storage.debug_assert_valid();
+        storage.check_valid();
         BigInt(storage, PhantomData)
     }
 
@@ -302,7 +301,7 @@ impl std::ops::Neg for &BigInt {
     fn neg(self) -> Self::Output {
         if let Storage::Small(inner) = self.storage() {
             if let Some(result) = inner.checked_neg() {
-                BigInt::new(Storage::Small(result));
+                return BigInt::new(Storage::Small(result));
             }
         }
 
