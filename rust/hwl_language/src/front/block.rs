@@ -131,7 +131,7 @@ enum PatternEqual {
     String(String),
 }
 
-type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, &'a Identifier>;
+type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;
 
 impl CompileItemContext<'_, '_> {
     pub fn elaborate_const_block(
@@ -213,14 +213,13 @@ impl CompileItemContext<'_, '_> {
                     BlockEnd::Normal
                 }
                 BlockStatementKind::VariableDeclaration(decl) => {
-                    let VariableDeclaration {
+                    let &VariableDeclaration {
                         span: _,
                         mutable,
                         id,
                         ty,
                         init,
                     } = decl;
-                    let mutable = *mutable;
 
                     // eval ty
                     let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose();
@@ -245,17 +244,13 @@ impl CompileItemContext<'_, '_> {
                         }
 
                         // build variable
-                        let info = VariableInfo {
-                            id: id.clone(),
-                            mutable,
-                            ty,
-                        };
+                        let info = VariableInfo { id, mutable, ty };
                         let var = vars.var_new(&mut self.variables, info);
 
                         // store initial value if there is one
                         if let Some(init) = init {
                             let init = init.inner.try_map_other(|init| {
-                                store_ir_expression_in_new_variable(diags, ctx, &mut ctx_block, id.clone(), init)
+                                store_ir_expression_in_new_variable(self.refs, ctx, &mut ctx_block, id, init)
                                     .map(HardwareValue::to_general_expression)
                             })?;
                             vars.var_set(diags, var, decl.span, init)?;
@@ -264,7 +259,7 @@ impl CompileItemContext<'_, '_> {
                         Ok(ScopedEntry::Named(NamedValue::Variable(var)))
                     });
 
-                    scope.maybe_declare(diags, id.as_ref(), entry);
+                    scope.maybe_declare(diags, self.refs.fixed.source, id, entry);
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Assignment(stmt) => {
@@ -408,6 +403,7 @@ impl CompileItemContext<'_, '_> {
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
@@ -529,6 +525,7 @@ impl CompileItemContext<'_, '_> {
 
                 merge_variable_branches(
                     diags,
+                    source,
                     ctx,
                     &mut self.large,
                     &self.variables,
@@ -619,7 +616,7 @@ impl CompileItemContext<'_, '_> {
                         cover_all = true;
                         Ok(MatchPattern::Dummy)
                     }
-                    MatchPattern::Val(i) => {
+                    &MatchPattern::Val(i) => {
                         cover_all = true;
                         Ok(MatchPattern::Val(i))
                     }
@@ -686,7 +683,7 @@ impl CompileItemContext<'_, '_> {
 
                         Ok(MatchPattern::In(value))
                     }
-                    MatchPattern::EnumVariant(variant, id_content) => {
+                    &MatchPattern::EnumVariant(variant, id_content) => {
                         let elab = match target_ty {
                             Type::Enum(elab, _) => elab,
                             _ => {
@@ -698,7 +695,9 @@ impl CompileItemContext<'_, '_> {
                             }
                         };
                         let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
-                        let variant_index = info.find_variant(diags, Spanned::new(variant.span, &variant.string))?;
+
+                        let variant_str = variant.str(self.refs.fixed.source);
+                        let variant_index = info.find_variant(diags, Spanned::new(variant.span, variant_str))?;
 
                         // check reachable
                         match cover_enum_variant.entry(variant_index) {
@@ -740,10 +739,7 @@ impl CompileItemContext<'_, '_> {
                             }
                         }
 
-                        Ok(MatchPattern::EnumVariant(
-                            variant_index,
-                            id_content.as_ref().map(MaybeIdentifier::as_ref),
-                        ))
+                        Ok(MatchPattern::EnumVariant(variant_index, id_content))
                     }
                 }
             })
@@ -845,9 +841,7 @@ impl CompileItemContext<'_, '_> {
 
             let matched: BranchMatched = match pattern {
                 MatchPattern::Dummy => BranchMatched::Yes(None),
-                MatchPattern::Val(id) => {
-                    BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id.clone()), cond.clone())))
-                }
+                MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), cond.clone()))),
                 MatchPattern::Equal(pattern) => {
                     let c = match (&pattern, &cond) {
                         (PatternEqual::Bool(p), CompileValue::Bool(v)) => p == v,
@@ -867,7 +861,7 @@ impl CompileItemContext<'_, '_> {
                         if pattern_index == *value_index {
                             let declare_content = match (id_content, value_content) {
                                 (Some(id_content), Some(value_content)) => {
-                                    Some((id_content.map_inner(Identifier::clone), (**value_content).clone()))
+                                    Some((id_content, (**value_content).clone()))
                                 }
                                 (None, None) => None,
                                 _ => unreachable!(),
@@ -889,13 +883,14 @@ impl CompileItemContext<'_, '_> {
                     let scoped_used = if let Some((declare_id, declare_value)) = declare {
                         let var = vars.var_new_immutable_init(
                             &mut self.variables,
-                            declare_id.clone(),
+                            declare_id,
                             pattern_span,
                             Ok(Value::Compile(declare_value)),
                         );
                         scope_inner.maybe_declare(
                             diags,
-                            declare_id.as_ref(),
+                            self.refs.fixed.source,
+                            declare_id,
                             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                         );
                         &scope_inner
@@ -925,6 +920,7 @@ impl CompileItemContext<'_, '_> {
         branch_patterns: Vec<CheckedMatchPattern>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         let mut if_stack_cond_block = vec![];
         let mut if_stack_vars = vec![];
@@ -939,7 +935,7 @@ impl CompileItemContext<'_, '_> {
 
             let (cond, declare): (Option<IrExpression>, Option<(MaybeIdentifier, HardwareValue)>) = match pattern {
                 MatchPattern::Dummy => (None, None),
-                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id.clone()), target.clone()))),
+                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id), target.clone()))),
                 MatchPattern::Equal(pattern) => {
                     let cond = match (&target.ty, pattern) {
                         (HardwareType::Bool, PatternEqual::Bool(pattern)) => {
@@ -1029,7 +1025,7 @@ impl CompileItemContext<'_, '_> {
                                 domain: target.domain,
                                 expr: target_content,
                             };
-                            Some((id_content.map_inner(Identifier::clone), declare_value))
+                            Some((id_content, declare_value))
                         }
                         (None, None) => None,
                         _ => unreachable!(),
@@ -1045,13 +1041,14 @@ impl CompileItemContext<'_, '_> {
             let scoped_used = if let Some((declare_id, declare_value)) = declare {
                 let var = vars_inner.var_new_immutable_init(
                     &mut self.variables,
-                    declare_id.clone(),
+                    declare_id,
                     pattern_span,
                     Ok(Value::Hardware(declare_value)),
                 );
                 scope_inner.maybe_declare(
                     diags,
-                    declare_id.as_ref(),
+                    self.refs.fixed.source,
+                    declare_id,
                     Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                 );
                 &scope_inner
@@ -1082,6 +1079,7 @@ impl CompileItemContext<'_, '_> {
             .collect_vec();
         merge_variable_branches(
             diags,
+            source,
             ctx,
             &mut self.large,
             &self.variables,
@@ -1171,7 +1169,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let &ForStatement {
             span_keyword,
-            index: ref index_id,
+            index: index_id,
             index_ty: _,
             iter: _,
             ref body,
@@ -1194,13 +1192,13 @@ impl CompileItemContext<'_, '_> {
             }
 
             // create scope and set index
-            let index_var =
-                vars.var_new_immutable_init(&mut self.variables, index_id.clone(), span_keyword, Ok(index_value));
+            let index_var = vars.var_new_immutable_init(&mut self.variables, index_id, span_keyword, Ok(index_value));
 
             let mut scope_index = Scope::new_child(stmt.span, scope_parent);
             scope_index.maybe_declare(
                 diags,
-                index_id.as_ref(),
+                self.refs.fixed.source,
+                index_id,
                 Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
             );
 

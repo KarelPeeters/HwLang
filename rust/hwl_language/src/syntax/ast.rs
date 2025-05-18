@@ -1,8 +1,8 @@
 use crate::front::value::Value;
 use crate::new_index_type;
 use crate::syntax::pos::Span;
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
-use crate::util::iter::IterExt;
 
 new_index_type!(pub ExpressionKindIndex);
 
@@ -413,7 +413,7 @@ pub enum MatchPattern<E = Expression, R = Expression, V = Identifier, I = Identi
 
     Equal(E),
     In(R),
-    EnumVariant(V, Option<MaybeIdentifier<I>>),
+    EnumVariant(V, Option<MaybeIdentifier>),
 }
 
 #[derive(Debug, Clone)]
@@ -596,7 +596,7 @@ pub enum ExpressionKind {
     // Literals
     IntLiteral(IntLiteral),
     BoolLiteral(bool),
-    StringLiteral(String),
+    StringLiteral(Span),
 
     // Structures
     ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
@@ -612,7 +612,7 @@ pub enum ExpressionKind {
     ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Expression),
     ArrayIndex(Expression, Spanned<Vec<Expression>>),
     DotIdIndex(Expression, Identifier),
-    DotIntIndex(Expression, Spanned<String>),
+    DotIntIndex(Expression, Span),
 
     // Calls
     Call(Expression, Args),
@@ -639,46 +639,6 @@ pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub span: Span,
     pub name: N,
     pub value: T,
-}
-
-impl<N, T> Args<N, T> {
-    pub fn map_inner<U>(&self, mut f: impl FnMut(&T) -> U) -> Args<N, U>
-    where
-        N: Clone,
-    {
-        Args {
-            span: self.span,
-            inner: self
-                .inner
-                .iter()
-                .map(|arg| Arg {
-                    span: arg.span,
-                    name: arg.name.clone(),
-                    value: f(&arg.value),
-                })
-                .collect(),
-        }
-    }
-
-    pub fn try_map_inner_all<U, E>(&self, mut f: impl FnMut(&T) -> Result<U, E>) -> Result<Args<N, U>, E>
-    where
-        N: Clone,
-    {
-        Ok(Args {
-            span: self.span,
-            inner: self
-                .inner
-                .iter()
-                .map(|arg| {
-                    Ok(Arg {
-                        span: arg.span,
-                        name: arg.name.clone(),
-                        value: f(&arg.value)?,
-                    })
-                })
-                .try_collect_all()?,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -783,25 +743,23 @@ pub struct SyncExpression {
 #[derive(Debug, Clone)]
 pub enum IntLiteral {
     // 0b[01_]+
-    Binary(String),
+    Binary(Span),
     // [0-9_]+
-    Decimal(String),
+    Decimal(Span),
     // 0x[0-9a-fA-F_]+
-    Hexadecimal(String),
+    Hexadecimal(Span),
 }
 
-#[derive(Debug, Clone)]
-pub enum MaybeIdentifier<I = Identifier> {
-    Dummy(Span),
-    Identifier(I),
-}
-
-// TODO this is also just a spanned string
-// TODO intern identifiers
-#[derive(Debug, Clone)]
+// TODO intern identifiers?
+#[derive(Debug, Copy, Clone)]
 pub struct Identifier {
     pub span: Span,
-    pub string: String,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum MaybeIdentifier {
+    Dummy(Span),
+    Identifier(Identifier),
 }
 
 // TODO move to parser utilities module
@@ -924,65 +882,47 @@ impl<T, C> Spanned<Value<T, C>> {
     }
 }
 
-impl<I> MaybeIdentifier<I> {
-    pub fn as_ref(&self) -> MaybeIdentifier<&I> {
-        match self {
-            &MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
-            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id),
-        }
+impl Identifier {
+    pub fn str(self, source: &SourceDatabase) -> &str {
+        source.span_str(self.span)
     }
 
-    pub fn map_inner<U>(self, f: impl FnOnce(I) -> U) -> MaybeIdentifier<U> {
-        match self {
-            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
-            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(f(id)),
-        }
+    pub fn as_spanned_string(self, source: &SourceDatabase) -> Spanned<String> {
+        Spanned::new(self.span, self.str(source).to_owned())
     }
 }
 
 impl MaybeIdentifier {
-    pub fn span(&self) -> Span {
+    pub fn span(self) -> Span {
         match self {
-            &MaybeIdentifier::Dummy(span) => span,
+            MaybeIdentifier::Dummy(span) => span,
             MaybeIdentifier::Identifier(id) => id.span,
         }
     }
 
-    pub fn string(&self) -> &str {
+    pub fn str(self, source: &SourceDatabase) -> Option<&str> {
         match self {
-            MaybeIdentifier::Dummy(_span) => "_",
-            MaybeIdentifier::Identifier(id) => &id.string,
-        }
-    }
-}
-
-impl<'a> MaybeIdentifier<&'a Identifier> {
-    pub fn span(&self) -> Span {
-        match self {
-            &MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span,
+            MaybeIdentifier::Dummy(_) => None,
+            MaybeIdentifier::Identifier(id) => Some(id.str(source)),
         }
     }
 
-    pub fn string(&self) -> Option<&'a str> {
-        match self {
-            MaybeIdentifier::Dummy(_span) => None,
-            MaybeIdentifier::Identifier(id) => Some(&id.string),
-        }
+    pub fn as_spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
+        Spanned::new(self.span(), self.str(source).map(str::to_owned))
     }
 }
 
 #[derive(Debug)]
-pub struct ItemInfo<'a> {
+pub struct ItemInfo {
     pub span_full: Span,
     pub span_short: Span,
-    pub declaration: Option<ItemDeclarationInfo<'a>>,
+    pub declaration: Option<ItemDeclarationInfo>,
 }
 
 #[derive(Debug)]
-pub struct ItemDeclarationInfo<'s> {
+pub struct ItemDeclarationInfo {
     pub vis: Visibility<Span>,
-    pub id: MaybeIdentifier<&'s Identifier>,
+    pub id: MaybeIdentifier,
 }
 
 impl Item {
@@ -999,7 +939,7 @@ impl Item {
                 declaration: match &item.inner {
                     CommonDeclaration::Named(decl) => Some(ItemDeclarationInfo {
                         vis: decl.vis,
-                        id: decl.kind.id().as_ref(),
+                        id: decl.kind.id(),
                     }),
                     CommonDeclaration::ConstBlock(_) => None,
                 },
@@ -1009,7 +949,7 @@ impl Item {
                 span_short: item.id.span(),
                 declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: item.id.as_ref(),
+                    id: item.id,
                 }),
             },
             Item::ModuleExternal(item) => ItemInfo {
@@ -1017,7 +957,7 @@ impl Item {
                 span_short: item.id.span,
                 declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: MaybeIdentifier::Identifier(&item.id),
+                    id: MaybeIdentifier::Identifier(item.id),
                 }),
             },
             Item::Interface(item) => ItemInfo {
@@ -1025,7 +965,7 @@ impl Item {
                 span_short: item.id.span(),
                 declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: item.id.as_ref(),
+                    id: item.id,
                 }),
             },
         }
@@ -1052,13 +992,13 @@ impl CommonDeclarationNamedKind {
         }
     }
 
-    pub fn id(&self) -> &MaybeIdentifier {
+    pub fn id(&self) -> MaybeIdentifier {
         match self {
-            CommonDeclarationNamedKind::Type(decl) => &decl.id,
-            CommonDeclarationNamedKind::Const(decl) => &decl.id,
-            CommonDeclarationNamedKind::Struct(decl) => &decl.id,
-            CommonDeclarationNamedKind::Enum(decl) => &decl.id,
-            CommonDeclarationNamedKind::Function(decl) => &decl.id,
+            CommonDeclarationNamedKind::Type(decl) => decl.id,
+            CommonDeclarationNamedKind::Const(decl) => decl.id,
+            CommonDeclarationNamedKind::Struct(decl) => decl.id,
+            CommonDeclarationNamedKind::Enum(decl) => decl.id,
+            CommonDeclarationNamedKind::Function(decl) => decl.id,
         }
     }
 }

@@ -9,11 +9,8 @@ use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
 use hwl_language::front::compile::{compile, ElaborationSet, NoPrintHandler};
 use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{
-    BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder, SourceSetError,
-};
+use hwl_language::syntax::source::{BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::util::NON_ZERO_USIZE_ONE;
-use hwl_language::{throw, try_inner};
 use indexmap::IndexMap;
 use lsp_types::{
     notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
@@ -26,12 +23,7 @@ impl ServerState {
         if self.vfs.inner().map_err(RequestError::from)?.get_and_clear_changed() {
             self.log("file system changed, updating diagnostics");
 
-            let (source, abs_path_map) = match self.build_source_database()? {
-                Ok(v) => v,
-                Err(e) => throw!(RequestError::Internal(format!(
-                    "compile set error, should not be possible through VFS: {e:?}"
-                ))),
-            };
+            let (source, abs_path_map) = self.build_source_database()?;
 
             self.log("source database built, compiling");
             let diags = Diagnostics::new();
@@ -50,9 +42,7 @@ impl ServerState {
                 &|| false,
                 NON_ZERO_USIZE_ONE,
             );
-            let _ = compiled.and_then(|c| {
-                lower_to_verilog(&diags, &source, &parsed, &c.modules, &c.external_modules, c.top_module)
-            });
+            let _ = compiled.and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
             self.log("compilation finished");
 
             // build new diagnostic set, combined per URI
@@ -85,9 +75,8 @@ impl ServerState {
         Ok(())
     }
 
-    pub fn build_source_database(
-        &mut self,
-    ) -> RequestResult<Result<(SourceDatabase, IndexMap<FileId, PathBuf>), SourceSetError>> {
+    // TODO integrate all of this better with the main compiler, eg. cache the parsed ast, reason about imports, ...
+    pub fn build_source_database(&mut self) -> RequestResult<(SourceDatabase, IndexMap<FileId, PathBuf>)> {
         let vfs = self.vfs.inner()?;
         let vfs_root = vfs.root().clone();
 
@@ -115,11 +104,11 @@ impl ServerState {
                 .to_owned();
 
             let text = content.get_text(path)?;
-            let file_id = try_inner!(source_builder.add_file(
-                FilePath(steps),
-                path.to_str().unwrap().to_owned(),
-                text.to_owned()
-            ));
+            let file_id = source_builder
+                .add_file(FilePath(steps), path.to_str().unwrap().to_owned(), text.to_owned())
+                .map_err(|e| {
+                    RequestError::Internal(format!("compile set error, should not be possible through VFS: {e:?}"))
+                })?;
             abs_path_map.insert(file_id, vfs_root.join(path));
         }
 
@@ -128,7 +117,7 @@ impl ServerState {
             .into_iter()
             .map(|(file_id, path)| (*mapping_file.get(&file_id).unwrap(), path))
             .collect();
-        Ok(Ok((source, abs_path_map)))
+        Ok((source, abs_path_map))
     }
 }
 

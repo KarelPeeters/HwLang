@@ -23,7 +23,7 @@ mod grammar_wrapper {
     lalrpop_mod!(pub grammar, "/syntax/grammar.rs");
 }
 
-pub type ParseError = lalrpop_util::ParseError<Pos, TokenType<String>, TokenError>;
+pub type ParseError = lalrpop_util::ParseError<Pos, TokenType, TokenError>;
 
 /// Utility struct for the grammer file.
 pub struct LocationBuilder {
@@ -73,9 +73,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
                 arena_expressions,
             })
         }
-        Err(e) => Err(e
-            .map_location(|byte| Pos { file, byte })
-            .map_token(|token| token.map(str::to_owned))),
+        Err(e) => Err(e.map_location(|byte| Pos { file, byte })),
     }
 }
 

@@ -8,6 +8,7 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::{IndexType, RandomCheck};
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
@@ -335,6 +336,7 @@ struct NeedsHardwareMerge;
 // TODO take implications from before the merge into account while merging, requires implications to be in the flow
 pub fn merge_variable_branches<C: ExpressionContext>(
     diags: &Diagnostics,
+    source: &SourceDatabase,
     ctx: &mut C,
     large: &mut IrLargeArena,
     variables: &ArenaVariables,
@@ -449,7 +451,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
                         (&mut **block, Spanned::new(span_merge, value.value()))
                     })
                     .collect_vec();
-                let merged = merge_hardware_values(diags, ctx, large, span_merge, &variables[var].id, children)?;
+                let merged = merge_hardware_values(diags, source, ctx, large, span_merge, variables[var].id, children)?;
 
                 let value_and_version = (merged.to_general_expression(), parent.kind.increment_version());
                 MaybeAssignedValue::Assigned(AssignedValue {
@@ -505,10 +507,11 @@ pub fn merge_variable_branches<C: ExpressionContext>(
 
 fn merge_hardware_values<'a, C: ExpressionContext>(
     diags: &Diagnostics,
+    source: &SourceDatabase,
     ctx: &mut C,
     large: &mut IrLargeArena,
     span_merge: Span,
-    debug_info_id: &MaybeIdentifier,
+    debug_info_id: MaybeIdentifier,
     children: Vec<(&mut C::Block, Spanned<Value>)>,
 ) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed>
 where
@@ -566,7 +569,7 @@ where
     // create result variable
     let var_ir_info = IrVariableInfo {
         ty: ty.as_ir(),
-        debug_info_id: debug_info_id.clone(),
+        debug_info_id: debug_info_id.as_spanned_string(source),
     };
     let var_ir = ctx.new_ir_variable(diags, span_merge, var_ir_info)?;
 

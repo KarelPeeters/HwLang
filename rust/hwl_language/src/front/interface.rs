@@ -6,6 +6,7 @@ use crate::front::types::HardwareType;
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::parsed::AstRefInterface;
+use crate::syntax::source::SourceDatabase;
 use crate::util::iter::IterExt;
 use crate::util::ResultDoubleExt;
 use indexmap::map::Entry;
@@ -22,9 +23,10 @@ impl ElaboratedInterfaceInfo {
     pub fn get_port(
         &self,
         diags: &Diagnostics,
-        index: &Identifier,
+        source: &SourceDatabase,
+        index: Identifier,
     ) -> Result<(usize, &ElaboratedInterfacePortInfo), ErrorGuaranteed> {
-        match self.ports.get_index_of(&index.string) {
+        match self.ports.get_index_of(index.str(source)) {
             None => {
                 let diag = Diagnostic::new("dot index does not match any interface port")
                     .add_error(index.span, "this identifier should match a port")
@@ -39,9 +41,10 @@ impl ElaboratedInterfaceInfo {
     pub fn get_view(
         &self,
         diags: &Diagnostics,
-        index: &Identifier,
+        source: &SourceDatabase,
+        index: Identifier,
     ) -> Result<&ElaboratedInterfaceViewInfo, ErrorGuaranteed> {
-        match self.views.get(&index.string) {
+        match self.views.get(index.str(source)) {
             None => {
                 let diag = Diagnostic::new("dot index does not match any interface view")
                     .add_error(index.span, "this identifier should match a view")
@@ -72,6 +75,8 @@ impl CompileRefs<'_, '_> {
         ast_ref: AstRefInterface,
         scope_params: CapturedScope,
     ) -> Result<ElaboratedInterfaceInfo, ErrorGuaranteed> {
+        let diags = self.diags;
+        let source = self.fixed.source;
         let &ItemDefInterface {
             span,
             vis: _,
@@ -81,7 +86,6 @@ impl CompileRefs<'_, '_> {
             ref port_types,
             ref views,
         } = &self.fixed.parsed[ast_ref];
-        let diags = self.diags;
 
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
@@ -96,8 +100,7 @@ impl CompileRefs<'_, '_> {
             &mut scope_ports,
             &mut vars,
             port_types,
-            &mut |ctx, scope_params, vars, (port_id, ty)| {
-                let ty = *ty;
+            &mut |ctx, scope_params, vars, &(port_id, ty)| {
                 let ty_eval = ctx.eval_expression_as_ty(scope_params, vars, ty).and_then(|ty| {
                     match ty.inner.as_hardware_type() {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
@@ -109,7 +112,7 @@ impl CompileRefs<'_, '_> {
                     }
                 });
 
-                match port_map.entry(port_id.string.clone()) {
+                match port_map.entry(port_id.str(source).to_owned()) {
                     Entry::Occupied(mut entry) => {
                         let prev: &mut ElaboratedInterfacePortInfo = entry.get_mut();
                         let diag = Diagnostic::new("port declared twice")
@@ -120,7 +123,7 @@ impl CompileRefs<'_, '_> {
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(ElaboratedInterfacePortInfo {
-                            id: port_id.clone(),
+                            id: port_id,
                             ty: ty_eval,
                         });
                     }
@@ -133,7 +136,10 @@ impl CompileRefs<'_, '_> {
         // elaborate views
         let mut view_map: IndexMap<String, ElaboratedInterfaceViewInfo> = IndexMap::new();
         for view in views {
-            let InterfaceView { id: view_id, port_dirs } = view;
+            let &InterfaceView {
+                id: view_id,
+                ref port_dirs,
+            } = view;
 
             let mut port_dir_vec: Vec<Option<Result<(Identifier, Spanned<PortDirection>), ErrorGuaranteed>>> =
                 vec![None; port_map.len()];
@@ -144,7 +150,7 @@ impl CompileRefs<'_, '_> {
                 &mut vars,
                 port_dirs,
                 &mut (|_, _, _, (port_id, dir)| {
-                    if let Some(port_index) = port_map.get_index_of(&port_id.string) {
+                    if let Some(port_index) = port_map.get_index_of(port_id.str(source)) {
                         let slot = &mut port_dir_vec[port_index];
                         if let Some(prev) = &*slot {
                             if let Ok((prev_id, _)) = prev {
@@ -155,7 +161,7 @@ impl CompileRefs<'_, '_> {
                                 *slot = Some(Err(diags.report(diag)));
                             }
                         } else {
-                            *slot = Some(Ok((port_id.clone(), *dir)));
+                            *slot = Some(Ok((*port_id, *dir)));
                         }
                     } else {
                         any_view_err = Err(diags.report_simple(
@@ -176,7 +182,7 @@ impl CompileRefs<'_, '_> {
                     .map(|(port_index, dir)| {
                         dir.ok_or_else(|| {
                             let port_id = &port_map.get_index(port_index).unwrap().1.id;
-                            let diag = Diagnostic::new(format!("missing direction for port `{}`", port_id.string))
+                            let diag = Diagnostic::new(format!("missing direction for port `{}`", port_id.str(source)))
                                 .add_info(port_id.span, "port declared here")
                                 .add_error(
                                     interface_id.span(),
@@ -191,11 +197,11 @@ impl CompileRefs<'_, '_> {
             });
 
             let view_eval = ElaboratedInterfaceViewInfo {
-                id: view_id.clone(),
+                id: view_id,
                 port_dirs: port_dir_vec,
             };
             if let MaybeIdentifier::Identifier(view_id) = view_id {
-                if let Some(prev) = port_map.get(&view_id.string) {
+                if let Some(prev) = port_map.get(view_id.str(source)) {
                     let diag = Diagnostic::new("view name conflicts with port name")
                         .add_error(view_id.span, "view declared here")
                         .add_info(prev.id.span, "port declared here")
@@ -203,7 +209,7 @@ impl CompileRefs<'_, '_> {
                     diags.report(diag);
                 }
 
-                match view_map.entry(view_id.string.clone()) {
+                match view_map.entry(view_id.str(source).to_owned()) {
                     Entry::Occupied(mut entry) => {
                         let diag = Diagnostic::new("view name already declared")
                             .add_info(entry.get().id.span(), "previously declared here")
@@ -219,7 +225,7 @@ impl CompileRefs<'_, '_> {
         }
 
         Ok(ElaboratedInterfaceInfo {
-            id: interface_id.clone(),
+            id: *interface_id,
             ports: port_map,
             views: view_map,
         })

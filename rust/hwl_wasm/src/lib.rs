@@ -49,7 +49,7 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
 
     let lowered = compiled
         .as_ref_ok()
-        .and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, &c.external_modules, c.top_module));
+        .and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
     let sim = compiled
         .as_ref_ok()
         .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));

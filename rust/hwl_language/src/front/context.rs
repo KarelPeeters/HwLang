@@ -11,7 +11,7 @@ use crate::mid::ir::{
     IrBlock, IrExpression, IrRegister, IrRegisterInfo, IrRegisters, IrStatement, IrVariable, IrVariableInfo,
     IrVariables,
 };
-use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use crate::throw;
 use annotate_snippets::Level;
@@ -46,7 +46,7 @@ pub trait ExpressionContext {
         &mut self,
         ctx: &CompileItemContext,
         diags: &Diagnostics,
-        id: MaybeIdentifier,
+        debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
     ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed>;
@@ -129,12 +129,12 @@ impl ExpressionContext for CompileTimeExpressionContext {
         &mut self,
         ctx: &CompileItemContext,
         diags: &Diagnostics,
-        id: MaybeIdentifier,
+        debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
     ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
         let _ = (ctx, ty, init);
-        Err(diags.report_internal_error(id.span(), "trying to create register in compile-time context"))
+        Err(diags.report_internal_error(debug_info_id.span, "trying to create register in compile-time context"))
     }
 
     fn report_assignment(
@@ -313,11 +313,11 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         &mut self,
         ctx: &CompileItemContext,
         diags: &Diagnostics,
-        id: MaybeIdentifier,
+        debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
     ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
-        let span = id.span();
+        let span = debug_info_id.span;
 
         let error_not_clocked = |block_span: Span, block_kind: &str| {
             let diag = Diagnostic::new("creating new registers is only allowed in a clocked block")
@@ -336,7 +336,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
             } => {
                 let reg_info = IrRegisterInfo {
                     ty: ty.as_ir(),
-                    debug_info_id: id.clone(),
+                    debug_info_id,
                     debug_info_ty: ty.clone(),
                     debug_info_domain: domain.inner.to_diagnostic_string(ctx),
                 };

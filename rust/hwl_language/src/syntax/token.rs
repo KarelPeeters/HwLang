@@ -6,8 +6,8 @@ use strum::EnumIter;
 use crate::syntax::pos::{Pos, Span};
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct Token<S> {
-    pub ty: TokenType<S>,
+pub struct Token {
+    pub ty: TokenType,
     pub span: Span,
 }
 
@@ -20,7 +20,7 @@ pub enum TokenError {
     StringLiteralMissingEnd { start: Pos, eof: Pos },
 }
 
-pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Result<Vec<Token<&str>>, TokenError> {
+pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Result<Vec<Token>, TokenError> {
     Tokenizer::new(file, source, emit_incomplete_token)
         .into_iter()
         .try_collect()
@@ -114,7 +114,7 @@ impl<'s> Tokenizer<'s> {
 
     // TODO generate this match state machine
     // TODO try memchr where it applies, see if it's actually faster
-    fn next_inner(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
+    fn next_inner(&mut self) -> Result<Option<Token>, TokenError> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
@@ -127,7 +127,7 @@ impl<'s> Tokenizer<'s> {
             ]
         };
 
-        let mut skip_fixed = |n: usize, ty: TokenType<&'static str>| {
+        let mut skip_fixed = |n: usize, ty: TokenType| {
             self.skip(n);
             ty
         };
@@ -139,7 +139,7 @@ impl<'s> Tokenizer<'s> {
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
-                TokenType::WhiteSpace(&start_left_str[..self.curr_byte - start.byte])
+                TokenType::WhiteSpace
             }
             [pattern_id_start!(), _, _] => {
                 self.skip(1);
@@ -148,11 +148,11 @@ impl<'s> Tokenizer<'s> {
 
                 // TODO speed up with runtime? literal tree
                 match self.fixed_tokens_grouped_by_length.get(id.len()) {
-                    None => TokenType::Identifier(id),
+                    None => TokenType::Identifier,
                     Some(potential) => potential
                         .iter()
                         .find_map(|info| if info.literal == id { Some(info.ty) } else { None })
-                        .unwrap_or(TokenType::Identifier(id)),
+                        .unwrap_or(TokenType::Identifier),
                 }
             }
 
@@ -177,7 +177,7 @@ impl<'s> Tokenizer<'s> {
                             return invalid();
                         }
 
-                        TokenType::IntLiteralBinary(token_str)
+                        TokenType::IntLiteralBinary
                     }
                     ['0', 'x', _] => {
                         let tail = &token_str[2..];
@@ -186,14 +186,14 @@ impl<'s> Tokenizer<'s> {
                             return invalid();
                         }
 
-                        TokenType::IntLiteralHexadecimal(token_str)
+                        TokenType::IntLiteralHexadecimal
                     }
                     _ => {
                         let f = |c| matches!(c, pattern_decimal_digit!() | '_');
                         if !token_str.chars().any(f_not_dummy) || !token_str.chars().all(f) {
                             return invalid();
                         }
-                        TokenType::IntLiteralDecimal(token_str)
+                        TokenType::IntLiteralDecimal
                     }
                 }
             }
@@ -214,7 +214,7 @@ impl<'s> Tokenizer<'s> {
                     }
                     _ => unreachable!(),
                 }
-                TokenType::StringLiteral(&start_left_str[..self.curr_byte - start.byte])
+                TokenType::StringLiteral
             }
             ['/', '*', _] => {
                 // block comments are allowed to nest
@@ -246,12 +246,12 @@ impl<'s> Tokenizer<'s> {
                 }
 
                 // end of comment, depth is 0 again
-                TokenType::BlockComment(&start_left_str[..self.curr_byte - start.byte])
+                TokenType::BlockComment
             }
             ['/', '/', _] => {
                 self.skip(2);
                 self.skip_while(|c| c != '\n' && c != '\r');
-                TokenType::LineComment(&start_left_str[..self.curr_byte - start.byte])
+                TokenType::LineComment
             }
 
             // trigram
@@ -311,7 +311,7 @@ impl<'s> Tokenizer<'s> {
         Ok(Some(Token { span, ty }))
     }
 
-    fn next(&mut self) -> Result<Option<Token<&'s str>>, TokenError> {
+    fn next(&mut self) -> Result<Option<Token>, TokenError> {
         assert!(
             !self.errored,
             "Cannot continue calling next on tokenizer that returned an error"
@@ -338,7 +338,7 @@ impl<'s> Tokenizer<'s> {
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {
-    type Item = Result<Token<&'s str>, TokenError>;
+    type Item = Result<Token, TokenError>;
     type IntoIter = TokenizerIterator<'s>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -351,7 +351,7 @@ pub struct TokenizerIterator<'s> {
 }
 
 impl<'s> Iterator for TokenizerIterator<'s> {
-    type Item = Result<Token<&'s str>, TokenError>;
+    type Item = Result<Token, TokenError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.tokenizer.next().transpose()
@@ -368,40 +368,30 @@ macro_rules! declare_tokens {
         }
     ) => {
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-        pub enum TokenType<S> {
-            $($c_token(S),)*
+        pub enum TokenType {
+            $($c_token,)*
             $($f_token,)*
         }
 
-        impl TokenType<()> {
+        impl TokenType {
             #[cfg(test)]
-            const CUSTOM_TOKENS: &[(fn (&str) -> TokenType<&str>, &'static str)] = &[
-                $((|s| TokenType::$c_token(s), stringify!($c_token)),)*
+            const CUSTOM_TOKENS: &[(&str, TokenType)] = &[
+                $((stringify!($c_token), TokenType::$c_token),)*
             ];
             const FIXED_TOKENS: &[FixedTokenInfo] = &[
                 $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
             ];
-        }
 
-        // TODO function vs array?
-        impl<S> TokenType<S> {
             pub fn category(self) -> TokenCategory {
                 match self {
-                    $(TokenType::$c_token(_) => $c_cat,)*
+                    $(TokenType::$c_token => $c_cat,)*
                     $(TokenType::$f_token => $f_cat,)*
-                }
-            }
-
-            pub fn map<T>(self, f: impl FnOnce(S) -> T) -> TokenType<T> {
-                match self {
-                    $(TokenType::$c_token(s) => TokenType::$c_token(f(s)),)*
-                    $(TokenType::$f_token => TokenType::$f_token,)*
                 }
             }
 
             pub fn diagnostic_str(&self) -> &str {
                 match self {
-                    $(TokenType::$c_token(_) => stringify!($c_token),)*
+                    $(TokenType::$c_token => stringify!($c_token),)*
                     $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
                 }
             }
@@ -551,7 +541,7 @@ struct FixedTokenInfo {
     #[allow(dead_code)]
     name: &'static str,
     literal: &'static str,
-    ty: TokenType<&'static str>,
+    ty: TokenType,
 }
 
 lazy_static! {
@@ -598,7 +588,7 @@ mod test {
     use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
     use std::collections::HashSet;
 
-    fn tokenize_iter(file: FileId, source: &str, emit_incomplete_token: bool) -> Vec<Result<Token<&str>, TokenError>> {
+    fn tokenize_iter(file: FileId, source: &str, emit_incomplete_token: bool) -> Vec<Result<Token, TokenError>> {
         let mut result = vec![];
         for token in Tokenizer::new(file, source, emit_incomplete_token) {
             match token {
@@ -619,7 +609,7 @@ mod test {
         assert_eq!(Ok(vec![]), tokenize(file, "", false));
         assert_eq!(
             Ok(vec![Token {
-                ty: TokenType::WhiteSpace("\n"),
+                ty: TokenType::WhiteSpace,
                 span: Span {
                     start: Pos { file, byte: 0 },
                     end: Pos { file, byte: 1 }
@@ -636,7 +626,7 @@ mod test {
 
         assert_eq!(
             Ok(vec![Token {
-                ty: TokenType::BlockComment("/**/"),
+                ty: TokenType::BlockComment,
                 span: Span {
                     start: Pos { file, byte: 0 },
                     end: Pos { file, byte: 4 }
@@ -647,7 +637,7 @@ mod test {
 
         assert_eq!(
             Ok(vec![Token {
-                ty: TokenType::BlockComment("/*/**/*/"),
+                ty: TokenType::BlockComment,
                 span: Span {
                     start: Pos { file, byte: 0 },
                     end: Pos { file, byte: 8 }
@@ -672,7 +662,7 @@ mod test {
 
         let expected = vec![
             Ok(Token {
-                ty: TokenType::BlockComment("/*"),
+                ty: TokenType::BlockComment,
                 span: Span {
                     start: Pos { file, byte: 0 },
                     end: Pos { file, byte: 2 },
@@ -694,7 +684,7 @@ mod test {
 
         let expected = vec![
             Ok(Token {
-                ty: TokenType::StringLiteral("\""),
+                ty: TokenType::StringLiteral,
                 span: Span {
                     start: Pos { file, byte: 0 },
                     end: Pos { file, byte: 1 },
@@ -748,7 +738,7 @@ mod test {
     // TODO turn this into a test case that checks whether the grammer is up-to-date
     #[test]
     fn print_grammer_enum() {
-        for (_build, name) in TokenType::CUSTOM_TOKENS {
+        for (name, _ty) in TokenType::CUSTOM_TOKENS {
             println!("Token{name} => TokenType::{name}(<&'s str>),")
         }
         for info in TokenType::FIXED_TOKENS {

@@ -12,6 +12,7 @@ use crate::syntax::ast::{
     WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
 
@@ -27,14 +28,19 @@ type FindDefinitionResult = Result<(), FindDefinition>;
 // TODO implement the opposite direction, "find usages"
 // TODO follow imports instead of jumping to them
 // TODO we can do better: in `if(_) { a } else { a }` a is not really conditional any more
-pub fn find_definition(ast: &FileContent, pos: Pos) -> FindDefinition {
+// TODO generalize this "visitor", we also want to collect all usages, find the next selection span, find folding ranges, ...
+pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> FindDefinition {
     let FileContent {
         span: _,
         items,
         arena_expressions,
     } = ast;
 
-    let ctx = ResolveContext { pos, arena_expressions };
+    let ctx = ResolveContext {
+        pos,
+        arena_expressions,
+        source,
+    };
 
     match ctx.visit_file_items(items) {
         // TODO maybe this should be an internal error?
@@ -46,6 +52,7 @@ pub fn find_definition(ast: &FileContent, pos: Pos) -> FindDefinition {
 struct ResolveContext<'a> {
     pos: Pos,
     arena_expressions: &'a Arena<ExpressionKindIndex, ExpressionKind>,
+    source: &'a SourceDatabase,
 }
 
 macro_rules! check_skip {
@@ -93,28 +100,28 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn declare(&mut self, id: &Identifier) {
+    fn declare(&mut self, source: &SourceDatabase, id: Identifier) {
         self.map
-            .entry(id.string.clone())
+            .entry(id.str(source).to_owned())
             .or_default()
             .push((id.span, Conditional::No));
     }
 
-    fn maybe_declare(&mut self, id: MaybeIdentifier<&Identifier>) {
+    fn maybe_declare(&mut self, source: &SourceDatabase, id: MaybeIdentifier) {
         match id {
             MaybeIdentifier::Dummy(_) => {}
-            MaybeIdentifier::Identifier(id) => self.declare(id),
+            MaybeIdentifier::Identifier(id) => self.declare(source, id),
         }
     }
 
-    fn find(&self, id: &Identifier) -> FindDefinition {
+    fn find(&self, source: &SourceDatabase, id: Identifier) -> FindDefinition {
         let mut curr = self;
         let mut result = vec![];
 
         loop {
             let mut any_certain = false;
 
-            if let Some(entries) = curr.map.get(&id.string) {
+            if let Some(entries) = curr.map.get(id.str(source)) {
                 for &(span, cond) in entries {
                     result.push(span);
                     match cond {
@@ -154,17 +161,14 @@ impl ResolveContext<'_> {
         let mut scope_file = DeclScope::new_root();
         for item in items {
             if let Some(info) = item.info().declaration {
-                scope_file.maybe_declare(info.id);
+                scope_file.maybe_declare(self.source, info.id);
             }
 
             if let Item::Import(item) = item {
                 let mut visit_entry = |entry: &ImportEntry| {
-                    let ImportEntry { span: _, id, as_ } = entry;
-                    let result = as_
-                        .as_ref()
-                        .map(MaybeIdentifier::as_ref)
-                        .unwrap_or(MaybeIdentifier::Identifier(id));
-                    scope_file.maybe_declare(result);
+                    let &ImportEntry { span: _, id, as_ } = entry;
+                    let result = as_.unwrap_or(MaybeIdentifier::Identifier(id));
+                    scope_file.maybe_declare(self.source, result);
                 };
                 match &item.entry.inner {
                     ImportFinalKind::Single(entry) => {
@@ -252,18 +256,20 @@ impl ResolveContext<'_> {
                 }
 
                 let mut scope_body = DeclScope::new_child(&scope_params);
-                self.visit_extra_list(&mut scope_body, port_types, &mut |scope_body, (port_name, port_ty)| {
-                    self.visit_expression(scope_body, *port_ty)?;
-                    scope_body.declare(port_name);
+                self.visit_extra_list(&mut scope_body, port_types, &mut |scope_body, &(port_name, port_ty)| {
+                    self.visit_expression(scope_body, port_ty)?;
+                    scope_body.declare(self.source, port_name);
                     Ok(())
                 })?;
 
                 for view in views {
-                    let InterfaceView { id, port_dirs } = view;
-                    self.visit_extra_list(&mut scope_body, port_dirs, &mut |scope_body, (port_name, _port_dir)| {
-                        self.visit_id_usage(scope_body, port_name)
-                    })?;
-                    scope_body.maybe_declare(id.as_ref());
+                    let &InterfaceView { id, ref port_dirs } = view;
+                    self.visit_extra_list(
+                        &mut scope_body,
+                        port_dirs,
+                        &mut |scope_body, &(port_name, _port_dir)| self.visit_id_usage(scope_body, port_name),
+                    )?;
+                    scope_body.maybe_declare(self.source, id);
                 }
 
                 Ok(())
@@ -278,7 +284,7 @@ impl ResolveContext<'_> {
     ) -> Result<FindDefinitionResult, FindDefinition> {
         Ok(match port {
             ModulePortItem::Single(port) => {
-                let ModulePortSingle { span: _, id, kind } = port;
+                let &ModulePortSingle { span: _, id, ref kind } = port;
                 match kind {
                     ModulePortSingleKind::Port { direction: _, kind } => match kind {
                         PortSingleKindInner::Clock { span_clock: _ } => {}
@@ -296,7 +302,7 @@ impl ResolveContext<'_> {
                         self.visit_expression(scope_ports, interface)?;
                     }
                 }
-                scope_ports.declare(id);
+                scope_ports.declare(self.source, id);
                 Ok(())
             }
             ModulePortItem::Block(block) => {
@@ -304,7 +310,7 @@ impl ResolveContext<'_> {
 
                 self.visit_domain(scope_ports, domain.inner)?;
                 self.visit_extra_list(scope_ports, ports, &mut |scope_ports, port| {
-                    let ModulePortInBlock { span: _, id, kind } = port;
+                    let &ModulePortInBlock { span: _, id, ref kind } = port;
                     match *kind {
                         ModulePortInBlockKind::Port { direction: _, ty } => {
                             self.visit_expression(scope_ports, ty)?;
@@ -316,7 +322,7 @@ impl ResolveContext<'_> {
                             self.visit_expression(scope_ports, interface)?;
                         }
                     }
-                    scope_ports.declare(id);
+                    scope_ports.declare(self.source, id);
                     Ok(())
                 })?;
 
@@ -342,19 +348,19 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_common_declaration<'a, V>(
+    fn visit_common_declaration<V>(
         &self,
         scope_parent: &mut DeclScope,
-        decl: &'a CommonDeclaration<V>,
+        decl: &CommonDeclaration<V>,
     ) -> FindDefinitionResult {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
-                let id: MaybeIdentifier<&'a Identifier> = match kind {
+                let id = match kind {
                     CommonDeclarationNamedKind::Type(decl) => {
                         let &TypeDeclaration {
                             span: _,
-                            ref id,
+                            id,
                             ref params,
                             body,
                         } = decl;
@@ -365,30 +371,25 @@ impl ResolveContext<'_> {
                         }
                         self.visit_expression(&scope_params, body)?;
 
-                        id.as_ref()
+                        id
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
-                        let &ConstDeclaration {
-                            span: _,
-                            ref id,
-                            ty,
-                            value,
-                        } = decl;
+                        let &ConstDeclaration { span: _, id, ty, value } = decl;
 
                         if let Some(ty) = ty {
                             self.visit_expression(scope_parent, ty)?;
                         }
                         self.visit_expression(scope_parent, value)?;
 
-                        id.as_ref()
+                        id
                     }
                     CommonDeclarationNamedKind::Struct(decl) => {
-                        let StructDeclaration {
+                        let &StructDeclaration {
                             span: _,
                             span_body: _,
                             id,
-                            params,
-                            fields,
+                            ref params,
+                            ref fields,
                         } = decl;
 
                         let mut scope_params = DeclScope::new_child(scope_parent);
@@ -401,14 +402,14 @@ impl ResolveContext<'_> {
                             Ok(())
                         })?;
 
-                        id.as_ref()
+                        id
                     }
                     CommonDeclarationNamedKind::Enum(decl) => {
-                        let EnumDeclaration {
+                        let &EnumDeclaration {
                             span: _,
                             id,
-                            params,
-                            variants,
+                            ref params,
+                            ref variants,
                         } = decl;
 
                         let mut scope_params = DeclScope::new_child(scope_parent);
@@ -429,12 +430,12 @@ impl ResolveContext<'_> {
                             Ok(())
                         })?;
 
-                        id.as_ref()
+                        id
                     }
                     CommonDeclarationNamedKind::Function(decl) => {
                         let &FunctionDeclaration {
                             span: _,
-                            ref id,
+                            id,
                             ref params,
                             ret_ty,
                             ref body,
@@ -447,11 +448,11 @@ impl ResolveContext<'_> {
                         }
                         self.visit_block_statements(&scope_params, body)?;
 
-                        id.as_ref()
+                        id
                     }
                 };
 
-                scope_parent.maybe_declare(id);
+                scope_parent.maybe_declare(self.source, id);
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -466,12 +467,12 @@ impl ResolveContext<'_> {
         let Parameters { span: _, items } = params;
 
         self.visit_extra_list(scope, items, &mut |scope, param| {
-            let &Parameter { ref id, ty, default } = param;
+            let &Parameter { id, ty, default } = param;
             self.visit_expression(scope, ty)?;
             if let Some(default) = default {
                 self.visit_expression(scope, default)?;
             }
-            scope.declare(id);
+            scope.declare(self.source, id);
             Ok(())
         })
     }
@@ -544,7 +545,7 @@ impl ResolveContext<'_> {
     ) -> FindDefinitionResult {
         let &ForStatement {
             span_keyword: _,
-            ref index,
+            index,
             index_ty,
             iter,
             ref body,
@@ -556,7 +557,7 @@ impl ResolveContext<'_> {
         }
 
         let mut scope_inner = DeclScope::new_child(scope);
-        scope_inner.maybe_declare(index.as_ref());
+        scope_inner.maybe_declare(self.source, index);
 
         f(&scope_inner, body)?;
 
@@ -587,7 +588,7 @@ impl ResolveContext<'_> {
                 let &VariableDeclaration {
                     span: _,
                     mutable: _,
-                    ref id,
+                    id,
                     ty,
                     init,
                 } = decl;
@@ -597,7 +598,7 @@ impl ResolveContext<'_> {
                 if let Some(init) = init {
                     self.visit_expression(scope, init)?;
                 }
-                scope.maybe_declare(id.as_ref());
+                scope.maybe_declare(self.source, id);
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -635,8 +636,8 @@ impl ResolveContext<'_> {
                     let mut scope_inner = DeclScope::new_child(scope);
                     match &pattern.inner {
                         MatchPattern::Dummy => {}
-                        MatchPattern::Val(id) => {
-                            scope_inner.declare(id);
+                        &MatchPattern::Val(id) => {
+                            scope_inner.declare(self.source, id);
                         }
                         &MatchPattern::Equal(expr) => {
                             self.visit_expression(scope, expr)?;
@@ -644,9 +645,9 @@ impl ResolveContext<'_> {
                         &MatchPattern::In(expr) => {
                             self.visit_expression(scope, expr)?;
                         }
-                        MatchPattern::EnumVariant(_variant, id) => {
+                        &MatchPattern::EnumVariant(_variant, id) => {
                             if let Some(id) = id {
-                                scope_inner.maybe_declare(id.as_ref());
+                                scope_inner.maybe_declare(self.source, id);
                             }
                         }
                     }
@@ -692,17 +693,17 @@ impl ResolveContext<'_> {
                     self.visit_common_declaration(&mut scope, decl)?;
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let &RegDeclaration { ref id, sync, ty, init } = decl;
+                    let &RegDeclaration { id, sync, ty, init } = decl;
 
                     if let Some(sync) = sync {
                         self.visit_domain_sync(&scope, sync.inner)?;
                     }
                     self.visit_expression(&scope, ty)?;
                     self.visit_expression(&scope, init)?;
-                    scope.maybe_declare(id.as_ref());
+                    scope.maybe_declare(self.source, id);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let WireDeclaration { id, kind } = decl;
+                    let &WireDeclaration { id, ref kind } = decl;
 
                     match *kind {
                         WireDeclarationKind::Clock {
@@ -735,10 +736,10 @@ impl ResolveContext<'_> {
                         }
                     }
 
-                    scope.maybe_declare(id.as_ref());
+                    scope.maybe_declare(self.source, id);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
-                    let &RegOutPortMarker { ref id, init } = decl;
+                    let &RegOutPortMarker { id, init } = decl;
                     self.visit_expression(&scope, init)?;
                     self.visit_id_usage(&scope, id)?;
                 }
@@ -795,7 +796,7 @@ impl ResolveContext<'_> {
 
                     check_skip!(self, port_connections.span);
                     for conn in &port_connections.inner {
-                        let &PortConnection { ref id, expr } = &conn.inner;
+                        let &PortConnection { id, expr } = &conn.inner;
                         // TODO try resolving port name, needs type info
                         let _ = id;
                         self.visit_expression(&scope, expr)?;
@@ -843,7 +844,7 @@ impl ResolveContext<'_> {
                 }
                 self.visit_expression(&scope_inner, expression)?;
             }
-            ExpressionKind::Id(id) => {
+            &ExpressionKind::Id(id) => {
                 return self.visit_id_usage(scope, id);
             }
             ExpressionKind::ArrayLiteral(elems) => {
@@ -879,14 +880,14 @@ impl ResolveContext<'_> {
             ExpressionKind::ArrayComprehension(expr) => {
                 let &ArrayComprehension {
                     body,
-                    ref index,
+                    index,
                     span_keyword: _,
                     iter,
                 } = expr;
                 self.visit_expression(scope, iter)?;
 
                 let mut scope_inner = DeclScope::new_child(scope);
-                scope_inner.maybe_declare(index.as_ref());
+                scope_inner.maybe_declare(self.source, index);
 
                 self.visit_array_literal_element(&scope_inner, body)?;
             }
@@ -961,8 +962,8 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_id_usage(&self, scope: &DeclScope, id: &Identifier) -> Result<(), FindDefinition> {
+    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> Result<(), FindDefinition> {
         check_skip!(self, id.span);
-        Err(scope.find(id))
+        Err(scope.find(self.source, id))
     }
 }

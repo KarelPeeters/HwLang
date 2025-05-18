@@ -79,7 +79,7 @@ enum ConnectorKind {
 
 pub struct ElaboratedModuleHeader<A> {
     ast_ref: A,
-    debug_info_params: Option<Vec<(Identifier, CompileValue)>>,
+    debug_info_params: Option<Vec<(String, CompileValue)>>,
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
@@ -130,6 +130,10 @@ impl CompileRefs<'_, '_> {
             self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
         let scope_ports = scope_ports.into_content();
 
+        let source = self.fixed.source;
+        let debug_info_params =
+            debug_info_params.map(|p| p.into_iter().map(|(k, v)| (k.str(source).to_owned(), v)).collect_vec());
+
         let header = ElaboratedModuleHeader {
             ast_ref,
             debug_info_params,
@@ -162,7 +166,7 @@ impl CompileRefs<'_, '_> {
         let &ast::ItemDefModuleInternal {
             span: def_span,
             vis: _,
-            ref id,
+            id,
             params: _,
             ports: _,
             ref body,
@@ -190,6 +194,7 @@ impl CompileRefs<'_, '_> {
         module_def_span: Span,
     ) -> Result<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>), ErrorGuaranteed> {
         let diags = self.diags;
+        let source = self.fixed.source;
 
         let mut scope_ports = Scope::new_child(ports.span.join(Span::single_at(module_def_span.end)), scope_params);
 
@@ -211,7 +216,7 @@ impl CompileRefs<'_, '_> {
                                    port_item: &ModulePortItem| {
             match port_item {
                 ModulePortItem::Single(port_item) => {
-                    let ModulePortSingle { span: _, id, kind } = port_item;
+                    let &ModulePortSingle { span: _, id, ref kind } = port_item;
                     match *kind {
                         ModulePortSingleKind::Port { direction, ref kind } => {
                             let (domain, ty) = match *kind {
@@ -238,7 +243,7 @@ impl CompileRefs<'_, '_> {
                                 domain,
                                 ty,
                             );
-                            scope_ports.declare(diags, id, entry);
+                            scope_ports.declare(diags, source, id, entry);
                         }
                         ModulePortSingleKind::Interface {
                             span_keyword: _,
@@ -274,7 +279,7 @@ impl CompileRefs<'_, '_> {
                                 domain,
                                 interface_view,
                             );
-                            scope_ports.declare(diags, id, entry);
+                            scope_ports.declare(diags, source, id, entry);
                         }
                     }
                 }
@@ -292,7 +297,7 @@ impl CompileRefs<'_, '_> {
                          scope_ports: &mut Scope,
                          vars: &mut VariableValues,
                          port_item_in_block: &ModulePortInBlock| {
-                            let ModulePortInBlock { span: _, id, kind } = port_item_in_block;
+                            let &ModulePortInBlock { span: _, id, ref kind } = port_item_in_block;
 
                             match *kind {
                                 ModulePortInBlockKind::Port { direction, ty } => {
@@ -311,7 +316,7 @@ impl CompileRefs<'_, '_> {
                                         domain,
                                         ty,
                                     );
-                                    scope_ports.declare(diags, id, entry);
+                                    scope_ports.declare(diags, source, id, entry);
                                 }
                                 ModulePortInBlockKind::Interface {
                                     span_keyword: _,
@@ -345,7 +350,7 @@ impl CompileRefs<'_, '_> {
                                         domain,
                                         interface_view,
                                     );
-                                    scope_ports.declare(diags, id, entry);
+                                    scope_ports.declare(diags, source, id, entry);
                                 }
                             }
                             Ok(())
@@ -367,8 +372,8 @@ impl CompileRefs<'_, '_> {
         mut ctx_item: CompileItemContext,
         vars: &VariableValues,
         scope_header: &Scope,
-        def_id: &MaybeIdentifier,
-        debug_info_params: Option<Vec<(Identifier, CompileValue)>>,
+        def_id: MaybeIdentifier,
+        debug_info_params: Option<Vec<(String, CompileValue)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         body: &Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
@@ -446,13 +451,15 @@ impl CompileRefs<'_, '_> {
             })
             .collect();
 
+        let source = self.fixed.source;
         Ok(IrModuleInfo {
             ports: ctx.ir_ports,
             registers: ctx.ir_registers,
             wires: ctx.ir_wires,
             large: ctx_item.large,
             children: processes,
-            debug_info_id: def_id.clone(),
+            debug_info_file: source[def_id.span().start.file].path_raw.clone(),
+            debug_info_id: def_id.as_spanned_string(source),
             debug_info_generic_args: debug_info_params,
         })
     }
@@ -465,17 +472,19 @@ fn push_connector_single(
     connectors: &mut ArenaConnectors,
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
     next_single: &mut impl FnMut() -> ConnectorSingle,
-    id: &Identifier,
+    id: Identifier,
     direction: Spanned<PortDirection>,
     domain: Result<Spanned<PortDomain<Port>>, ErrorGuaranteed>,
     ty: Result<Spanned<HardwareType>, ErrorGuaranteed>,
 ) -> Result<ScopedEntry, ErrorGuaranteed> {
     let diags = ctx.refs.diags;
-    claim_ir_name(diags, used_ir_names, &id.string, id.span)?;
+    let source = ctx.refs.fixed.source;
+
+    claim_ir_name(diags, used_ir_names, id.str(source), id.span)?;
 
     let kind_and_entry = result_pair(domain, ty).map(|(domain, ty)| {
         let ir_port = ports_ir.push(IrPortInfo {
-            name: id.string.clone(),
+            name: id.str(source).to_owned(),
             direction: direction.inner,
             ty: ty.inner.as_ir(),
             debug_span: id.span,
@@ -485,7 +494,7 @@ fn push_connector_single(
 
         let port = ctx.ports.push(PortInfo {
             span: id.span,
-            name: id.string.clone(),
+            name: id.str(source).to_owned(),
             direction,
             domain,
             ty: ty.clone(),
@@ -508,7 +517,7 @@ fn push_connector_single(
     });
 
     let (kind, entry) = result_pair_split(kind_and_entry);
-    connectors.push(ConnectorInfo { id: id.clone(), kind });
+    connectors.push(ConnectorInfo { id, kind });
     entry
 }
 
@@ -519,11 +528,12 @@ fn push_connector_interface(
     connectors: &mut ArenaConnectors,
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
     next_single: &mut impl FnMut() -> ConnectorSingle,
-    id: &Identifier,
+    id: Identifier,
     domain: Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed>,
     view: Result<ElaboratedInterfaceView, ErrorGuaranteed>,
 ) -> Result<ScopedEntry, ErrorGuaranteed> {
     let diags = ctx.refs.diags;
+    let source = ctx.refs.fixed.source;
 
     let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
         let ElaboratedInterfaceView {
@@ -539,8 +549,10 @@ fn push_connector_interface(
         let mut singles = vec![];
 
         for (port_index, (_, port)) in enumerate(&interface.ports) {
-            let name = format!("{}.{}", id.string, port.id.string);
-            let ir_name = format!("{}_{}", id.string, port.id.string);
+            let id_str = id.str(source);
+            let port_id_str = port.id.str(source);
+            let name = format!("{}.{}", id_str, port_id_str);
+            let ir_name = format!("{}_{}", id_str, port_id_str);
             claim_ir_name(diags, used_ir_names, &ir_name, id.span)?;
 
             let direction = port_dirs[port_index].1;
@@ -571,7 +583,7 @@ fn push_connector_interface(
         }
 
         let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
-            id: id.clone(),
+            id,
             view: view.clone(),
             domain,
             ports: declared_ports,
@@ -589,10 +601,11 @@ fn push_connector_interface(
     });
 
     let (kind, entry) = result_pair_split(kind_and_entry);
-    connectors.push(ConnectorInfo { id: id.clone(), kind });
+    connectors.push(ConnectorInfo { id, kind });
     entry
 }
 
+// TODO think about this, and maybe expand to include more things (eg. signals, child modules, ...)
 fn claim_ir_name(
     diags: &Diagnostics,
     used_ir_names: &mut IndexMap<String, Span>,
@@ -766,6 +779,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         is_root_block: bool,
     ) {
         let diags = self.ctx.refs.diags;
+        let source = self.ctx.refs.fixed.source;
 
         let Block { span: _, statements } = body;
         for stmt in statements {
@@ -793,7 +807,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         ScopedEntry::Named(NamedValue::Register(reg))
                     });
 
-                    scope.maybe_declare(diags, decl.id.as_ref(), entry);
+                    scope.maybe_declare(diags, source, decl.id, entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let elab_tuple = self.elaborate_module_declaration_wire(scope, vars, stmt_span, decl);
@@ -818,7 +832,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         }
                     };
 
-                    scope.maybe_declare(diags, decl.id.as_ref(), entry);
+                    scope.maybe_declare(diags, source, decl.id, entry);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
@@ -837,7 +851,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             self.out_port_register_connections.insert_first(port, reg_init.reg);
 
                             let entry = Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg)));
-                            scope.declare(diags, &decl.id, entry);
+                            scope.declare(diags, source, decl.id, entry);
                             signals.push(Spanned::new(decl.id.span, Signal::Register(reg_init.reg)));
                         }
                         Err(e) => self.delayed_error = Err(e),
@@ -1090,9 +1104,11 @@ impl BodyElaborationContext<'_, '_, '_> {
         for_stmt: Spanned<&ForStatement<ModuleStatement>>,
     ) -> Result<(), ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
+        let source = self.ctx.refs.fixed.source;
+
         let &ForStatement {
             span_keyword,
-            ref index,
+            index,
             index_ty,
             iter,
             ref body,
@@ -1131,13 +1147,8 @@ impl BodyElaborationContext<'_, '_, '_> {
             }
 
             let mut scope_inner = Scope::new_child(index.span().join(body.span), scope);
-            let var = vars_inner.var_new_immutable_init(
-                &mut self.ctx.variables,
-                index.clone(),
-                span_keyword,
-                Ok(index_value),
-            );
-            scope_inner.maybe_declare(diags, index.as_ref(), Ok(ScopedEntry::Named(NamedValue::Variable(var))));
+            let var = vars_inner.var_new_immutable_init(&mut self.ctx.variables, index, span_keyword, Ok(index_value));
+            scope_inner.maybe_declare(diags, source, index, Ok(ScopedEntry::Named(NamedValue::Variable(var))));
 
             self.elaborate_block(&scope_inner, &vars_inner, signals, body, false);
         }
@@ -1155,6 +1166,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let refs = self.ctx.refs;
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
+        let source = ctx.refs.fixed.source;
 
         let &ast::ModuleInstance {
             ref name,
@@ -1196,9 +1208,9 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
 
         // check that connections are unique
-        let mut id_to_connection_and_used: IndexMap<&String, (&Spanned<PortConnection>, bool)> = IndexMap::new();
+        let mut id_to_connection_and_used: IndexMap<&str, (&Spanned<PortConnection>, bool)> = IndexMap::new();
         for connection in &port_connections.inner {
-            match id_to_connection_and_used.entry(&connection.inner.id.string) {
+            match id_to_connection_and_used.entry(connection.inner.id.str(source)) {
                 Entry::Vacant(entry) => {
                     entry.insert((connection, false));
                 }
@@ -1220,7 +1232,8 @@ impl BodyElaborationContext<'_, '_, '_> {
         let mut ir_connections = vec![];
 
         for (connector, connector_info) in connectors {
-            match id_to_connection_and_used.get_mut(&connector_info.id.string) {
+            let connector_id_str = connector_info.id.str(source);
+            match id_to_connection_and_used.get_mut(connector_id_str) {
                 Some((connection, connection_used)) => {
                     if *connection_used {
                         // this should have already been caught during module header elaboration
@@ -1244,7 +1257,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     }
                 }
                 None => {
-                    let diag = Diagnostic::new(format!("missing connection for port {}", connector_info.id.string))
+                    let diag = Diagnostic::new(format!("missing connection for port {}", connector_id_str))
                         .add_error(Span::single_at(port_connections.span.end), "connections here")
                         .add_info(connector_info.id.span, "port declared here")
                         .finish();
@@ -1265,7 +1278,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         }
         any_unused_err?;
 
-        let name = name.as_ref().map(|name| name.string.clone());
+        let name = name.as_ref().map(|name| name.str(source).to_owned());
         let ir_instance = match instance_info {
             ElaboratedModule::Internal(module_ir) => IrModuleChild::ModuleInternalInstance(IrModuleInternalInstance {
                 name,
@@ -1296,6 +1309,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         connection: &Spanned<PortConnection>,
     ) -> Result<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>, ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
+        let source = self.ctx.refs.fixed.source;
 
         let &PortConnection {
             id: ref connection_id,
@@ -1304,7 +1318,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
         // double-check id match
-        if connector_id.string != connection_id.string {
+        if connector_id.str(source) != connection_id.str(source) {
             return Err(diags.report_internal_error(connection.span, "connection name mismatch"));
         }
 
@@ -1451,7 +1465,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                         {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(),
-                                debug_info_id: MaybeIdentifier::Identifier(connector_id.clone()),
+                                debug_info_id: connector_id.as_spanned_string(source).map_inner(Some),
                                 debug_info_ty: ty.inner.clone(),
                                 debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
                             });
@@ -1490,9 +1504,9 @@ impl BodyElaborationContext<'_, '_, '_> {
                             )
                         };
 
-                        match &self.ctx.refs.get_expr(value_expr) {
+                        match self.ctx.refs.get_expr(value_expr) {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
-                            ExpressionKind::Id(id) => {
+                            &ExpressionKind::Id(id) => {
                                 let named = self.ctx.eval_id(scope, id)?;
 
                                 let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
@@ -1643,7 +1657,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     if connector_dir.inner != value_dir.inner {
                         let diag = Diagnostic::new(format!(
                             "direction mismatch for interface port `{}`",
-                            interface_info.ports[i].id.string
+                            interface_info.ports[i].id.str(source)
                         ))
                         .add_info(
                             connection_id.span,
@@ -1725,6 +1739,8 @@ impl BodyElaborationContext<'_, '_, '_> {
     fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
         // check exactly one valid driver for each signal
         // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
+        let source = self.ctx.refs.fixed.source;
+
         let Drivers {
             output_port_drivers,
             reg_drivers,
@@ -1740,7 +1756,8 @@ impl BodyElaborationContext<'_, '_, '_> {
         }
         for (&wire, drivers) in wire_drivers {
             let wire_info = &self.ctx.wires[wire];
-            let driver_err = self.check_exactly_one_driver("wire", wire_info.id.string(), wire_info.id.span(), drivers);
+            let wire_name = wire_info.id.str(source).unwrap_or("_");
+            let driver_err = self.check_exactly_one_driver("wire", wire_name, wire_info.id.span(), drivers);
             any_err = any_err.and(driver_err.map(|_| ()));
         }
 
@@ -1749,8 +1766,8 @@ impl BodyElaborationContext<'_, '_, '_> {
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
             let reg_info = &self.ctx.registers[reg];
-            let driver_err =
-                self.check_exactly_one_driver("register", reg_info.id.string(), reg_info.id.span(), drivers);
+            let reg_name = reg_info.id.str(source).unwrap_or("_");
+            let driver_err = self.check_exactly_one_driver("register", reg_name, reg_info.id.span(), drivers);
 
             let maybe_err = match any_err.and(driver_err) {
                 Err(e) => Err(e),
@@ -1811,8 +1828,9 @@ impl BodyElaborationContext<'_, '_, '_> {
     ) -> Result<(Wire, Option<Spanned<IrCombinatorialProcess>>), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
+        let source = ctx.refs.fixed.source;
 
-        let WireDeclaration { id, kind } = decl;
+        let &WireDeclaration { id, ref kind } = decl;
 
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut vars_inner = VariableValues::new_child(vars_body);
@@ -1955,12 +1973,12 @@ impl BodyElaborationContext<'_, '_, '_> {
         let debug_info_domain = domain.map_or_else(|| "inferred".to_string(), |d| d.inner.to_diagnostic_string(ctx));
         let ir_wire = self.ir_wires.push(IrWireInfo {
             ty: ty.inner.as_ir(),
-            debug_info_id: id.clone(),
+            debug_info_id: id.as_spanned_string(source),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain,
         });
         let wire = ctx.wires.push(WireInfo {
-            id: id.clone(),
+            id,
             domain: Ok(domain),
             ty: ty.clone(),
             ir: ir_wire,
@@ -2004,10 +2022,11 @@ impl BodyElaborationContext<'_, '_, '_> {
     ) -> Result<RegisterInit, ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
+        let source = ctx.refs.fixed.source;
 
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let &RegDeclaration { ref id, sync, ty, init } = decl;
+        let &RegDeclaration { id, sync, ty, init } = decl;
 
         // evaluate
         let sync = sync
@@ -2043,12 +2062,12 @@ impl BodyElaborationContext<'_, '_, '_> {
             .map_or_else(|| "inferred".to_string(), |sync| sync.inner.to_diagnostic_string(ctx));
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: ty.inner.as_ir(),
-            debug_info_id: id.clone(),
+            debug_info_id: id.as_spanned_string(source),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain,
         });
         let reg = ctx.registers.push(RegisterInfo {
-            id: id.clone(),
+            id,
             domain: Ok(sync),
             ty,
             ir: ir_reg,
@@ -2066,7 +2085,9 @@ impl BodyElaborationContext<'_, '_, '_> {
     ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
-        let &RegOutPortMarker { ref id, init } = decl;
+        let source = ctx.refs.fixed.source;
+
+        let &RegOutPortMarker { id, init } = decl;
 
         if !is_root_block {
             return Err(diags.report_simple(
@@ -2077,7 +2098,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         }
 
         // find port
-        let port = scope_body.find(diags, id).and_then(|port| match port.value {
+        let port = scope_body.find(diags, source, id).and_then(|port| match port.value {
             &ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
             _ => {
                 let diag = Diagnostic::new("register port marker needs to be on a port")
@@ -2144,7 +2165,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: port_info.ty.inner.as_ir(),
-            debug_info_id: MaybeIdentifier::Identifier(id.clone()),
+            debug_info_id: id.as_spanned_string(source).map_inner(Some),
             debug_info_ty: port_info.ty.inner.clone(),
             debug_info_domain: domain.to_diagnostic_string(ctx),
         });
@@ -2153,7 +2174,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             inner: domain.map_signal(|p| p.map_inner(Signal::Port)),
         };
         let reg = ctx.registers.push(RegisterInfo {
-            id: MaybeIdentifier::Identifier(id.clone()),
+            id: MaybeIdentifier::Identifier(id),
             domain: Ok(Some(domain_spanned)),
             ty: port_info.ty.clone(),
             ir: ir_reg,

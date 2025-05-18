@@ -55,7 +55,7 @@ impl Polarized<Signal> {
         let Polarized { inverted, signal } = self;
         let signal_str = signal.to_diagnostic_string(s);
         match inverted {
-            false => signal_str,
+            false => signal_str.to_owned(),
             true => format!("(!{})", signal_str),
         }
     }
@@ -75,11 +75,12 @@ pub enum SignalOrVariable {
 }
 
 impl Signal {
-    pub fn to_diagnostic_string(self, s: &CompileItemContext) -> String {
+    pub fn to_diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
+        let source = s.refs.fixed.source;
         match self {
-            Signal::Port(port) => s.ports[port].name.clone(),
-            Signal::Wire(wire) => s.wires[wire].id.string().to_owned(),
-            Signal::Register(reg) => s.registers[reg].id.string().to_owned(),
+            Signal::Port(port) => &s.ports[port].name,
+            Signal::Wire(wire) => s.wires[wire].id.str(source).unwrap_or("_"),
+            Signal::Register(reg) => s.registers[reg].id.str(source).unwrap_or("_"),
         }
     }
 

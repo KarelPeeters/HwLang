@@ -16,7 +16,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
-use crate::syntax::source::FileId;
+use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
@@ -116,7 +116,8 @@ pub enum FailedCaptureReason {
 pub struct ParamArgMacher<'a> {
     // constant initial values
     diags: &'a Diagnostics,
-    args: &'a Args<Option<Identifier>, Spanned<Value>>,
+    source: &'a SourceDatabase,
+    args: &'a Args<Option<Spanned<&'a str>>, Spanned<Value>>,
     arg_name_to_index: IndexMap<&'a str, usize>,
     positional_count: usize,
     params_span: Span,
@@ -140,8 +141,9 @@ enum NamedRule {
 impl<'a> ParamArgMacher<'a> {
     fn new(
         diags: &'a Diagnostics,
+        source: &'a SourceDatabase,
         params_span: Span,
-        args: &'a Args<Option<Identifier>, Spanned<Value>>,
+        args: &'a Args<Option<Spanned<&'a str>>, Spanned<Value>>,
         args_must_be_compile: bool,
         args_must_be_named: NamedRule,
     ) -> Result<Self, ErrorGuaranteed> {
@@ -182,7 +184,7 @@ impl<'a> ParamArgMacher<'a> {
 
             match &arg.name {
                 Some(id) => {
-                    match arg_name_to_index.entry(id.string.as_str()) {
+                    match arg_name_to_index.entry(id.inner) {
                         Entry::Occupied(entry) => {
                             let prev_index = *entry.get();
                             let diag = Diagnostic::new("duplicate named parameter")
@@ -217,6 +219,7 @@ impl<'a> ParamArgMacher<'a> {
 
         Ok(Self {
             diags,
+            source,
             args,
             positional_count,
             arg_name_to_index,
@@ -230,16 +233,17 @@ impl<'a> ParamArgMacher<'a> {
 
     pub fn resolve_param(
         &mut self,
-        id: &'a Identifier,
+        id: Identifier,
         ty: Spanned<&Type>,
         default: Option<Spanned<Value>>,
     ) -> Result<Spanned<Value>, ErrorGuaranteed> {
         let diags = self.diags;
+        let id_str = id.str(self.source);
 
         let param_index = self.next_param_index;
         self.next_param_index += 1;
 
-        if let Some(prev_span) = self.param_names.insert(&id.string, id.span) {
+        if let Some(prev_span) = self.param_names.insert(id_str, id.span) {
             let diag = Diagnostic::new("duplicate parameter name")
                 .add_info(prev_span, "previously defined here")
                 .add_error(id.span, "defined again here")
@@ -257,7 +261,7 @@ impl<'a> ParamArgMacher<'a> {
             assert!(!self.arg_used[arg_index]);
 
             // check if there's also a named match to get better error messages
-            if let Some(&other_arg_index) = self.arg_name_to_index.get(id.string.as_str()) {
+            if let Some(&other_arg_index) = self.arg_name_to_index.get(id_str) {
                 let diag = Diagnostic::new("argument matches positionally but is also passed as named")
                     .add_info(id.span, "parameter defined here")
                     .add_info(arg.span, "positional match here")
@@ -271,7 +275,7 @@ impl<'a> ParamArgMacher<'a> {
             self.arg_used[arg_index] = true;
             Ok(arg.value.clone())
         } else {
-            match self.arg_name_to_index.get(id.string.as_str()) {
+            match self.arg_name_to_index.get(id_str) {
                 Some(&arg_index) => {
                     // named match
                     let arg = &self.args.inner[arg_index];
@@ -286,7 +290,7 @@ impl<'a> ParamArgMacher<'a> {
                         Ok(default)
                     } else {
                         // nothing matched, report error
-                        let diag = Diagnostic::new(format!("missing argument for parameter `{}`", id.string))
+                        let diag = Diagnostic::new(format!("missing argument for parameter `{}`", id_str))
                             .add_info(id.span, "parameter defined without default value here")
                             .add_error(self.args.span, "missing argument here")
                             .finish();
@@ -341,7 +345,7 @@ impl CompileItemContext<'_, '_> {
         span_target: Span,
         span_call: Span,
         function: &FunctionValue,
-        args: Args<Option<Identifier>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -417,7 +421,7 @@ impl CompileItemContext<'_, '_> {
     fn call_struct_new(
         &mut self,
         elab: ElaboratedStruct,
-        args: Args<Option<Identifier>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let &ElaboratedStructInfo {
@@ -426,10 +430,17 @@ impl CompileItemContext<'_, '_> {
             ref fields,
         } = self.refs.shared.elaboration_arenas.struct_info(elab)?;
 
-        let mut matcher = ParamArgMacher::new(self.refs.diags, span_body, &args, false, NamedRule::OnlyNamed)?;
+        let mut matcher = ParamArgMacher::new(
+            self.refs.diags,
+            self.refs.fixed.source,
+            span_body,
+            &args,
+            false,
+            NamedRule::OnlyNamed,
+        )?;
 
         let mut field_values = vec![];
-        for (field_id, field_ty) in fields.values() {
+        for &(field_id, ref field_ty) in fields.values() {
             if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
                 field_values.push(v);
             }
@@ -493,15 +504,22 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         elab: ElaboratedEnum,
         variant_index: usize,
-        args: &Args<Option<Identifier>, Spanned<Value>>,
+        args: &Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
-        let (variant_id, variant_content) = &enum_info.variants[variant_index];
+        let &(variant_id, ref variant_content) = &enum_info.variants[variant_index];
         let variant_content = variant_content.as_ref().unwrap();
 
-        let mut matcher = ParamArgMacher::new(self.refs.diags, span_call, args, false, NamedRule::OnlyPositional)?;
+        let mut matcher = ParamArgMacher::new(
+            diags,
+            self.refs.fixed.source,
+            span_call,
+            args,
+            false,
+            NamedRule::OnlyPositional,
+        )?;
         let content = matcher.resolve_param(variant_id, variant_content.as_ref(), None)?;
         matcher.finish()?;
 
@@ -558,9 +576,11 @@ impl CompileItemContext<'_, '_> {
         ctx: &mut C,
         vars: &mut VariableValues,
         function: &UserFunctionValue,
-        args: Args<Option<Identifier>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
+
         let UserFunctionValue {
             decl_span,
             scope_captured,
@@ -580,10 +600,17 @@ impl CompileItemContext<'_, '_> {
         let mut param_values = vec![];
 
         let compile = body.inner.params_must_be_compile();
-        let mut matcher = ParamArgMacher::new(diags, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
+        let mut matcher = ParamArgMacher::new(
+            diags,
+            source,
+            params.span,
+            &args,
+            compile,
+            NamedRule::PositionalAndNamed,
+        )?;
 
         self.compile_elaborate_extra_list(&mut scope, vars, &params.items, &mut |ctx, scope, vars, param| {
-            let &Parameter { ref id, ty, default } = param;
+            let &Parameter { id, ty, default } = param;
 
             let ty = ctx.eval_expression_as_ty(scope, vars, ty)?;
             let default = default
@@ -599,13 +626,13 @@ impl CompileItemContext<'_, '_> {
 
             // record value into vec
             if let Ok(value) = &value {
-                param_values.push((param.id.clone(), value.inner.clone()));
+                param_values.push((param.id, value.inner.clone()));
             }
 
             // declare param in scope
             let param_var = vars.var_new_immutable_init(
                 &mut ctx.variables,
-                MaybeIdentifier::Identifier(param.id.clone()),
+                MaybeIdentifier::Identifier(param.id),
                 param.id.span,
                 value.map(|v| v.inner),
             );
@@ -613,7 +640,7 @@ impl CompileItemContext<'_, '_> {
                 span: param.id.span,
                 value: ScopedEntry::Named(NamedValue::Variable(param_var)),
             };
-            scope.declare_already_checked(param.id.string.clone(), entry);
+            scope.declare_already_checked(param.id.str(source).to_owned(), entry);
 
             Ok(())
         })?;
@@ -658,7 +685,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         span_call: Span,
         function: &FunctionBits,
-        args: Args<Option<Identifier>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
@@ -932,10 +959,8 @@ impl CapturedScope {
                             value: ScopedEntry::Item(item),
                         },
                         CapturedValue::Value(ref value) => {
-                            let id_recreated = MaybeIdentifier::Identifier(Identifier {
-                                span,
-                                string: id.clone(),
-                            });
+                            // TODO this can be simplified, identifiers can be stored by value now
+                            let id_recreated = MaybeIdentifier::Identifier(Identifier { span });
                             let var = vars.var_new_immutable_init(
                                 variables,
                                 id_recreated,

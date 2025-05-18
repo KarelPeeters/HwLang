@@ -1,7 +1,7 @@
 use crate::front::types::{ClosedIncRange, HardwareType, Type};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
+use crate::syntax::ast::{PortDirection, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
@@ -75,8 +75,9 @@ pub struct IrModuleInfo {
 
     pub children: Vec<Spanned<IrModuleChild>>,
 
-    pub debug_info_id: MaybeIdentifier,
-    pub debug_info_generic_args: Option<Vec<(Identifier, CompileValue)>>,
+    pub debug_info_file: String,
+    pub debug_info_id: Spanned<Option<String>>,
+    pub debug_info_generic_args: Option<Vec<(String, CompileValue)>>,
 }
 
 #[derive(Debug)]
@@ -94,7 +95,7 @@ pub struct IrPortInfo {
 pub struct IrRegisterInfo {
     pub ty: IrType,
 
-    pub debug_info_id: MaybeIdentifier,
+    pub debug_info_id: Spanned<Option<String>>,
     pub debug_info_ty: HardwareType,
     pub debug_info_domain: String,
 }
@@ -103,7 +104,7 @@ pub struct IrRegisterInfo {
 pub struct IrWireInfo {
     pub ty: IrType,
 
-    pub debug_info_id: MaybeIdentifier,
+    pub debug_info_id: Spanned<Option<String>>,
     pub debug_info_ty: HardwareType,
     pub debug_info_domain: String,
 }
@@ -112,7 +113,7 @@ pub struct IrWireInfo {
 pub struct IrVariableInfo {
     pub ty: IrType,
 
-    pub debug_info_id: MaybeIdentifier,
+    pub debug_info_id: Spanned<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -459,8 +460,18 @@ impl IrExpression {
             IrExpression::Int(x) => x.to_string(),
 
             &IrExpression::Port(x) => module.ports[x].name.clone(),
-            &IrExpression::Wire(x) => module.wires[x].debug_info_id.string().to_owned(),
-            &IrExpression::Register(x) => module.registers[x].debug_info_id.string().to_owned(),
+            &IrExpression::Wire(x) => module.wires[x]
+                .debug_info_id
+                .inner
+                .as_ref()
+                .map_or("_", String::as_ref)
+                .to_owned(),
+            &IrExpression::Register(x) => module.registers[x]
+                .debug_info_id
+                .inner
+                .as_ref()
+                .map_or("_", String::as_ref)
+                .to_owned(),
             // TODO support printing variables with their real names if in a context where they exist
             &IrExpression::Variable(_) => "_variable".to_owned(),
 

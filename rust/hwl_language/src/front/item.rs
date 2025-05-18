@@ -319,7 +319,7 @@ impl CompileItemContext<'_, '_> {
             CommonDeclarationNamedKind::Type(decl) => {
                 let &TypeDeclaration {
                     span: _,
-                    ref id,
+                    id,
                     ref params,
                     body,
                 } = decl;
@@ -329,12 +329,7 @@ impl CompileItemContext<'_, '_> {
                 self.eval_maybe_generic_item(id.span(), body_span, scope, vars, params, body)
             }
             CommonDeclarationNamedKind::Const(decl) => {
-                let &ConstDeclaration {
-                    span: _,
-                    ref id,
-                    ty,
-                    value,
-                } = decl;
+                let &ConstDeclaration { span: _, id, ty, value } = decl;
 
                 let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose()?;
 
@@ -380,7 +375,7 @@ impl CompileItemContext<'_, '_> {
             CommonDeclarationNamedKind::Function(decl) => {
                 let &FunctionDeclaration {
                     span: _,
-                    ref id,
+                    id,
                     ref params,
                     ret_ty,
                     ref body,
@@ -420,15 +415,11 @@ impl CompileItemContext<'_, '_> {
                 let decl_span = kind.span();
 
                 let entry = self.eval_declaration_named(scope, vars, kind).map(|v| {
-                    let var = vars.var_new_immutable_init(
-                        &mut self.variables,
-                        decl_id.clone(),
-                        decl_span,
-                        Ok(Value::Compile(v)),
-                    );
+                    let var =
+                        vars.var_new_immutable_init(&mut self.variables, decl_id, decl_span, Ok(Value::Compile(v)));
                     ScopedEntry::Named(NamedValue::Variable(var))
                 });
-                scope.maybe_declare(diags, decl_id.as_ref(), entry);
+                scope.maybe_declare(diags, self.refs.fixed.source, decl_id, entry);
             }
             CommonDeclaration::ConstBlock(decl) => {
                 // elaborate, don't declare anything
@@ -478,6 +469,7 @@ impl CompileItemContext<'_, '_> {
         body: Spanned<&FunctionItemBody>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         match *body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
@@ -558,7 +550,7 @@ impl CompileItemContext<'_, '_> {
                                             }
                                         };
 
-                                        Ok((id.string.clone(), value))
+                                        Ok((id.str(source).to_owned(), value))
                                     })
                                     .try_collect_all_vec()
                             })
@@ -581,7 +573,7 @@ impl CompileItemContext<'_, '_> {
 
                         Ok(ElaboratedModuleExternalInfo {
                             ast_ref,
-                            module_name: ast.id.string.clone(),
+                            module_name: ast.id.str(source).to_owned(),
                             generic_args,
                             port_names,
                             connectors,
@@ -648,19 +640,20 @@ impl CompileItemContext<'_, '_> {
         fields: &ExtraList<StructField>,
     ) -> Result<ElaboratedStructInfo, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         // TODO generalize this indexmap "already defined" structure
         let mut fields_eval = IndexMap::new();
 
         let mut any_field_err = Ok(());
         let mut visit_field = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, field: &StructField| {
-            let &StructField { span: _, ref id, ty } = field;
+            let &StructField { span: _, id, ty } = field;
 
             let ty = s.eval_expression_as_ty(scope, vars, ty)?;
 
-            match fields_eval.entry(id.string.clone()) {
+            match fields_eval.entry(id.str(source).to_owned()) {
                 Entry::Vacant(entry) => {
-                    entry.insert((id.clone(), ty));
+                    entry.insert((id, ty));
                 }
                 Entry::Occupied(entry) => {
                     let diag = Diagnostic::new("duplicate struct field name")
@@ -694,20 +687,21 @@ impl CompileItemContext<'_, '_> {
         variants: &ExtraList<EnumVariant>,
     ) -> Result<ElaboratedEnumInfo, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         let mut variants_eval = IndexMap::new();
         let mut any_variant_err = Ok(());
 
         let mut visit_variant = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, variant: &EnumVariant| {
-            let EnumVariant { span: _, id, content } = variant;
+            let &EnumVariant { span: _, id, content } = variant;
 
             let content = content
                 .map(|content| s.eval_expression_as_ty(scope, vars, content))
                 .transpose()?;
 
-            match variants_eval.entry(id.string.clone()) {
+            match variants_eval.entry(id.str(source).to_owned()) {
                 Entry::Vacant(entry) => {
-                    entry.insert((id.clone(), content));
+                    entry.insert((id, content));
                 }
                 Entry::Occupied(entry) => {
                     let diag = Diagnostic::new("duplicate enum variant name")

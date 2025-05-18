@@ -7,10 +7,8 @@ use crate::mid::ir::{
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
     IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::syntax::ast::{Identifier, MaybeIdentifier, PortDirection, Spanned};
-use crate::syntax::parsed::ParsedDatabase;
+use crate::syntax::ast::{PortDirection, Spanned};
 use crate::syntax::pos::Span;
-use crate::syntax::source::SourceDatabase;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
@@ -39,19 +37,12 @@ pub struct LoweredVerilog {
 //   so nothing can conflict with ports/module names. Not fully right yet, but maybe a good idea.
 pub fn lower_to_verilog(
     diags: &Diagnostics,
-    source: &SourceDatabase,
-    parsed: &ParsedDatabase,
     modules: &IrModules,
     external_modules: &IndexSet<String>,
     top_module: IrModule,
 ) -> Result<LoweredVerilog, ErrorGuaranteed> {
-    // the fact that we're not using `parsed` is good, all information should be contained in `compiled`
-    // ideally `source` would also not be used
-    let _ = parsed;
-
     let mut ctx = LowerContext {
         diags,
-        source,
         modules,
         module_map: IndexMap::new(),
         top_name_scope: LoweredNameScope {
@@ -76,7 +67,6 @@ pub fn lower_to_verilog(
 
 struct LowerContext<'a> {
     diags: &'a Diagnostics,
-    source: &'a SourceDatabase,
     modules: &'a IrModules,
     module_map: IndexMap<IrModule, LoweredModule>,
     top_name_scope: LoweredNameScope,
@@ -114,14 +104,14 @@ impl LoweredNameScope {
     pub fn make_unique_maybe_id(
         &mut self,
         diags: &Diagnostics,
-        id: &MaybeIdentifier,
+        id: Spanned<Option<&str>>,
     ) -> Result<LoweredName, ErrorGuaranteed> {
-        self.make_unique_str(diags, id.span(), id.string())
+        self.make_unique_str(diags, id.span, id.inner.unwrap_or("_"))
     }
 
     #[allow(dead_code)]
-    pub fn make_unique_id(&mut self, diags: &Diagnostics, id: &Identifier) -> Result<LoweredName, ErrorGuaranteed> {
-        self.make_unique_str(diags, id.span, &id.string)
+    pub fn make_unique_id(&mut self, diags: &Diagnostics, id: Spanned<&str>) -> Result<LoweredName, ErrorGuaranteed> {
+        self.make_unique_str(diags, id.span, id.inner)
     }
 
     pub fn make_unique_str(
@@ -214,24 +204,22 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
         registers,
         wires,
         children: processes,
+        debug_info_file,
         debug_info_id,
         debug_info_generic_args,
     } = module_info;
+    let debug_info_id = maybe_id_as_ref(debug_info_id);
     let module_name = ctx.top_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
     let mut f = String::new();
 
-    swriteln!(f, "// module {}", debug_info_id.string());
-    swriteln!(
-        f,
-        "//   defined in \"{}\"",
-        ctx.source[debug_info_id.span().start.file].path_raw
-    );
+    swriteln!(f, "// module {}", debug_info_id.inner.unwrap_or("_"));
+    swriteln!(f, "//   defined in \"{debug_info_file}\"",);
 
     if let Some(generic_args) = debug_info_generic_args {
         swriteln!(f, "//   instantiated with generic arguments:");
         for (arg_name, arg_value) in generic_args {
-            swriteln!(f, "//     {}={}", arg_name.string, arg_value.to_diagnostic_string());
+            swriteln!(f, "//     {}={}", arg_name, arg_value.to_diagnostic_string());
         }
     }
 
@@ -345,18 +333,19 @@ fn lower_module_signals(
 ) -> Result<(IndexMap<IrRegister, LoweredName>, IndexMap<IrWire, LoweredName>), ErrorGuaranteed> {
     let mut lower_signal = |signal_type,
                             ty,
-                            debug_info_id,
+                            debug_info_id: &Spanned<Option<String>>,
                             debug_info_ty: &HardwareType,
                             debug_info_domain,
                             f: &mut String| {
+        let debug_info_id = maybe_id_as_ref(debug_info_id);
         let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
-        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span, ty)?.to_prefix_str();
         let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
             Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
             Err(ZeroWidth) => ("// ", "[empty]"),
         };
 
-        let name_debug_str = &debug_info_id.string();
+        let name_debug_str = debug_info_id.inner.unwrap_or("_");
         let ty_debug_str = debug_info_ty.to_diagnostic_string();
 
         // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
@@ -695,9 +684,9 @@ fn declare_locals(
         newline.before_item(f);
 
         let IrVariableInfo { ty, debug_info_id } = variable_info;
-        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+        let name = module_name_scope.make_unique_maybe_id(diags, maybe_id_as_ref(debug_info_id))?;
 
-        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span(), ty)?.to_prefix_str();
+        let ty_prefix_str = VerilogType::from_ir_ty(diags, debug_info_id.span, ty)?.to_prefix_str();
         let (prefix_str, ty_prefix_str) = match ty_prefix_str.as_ref_ok() {
             Ok(ty_prefix_str) => ("", ty_prefix_str.as_str()),
             Err(ZeroWidth) => ("// ", "[empty]"),
@@ -724,14 +713,13 @@ fn lower_shadow_registers(
 
     for &reg in written_regs {
         let register_info = &registers[reg];
-        let ty = VerilogType::from_ir_ty(diags, register_info.debug_info_id.span(), &register_info.ty)?;
+        let debug_info_id = maybe_id_as_ref(&register_info.debug_info_id);
 
-        let register_name = register_info.debug_info_id.string();
-        let shadow_name = module_name_scope.make_unique_str(
-            diags,
-            register_info.debug_info_id.span(),
-            &format!("shadow_{}", register_name),
-        )?;
+        let ty = VerilogType::from_ir_ty(diags, debug_info_id.span, &register_info.ty)?;
+
+        let register_name = debug_info_id.inner.unwrap_or("_");
+        let shadow_name =
+            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{}", register_name))?;
 
         match ty.to_prefix_str() {
             Ok(ty_prefix_str) => {
@@ -1211,4 +1199,8 @@ lazy_static! {
     static ref VERILOG_KEYWORDS: IndexSet<&'static str> = {
         include_str!("verilog_keywords.txt").lines().map(str::trim).filter(|line| !line.is_empty()).collect()
     };
+}
+
+fn maybe_id_as_ref(id: &Spanned<Option<String>>) -> Spanned<Option<&str>> {
+    id.as_ref().map_inner(|s| s.as_ref().map(String::as_ref))
 }

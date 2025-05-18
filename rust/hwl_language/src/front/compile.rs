@@ -53,7 +53,7 @@ pub fn compile(
         ElaborationSet::TopOnly => false,
         ElaborationSet::AsMuchAsPossible => true,
     };
-    let shared = CompileShared::new(fixed, diags, queue_all_items, thread_count);
+    let shared = CompileShared::new(diags, fixed, queue_all_items, thread_count);
 
     // get the top module
     // TODO we don't really need to do this any more, all non-generic modules are elaborated anyway
@@ -550,7 +550,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             let mut scope = Scope::new_root(ast.span, file);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
-                    scope.maybe_declare(diags, info.id, Ok(ScopedEntry::Item(ast_item_ref)));
+                    scope.maybe_declare(diags, source, info.id, Ok(ScopedEntry::Item(ast_item_ref)));
                 }
             }
             scope
@@ -560,8 +560,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
 
     // pass 1: collect import items from source scopes for each target file
-    let mut file_imported_items: Vec<Vec<(MaybeIdentifier<&Identifier>, Result<ScopedEntry, ErrorGuaranteed>)>> =
-        vec![];
+    let mut file_imported_items: Vec<Vec<(MaybeIdentifier, Result<ScopedEntry, ErrorGuaranteed>)>> = vec![];
     for target_file in source.files() {
         let mut curr_imported_items = vec![];
 
@@ -583,9 +582,9 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                     };
 
                     for entry in entries {
-                        let ast::ImportEntry { span: _, id, as_ } = entry;
+                        let &ast::ImportEntry { span: _, id, as_ } = entry;
                         let source_value = source_scope
-                            .and_then(|source_scope| source_scope.find(diags, id))
+                            .and_then(|source_scope| source_scope.find(diags, source, id))
                             .map(|found| found.value.clone());
 
                         // check visibility, but still proceed as if the import succeeded
@@ -594,7 +593,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                             match decl_info.vis {
                                 Visibility::Public(_) => {}
                                 Visibility::Private => {
-                                    let err = Diagnostic::new(format!("cannot access identifier `{}`", id.string))
+                                    let err = Diagnostic::new(format!("cannot access identifier `{}`", id.str(source)))
                                         .add_info(decl_info.id.span(), "identifier declared here")
                                         .add_error(id.span, "not accessible here")
                                         .footer(
@@ -607,8 +606,8 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                             }
                         }
 
-                        let target_id: MaybeIdentifier<&Identifier> = match as_ {
-                            Some(as_) => as_.as_ref(),
+                        let target_id: MaybeIdentifier = match as_ {
+                            Some(as_) => as_,
                             None => MaybeIdentifier::Identifier(id),
                         };
                         curr_imported_items.push((target_id, source_value));
@@ -624,7 +623,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     for (target_file, items) in zip_eq(source.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
-                scope.maybe_declare(diags, target_id, value);
+                scope.maybe_declare(diags, source, target_id, value);
             }
         }
     }
@@ -652,7 +651,7 @@ fn resolve_import_path(
     for step in &path.inner {
         let curr_dir_info = &source[curr_dir];
 
-        curr_dir = match curr_dir_info.children.get(&step.string) {
+        curr_dir = match curr_dir_info.children.get(step.str(source)) {
             Some(&child_dir) => child_dir,
             None => {
                 let mut options = curr_dir_info.children.keys().cloned().collect_vec();
@@ -716,7 +715,7 @@ fn find_top_module(
 }
 
 impl CompileShared {
-    pub fn new(fixed: CompileFixed, diags: &Diagnostics, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
+    pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
         let CompileFixed { source, parsed } = fixed;
         let file_scopes = populate_file_scopes(diags, fixed);
 
@@ -734,7 +733,7 @@ impl CompileShared {
                     }
                     if let ast::Item::ModuleExternal(module) = item {
                         external_modules
-                            .entry(module.id.string.clone())
+                            .entry(module.id.str(fixed.source).to_owned())
                             .or_default()
                             .push(module.id.span);
                     }

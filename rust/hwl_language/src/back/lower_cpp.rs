@@ -7,7 +7,6 @@ use crate::mid::ir::{
     IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
 };
-use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
@@ -55,6 +54,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         wires,
         large: _,
         children,
+        debug_info_file: _,
         debug_info_id: _,
         debug_info_generic_args: _,
     } = module_info;
@@ -98,12 +98,12 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
     // signals
     swriteln!(f_structs, "struct {struct_signals} {{");
     for (reg, reg_info) in registers {
-        let ty_str = type_to_cpp(diags, reg_info.debug_info_id.span(), &reg_info.ty)?;
+        let ty_str = type_to_cpp(diags, reg_info.debug_info_id.span, &reg_info.ty)?;
         let name = reg_str(reg, reg_info);
         swriteln!(f_structs, "{I}{ty_str} {name};");
     }
     for (wire, wire_info) in wires {
-        let ty_str = type_to_cpp(diags, wire_info.debug_info_id.span(), &wire_info.ty)?;
+        let ty_str = type_to_cpp(diags, wire_info.debug_info_id.span, &wire_info.ty)?;
         let name = wire_str(wire, wire_info);
         swriteln!(f_structs, "{I}{ty_str} {name};");
     }
@@ -195,7 +195,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
 
                 //   declare locals
                 for (var, var_info) in locals {
-                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
@@ -219,7 +219,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     next_temporary_index: 0,
                 };
                 for (var, var_info) in locals {
-                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span(), &var_info.ty)?;
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
@@ -866,40 +866,41 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, E
 }
 
 fn port_str(port: IrPort, port_info: &IrPortInfo) -> String {
-    name_str(
-        "port",
-        port.inner(),
-        MaybeIdentifier::Identifier(&Identifier {
-            span: port_info.debug_span,
-            string: port_info.name.clone(),
-        }),
-    )
+    name_str("port", port.inner(), Some(&port_info.name))
 }
 
 fn wire_str(wire: IrWire, wire_info: &IrWireInfo) -> String {
-    name_str("wire", wire.inner(), wire_info.debug_info_id.as_ref())
+    name_str(
+        "wire",
+        wire.inner(),
+        wire_info.debug_info_id.inner.as_ref().map(String::as_ref),
+    )
 }
 
 fn reg_str(reg: IrRegister, reg_info: &IrRegisterInfo) -> String {
-    name_str("reg", reg.inner(), reg_info.debug_info_id.as_ref())
+    name_str(
+        "reg",
+        reg.inner(),
+        reg_info.debug_info_id.inner.as_ref().map(String::as_ref),
+    )
 }
 
 fn var_str(var: IrVariable, var_info: &IrVariableInfo) -> String {
-    name_str("var", var.inner(), var_info.debug_info_id.as_ref())
+    name_str(
+        "var",
+        var.inner(),
+        var_info.debug_info_id.inner.as_ref().map(String::as_ref),
+    )
 }
 
-fn name_str(prefix: &str, index: Idx, id: MaybeIdentifier<&Identifier>) -> String {
+fn name_str(prefix: &str, index: Idx, id: Option<&str>) -> String {
     let index = index.index();
     match id {
-        MaybeIdentifier::Identifier(id) => {
-            let str_filtered: String = id
-                .string
-                .chars()
-                .filter(|&c| c.is_ascii_alphanumeric() || c == '_')
-                .collect();
+        Some(id) => {
+            let str_filtered: String = id.chars().filter(|&c| c.is_ascii_alphanumeric() || c == '_').collect();
             format!("{prefix}_{index}_{str_filtered}")
         }
-        MaybeIdentifier::Dummy(_) => {
+        None => {
             format!("{prefix}_{index}")
         }
     }

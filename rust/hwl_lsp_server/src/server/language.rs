@@ -5,7 +5,7 @@ use crate::server::state::{RequestResult, ServerState};
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{LineOffsets, Span};
 use hwl_language::syntax::resolve::{find_definition, FindDefinition};
-use hwl_language::syntax::source::FileId;
+use hwl_language::syntax::source::{FileId, FilePath, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::{GotoDefinition, SemanticTokensFullRequest};
@@ -91,23 +91,30 @@ impl RequestHandler<GotoDefinition> for ServerState {
 
         // TODO integrate all of this better with the main compiler, eg. cache the parsed ast, reason about imports, ...
         let src = self.vfs.inner()?.get_text(&uri)?;
-        let offsets = LineOffsets::new(src);
+        let (source, file) = {
+            let mut source = SourceDatabaseBuilder::new();
+            let file = source
+                .add_file(FilePath(vec!["dummy".to_owned()]), "dummy".to_owned(), src.to_owned())
+                .unwrap();
+            let (source, _, file_map) = source.finish_with_mapping();
+            (source, *file_map.get(&file).unwrap())
+        };
+        let offsets = &source[file].offsets;
 
         // parse source to ast
-        let file = FileId::dummy();
         let ast = match parse_file_content(file, src) {
             Ok(ast) => ast,
             Err(_) => return Ok(Some(GotoDefinitionResponse::Array(vec![]))),
         };
 
         // find declarations
-        let pos = lsp_to_pos(self.settings.position_encoding, &offsets, src, file, position);
-        let result = match find_definition(&ast, pos) {
+        let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
+        let result = match find_definition(&source, &ast, pos) {
             FindDefinition::Found(spans) => {
                 let spans_lsp = spans
                     .into_iter()
                     .map(|span| {
-                        let span = span_to_lsp(self.settings.position_encoding, &offsets, src, span);
+                        let span = span_to_lsp(self.settings.position_encoding, offsets, src, span);
                         Location {
                             uri: uri.clone(),
                             range: span,

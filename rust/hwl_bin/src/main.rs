@@ -136,7 +136,7 @@ fn main_inner(args: Args) -> ExitCode {
         let start_lower = Instant::now();
         let lowered = compiled
             .as_ref_ok()
-            .and_then(|c| lower_to_verilog(&diags, &source, &parsed, &c.modules, &c.external_modules, c.top_module));
+            .and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
         let time_lower = start_lower.elapsed();
 
         let start_simulator = Instant::now();

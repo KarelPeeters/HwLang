@@ -3,7 +3,7 @@ use hwl_language::util::big_int::BigInt;
 use hwl_language::{
     front::{types::IncRange as RustIncRange, value::CompileValue},
     syntax::{
-        ast::{Arg, Args, Identifier},
+        ast::{Arg, Args},
         pos::Span,
     },
 };
@@ -114,33 +114,26 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
     )))
 }
 
-pub fn convert_python_args<T>(
+pub fn convert_python_args_and_kwargs_to_args(
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
-    f: impl Fn(CompileValue) -> T,
-) -> PyResult<Args<Option<Identifier>, T>> {
+) -> PyResult<Args<Option<String>, CompileValue>> {
     let mut args_inner = vec![];
     for value in args {
-        let value = compile_value_from_py(value)?;
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: f(value),
+            value: compile_value_from_py(value)?,
         });
     }
     if let Some(kwargs) = kwargs {
         for (name, value) in kwargs {
             let name = name.extract::<String>()?;
-            let value = compile_value_from_py(value)?;
-            let name = Some(Identifier {
-                span: dummy_span,
-                string: name,
-            });
             args_inner.push(Arg {
                 span: dummy_span,
-                name,
-                value: f(value),
+                name: Some(name),
+                value: compile_value_from_py(value)?,
             });
         }
     }

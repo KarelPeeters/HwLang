@@ -1,11 +1,10 @@
 use crate::front::compile::{Port, PortInterface, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
-use crate::syntax::ast;
-use crate::syntax::ast::Identifier;
+use crate::syntax::ast::{Identifier, MaybeIdentifier};
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
-use crate::syntax::source::FileId;
+use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::IndexMapExt;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
@@ -140,8 +139,16 @@ impl<'p> Scope<'p> {
     /// This function always appears to succeed, errors are instead reported as diags.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare(&mut self, diags: &Diagnostics, id: &Identifier, value: Result<ScopedEntry, ErrorGuaranteed>) {
-        if let Some(declared) = self.content.values.get_mut(&id.string) {
+    pub fn declare(
+        &mut self,
+        diags: &Diagnostics,
+        source: &SourceDatabase,
+        id: Identifier,
+        value: Result<ScopedEntry, ErrorGuaranteed>,
+    ) {
+        let id_str = id.str(source);
+
+        if let Some(declared) = self.content.values.get_mut(id_str) {
             // get all spans
             let mut spans = match declared {
                 DeclaredValue::Once { value: _, span } => vec![*span],
@@ -168,7 +175,7 @@ impl<'p> Scope<'p> {
             *declared = DeclaredValue::Multiple { spans, err }
         } else {
             let declared = DeclaredValue::Once { value, span: id.span };
-            self.content.values.insert_first(id.string.to_owned(), declared);
+            self.content.values.insert_first(id_str.to_owned(), declared);
         }
     }
 
@@ -189,20 +196,26 @@ impl<'p> Scope<'p> {
     pub fn maybe_declare(
         &mut self,
         diags: &Diagnostics,
-        id: ast::MaybeIdentifier<&Identifier>,
+        source: &SourceDatabase,
+        id: MaybeIdentifier,
         entry: Result<ScopedEntry, ErrorGuaranteed>,
     ) {
         match id {
-            ast::MaybeIdentifier::Identifier(id) => self.declare(diags, id, entry),
-            ast::MaybeIdentifier::Dummy(_) => {}
+            MaybeIdentifier::Identifier(id) => self.declare(diags, source, id, entry),
+            MaybeIdentifier::Dummy(_) => {}
         }
     }
 
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s>(&'s self, diags: &Diagnostics, id: &Identifier) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
-        self.find_impl(diags, &id.string, Some(id.span), self.span, true)
+    pub fn find<'s>(
+        &'s self,
+        diags: &Diagnostics,
+        source: &SourceDatabase,
+        id: Identifier,
+    ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+        self.find_impl(diags, id.str(source), Some(id.span), self.span, true)
     }
 
     pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> Result<ScopeFound, ErrorGuaranteed> {

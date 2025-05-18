@@ -23,8 +23,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
-    ExpressionKind, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral, RegisterDelay, Spanned,
-    SyncDomain, UnaryOp,
+    ExpressionKind, Identifier, IntLiteral, PortDirection, RangeLiteral, RegisterDelay, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -95,10 +94,10 @@ pub enum EvaluatedId {
 }
 
 impl CompileItemContext<'_, '_> {
-    pub fn eval_id(&mut self, scope: &Scope, id: &Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
+    pub fn eval_id(&mut self, scope: &Scope, id: Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let found = scope.find(diags, id)?;
+        let found = scope.find(diags, self.refs.fixed.source, id)?;
         let def_span = found.defining_span;
         let result = match *found.value {
             ScopedEntry::Named(value) => EvaluatedId::Named(value),
@@ -168,6 +167,7 @@ impl CompileItemContext<'_, '_> {
         expr: Expression,
     ) -> Result<ValueInner, ErrorGuaranteed> {
         let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
 
         let result_simple = match self.refs.get_expr(expr) {
             ExpressionKind::Dummy => {
@@ -199,7 +199,7 @@ impl CompileItemContext<'_, '_> {
                 self.eval_expression(ctx, &mut ctx_block, &scope_inner, vars, expected_ty, expression)?
                     .inner
             }
-            ExpressionKind::Id(id) => {
+            &ExpressionKind::Id(id) => {
                 let result = match self.eval_id(scope, id)?.inner {
                     EvaluatedId::Value(value) => ValueWithImplications::simple(value),
                     EvaluatedId::Named(value) => match value {
@@ -260,19 +260,22 @@ impl CompileItemContext<'_, '_> {
             }
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::IntLiteral(ref pattern) => {
-                let value = match pattern {
-                    IntLiteral::Binary(s_raw) => {
-                        let s_clean = s_raw[2..].replace('_', "");
-                        BigUint::from_str_radix(&s_clean, 2)
+                let value = match *pattern {
+                    IntLiteral::Binary(raw) => {
+                        let raw = source.span_str(raw);
+                        let clean = raw[2..].replace('_', "");
+                        BigUint::from_str_radix(&clean, 2)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Decimal(s_raw) => {
-                        let s_clean = s_raw.replace('_', "");
-                        BigUint::from_str_radix(&s_clean, 10)
+                    IntLiteral::Decimal(raw) => {
+                        let raw = source.span_str(raw);
+                        let clean = raw.replace('_', "");
+                        BigUint::from_str_radix(&clean, 10)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Hexadecimal(s) => {
-                        let s_hex = s[2..].replace('_', "");
+                    IntLiteral::Hexadecimal(raw) => {
+                        let raw = source.span_str(raw);
+                        let s_hex = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&s_hex, 16)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
@@ -280,8 +283,15 @@ impl CompileItemContext<'_, '_> {
                 Value::Compile(CompileValue::Int(BigInt::from(value)))
             }
             &ExpressionKind::BoolLiteral(literal) => Value::Compile(CompileValue::Bool(literal)),
-            // TODO f-string formatting
-            ExpressionKind::StringLiteral(literal) => Value::Compile(CompileValue::String(literal.clone())),
+            &ExpressionKind::StringLiteral(raw) => {
+                // TODO f-string formatting, string escaping
+                let raw = source.span_str(raw);
+                if raw.len() < 2 {
+                    return Err(diags.report_internal_error(expr.span, "invalid string literal"));
+                }
+                let clean = &raw[1..raw.len() - 1];
+                Value::Compile(CompileValue::String(clean.to_owned()))
+            }
             ExpressionKind::ArrayLiteral(values) => {
                 self.eval_array_literal(ctx, ctx_block, scope, vars, expected_ty, expr.span, values)?
             }
@@ -346,7 +356,7 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::ArrayComprehension(array_comprehension) => {
                 let &ArrayComprehension {
                     body,
-                    ref index,
+                    index,
                     span_keyword,
                     iter,
                 } = array_comprehension;
@@ -362,13 +372,14 @@ impl CompileItemContext<'_, '_> {
                 for index_value in iter {
                     let index_value = index_value.to_maybe_compile(&mut self.large);
                     let index_var =
-                        vars.var_new_immutable_init(&mut self.variables, index.clone(), span_keyword, Ok(index_value));
+                        vars.var_new_immutable_init(&mut self.variables, index, span_keyword, Ok(index_value));
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
                     scope_body.maybe_declare(
                         diags,
-                        index.as_ref(),
+                        source,
+                        index,
                         Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
                     );
 
@@ -498,24 +509,25 @@ impl CompileItemContext<'_, '_> {
                     .fold(base.inner, |acc, len| Type::Array(Box::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
-            &ExpressionKind::DotIdIndex(base, ref index) => {
+            &ExpressionKind::DotIdIndex(base, index) => {
                 return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expected_ty, expr.span, base, index);
             }
-            &ExpressionKind::DotIntIndex(base, ref index) => {
+            &ExpressionKind::DotIntIndex(base, index_span) => {
                 let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+                let index = source.span_str(index_span);
 
-                let index_int = BigUint::from_str_radix(&index.inner, 10)
+                let index_int = BigUint::from_str_radix(index, 10)
                     .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
                 let err_not_tuple = |ty: &str| {
                     let diag = Diagnostic::new("indexing into non-tuple type")
-                        .add_error(index.span, "attempt to index into non-tuple type here")
+                        .add_error(index_span, "attempt to index into non-tuple type here")
                         .add_info(base.span, format!("base has type `{ty}`"))
                         .finish();
                     diags.report(diag)
                 };
                 let err_index_out_of_bounds = |len: usize| {
                     let diag = Diagnostic::new("tuple index out of bounds")
-                        .add_error(index.span, format!("index `{index_int}` is out of bounds"))
+                        .add_error(index_span, format!("index `{index_int}` is out of bounds"))
                         .add_info(base.span, format!("base is tuple with length `{len}`"))
                         .finish();
                     diags.report(diag)
@@ -560,15 +572,30 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             &ExpressionKind::Call(target, ref args) => {
-                // evaluate target and args
+                // eval target
                 let target = self.eval_expression_as_compile(scope, vars, &Type::Any, target, "call target")?;
-                let args =
-                    args.try_map_inner_all(|&arg| self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg));
 
-                // report errors for invalid target and args
-                //   (only after both have been evaluated to get all diagnostics)
+                // eval args
+                let args_eval = args
+                    .inner
+                    .iter()
+                    .map(|arg| {
+                        // TODO pass an actual expected type in cases where we know it (eg. struct/enum construction)
+                        let arg_value = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg.value)?;
+
+                        Ok(Arg {
+                            span: arg.span,
+                            name: arg.name.map(|id| Spanned::new(id.span, id.str(source))),
+                            value: arg_value,
+                        })
+                    })
+                    .try_collect_all_vec();
+                let args = args_eval.map(|inner| Args { span: args.span, inner });
+
+                // check that the target is a function
                 let target_inner = match target.inner {
                     CompileValue::Type(Type::Int(range)) => {
+                        // handle integer calls here
                         let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
                         return Ok(ValueInner::Value(Value::Compile(CompileValue::Type(Type::Int(result)))));
                     }
@@ -582,6 +609,7 @@ impl CompileItemContext<'_, '_> {
                         return Err(e);
                     }
                 };
+
                 let args = args?;
 
                 // actually do the call
@@ -668,13 +696,13 @@ impl CompileItemContext<'_, '_> {
                     .transpose()?;
 
                 // create a register and variable
-                let dummy_id = MaybeIdentifier::Dummy(span_keyword);
+                let debug_info_id = || Spanned::new(span_keyword, None);
                 let var_info = IrVariableInfo {
                     ty: ty_hw.as_ir(),
-                    debug_info_id: dummy_id.clone(),
+                    debug_info_id: debug_info_id(),
                 };
                 let var = ctx.new_ir_variable(diags, span_keyword, var_info)?;
-                let (reg, domain) = ctx.new_ir_register(self, diags, dummy_id, ty_hw.clone(), init)?;
+                let (reg, domain) = ctx.new_ir_register(self, diags, debug_info_id(), ty_hw.clone(), init)?;
 
                 // do the right shuffle operations
                 let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(var), IrExpression::Register(reg));
@@ -704,13 +732,13 @@ impl CompileItemContext<'_, '_> {
         expected_ty: &Type,
         expr_span: Span,
         base: Expression,
-        index: &Identifier,
+        index: Identifier,
     ) -> Result<ValueInner, ErrorGuaranteed> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
         let diags = self.refs.diags;
 
         let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
-        let index_str = index.string.as_str();
+        let index_str = index.str(self.refs.fixed.source);
 
         // interface fields
         let base_eval = match base_eval {
@@ -739,7 +767,7 @@ impl CompileItemContext<'_, '_> {
         // interface views
         if let &Value::Compile(CompileValue::Interface(base_interface)) = &base_eval {
             let info = self.refs.shared.elaboration_arenas.interface_info(base_interface)?;
-            let _ = info.get_view(diags, index)?;
+            let _ = info.get_view(diags, self.refs.fixed.source, index)?;
 
             let interface_view = ElaboratedInterfaceView {
                 interface: base_interface,
@@ -1378,7 +1406,7 @@ impl CompileItemContext<'_, '_> {
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {}", actual));
 
         let result = match self.refs.get_expr(expr) {
-            ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
+            &ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
                 EvaluatedId::Value(_) => return Err(build_err("value")),
                 EvaluatedId::Named(s) => match s {
                     NamedValue::Variable(v) => {
@@ -1427,8 +1455,8 @@ impl CompileItemContext<'_, '_> {
                     array_steps,
                 }
             }
-            &ExpressionKind::DotIdIndex(base, ref index) => match self.refs.get_expr(base) {
-                ExpressionKind::Id(base) => match self.eval_id(scope, base)?.inner {
+            &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
+                &ExpressionKind::Id(base) => match self.eval_id(scope, base)?.inner {
                     EvaluatedId::Named(NamedValue::PortInterface(base)) => {
                         // get port
                         let port_interface_info = &self.port_interfaces[base];
@@ -1437,7 +1465,7 @@ impl CompileItemContext<'_, '_> {
                             .shared
                             .elaboration_arenas
                             .interface_info(port_interface_info.view.interface)?;
-                        let (port_index, _) = interface_info.get_port(diags, index)?;
+                        let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
                         let port = port_interface_info.ports[port_index];
 
                         // check direction
@@ -1496,8 +1524,8 @@ impl CompileItemContext<'_, '_> {
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
         // TODO expand to allow general expressions again (which then probably create implicit signals)?
-        let result = match &self.refs.get_expr(expr) {
-            &&ExpressionKind::UnaryOp(
+        let result = match *self.refs.get_expr(expr) {
+            ExpressionKind::UnaryOp(
                 Spanned {
                     span: _,
                     inner: UnaryOp::Not,
@@ -1680,7 +1708,7 @@ fn eval_int_ty_call(
     diags: &Diagnostics,
     span_call: Span,
     target_range: Spanned<IncRange<BigInt>>,
-    args: Args<Option<Identifier>, Spanned<Value>>,
+    args: Args<Option<Spanned<&str>>, Spanned<Value>>,
 ) -> Result<IncRange<BigInt>, ErrorGuaranteed> {
     // ensure single unnamed compile-time arg
     let arg = args.inner.single().ok_or_else(|| {

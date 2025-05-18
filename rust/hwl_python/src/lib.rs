@@ -1,10 +1,11 @@
 use check::{check_diags, convert_diag_error, map_diag_error};
-use convert::{compile_value_to_py, convert_python_args};
+use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
+use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::pos::{Pos, Span};
 use hwl_language::syntax::source::FilePath;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
@@ -211,7 +212,7 @@ impl Parsed {
                 parsed: &parsed.parsed,
             };
 
-            let state = CompileShared::new(fixed, &diags, false, NON_ZERO_USIZE_ONE);
+            let state = CompileShared::new(&diags, fixed, false, NON_ZERO_USIZE_ONE);
             check_diags(&source.source, &diags)?;
 
             state
@@ -333,8 +334,22 @@ impl Function {
             let dummy_span = source_ref.dummy_span;
 
             // convert args
-            let f_arg = |v| Spanned::new(dummy_span, Value::Compile(v));
-            let args = convert_python_args(args, kwargs, dummy_span, f_arg)?;
+            let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span)?;
+            let args = Args {
+                span: dummy_span,
+                inner: args
+                    .inner
+                    .iter()
+                    .map(|arg| {
+                        Arg {
+                            span: dummy_span,
+                            name: arg.name.as_ref().map(|name| Spanned::new(dummy_span, name.as_str())),
+                            // TODO avoid clone here
+                            value: Spanned::new(dummy_span, Value::Compile(arg.value.clone())),
+                        }
+                    })
+                    .collect_vec(),
+            };
 
             // call function
             let refs = CompileRefs {
@@ -353,7 +368,6 @@ impl Function {
                 reason: "external call".to_owned(),
             };
 
-            println!("call_function");
             let returned = item_ctx.call_function(
                 &mut ctx,
                 &mut vars,
@@ -366,7 +380,6 @@ impl Function {
             let (_block, returned) = map_diag_error(source, &diags, returned)?;
 
             // run any downstream elaboration
-            println!("run elaboration loop");
             refs.run_elaboration_loop();
             check_diags(source, &diags)?;
 
@@ -412,7 +425,7 @@ impl Module {
         let state = {
             let fixed = CompileFixed { source, parsed };
             let replacement_diags = Diagnostics::new();
-            let replacement_state = CompileShared::new(fixed, &replacement_diags, false, NON_ZERO_USIZE_ONE);
+            let replacement_state = CompileShared::new(&replacement_diags, fixed, false, NON_ZERO_USIZE_ONE);
             std::mem::replace(&mut compile.state, replacement_state)
         };
 
@@ -428,8 +441,6 @@ impl Module {
         // actual lowering
         let lowered = lower_to_verilog(
             &diags,
-            source,
-            parsed,
             &ir_database.ir_modules,
             &ir_database.external_modules,
             ir_module,

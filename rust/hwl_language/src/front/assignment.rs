@@ -1,7 +1,7 @@
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
+use crate::front::compile::{CompileItemContext, CompileRefs, Port, Register, Variable, Wire};
 use crate::front::context::ExpressionContext;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
@@ -292,10 +292,10 @@ impl CompileItemContext<'_, '_> {
                 Value::Compile(value_inner) => Value::Compile(value_inner),
                 Value::Hardware(value_inner) => Value::Hardware(
                     store_ir_expression_in_new_variable(
-                        diags,
+                        self.refs,
                         ctx,
                         ctx_block,
-                        self.variables[var].id.clone(),
+                        self.variables[var].id,
                         value_inner,
                     )?
                     .to_general_expression(),
@@ -473,10 +473,10 @@ impl CompileItemContext<'_, '_> {
         let target_base_ir_expr =
             target_base_eval.as_hardware_value(diags, &mut self.large, target_base_span, &target_base_ty_hw)?;
         let result = store_ir_expression_in_new_variable(
-            diags,
+            self.refs,
             ctx,
             ctx_block,
-            self.variables[var].id.clone(),
+            self.variables[var].id,
             target_base_ir_expr,
         )?;
 
@@ -552,16 +552,18 @@ impl CompileItemContext<'_, '_> {
 
 // TODO move to better place?
 pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     ctx: &mut C,
     ctx_block: &mut C::Block,
     debug_info_id: MaybeIdentifier,
     expr: HardwareValue,
 ) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed> {
+    let diags = refs.diags;
+
     let span = debug_info_id.span();
     let var_ir_info = IrVariableInfo {
         ty: expr.ty.as_ir(),
-        debug_info_id,
+        debug_info_id: debug_info_id.as_spanned_string(refs.fixed.source),
     };
     let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;
 
