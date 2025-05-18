@@ -8,7 +8,6 @@ pub enum Signed {
     Unsigned,
 }
 
-// TODO allow zero-width signed ints
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum IntRepresentation {
     Unsigned { width: u64 },

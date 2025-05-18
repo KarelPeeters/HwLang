@@ -1757,21 +1757,18 @@ fn eval_int_ty_call(
             })?;
 
             if target_signed {
-                match BigUint::try_from(width - 1) {
-                    Ok(width_m1) => {
-                        let pow = BigUint::pow_2_to(&width_m1);
-                        IncRange {
-                            start_inc: Some(-&pow),
-                            end_inc: Some(pow - 1),
-                        }
-                    }
-                    Err(_) => {
-                        // width was zero, for signed numbers this means that we can only represent -1
-                        IncRange {
-                            start_inc: Some(BigInt::NEG_ONE),
-                            end_inc: Some(BigInt::NEG_ONE),
-                        }
-                    }
+                let width_m1 = BigUint::try_from(width - 1).map_err(|_| {
+                    diags.report_simple(
+                        "zero-width signed integers are not allowed",
+                        arg.span,
+                        "got width zero here",
+                    )
+                })?;
+
+                let pow = BigUint::pow_2_to(&width_m1);
+                IncRange {
+                    start_inc: Some(-&pow),
+                    end_inc: Some(pow - 1),
                 }
             } else {
                 IncRange {
