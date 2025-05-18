@@ -115,6 +115,7 @@ pub fn compile(
             // TODO some kind of topological sort "as if visited by single thread" might be nicer
             let mut all_diags = vec![];
             for h in handles {
+                // TODO propagate panics better here, ideally all threads would stop and program would fully exit
                 let thread_diags = h.join().unwrap();
                 all_diags.extend(thread_diags.finish());
             }

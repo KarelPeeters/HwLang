@@ -141,17 +141,25 @@ impl BigUint {
         ))
     }
 
-    pub fn get_bit(&self, index: u64) -> bool {
-        match self.storage() {
-            Storage::Small(storage) => storage >> index & 1 != 0,
-            Storage::Big(storage) => storage.bit(index),
-        }
-    }
-
     pub fn size_bits(&self) -> u64 {
         match self.storage() {
             Storage::Small(storage) => (IStorage::BITS - storage.leading_zeros()).into(),
             Storage::Big(storage) => storage.bits(),
+        }
+    }
+
+    /// Get the bit at the given index.
+    /// This acts as if the value is padded with an infinite number of 0s towards the higher indices.
+    pub fn get_bit_zero_padded(&self, index: u64) -> bool {
+        match self.storage() {
+            Storage::Small(storage) => {
+                if index >= u64::from(IStorage::BITS) {
+                    false
+                } else {
+                    (storage >> index) & 1 != 0
+                }
+            }
+            Storage::Big(storage) => storage.bit(index),
         }
     }
 
@@ -251,6 +259,21 @@ impl BigInt {
         BigInt::new(Storage::from_maybe_big(
             self.clone().into_num_bigint().pow(&exp.clone().into_num_biguint()),
         ))
+    }
+
+    /// Get the bit at the given index.
+    /// This acts as if the value is padded with an infinite number of sign bits toward the higher indices.
+    pub fn get_bit_sign_padded(&self, index: u64) -> bool {
+        match self.storage() {
+            &Storage::Small(storage) => {
+                if index >= u64::from(IStorage::BITS) {
+                    storage < 0
+                } else {
+                    (storage >> index) & 1 != 0
+                }
+            }
+            Storage::Big(storage) => storage.bit(index),
+        }
     }
 }
 

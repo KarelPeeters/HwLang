@@ -8,6 +8,7 @@ pub enum Signed {
     Unsigned,
 }
 
+// TODO allow zero-width signed ints
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum IntRepresentation {
     Unsigned { width: u64 },
@@ -65,15 +66,13 @@ impl IntRepresentation {
             IntRepresentation::Unsigned { width } => {
                 let value = BigUint::try_from(value).unwrap();
                 for i in 0..width {
-                    bits.push(value.get_bit(i));
+                    bits.push(value.get_bit_zero_padded(i));
                 }
             }
             IntRepresentation::Signed { width_1 } => {
-                let (sign, value) = value.clone().into_neg_abs();
-                for i in 0..width_1 {
-                    bits.push(value.get_bit(i));
+                for i in 0..=width_1 {
+                    bits.push(value.get_bit_sign_padded(i));
                 }
-                bits.push(sign);
             }
         }
 
