@@ -240,7 +240,7 @@ pub fn check_type_contains_compile_value(
         let diag = diag
             .add_error(
                 value.span,
-                format!("source value `{value_str}` with type `{value_ty_str}` does not fit"),
+                format!("source with type `{value_ty_str}` and value `{value_str}` does not fit"),
             )
             .finish();
         Err(diags.report(diag))
