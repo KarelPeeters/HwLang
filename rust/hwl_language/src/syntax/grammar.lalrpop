@@ -11,18 +11,19 @@ extern {
     type Error = TokenError;
 
     enum TokenType {
+        TokenWhiteSpace => TokenType::WhiteSpace,
+        TokenBlockComment => TokenType::BlockComment,
+        TokenLineComment => TokenType::LineComment,
         TokenIdentifier => TokenType::Identifier,
-        TokenIntLiteralDecimal => TokenType::IntLiteralDecimal,
         TokenIntLiteralBinary => TokenType::IntLiteralBinary,
+        TokenIntLiteralDecimal => TokenType::IntLiteralDecimal,
         TokenIntLiteralHexadecimal => TokenType::IntLiteralHexadecimal,
         TokenStringLiteral => TokenType::StringLiteral,
         "import" => TokenType::Import,
-        "as" => TokenType::As,
         "type" => TokenType::Type,
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
         "ports" => TokenType::Ports,
-        "body" => TokenType::Body,
         "module" => TokenType::Module,
         "interface" => TokenType::Interface,
         "instance" => TokenType::Instance,
@@ -47,14 +48,15 @@ extern {
         "undef" => TokenType::Undefined,
         "if" => TokenType::If,
         "else" => TokenType::Else,
-        "match" => TokenType::Match,
         "loop" => TokenType::Loop,
+        "match" => TokenType::Match,
         "for" => TokenType::For,
         "while" => TokenType::While,
         "pub" => TokenType::Public,
+        "as" => TokenType::As,
+        "external" => TokenType::External,
         "__builtin" => TokenType::Builtin,
         "unsafe_value_with_domain" => TokenType::UnsafeValueWithDomain,
-        "external" => TokenType::External,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -121,7 +123,7 @@ Item: Item = {
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
-        "body" <body:Block<ModuleStatement>>
+        <body:Block<ModuleStatement>>
     <end:@R> => {
         Item::ModuleInternal(ItemDefModuleInternal { vis, id, params, ports, body, span: loc.span(start, end) })
     },

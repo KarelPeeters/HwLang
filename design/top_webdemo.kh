@@ -12,7 +12,7 @@ pub module top ports(
         y: out int(0..256),
         t: out bool,
     }
-) body {
+) {
     reg d0: sync(clk, rst) int(0..256) = 0;
     reg d1: sync(clk, rst) int(0..256) = 0;
     reg out t = false;
@@ -53,7 +53,7 @@ module child(T: type) ports(
         x: in T,
         y: out T,
     }
-) body {
+) {
     comb {
         y = x;
     }

@@ -17,7 +17,7 @@ module passthrough_{i}(w: int) ports(
         data_b: in [w]bool,
         data_out: out [w]bool,
     }}
-) body {{"""
+) {{"""
         if i == 0:
             result += f"""
     reg out data_out = undef;
@@ -56,7 +56,7 @@ pub module top ports(
         data_b: in [4]bool,
         data_out: out [4]bool,
     }}
-) body {{
+) {{
     wire select: sync(clk, rst) bool = true;
     instance passthrough_{n - 1}(w=4) ports(
         clk,

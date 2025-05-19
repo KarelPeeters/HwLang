@@ -441,7 +441,6 @@ declare_tokens! {
         Struct("struct", TC::Keyword),
         Enum("enum", TC::Keyword),
         Ports("ports", TC::Keyword),
-        Body("body", TC::Keyword),
         Module("module", TC::Keyword),
         Interface("interface", TC::Keyword),
         Instance("instance", TC::Keyword),
@@ -583,6 +582,7 @@ impl TokenError {
 
 #[cfg(test)]
 mod test {
+    use crate::swriteln;
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
     use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
@@ -735,14 +735,25 @@ mod test {
         assert!(!any_error);
     }
 
-    // TODO turn this into a test case that checks whether the grammer is up-to-date
     #[test]
-    fn print_grammer_enum() {
-        for (name, _ty) in TokenType::CUSTOM_TOKENS {
-            println!("Token{name} => TokenType::{name}(<&'s str>),")
-        }
-        for info in TokenType::FIXED_TOKENS {
-            println!("{:?} => TokenType::{},", info.literal, info.name)
-        }
+    fn grammar_matches_tokens() {
+        let expected = {
+            const I: &str = "    ";
+            let mut f = String::new();
+            swriteln!(f, "{I}enum TokenType {{");
+            for (name, _ty) in TokenType::CUSTOM_TOKENS {
+                swriteln!(f, "{I}{I}Token{name} => TokenType::{name},");
+            }
+            for info in TokenType::FIXED_TOKENS {
+                swriteln!(f, "{I}{I}{:?} => TokenType::{},", info.literal, info.name);
+            }
+            swriteln!(f, "{I}}}");
+            f
+        };
+
+        println!("{}", expected);
+
+        let grammar = include_str!("grammar.lalrpop");
+        assert!(grammar.contains(&expected));
     }
 }

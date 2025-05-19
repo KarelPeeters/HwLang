@@ -24,7 +24,7 @@ pub module axi_passthrough(T: type) ports (
     rst: in async bool,
     input: interface sync(clk, rst) axi_stream(T).input,
     output: interface sync(clk, rst) axi_stream(T).output,
-) body {
+) {
     comb {
         output.data = input.data;
         output.valid = input.valid;

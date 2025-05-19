@@ -16,7 +16,7 @@ pub module axi_gearbox_v2(
         input: interface axi_stream([input_width]bool).input,
         output: interface axi_stream([output_width]bool).output,
     }
-) body {
+) {
     const step = gcd(input_width, output_width);
     const buffer_size = input_width + output_width + min(input_width, output_width) - step;
     // TODO off by one, bug in original?

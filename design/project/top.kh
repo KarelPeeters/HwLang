@@ -13,7 +13,7 @@ pub module top ports(
 
     input: interface sync(clk, rst) axi_stream([input_width]bool).input,
     output: interface sync(clk, rst) axi_stream([output_width]bool).output,
-) body {
+) {
     instance axi_gearbox_v2(
         input_width=input_width,
         output_width=output_width

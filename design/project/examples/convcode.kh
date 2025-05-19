@@ -22,7 +22,7 @@ pub module convcode_encoder(
         output_data_1: out bool,
         output_valid: out bool
     }
-) body {
+) {
     reg delay_line: sync(clk, rst) [length - 1]bool = [false] * (length - 1);
     reg out output_data_0 = false;
     reg out output_data_1 = false;
@@ -64,7 +64,7 @@ pub module convcode_decoder(
         output_data: out bool,
         output_valid: out bool,
     }
-) body {
+) {
     const num_states = 2**length;
     const prob_bits = clog2(length) + analog_bits + 2;
     const codebook: [num_states, 2]bool = [

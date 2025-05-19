@@ -137,9 +137,9 @@ impl StringMut for String {
     }
 }
 
-impl StringMut for &mut String {
+impl<T: StringMut> StringMut for &mut T {
     fn as_mut_string(&mut self) -> &mut String {
-        self
+        (*self).as_mut_string()
     }
 }
 

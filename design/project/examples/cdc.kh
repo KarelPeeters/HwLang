@@ -17,7 +17,7 @@ module cdc_sync_ff(N: int(2..) = 2) ports(
     out_clk: in clock,
     out_rst: in async bool,
     out_data: out sync(out_clk, out_rst) bool,
-) body {
+) {
     reg buffer: [N]bool = [false] * N;
 
     clocked(out_clk, async out_rst) {
@@ -36,7 +36,7 @@ module cdc_async_reset(N: int(2..) = 2) ports(
     in_reset: in async bool,
     out_clk: in clock,
     out_reset: out sync(out_clk, in_reset) bool,
-) body {
+) {
     // TODO allow using expressions in ports
     wire w_true = true;
     instance cdc_sync_ff(N) ports(
@@ -63,7 +63,7 @@ module cdc_handshake(T: type, N: int(2..) = 2) ports(
     out_clk: in clock,
     out_rst: in async bool,
     out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
-) body {
+) {
     // TODO actual implementation
     comb {
         in_stream.ready = false;
@@ -86,7 +86,7 @@ module cdc_fifo(T: type, N: natural) ports(
     out_clk: in clock,
     out_rst: in async bool,
     out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
-) body {
+) {
     // TODO actual implementation
     comb {
         in_stream.ready = false;
