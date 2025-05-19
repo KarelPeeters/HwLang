@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::num::NonZeroU16;
 use std::ops::{Index, IndexMut};
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
@@ -68,7 +69,7 @@ pub struct Idx {
 /// Large enough for a really low chance of collision,
 /// small enough to leave room for niche value optimization in containing types.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct RandomCheck(u32);
+pub struct RandomCheck(NonZeroU16);
 
 pub struct Arena<K: IndexType, T> {
     values: Vec<T>,
