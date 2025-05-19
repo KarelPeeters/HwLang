@@ -94,11 +94,11 @@ impl SourceDatabase {
     }
 
     pub fn expand_span(&self, span: Span) -> SpanFull {
-        self[span.start.file].offsets.expand_span(span)
+        self[span.file].offsets.expand_span(span)
     }
 
     pub fn span_str(&self, span: Span) -> &str {
-        &self[span.start.file].source[span.start.byte..span.end.byte]
+        &self[span.file].source[span.start_byte..span.end_byte]
     }
 }
 

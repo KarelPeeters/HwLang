@@ -29,7 +29,7 @@ impl ParsedDatabase {
     }
 
     pub fn get_expr(&self, expr: Expression) -> &ExpressionKind {
-        let file_content = self[expr.span.start.file].as_ref().unwrap();
+        let file_content = self[expr.span.file].as_ref().unwrap();
         &file_content.arena_expressions[expr.inner]
     }
 }
@@ -121,7 +121,7 @@ impl FileContent {
         self.items.iter().enumerate().map(move |(i, item)| {
             (
                 AstRefItem {
-                    file: self.span.start.file,
+                    file: self.span.file,
                     file_item_index: i,
                 },
                 item,

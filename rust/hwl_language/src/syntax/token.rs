@@ -164,7 +164,7 @@ impl<'s> Tokenizer<'s> {
                 let token_str = &start_left_str[..self.curr_byte - start.byte];
                 let invalid = || {
                     Err(TokenError::InvalidIntLiteral {
-                        span: Span::new(start, self.curr_pos()),
+                        span: Span::new(self.file, start.byte, self.curr_byte),
                     })
                 };
 
@@ -307,7 +307,7 @@ impl<'s> Tokenizer<'s> {
             _ => return Err(TokenError::InvalidToken { pos: start }),
         };
 
-        let span = Span::new(start, self.curr_pos());
+        let span = Span::new(self.file, start.byte, self.curr_byte);
         Ok(Some(Token { span, ty }))
     }
 
@@ -610,10 +610,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::WhiteSpace,
-                span: Span {
-                    start: Pos { file, byte: 0 },
-                    end: Pos { file, byte: 1 }
-                },
+                span: Span::new(file, 0, 1),
             }]),
             tokenize(file, "\n", false)
         );
@@ -627,10 +624,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span {
-                    start: Pos { file, byte: 0 },
-                    end: Pos { file, byte: 4 }
-                },
+                span: Span::new(file, 0, 4),
             }]),
             tokenize(file, "/**/", false)
         );
@@ -638,10 +632,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span {
-                    start: Pos { file, byte: 0 },
-                    end: Pos { file, byte: 8 }
-                },
+                span: Span::new(file, 0, 8),
             }]),
             tokenize(file, "/*/**/*/", false)
         );
@@ -663,10 +654,7 @@ mod test {
         let expected = vec![
             Ok(Token {
                 ty: TokenType::BlockComment,
-                span: Span {
-                    start: Pos { file, byte: 0 },
-                    end: Pos { file, byte: 2 },
-                },
+                span: Span::new(file, 0, 2),
             }),
             Err(TokenError::BlockCommentMissingEnd {
                 start: Pos { file, byte: 0 },
@@ -685,10 +673,7 @@ mod test {
         let expected = vec![
             Ok(Token {
                 ty: TokenType::StringLiteral,
-                span: Span {
-                    start: Pos { file, byte: 0 },
-                    end: Pos { file, byte: 1 },
-                },
+                span: Span::new(file, 0, 1),
             }),
             Err(TokenError::StringLiteralMissingEnd {
                 start: Pos { file, byte: 0 },
@@ -715,13 +700,7 @@ mod test {
             let file = FileId::dummy();
 
             let result = tokenize(file, info.literal, false);
-            let span = Span::new(
-                Pos { file, byte: 0 },
-                Pos {
-                    file,
-                    byte: info.literal.len(),
-                },
-            );
+            let span = Span::new(file, 0, info.literal.len());
             let expected = Ok(vec![Token { ty: info.ty, span }]);
 
             if result != expected {

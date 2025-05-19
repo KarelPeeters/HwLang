@@ -278,12 +278,12 @@ impl<'p> Scope<'p> {
         if let Some(id_span) = id_span {
             diag = diag.add_error(id_span, "identifier not declared");
             diag = diag.add_info(
-                Span::empty_at(initial_scope_span.start),
+                Span::empty_at(initial_scope_span.start()),
                 format!("searched in the scope starting here{info_parents}"),
             );
         } else {
             diag = diag.add_error(
-                Span::empty_at(initial_scope_span.start),
+                Span::empty_at(initial_scope_span.start()),
                 format!("searched in the scope starting here{info_parents}"),
             );
         }

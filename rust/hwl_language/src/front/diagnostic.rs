@@ -251,7 +251,7 @@ impl Diagnostic {
         let mut message = Level::Error.title(&title);
 
         for &(span, ref annotations) in &snippets_merged {
-            let file_info = &database[span.start.file];
+            let file_info = &database[span.file];
             let offsets = &file_info.offsets;
 
             // select lines and convert to bytes
@@ -276,8 +276,8 @@ impl Diagnostic {
                     label,
                 } = annotation;
 
-                let delta_start = span_annotation.start.byte - start_byte;
-                let delta_end = span_annotation.end.byte - start_byte;
+                let delta_start = span_annotation.start_byte - start_byte;
+                let delta_end = span_annotation.end_byte - start_byte;
                 let delta_span = delta_start..delta_end;
 
                 snippet = snippet.annotation(level.span(delta_span).label(label));

@@ -52,7 +52,7 @@ pub fn lsp_to_pos(
 
 pub fn span_to_lsp(encoding: PositionEncoding, offsets: &LineOffsets, src: &str, span: Span) -> lsp_types::Range {
     lsp_types::Range {
-        start: pos_to_lsp(encoding, offsets, src, span.start),
-        end: pos_to_lsp(encoding, offsets, src, span.end),
+        start: pos_to_lsp(encoding, offsets, src, span.start()),
+        end: pos_to_lsp(encoding, offsets, src, span.end()),
     }
 }

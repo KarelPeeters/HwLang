@@ -119,8 +119,8 @@ pub fn codemirror_tokenize_to_tree(src: &str) -> Vec<u32> {
                 if let Some(category_index) = token_category_to_index[token.ty.category().index()] {
                     result.extend_from_slice(&[
                         category_index,
-                        token.span.start.byte as u32,
-                        token.span.end.byte as u32,
+                        token.span.start_byte as u32,
+                        token.span.end_byte as u32,
                         4,
                     ]);
                 }

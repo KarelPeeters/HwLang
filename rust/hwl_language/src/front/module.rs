@@ -196,7 +196,7 @@ impl CompileRefs<'_, '_> {
         let diags = self.diags;
         let source = self.fixed.source;
 
-        let mut scope_ports = Scope::new_child(ports.span.join(Span::single_at(module_def_span.end)), scope_params);
+        let mut scope_ports = Scope::new_child(ports.span.join(Span::empty_at(module_def_span.end())), scope_params);
 
         let mut connectors: ArenaConnectors = Arena::new();
         let mut port_to_single: IndexMap<Port, ConnectorSingle> = IndexMap::new();
@@ -458,7 +458,7 @@ impl CompileRefs<'_, '_> {
             wires: ctx.ir_wires,
             large: ctx_item.large,
             children: processes,
-            debug_info_file: source[def_id.span().start.file].path_raw.clone(),
+            debug_info_file: source[def_id.span().file].path_raw.clone(),
             debug_info_id: def_id.as_spanned_string(source),
             debug_info_generic_args: debug_info_params,
         })
@@ -1258,7 +1258,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 }
                 None => {
                     let diag = Diagnostic::new(format!("missing connection for port {}", connector_id_str))
-                        .add_error(Span::single_at(port_connections.span.end), "connections here")
+                        .add_error(Span::empty_at(port_connections.span.end()), "connections here")
                         .add_info(connector_info.id.span, "port declared here")
                         .finish();
                     return Err(diags.report(diag));

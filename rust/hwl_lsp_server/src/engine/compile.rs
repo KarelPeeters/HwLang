@@ -148,7 +148,7 @@ fn diagnostic_to_lsp(
             }
             let &Annotation { level, span, ref label } = annotation;
 
-            let file = span.start.file;
+            let file = span.file;
             let file_info = &source[file];
             related_information.push(DiagnosticRelatedInformation {
                 location: Location {
@@ -160,7 +160,7 @@ fn diagnostic_to_lsp(
         }
     }
 
-    let top_file = top_annotation.span.start.file;
+    let top_file = top_annotation.span.file;
     let top_file_info = &source[top_file];
     let top_uri = abs_path_to_uri(abs_path_map.get(&top_file).unwrap())?;
 

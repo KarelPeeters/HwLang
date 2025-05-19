@@ -25,7 +25,7 @@ fn test_resolve(src: &str, pos: usize, expected: FindDefinition<&[Range<usize>]>
         FindDefinition::Found(expected_spans) => {
             let spans = expected_spans
                 .iter()
-                .map(|r| Span::new(Pos { file, byte: r.start }, Pos { file, byte: r.end }))
+                .map(|r| Span::new(file, r.start, r.end))
                 .collect_vec();
             FindDefinition::Found(spans)
         }

@@ -26,10 +26,11 @@ pub struct PosFull {
 // TODO track spans relative to the start of the item, allowing incremental compilation to actually work
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Span {
+    pub file: FileId,
     /// inclusive
-    pub start: Pos,
+    pub start_byte: usize,
     /// exclusive
-    pub end: Pos,
+    pub end_byte: usize,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -41,30 +42,43 @@ pub struct SpanFull {
 }
 
 impl Span {
-    pub fn new(start: Pos, end: Pos) -> Self {
-        assert_eq!(start.file, end.file);
-        Self { start, end }
+    pub fn new(file: FileId, start_byte: usize, end_byte: usize) -> Self {
+        assert!(start_byte <= end_byte);
+        Span {
+            file,
+            start_byte,
+            end_byte,
+        }
     }
 
     pub fn empty_at(at: Pos) -> Self {
-        Self::new(at, at)
+        let Pos { file, byte } = at;
+        Span {
+            file,
+            start_byte: byte,
+            end_byte: byte,
+        }
     }
 
-    pub fn single_at(at: Pos) -> Self {
-        Self::new(
-            at,
-            Pos {
-                file: at.file,
-                byte: at.byte,
-            },
-        )
+    pub fn start(self) -> Pos {
+        Pos {
+            file: self.file,
+            byte: self.start_byte,
+        }
+    }
+
+    pub fn end(self) -> Pos {
+        Pos {
+            file: self.file,
+            byte: self.end_byte,
+        }
     }
 
     pub fn cmp_touches_pos(self, pos: Pos) -> std::cmp::Ordering {
-        assert_eq!(self.start.file, pos.file);
-        if self.start.byte >= pos.byte {
+        assert_eq!(self.file, pos.file);
+        if self.start_byte >= pos.byte {
             std::cmp::Ordering::Greater
-        } else if self.end.byte <= pos.byte {
+        } else if self.end_byte <= pos.byte {
             std::cmp::Ordering::Less
         } else {
             std::cmp::Ordering::Equal
@@ -72,36 +86,30 @@ impl Span {
     }
 
     pub fn touches_pos(self, pos: Pos) -> bool {
-        assert_eq!(self.start.file, pos.file);
-        self.start.byte <= pos.byte && pos.byte <= self.end.byte
+        assert_eq!(self.file, pos.file);
+        self.start_byte <= pos.byte && pos.byte <= self.end_byte
     }
 
     pub fn contains_span(self, other: Span) -> bool {
-        assert_eq!(self.start.file, other.start.file);
-        self.start.byte <= other.start.byte && other.end.byte <= self.end.byte
+        assert_eq!(self.file, other.file);
+        self.start_byte <= other.start_byte && other.end_byte <= self.end_byte
     }
 
     pub fn join(self, other: Span) -> Span {
-        assert_eq!(self.start.file, other.start.file);
-        let file = self.start.file;
+        assert_eq!(self.file, other.file);
         Span {
-            start: Pos {
-                file,
-                byte: min(self.start.byte, other.start.byte),
-            },
-            end: Pos {
-                file,
-                byte: max(self.end.byte, other.end.byte),
-            },
+            file: self.file,
+            start_byte: min(self.start_byte, other.start_byte),
+            end_byte: max(self.end_byte, other.end_byte),
         }
     }
 
     pub fn len_bytes(self) -> usize {
-        self.end.byte - self.start.byte
+        self.end_byte - self.start_byte
     }
 
     pub fn range_bytes(self) -> std::ops::Range<usize> {
-        self.start.byte..self.end.byte
+        self.start_byte..self.end_byte
     }
 }
 
@@ -120,8 +128,9 @@ pub struct DifferentFile;
 impl SpanFull {
     pub fn span(self) -> Span {
         Span {
-            start: self.start.pos(),
-            end: self.end.pos(),
+            file: self.start.file,
+            start_byte: self.start.byte,
+            end_byte: self.end.byte,
         }
     }
 
@@ -167,12 +176,11 @@ impl Debug for PosFull {
 
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        assert_eq!(self.start.file, self.end.file);
         f.write_fmt(format_args!(
             "Span([{}]:{}..{})",
-            self.start.file.inner().index(),
-            self.start.byte,
-            self.end.byte
+            self.file.inner().index(),
+            self.start_byte,
+            self.end_byte
         ))
     }
 }
@@ -252,11 +260,9 @@ impl LineOffsets {
 
     pub fn full_span(&self, file: FileId) -> Span {
         Span {
-            start: Pos { file, byte: 0 },
-            end: Pos {
-                file,
-                byte: self.total_bytes,
-            },
+            file,
+            start_byte: 0,
+            end_byte: self.total_bytes,
         }
     }
 
@@ -278,8 +284,8 @@ impl LineOffsets {
     pub fn expand_span(&self, span: Span) -> SpanFull {
         // OPTIMIZE: the second position must come after the first and is probably close
         SpanFull {
-            start: self.expand_pos(span.start),
-            end: self.expand_pos(span.end),
+            start: self.expand_pos(span.start()),
+            end: self.expand_pos(span.end()),
         }
     }
 

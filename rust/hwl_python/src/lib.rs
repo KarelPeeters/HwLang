@@ -6,7 +6,7 @@ use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
 use hwl_language::syntax::ast::{Arg, Args};
-use hwl_language::syntax::pos::{Pos, Span};
+use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::FilePath;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::{
@@ -168,16 +168,7 @@ impl Source {
         let (source, _, mapping) = source_builder.finish_with_mapping();
 
         let dummy_file = *mapping.get(&dummy_file).unwrap();
-        let dummy_span = Span::new(
-            Pos {
-                file: dummy_file,
-                byte: 0,
-            },
-            Pos {
-                file: dummy_file,
-                byte: dummy_source.len(),
-            },
-        );
+        let dummy_span = Span::new(dummy_file, 0, dummy_source.len());
 
         Ok(Self { source, dummy_span })
     }

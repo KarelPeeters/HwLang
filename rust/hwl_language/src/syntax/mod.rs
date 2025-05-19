@@ -31,16 +31,11 @@ pub struct LocationBuilder {
 }
 
 impl LocationBuilder {
-    pub fn span(&self, start: usize, end: usize) -> Span {
+    pub fn span(&self, start_byte: usize, end_byte: usize) -> Span {
         Span {
-            start: Pos {
-                file: self.file,
-                byte: start,
-            },
-            end: Pos {
-                file: self.file,
-                byte: end,
-            },
+            file: self.file,
+            start_byte,
+            end_byte,
         }
     }
 }
@@ -53,7 +48,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
             Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),
             Err(_) => true,
         })
-        .map(|token| token.map(|token| (token.span.start.byte, token.ty, token.span.end.byte)));
+        .map(|token| token.map(|token| (token.span.start_byte, token.ty, token.span.end_byte)));
 
     // utility converter to include the file in positions and spans
     let location_builder = LocationBuilder { file };
@@ -66,7 +61,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
 
     match result {
         Ok(file_items) => {
-            let span_full = Span::new(Pos { file, byte: 0 }, Pos { file, byte: src.len() });
+            let span_full = Span::new(file, 0, src.len());
             Ok(FileContent {
                 span: span_full,
                 items: file_items,
@@ -95,7 +90,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
         }
         ParseError::UnrecognizedToken { token, expected } => {
             let (start, ty, end) = token;
-            let span = Span::new(start, end);
+            let span = Span::new(start.file, start.byte, end.byte);
 
             // TODO use token string instead of name for keywords and symbols
             Diagnostic::new("unexpected token")
@@ -105,7 +100,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
         }
         ParseError::ExtraToken { token } => {
             let (start, _, end) = token;
-            let span = Span::new(start, end);
+            let span = Span::new(start.file, start.byte, end.byte);
 
             Diagnostic::new("unexpected extra token")
                 .add_error(span, "extra token")

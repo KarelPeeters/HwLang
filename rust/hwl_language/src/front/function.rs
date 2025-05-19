@@ -799,7 +799,7 @@ fn check_function_return_value(
                         Ok(Value::Compile(CompileValue::UNIT))
                     } else {
                         let diag = Diagnostic::new("control flow reaches end of function with return type")
-                            .add_error(Span::single_at(body_span.end), "end of function is reached here")
+                            .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
                             .add_info(
                                 ret_ty.span,
                                 format!("return type `{}` declared here", ret_ty.inner.to_diagnostic_string()),
