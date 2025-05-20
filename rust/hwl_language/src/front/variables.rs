@@ -521,7 +521,7 @@ where
     // (we do this before finding the common type to get nicer error messages)
     let value_ty_hw = |value: Spanned<&Value>| {
         value.inner.ty().as_hardware_type().map_err(|_| {
-            let ty_str = value.inner.ty().to_diagnostic_string();
+            let ty_str = value.inner.ty().diagnostic_string();
             let diag = Diagnostic::new("merging if assignments needs hardware type")
                 .add_info(debug_info_id.span(), "for this variable")
                 .add_info(
@@ -546,7 +546,7 @@ where
 
     // convert common to hardware too
     let ty = ty.as_hardware_type().map_err(|_| {
-        let ty_str = ty.to_diagnostic_string();
+        let ty_str = ty.diagnostic_string();
 
         let mut diag = Diagnostic::new("merging if assignments needs hardware type")
             .add_info(debug_info_id.span(), "for this variable")
@@ -560,7 +560,7 @@ where
         for ((_, v), ty) in zip_eq(&children, tys) {
             diag = diag.add_info(
                 v.span,
-                format!("value assigned here has type `{}`", ty.to_diagnostic_string()),
+                format!("value assigned here has type `{}`", ty.diagnostic_string()),
             )
         }
         diags.report(diag.finish())

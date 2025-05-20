@@ -364,7 +364,7 @@ impl CompileItemContext<'_, '_> {
             let diag = Diagnostic::new("mismatching expected type")
                 .add_info(
                     span_call,
-                    format!("non-{kind} expected type {:?}", expected_ty.to_diagnostic_string()),
+                    format!("non-{kind} expected type {:?}", expected_ty.diagnostic_string()),
                 )
                 .add_error(actual_span, format!("{kind} type set here"))
                 .finish();
@@ -465,7 +465,7 @@ impl CompileItemContext<'_, '_> {
                 let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
                     let message = format!(
                         "struct field has type `{}` which is not representable in hardware",
-                        expected_ty_inner.to_diagnostic_string()
+                        expected_ty_inner.diagnostic_string()
                     );
                     let diag = Diagnostic::new("hardware struct fields need to be representable in hardware")
                         .add_error(value.span, message)
@@ -541,7 +541,7 @@ impl CompileItemContext<'_, '_> {
                 let ty_hw = ty.as_hardware_type().map_err(|_| {
                     let diag = Diagnostic::new(format!(
                         "enum type `{}` is not representable in hardware",
-                        ty.to_diagnostic_string()
+                        ty.diagnostic_string()
                     ))
                     .add_error(span_call, "enum variant constructed here")
                     .add_info(content.span, "content value is hardware")
@@ -764,7 +764,7 @@ impl CompileItemContext<'_, '_> {
                         let msg = format!(
                             "while converting value `{:?}` into type `{}`",
                             v,
-                            ty_hw.to_diagnostic_string()
+                            ty_hw.diagnostic_string()
                         );
                         diags.report_simple("`from_bits` failed", span_call, msg)
                     })?),
@@ -802,7 +802,7 @@ fn check_function_return_value(
                             .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
                             .add_info(
                                 ret_ty.span,
-                                format!("return type `{}` declared here", ret_ty.inner.to_diagnostic_string()),
+                                format!("return type `{}` declared here", ret_ty.inner.diagnostic_string()),
                             )
                             .finish();
                         Err(diags.report(diag))
@@ -824,7 +824,7 @@ fn check_function_return_value(
                                 ret_ty.span,
                                 format!(
                                     "function return type `{}` declared here",
-                                    ret_ty.inner.to_diagnostic_string()
+                                    ret_ty.inner.diagnostic_string()
                                 ),
                             )
                             .finish();

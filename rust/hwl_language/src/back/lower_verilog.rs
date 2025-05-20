@@ -219,7 +219,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModul
     if let Some(generic_args) = debug_info_generic_args {
         swriteln!(f, "//   instantiated with generic arguments:");
         for (arg_name, arg_value) in generic_args {
-            swriteln!(f, "//     {}={}", arg_name, arg_value.to_diagnostic_string());
+            swriteln!(f, "//     {}={}", arg_name, arg_value.diagnostic_string());
         }
     }
 
@@ -346,7 +346,7 @@ fn lower_module_signals(
         };
 
         let name_debug_str = debug_info_id.inner.unwrap_or("_");
-        let ty_debug_str = debug_info_ty.to_diagnostic_string();
+        let ty_debug_str = debug_info_ty.diagnostic_string();
 
         // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
         swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // {signal_type} {name_debug_str}: {debug_info_domain} {ty_debug_str}");

@@ -316,7 +316,7 @@ impl Type {
         }
     }
 
-    pub fn to_diagnostic_string(&self) -> String {
+    pub fn diagnostic_string(&self) -> String {
         match self {
             Type::Type => "type".to_string(),
             Type::Any => "any".to_string(),
@@ -326,7 +326,7 @@ impl Type {
             Type::String => "string".to_string(),
             Type::Int(range) => format!("int({})", range),
             Type::Tuple(inner) => {
-                let inner_str = inner.iter().map(Type::to_diagnostic_string).join(", ");
+                let inner_str = inner.iter().map(Type::diagnostic_string).join(", ");
                 format!("({})", inner_str)
             }
             Type::Array(first_inner, first_len) => {
@@ -339,7 +339,7 @@ impl Type {
                     inner = curr_inner;
                 }
 
-                let inner_str = inner.to_diagnostic_string();
+                let inner_str = inner.diagnostic_string();
                 format!("{inner_str}[{dims}]")
             }
             Type::Struct(_, _) => "struct".to_string(),
@@ -452,8 +452,8 @@ impl HardwareType {
                 span,
                 format!(
                     "failed to convert value `{}` to bits of type `{}`",
-                    value.to_diagnostic_string(),
-                    self.to_diagnostic_string()
+                    value.diagnostic_string(),
+                    self.diagnostic_string()
                 ),
             )
         };
@@ -546,10 +546,7 @@ impl HardwareType {
         let err_internal = || {
             diags.report_internal_error(
                 span,
-                format!(
-                    "failed to convert bits to value of type `{}`",
-                    self.to_diagnostic_string()
-                ),
+                format!("failed to convert bits to value of type `{}`", self.diagnostic_string()),
             )
         };
 
@@ -624,8 +621,8 @@ impl HardwareType {
         }
     }
 
-    pub fn to_diagnostic_string(&self) -> String {
-        self.as_type().to_diagnostic_string()
+    pub fn diagnostic_string(&self) -> String {
+        self.as_type().diagnostic_string()
     }
 }
 

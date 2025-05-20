@@ -401,8 +401,8 @@ impl IrType {
         }
     }
 
-    pub fn to_diagnostic_string(&self) -> String {
-        self.as_type().to_diagnostic_string()
+    pub fn diagnostic_string(&self) -> String {
+        self.as_type().diagnostic_string()
     }
 }
 
@@ -454,7 +454,7 @@ impl IrExpression {
         }
     }
 
-    pub fn to_diagnostic_string(&self, module: &IrModuleInfo) -> String {
+    pub fn diagnostic_string(&self, module: &IrModuleInfo) -> String {
         match self {
             IrExpression::Bool(x) => x.to_string(),
             IrExpression::Int(x) => x.to_string(),
@@ -476,7 +476,7 @@ impl IrExpression {
             &IrExpression::Variable(_) => "_variable".to_owned(),
 
             &IrExpression::Large(expr) => match &module.large[expr] {
-                IrExpressionLarge::BoolNot(x) => format!("!({})", x.to_diagnostic_string(module)),
+                IrExpressionLarge::BoolNot(x) => format!("!({})", x.diagnostic_string(module)),
                 IrExpressionLarge::BoolBinary(op, left, right) => {
                     let op_str = match op {
                         IrBoolBinaryOp::And => "&&",
@@ -485,9 +485,9 @@ impl IrExpression {
                     };
                     format!(
                         "({} {} {})",
-                        left.to_diagnostic_string(module),
+                        left.diagnostic_string(module),
                         op_str,
-                        right.to_diagnostic_string(module)
+                        right.diagnostic_string(module)
                     )
                 }
                 IrExpressionLarge::IntArithmetic(op, ty, left, right) => {
@@ -502,9 +502,9 @@ impl IrExpression {
                     format!(
                         "({}; {} {} {})",
                         ty,
-                        left.to_diagnostic_string(module),
+                        left.diagnostic_string(module),
                         op_str,
-                        right.to_diagnostic_string(module)
+                        right.diagnostic_string(module)
                     )
                 }
                 IrExpressionLarge::IntCompare(op, left, right) => {
@@ -519,69 +519,61 @@ impl IrExpression {
 
                     format!(
                         "({} {} {})",
-                        left.to_diagnostic_string(module),
+                        left.diagnostic_string(module),
                         op_str,
-                        right.to_diagnostic_string(module)
+                        right.diagnostic_string(module)
                     )
                 }
 
                 IrExpressionLarge::TupleLiteral(v) => {
                     let v_str = v
                         .iter()
-                        .map(|x| x.to_diagnostic_string(module))
+                        .map(|x| x.diagnostic_string(module))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("({})", v_str)
                 }
                 IrExpressionLarge::ArrayLiteral(ty, len, v) => {
-                    let ty_str = ty.to_diagnostic_string();
+                    let ty_str = ty.diagnostic_string();
                     let v_str = v
                         .iter()
                         .map(|x| match x {
-                            IrArrayLiteralElement::Single(value) => value.to_diagnostic_string(module),
-                            IrArrayLiteralElement::Spread(value) => format!("*{}", value.to_diagnostic_string(module)),
+                            IrArrayLiteralElement::Single(value) => value.diagnostic_string(module),
+                            IrArrayLiteralElement::Spread(value) => format!("*{}", value.diagnostic_string(module)),
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("[{ty_str} {len}; {v_str}]")
                 }
                 IrExpressionLarge::TupleIndex { base, index } => {
-                    format!("({}.{})", base.to_diagnostic_string(module), index)
+                    format!("({}.{})", base.diagnostic_string(module), index)
                 }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     format!(
                         "({}[{}])",
-                        base.to_diagnostic_string(module),
-                        index.to_diagnostic_string(module)
+                        base.diagnostic_string(module),
+                        index.diagnostic_string(module)
                     )
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
                     format!(
                         "({}[{}..+{}])",
-                        base.to_diagnostic_string(module),
-                        start.to_diagnostic_string(module),
+                        base.diagnostic_string(module),
+                        start.diagnostic_string(module),
                         len
                     )
                 }
                 IrExpressionLarge::ToBits(ty, x) => {
-                    format!(
-                        "to_bits({}, {})",
-                        ty.to_diagnostic_string(),
-                        x.to_diagnostic_string(module)
-                    )
+                    format!("to_bits({}, {})", ty.diagnostic_string(), x.diagnostic_string(module))
                 }
                 IrExpressionLarge::FromBits(ty, x) => {
-                    format!(
-                        "from_bits({}, {})",
-                        ty.to_diagnostic_string(),
-                        x.to_diagnostic_string(module)
-                    )
+                    format!("from_bits({}, {})", ty.diagnostic_string(), x.diagnostic_string(module))
                 }
                 IrExpressionLarge::ExpandIntRange(ty, x) => {
-                    format!("expand_int_range({}, {})", ty, x.to_diagnostic_string(module))
+                    format!("expand_int_range({}, {})", ty, x.diagnostic_string(module))
                 }
                 IrExpressionLarge::ConstrainIntRange(ty, x) => {
-                    format!("constrain_int_range({}, {})", ty, x.to_diagnostic_string(module))
+                    format!("constrain_int_range({}, {})", ty, x.diagnostic_string(module))
                 }
             },
         }

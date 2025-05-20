@@ -283,7 +283,7 @@ impl Compile {
 #[pymethods]
 impl Type {
     fn __str__(&self) -> String {
-        self.0.to_diagnostic_string()
+        self.0.diagnostic_string()
     }
 }
 

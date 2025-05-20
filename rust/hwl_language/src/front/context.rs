@@ -338,7 +338,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
                     ty: ty.as_ir(),
                     debug_info_id,
                     debug_info_ty: ty.clone(),
-                    debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+                    debug_info_domain: domain.inner.diagnostic_string(ctx),
                 };
                 let reg = ir_registers.push(reg_info);
 

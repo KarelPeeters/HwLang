@@ -223,7 +223,7 @@ impl ArraySteps<ArrayStep> {
                                 curr.span,
                                 format!(
                                     "this array target needs to have a hardware type, has type `{}`",
-                                    ty.to_diagnostic_string()
+                                    ty.diagnostic_string()
                                 ),
                             )
                             .add_info(step.span, "for this hardware array access operation")
@@ -359,7 +359,7 @@ impl ArraySteps<&ArrayStepCompile> {
                     let diag = Diagnostic::new("expected array value for array access")
                         .add_info(
                             old_curr.span,
-                            format!("non-array value `{}` here", old_curr.inner.to_diagnostic_string()),
+                            format!("non-array value `{}` here", old_curr.inner.diagnostic_string()),
                         )
                         .add_error(step.span, "this array access needs an array")
                         .finish();
@@ -575,7 +575,7 @@ pub fn diag_expected_array_value(value: Spanned<&CompileValue>, step_span: Span)
         .add_error(step_span, "array access operation here")
         .add_info(
             value.span,
-            format!("on non-array value `{}` here", value.inner.to_diagnostic_string()),
+            format!("on non-array value `{}` here", value.inner.diagnostic_string()),
         )
         .finish()
 }
@@ -585,10 +585,7 @@ pub fn diag_expected_array_type(ty: Spanned<&Type>, step_span: Span) -> Diagnost
         .add_error(step_span, "array access operation here")
         .add_info(
             ty.span,
-            format!(
-                "on non-array value with type `{}` here",
-                ty.inner.to_diagnostic_string()
-            ),
+            format!("on non-array value with type `{}` here", ty.inner.diagnostic_string()),
         )
         .finish()
 }

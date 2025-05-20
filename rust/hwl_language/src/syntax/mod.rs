@@ -94,7 +94,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
 
             // TODO use token string instead of name for keywords and symbols
             Diagnostic::new("unexpected token")
-                .add_error(span, format!("unexpected token {}", ty.diagnostic_str()))
+                .add_error(span, format!("unexpected token {}", ty.diagnostic_string()))
                 .footer(Level::Info, format_expected(&expected))
                 .finish()
         }

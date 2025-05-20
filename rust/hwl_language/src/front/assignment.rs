@@ -462,7 +462,7 @@ impl CompileItemContext<'_, '_> {
                     target_span,
                     format!(
                         "actual type `{}` not representable in hardware",
-                        target_base_ty.inner.to_diagnostic_string()
+                        target_base_ty.inner.diagnostic_string()
                     ),
                 )
                 .add_info(target_base_ty.span, "variable type set here")

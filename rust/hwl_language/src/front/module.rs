@@ -265,7 +265,7 @@ impl CompileRefs<'_, '_> {
                                     value => Err(diags.report_simple(
                                         "expected interface view",
                                         interface.span,
-                                        format!("got other value `{}`", value.to_diagnostic_string()),
+                                        format!("got other value `{}`", value.diagnostic_string()),
                                     )),
                                 });
 
@@ -336,7 +336,7 @@ impl CompileRefs<'_, '_> {
                                             value => Err(diags.report_simple(
                                                 "expected interface view",
                                                 interface.span,
-                                                format!("got other value `{}`", value.to_diagnostic_string()),
+                                                format!("got other value `{}`", value.diagnostic_string()),
                                             )),
                                         });
 
@@ -489,8 +489,8 @@ fn push_connector_single(
             direction: direction.inner,
             ty: ty.inner.as_ir(),
             debug_span: id.span,
-            debug_info_ty: ty.inner.to_diagnostic_string(),
-            debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+            debug_info_ty: ty.inner.diagnostic_string(),
+            debug_info_domain: domain.inner.diagnostic_string(ctx),
         });
 
         let port = ctx.ports.push(PortInfo {
@@ -564,8 +564,8 @@ fn push_connector_interface(
                 direction: direction.inner,
                 ty: ty.inner.as_ir(),
                 debug_span: id.span,
-                debug_info_ty: ty.inner.to_diagnostic_string(),
-                debug_info_domain: domain.inner.to_diagnostic_string(ctx),
+                debug_info_ty: ty.inner.diagnostic_string(),
+                debug_info_domain: domain.inner.diagnostic_string(ctx),
             });
             let port = ctx.ports.push(PortInfo {
                 span: id.span,
@@ -1487,7 +1487,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                                 ty: ty.inner.as_ir(),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
                                 debug_info_ty: ty.inner.clone(),
-                                debug_info_domain: connection_value.inner.domain().to_diagnostic_string(self.ctx),
+                                debug_info_domain: connection_value.inner.domain().diagnostic_string(self.ctx),
                             });
 
                             ctx_block.statements.push(Spanned {
@@ -1776,7 +1776,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         }
         for (&wire, drivers) in wire_drivers {
             let wire_info = &self.ctx.wires[wire];
-            let wire_name = wire_info.id.as_diagnostic_str();
+            let wire_name = wire_info.id.diagnostic_str();
             let driver_err = self.check_exactly_one_driver("wire", wire_name, wire_info.id.span(), drivers);
             any_err = any_err.and(driver_err.map(|_| ()));
         }
@@ -1786,7 +1786,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             // TODO allow zero drivers for registers, just turn them into wires with the init expression as the value
             //  (still emit a warning)
             let reg_info = &self.ctx.registers[reg];
-            let reg_name = reg_info.id.as_diagnostic_str();
+            let reg_name = reg_info.id.diagnostic_str();
             let driver_err = self.check_exactly_one_driver("register", reg_name, reg_info.id.span(), drivers);
 
             let maybe_err = match any_err.and(driver_err) {
@@ -1967,7 +1967,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             Err(_) => Err(diags.report_simple(
                                 "wire value has non-hardware type",
                                 value.span,
-                                format!("value has type {:?}", v_ty.to_diagnostic_string()),
+                                format!("value has type {:?}", v_ty.diagnostic_string()),
                             )),
                         }
                     }
@@ -1994,7 +1994,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
 
         // build wire
-        let debug_info_domain = domain.map_or_else(|| "inferred".to_string(), |d| d.inner.to_diagnostic_string(ctx));
+        let debug_info_domain = domain.map_or_else(|| "inferred".to_string(), |d| d.inner.diagnostic_string(ctx));
         let ir_wire = self.ir_wires.push(IrWireInfo {
             ty: ty.inner.as_ir(),
             debug_info_id: id.spanned_string(),
@@ -2085,7 +2085,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         // build register
         let debug_info_domain = sync
             .as_ref()
-            .map_or_else(|| "inferred".to_string(), |sync| sync.inner.to_diagnostic_string(ctx));
+            .map_or_else(|| "inferred".to_string(), |sync| sync.inner.diagnostic_string(ctx));
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: ty.inner.as_ir(),
             debug_info_id: id.spanned_string(),
@@ -2196,7 +2196,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             ty: port_info.ty.inner.as_ir(),
             debug_info_id: id.map_inner(|s| Some(s.to_owned())),
             debug_info_ty: port_info.ty.inner.clone(),
-            debug_info_domain: domain.to_diagnostic_string(ctx),
+            debug_info_domain: domain.diagnostic_string(ctx),
         });
         let domain_spanned = Spanned {
             span: port_info.domain.span,

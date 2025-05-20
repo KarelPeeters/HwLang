@@ -28,45 +28,41 @@ impl<P> PortDomain<P> {
 }
 
 impl PortDomain<Port> {
-    pub fn to_diagnostic_string(self, s: &CompileItemContext) -> String {
-        ValueDomain::from_port_domain(self).to_diagnostic_string(s)
+    pub fn diagnostic_string(self, s: &CompileItemContext) -> String {
+        ValueDomain::from_port_domain(self).diagnostic_string(s)
     }
 }
 
 impl DomainKind<Polarized<Signal>> {
-    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
+    pub fn diagnostic_string(&self, s: &CompileItemContext) -> String {
         match self {
             DomainKind::Const => "const".to_owned(),
             DomainKind::Async => "async".to_owned(),
-            DomainKind::Sync(sync) => sync.to_diagnostic_string(s),
+            DomainKind::Sync(sync) => sync.diagnostic_string(s),
         }
     }
 }
 
 impl DomainKind<Polarized<Port>> {
-    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
-        self.map_signal(|s| s.map_inner(Signal::Port)).to_diagnostic_string(s)
+    pub fn diagnostic_string(&self, s: &CompileItemContext) -> String {
+        self.map_signal(|s| s.map_inner(Signal::Port)).diagnostic_string(s)
     }
 }
 
 impl SyncDomain<Polarized<Signal>> {
-    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
+    pub fn diagnostic_string(&self, s: &CompileItemContext) -> String {
         let SyncDomain { clock, reset } = self;
 
         match reset {
-            None => format!("sync({})", clock.to_diagnostic_string(s)),
-            Some(reset) => format!(
-                "sync({}, {})",
-                clock.to_diagnostic_string(s),
-                reset.to_diagnostic_string(s)
-            ),
+            None => format!("sync({})", clock.diagnostic_string(s)),
+            Some(reset) => format!("sync({}, {})", clock.diagnostic_string(s), reset.diagnostic_string(s)),
         }
     }
 }
 
 impl SyncDomain<Polarized<Port>> {
-    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
-        self.map_signal(|p| p.map_inner(Signal::Port)).to_diagnostic_string(s)
+    pub fn diagnostic_string(&self, s: &CompileItemContext) -> String {
+        self.map_signal(|p| p.map_inner(Signal::Port)).diagnostic_string(s)
     }
 }
 
@@ -116,13 +112,13 @@ impl ValueDomain {
         *self
     }
 
-    pub fn to_diagnostic_string(&self, s: &CompileItemContext) -> String {
+    pub fn diagnostic_string(&self, s: &CompileItemContext) -> String {
         match self {
             ValueDomain::CompileTime => "compile-time".to_owned(),
             ValueDomain::Clock => "clock".to_owned(),
             ValueDomain::Const => "const".to_owned(),
             ValueDomain::Async => "async".to_owned(),
-            ValueDomain::Sync(sync) => sync.to_diagnostic_string(s),
+            ValueDomain::Sync(sync) => sync.diagnostic_string(s),
         }
     }
 }

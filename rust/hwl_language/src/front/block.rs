@@ -653,7 +653,7 @@ impl CompileItemContext<'_, '_> {
                                     return Err(diags.report_simple(
                                         "unsupported match type",
                                         value.span,
-                                        format!("pattern has type `{}`", value.inner.ty().to_diagnostic_string()),
+                                        format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
                                     ))
                                 }
                             };
@@ -666,7 +666,7 @@ impl CompileItemContext<'_, '_> {
                             return Err(diags.report_simple(
                                 "range patterns are only supported for int values",
                                 value.span,
-                                format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                                format!("value has type `{}`", target_ty.diagnostic_string()),
                             ));
                         }
 
@@ -677,7 +677,7 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_simple(
                                     "expected range for in pattern",
                                     value.span,
-                                    format!("pattern has type `{}`", value.inner.ty().to_diagnostic_string()),
+                                    format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
                                 ))
                             }
                         };
@@ -691,7 +691,7 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_simple(
                                     "expected enum type for enum variant pattern",
                                     variant.span,
-                                    format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                                    format!("value has type `{}`", target_ty.diagnostic_string()),
                                 ))
                             }
                         };
@@ -776,7 +776,7 @@ impl CompileItemContext<'_, '_> {
                 .add_error(span_branches, msg)
                 .add_info(
                     target.span,
-                    format!("value has type `{}`", target_ty.to_diagnostic_string()),
+                    format!("value has type `{}`", target_ty.diagnostic_string()),
                 )
                 .footer(Level::Help, "add missing cases")
                 .footer(

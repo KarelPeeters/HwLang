@@ -107,7 +107,7 @@ impl CompileRefs<'_, '_> {
                         Err(_) => Err(diags.report_simple(
                             "interface ports must have hardware types",
                             ty.span,
-                            format!("got non-hardware type `{}`", ty.inner.to_diagnostic_string()),
+                            format!("got non-hardware type `{}`", ty.inner.diagnostic_string()),
                         )),
                     }
                 });

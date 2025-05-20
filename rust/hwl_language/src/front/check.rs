@@ -68,8 +68,8 @@ impl CompileItemContext<'_, '_> {
         };
 
         valid.map_err(|invalid_reason| {
-            let target_str = target.inner.to_diagnostic_string(self);
-            let source_str = source.inner.to_diagnostic_string(self);
+            let target_str = target.inner.diagnostic_string(self);
+            let source_str = source.inner.diagnostic_string(self);
             let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
                 .add_error(crossing_span, "invalid domain crossing here")
                 .add_info(target.span, format!("target domain is {target_str}"))
@@ -124,7 +124,7 @@ pub enum TypeContainsReason {
 
 impl TypeContainsReason {
     pub fn add_diag_info(self, diag: DiagnosticBuilder, target_ty: &Type) -> DiagnosticBuilder {
-        let target_ty_str = target_ty.to_diagnostic_string();
+        let target_ty_str = target_ty.diagnostic_string();
         match self {
             // TODO improve assignment error message
             TypeContainsReason::Assignment {
@@ -235,8 +235,8 @@ pub fn check_type_contains_compile_value(
         let mut diag = Diagnostic::new("value does not fit in type");
         diag = reason.add_diag_info(diag, target_ty);
         // TODO abbreviate source value if it gets too long
-        let value_str = value.inner.to_diagnostic_string();
-        let value_ty_str = value.inner.ty().to_diagnostic_string();
+        let value_str = value.inner.diagnostic_string();
+        let value_ty_str = value.inner.ty().diagnostic_string();
         let diag = diag
             .add_error(
                 value.span,
@@ -272,7 +272,7 @@ pub fn check_type_contains_type(
                 value_ty.span,
                 format!(
                     "source value with type `{}` does not fit",
-                    value_ty.inner.to_diagnostic_string()
+                    value_ty.inner.diagnostic_string()
                 ),
             )
             .finish();
@@ -433,11 +433,11 @@ pub fn check_type_is_bool_array(
 
     let expected_ty_str = match expected_len {
         None => Type::Array(Box::new(Type::Bool), BigUint::ZERO)
-            .to_diagnostic_string()
+            .diagnostic_string()
             .replace("0", "_"),
-        Some(expected_len) => Type::Array(Box::new(Type::Bool), expected_len.clone()).to_diagnostic_string(),
+        Some(expected_len) => Type::Array(Box::new(Type::Bool), expected_len.clone()).diagnostic_string(),
     };
-    let value_ty_str = value.inner.ty().to_diagnostic_string();
+    let value_ty_str = value.inner.ty().diagnostic_string();
     let mut diag = Diagnostic::new("value does not fit in type").add_error(
         value.span,
         format!("expected `{}`, got type `{}`", expected_ty_str, value_ty_str),
@@ -466,7 +466,7 @@ pub fn check_hardware_type_for_bit_operation(
 ) -> Result<HardwareType, ErrorGuaranteed> {
     ty.inner.as_hardware_type().map_err(|_| {
         let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
-            .add_error(ty.span, format!("actual type `{}`", ty.inner.to_diagnostic_string()))
+            .add_error(ty.span, format!("actual type `{}`", ty.inner.diagnostic_string()))
             .finish();
         diags.report(diag)
     })

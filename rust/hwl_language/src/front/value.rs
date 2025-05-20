@@ -311,23 +311,23 @@ impl CompileValue {
             MaybeUndefined::Undefined => Err(diags.report_simple(
                 "undefined values are not allowed here",
                 span,
-                format!("undefined value `{}` here", self.to_diagnostic_string()),
+                format!("undefined value `{}` here", self.diagnostic_string()),
             )),
         }
     }
 
-    pub fn to_diagnostic_string(&self) -> String {
+    pub fn diagnostic_string(&self) -> String {
         // TODO avoid printing diagnostics strings that are very long (eg. large strings, arrays, structs, ...)
         match self {
             CompileValue::Undefined => "undefined".to_string(),
-            CompileValue::Type(ty) => ty.to_diagnostic_string(),
+            CompileValue::Type(ty) => ty.diagnostic_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
             CompileValue::String(value) => format!("{:?}", value),
             CompileValue::Tuple(values) => {
                 let values = values
                     .iter()
-                    .map(|value| value.to_diagnostic_string())
+                    .map(|value| value.diagnostic_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("({})", values)
@@ -335,18 +335,18 @@ impl CompileValue {
             CompileValue::Array(values) => {
                 let values = values
                     .iter()
-                    .map(|value| value.to_diagnostic_string())
+                    .map(|value| value.diagnostic_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("[{}]", values)
             }
             CompileValue::Struct(_, _, values) => {
-                let values = values.iter().map(CompileValue::to_diagnostic_string).join(", ");
+                let values = values.iter().map(CompileValue::diagnostic_string).join(", ");
                 format!("struct({})", values)
             }
             CompileValue::Enum(_, _, (index, value)) => match value {
                 None => format!("enum({})", index),
-                Some(value) => format!("enum({}, {})", index, value.to_diagnostic_string()),
+                Some(value) => format!("enum({}, {})", index, value.diagnostic_string()),
             },
             CompileValue::IntRange(range) => format!("({})", range),
             // TODO include item name and generic args

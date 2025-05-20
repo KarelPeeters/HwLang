@@ -962,7 +962,7 @@ impl MaybeIdentifier<Identifier> {
 }
 
 impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
-    pub fn as_diagnostic_str(&self) -> &str {
+    pub fn diagnostic_str(&self) -> &str {
         match self {
             MaybeIdentifier::Dummy(_) => "_",
             MaybeIdentifier::Identifier(id) => id.inner.as_ref(),

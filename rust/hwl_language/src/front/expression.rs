@@ -358,7 +358,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 _ => {
                                     let mdg = format!(
                                         "string substitution for values with type {}",
-                                        value_inner.ty().to_diagnostic_string()
+                                        value_inner.ty().diagnostic_string()
                                     );
                                     return Err(diags.report_todo(value.span, mdg));
                                 }
@@ -641,10 +641,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                     expr: self.large.push_expr(expr),
                                 })
                             }
-                            _ => return Err(err_not_tuple(&value.ty.to_diagnostic_string())),
+                            _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
                         }
                     }
-                    ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().to_diagnostic_string())),
+                    ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
                     ValueInner::PortInterface(_) => return Err(err_not_tuple("port interface")),
                 }
             }
@@ -681,7 +681,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let e = diags.report_simple(
                             "call target must be function",
                             expr.span,
-                            format!("got `{}`", target.inner.to_diagnostic_string()),
+                            format!("got `{}`", target.inner.diagnostic_string()),
                         );
                         return Err(e);
                     }
@@ -751,16 +751,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     let diag = Diagnostic::new("register type must be representable in hardware")
                         .add_error(
                             span_keyword,
-                            format!("got non-hardware type `{}`", ty.to_diagnostic_string()),
+                            format!("got non-hardware type `{}`", ty.diagnostic_string()),
                         )
-                        .add_info(
-                            value.span,
-                            format!("from combining `{}`", value_ty.to_diagnostic_string()),
-                        )
-                        .add_info(
-                            init.span,
-                            format!("from combining `{}`", init_ty.to_diagnostic_string()),
-                        )
+                        .add_info(value.span, format!("from combining `{}`", value_ty.diagnostic_string()))
+                        .add_info(init.span, format!("from combining `{}`", init_ty.diagnostic_string()))
                         .finish();
                     diags.report(diag)
                 })?;
@@ -884,7 +878,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
                                 .add_error(
                                     base.span,
-                                    format!("got type `{}` with invalid bit patterns", ty_hw.to_diagnostic_string()),
+                                    format!("got type `{}` with invalid bit patterns", ty_hw.diagnostic_string()),
                                 )
                                 .footer(
                                     Level::Help,
@@ -985,7 +979,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let info = self.refs.shared.elaboration_arenas.struct_info(elab)?;
             let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
                 let diag = Diagnostic::new("field not found")
-                    .add_info(base.span, format!("base has type `{}`", base_ty.to_diagnostic_string()))
+                    .add_info(base.span, format!("base has type `{}`", base_ty.diagnostic_string()))
                     .add_error(index.span, "attempt to access non-existing field here")
                     .add_info(info.span_body, "struct fields declared here")
                     .finish();
@@ -1021,7 +1015,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // fallthrough into error
         let diag = Diagnostic::new("invalid dot index expression")
-            .add_info(base.span, format!("base has type `{}`", base_ty.to_diagnostic_string()))
+            .add_info(base.span, format!("base has type `{}`", base_ty.diagnostic_string()))
             .add_error(index.span, format!("no attribute found with with name `{index_str}`"))
             .finish();
         Err(diags.report(diag))
@@ -1134,7 +1128,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
                     let message = format!(
                         "tuple element has inferred type `{}` which is not representable in hardware",
-                        expected_ty_inner.to_diagnostic_string()
+                        expected_ty_inner.diagnostic_string()
                     );
                     let diag = Diagnostic::new("hardware tuple elements need to be representable in hardware")
                         .add_error(value.span, message)
@@ -1263,7 +1257,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         return Err(diags.report_simple(
                             "array index needs to be an int or a range",
                             index_or_slice.span,
-                            format!("got `{}`", index_or_slice.inner.to_diagnostic_string()),
+                            format!("got `{}`", index_or_slice.inner.diagnostic_string()),
                         ));
                     }
                 },
@@ -1312,12 +1306,12 @@ impl<'a> CompileItemContext<'a, '_> {
             let print_compile = |v: &Value| {
                 let value_str = match v {
                     // TODO print strings without quotes
-                    Value::Compile(v) => v.to_diagnostic_string(),
+                    Value::Compile(v) => v.diagnostic_string(),
                     // TODO less ugly formatting for HardwareValue
                     Value::Hardware(v) => {
                         let HardwareValue { ty, domain, expr: _ } = v;
-                        let ty_str = ty.to_diagnostic_string();
-                        let domain_str = domain.to_diagnostic_string(self);
+                        let ty_str = ty.diagnostic_string();
+                        let domain_str = domain.diagnostic_string(self);
                         format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _, }}")
                     }
                 };
@@ -1416,7 +1410,7 @@ impl<'a> CompileItemContext<'a, '_> {
             Value::Hardware(ir_expr) => Err(diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
-                format!("got value with domain `{}`", ir_expr.domain.to_diagnostic_string(self)),
+                format!("got value with domain `{}`", ir_expr.domain.diagnostic_string(self)),
             )),
         }
     }
@@ -1441,7 +1435,7 @@ impl<'a> CompileItemContext<'a, '_> {
             value => Err(diags.report_simple(
                 "expected type, got value",
                 expr.span,
-                format!("got value `{}`", value.to_diagnostic_string()),
+                format!("got value `{}`", value.diagnostic_string()),
             )),
         }
     }
@@ -1460,7 +1454,7 @@ impl<'a> CompileItemContext<'a, '_> {
             diags.report_simple(
                 format!("{} type must be representable in hardware", reason),
                 expr.span,
-                format!("got type `{}`", ty.to_diagnostic_string()),
+                format!("got type `{}`", ty.diagnostic_string()),
             )
         })?;
         Ok(Spanned {
@@ -1772,7 +1766,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 throw!(diags.report_simple(
                     "invalid for loop iterator type, must be range or array",
                     iter.span,
-                    format!("iterator has type `{}`", iter.inner.ty().to_diagnostic_string())
+                    format!("iterator has type `{}`", iter.inner.ty().diagnostic_string())
                 ))
             }
         };
@@ -1850,10 +1844,7 @@ fn eval_int_ty_call(
                 .add_error(span_call, "attempt to constrain int type here")
                 .add_info(
                     target_range.span,
-                    format!(
-                        "base type `{}` here",
-                        Type::Int(target_range.inner).to_diagnostic_string()
-                    ),
+                    format!("base type `{}` here", Type::Int(target_range.inner).diagnostic_string()),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -1912,7 +1903,7 @@ fn eval_int_ty_call(
             let diag = Diagnostic::new("int type constraining must be an int or int range")
                 .add_error(
                     arg.span,
-                    format!("got invalid value `{}` here", arg.inner.to_diagnostic_string()),
+                    format!("got invalid value `{}` here", arg.inner.diagnostic_string()),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -2199,7 +2190,7 @@ pub fn eval_binary_expression(
                     return Err(diags.report_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
-                        format!("got value with type `{}`", left.inner.ty().to_diagnostic_string()),
+                        format!("got value with type `{}`", left.inner.ty().diagnostic_string()),
                     ))
                 }
             }
@@ -2720,7 +2711,7 @@ fn array_literal_combine_values(
             // TODO clarify that inferred type comes from outside, not the expression itself
             let message = format!(
                 "hardware array literal has inferred inner type `{}` which is not representable in hardware",
-                expected_ty_inner.to_diagnostic_string()
+                expected_ty_inner.diagnostic_string()
             );
             let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
                 .add_error(expr_span, message)
