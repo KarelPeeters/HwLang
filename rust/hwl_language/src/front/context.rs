@@ -197,7 +197,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
     }
 
     fn check_ir_context(&self, diags: &Diagnostics, span: Span, access: &str) -> Result<(), ErrorGuaranteed> {
-        let diag = Diagnostic::new("trying to access hardware in compile-time context")
+        let diag = Diagnostic::new("trying to use hardware construct in compile-time context")
             .add_error(span, format!("accessing {access} here"))
             .add_info(
                 self.span,

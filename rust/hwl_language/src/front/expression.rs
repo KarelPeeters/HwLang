@@ -736,6 +736,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     init,
                 } = reg_delay;
 
+                ctx.check_ir_context(diags, expr.span, "delay register")?;
+
                 // eval
                 let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
                 let init = self.eval_expression_as_compile(scope, vars, expected_ty, init, "register init");
