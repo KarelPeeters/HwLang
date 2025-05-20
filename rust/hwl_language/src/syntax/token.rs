@@ -51,8 +51,8 @@ pub struct Tokenizer<'s> {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Mode {
     Normal,
-    NormalInSubExpression,
-    StringMiddle { subs: bool },
+    NormalInSubExpression { str_start: Pos },
+    StringMiddle { str_start: Pos, subs: bool },
 }
 
 #[rustfmt::skip]
@@ -133,16 +133,19 @@ impl<'s> Tokenizer<'s> {
             Mode::Normal => {
                 // fallthrough
             }
-            Mode::NormalInSubExpression => {
+            Mode::NormalInSubExpression { str_start } => {
                 if self.peek() == Some('}') {
                     self.skip(1);
-                    self.mode = Mode::StringMiddle { subs: true };
+                    self.mode = Mode::StringMiddle { str_start, subs: true };
                     return Ok(Some(TokenType::StringSubEnd));
                 } else {
                     // fallthrough
                 }
             }
-            Mode::StringMiddle { subs: allow_subs } => {
+            Mode::StringMiddle {
+                str_start,
+                subs: allow_subs,
+            } => {
                 let (ty, next_mode) = match self.peek() {
                     Some('"') => {
                         self.skip(1);
@@ -152,16 +155,22 @@ impl<'s> Tokenizer<'s> {
                     // TODO handle escapes (ie. {{)
                     Some('{') if allow_subs => {
                         self.skip(1);
-                        (TokenType::StringSubStart, Mode::NormalInSubExpression)
+                        (TokenType::StringSubStart, Mode::NormalInSubExpression { str_start })
                     }
                     Some(_) => {
                         // TODO handle escapes (eg. \n, \u, {{, \", ...)
                         self.skip_while(|c| !(c == '"' || (allow_subs && c == '{')));
-                        (TokenType::StringMiddle, Mode::StringMiddle { subs: allow_subs })
+                        (
+                            TokenType::StringMiddle,
+                            Mode::StringMiddle {
+                                str_start,
+                                subs: allow_subs,
+                            },
+                        )
                     }
                     None => {
                         return Err(TokenError::StringLiteralMissingEnd {
-                            start,
+                            start: str_start,
                             eof: self.curr_pos(),
                         });
                     }
@@ -209,13 +218,19 @@ impl<'s> Tokenizer<'s> {
                 let start = self.curr_pos();
                 self.skip(1);
                 self.mode_stack.push((start, self.mode));
-                self.mode = Mode::StringMiddle { subs: true };
+                self.mode = Mode::StringMiddle {
+                    str_start: start,
+                    subs: true,
+                };
                 TokenType::StringStart
             }
             ['r', '"', _] => {
                 self.skip(2);
                 self.mode_stack.push((start, self.mode));
-                self.mode = Mode::StringMiddle { subs: false };
+                self.mode = Mode::StringMiddle {
+                    str_start: start,
+                    subs: false,
+                };
                 TokenType::StringStart
             }
 
@@ -732,7 +747,8 @@ mod test {
             start: Pos { file, byte: 0 },
             eof: Pos { file, byte: 2 },
         })];
-        assert_eq!(tokenize_iter(file, "/*", false), expected);
+        let actual = tokenize_iter(file, "/*", false);
+        assert_eq!(expected, actual);
 
         let expected = vec![
             Ok(Token {
@@ -744,14 +760,22 @@ mod test {
                 eof: Pos { file, byte: 2 },
             }),
         ];
-        assert_eq!(tokenize_iter(file, "/*", true), expected);
+        let actual = tokenize_iter(file, "/*", true);
+        assert_eq!(expected, actual);
 
         // string
-        let expected = vec![Err(TokenError::StringLiteralMissingEnd {
-            start: Pos { file, byte: 0 },
-            eof: Pos { file, byte: 1 },
-        })];
-        assert_eq!(tokenize_iter(file, "\"", false), expected);
+        let expected = vec![
+            Ok(Token {
+                ty: TokenType::StringStart,
+                span: Span::new(file, 0, 1),
+            }),
+            Err(TokenError::StringLiteralMissingEnd {
+                start: Pos { file, byte: 0 },
+                eof: Pos { file, byte: 1 },
+            }),
+        ];
+        let actual = tokenize_iter(file, "\"", false);
+        assert_eq!(expected, actual);
 
         let expected = vec![
             Ok(Token {
@@ -763,7 +787,8 @@ mod test {
                 eof: Pos { file, byte: 1 },
             }),
         ];
-        assert_eq!(tokenize_iter(file, "\"", true), expected);
+        let actual = tokenize_iter(file, "\"", true);
+        assert_eq!(expected, actual);
     }
 
     #[test]
