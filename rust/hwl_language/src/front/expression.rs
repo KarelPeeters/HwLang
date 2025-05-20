@@ -1,7 +1,7 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
     check_hardware_type_for_bit_operation, check_type_contains_compile_value, check_type_contains_value,
-    check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware,
+    check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_string,
     check_type_is_uint_compile, TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, Port, PortInterface, StackEntry};
@@ -24,7 +24,7 @@ use crate::mid::ir::{
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
     ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    RegisterDelay, Spanned, SyncDomain, UnaryOp,
+    RegisterDelay, Spanned, StringPiece, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
@@ -109,18 +109,7 @@ impl<'a> CompileItemContext<'a, '_> {
             GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(|s| Cow::Borrowed(s))),
             GeneralIdentifier::FromString(span, expr) => {
                 let value = self.eval_expression_as_compile(scope, vars, &Type::String, expr, "id string")?;
-
-                check_type_contains_compile_value(
-                    diags,
-                    TypeContainsReason::Operator(span),
-                    &Type::String,
-                    value.as_ref(),
-                    false,
-                )?;
-                let value = match value.inner {
-                    CompileValue::String(str) => str,
-                    _ => return Err(diags.report_internal_error(expr.span, "expected string value")),
-                };
+                let value = check_type_is_string(diags, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(span, Cow::Owned(value)))
             }
@@ -340,14 +329,46 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Compile(CompileValue::Int(BigInt::from(value)))
             }
             &ExpressionKind::BoolLiteral(literal) => Value::Compile(CompileValue::Bool(literal)),
-            &ExpressionKind::StringLiteral(raw) => {
-                // TODO f-string formatting, string escaping
-                let raw = source.span_str(raw);
-                if raw.len() < 2 {
-                    return Err(diags.report_internal_error(expr.span, "invalid string literal"));
+            ExpressionKind::StringLiteral(pieces) => {
+                let mut s = String::new();
+
+                for &piece in pieces {
+                    match piece {
+                        StringPiece::Literal(span) => {
+                            // TODO handle escapes
+                            s.push_str(source.span_str(span));
+                        }
+                        StringPiece::Substitute(value) => {
+                            let value = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, value)?;
+
+                            let value_inner = match value.inner {
+                                Value::Compile(v) => v,
+                                Value::Hardware(_) => {
+                                    return Err(
+                                        diags.report_todo(value.span, "string substitution for hardware values")
+                                    );
+                                }
+                            };
+
+                            let value_str = match value_inner {
+                                CompileValue::Undefined => Cow::Borrowed("undef"),
+                                CompileValue::Bool(b) => Cow::Borrowed(if b { "true" } else { "false" }),
+                                CompileValue::Int(i) => Cow::Owned(i.to_string()),
+                                CompileValue::String(s) => Cow::Owned(s),
+                                _ => {
+                                    let mdg = format!(
+                                        "string substitution for values with type {}",
+                                        value_inner.ty().to_diagnostic_string()
+                                    );
+                                    return Err(diags.report_todo(value.span, mdg));
+                                }
+                            };
+                            s.push_str(&value_str);
+                        }
+                    }
                 }
-                let clean = &raw[1..raw.len() - 1];
-                Value::Compile(CompileValue::String(clean.to_owned()))
+
+                Value::Compile(CompileValue::String(s))
             }
             ExpressionKind::ArrayLiteral(values) => {
                 self.eval_array_literal(ctx, ctx_block, scope, vars, expected_ty, expr.span, values)?

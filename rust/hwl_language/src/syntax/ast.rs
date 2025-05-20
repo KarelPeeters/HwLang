@@ -596,7 +596,7 @@ pub enum ExpressionKind {
     // Literals
     IntLiteral(IntLiteral),
     BoolLiteral(bool),
-    StringLiteral(Span),
+    StringLiteral(Vec<StringPiece>),
 
     // Structures
     ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
@@ -619,6 +619,12 @@ pub enum ExpressionKind {
     Builtin(Spanned<Vec<Expression>>),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum StringPiece {
+    Literal(Span),
+    Substitute(Expression),
 }
 
 #[derive(Debug, Clone)]

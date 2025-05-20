@@ -18,7 +18,11 @@ extern {
         TokenIntLiteralBinary => TokenType::IntLiteralBinary,
         TokenIntLiteralDecimal => TokenType::IntLiteralDecimal,
         TokenIntLiteralHexadecimal => TokenType::IntLiteralHexadecimal,
-        TokenStringLiteral => TokenType::StringLiteral,
+        TokenStringStart => TokenType::StringStart,
+        TokenStringEnd => TokenType::StringEnd,
+        TokenStringSubStart => TokenType::StringSubStart,
+        TokenStringSubEnd => TokenType::StringSubEnd,
+        TokenStringMiddle => TokenType::StringMiddle,
         "import" => TokenType::Import,
         "type" => TokenType::Type,
         "struct" => TokenType::Struct,
@@ -780,9 +784,13 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
         => ExpressionKind::IntLiteral(IntLiteral::Decimal(span)),
     <span:Span<TokenIntLiteralHexadecimal>>
         => ExpressionKind::IntLiteral(IntLiteral::Hexadecimal(span)),
-    // TODO escape sequences and string formatting expressions
-    <span:Span<TokenStringLiteral>>
-        => ExpressionKind::StringLiteral(span),
+    TokenStringStart <StringPiece*> TokenStringEnd
+        => ExpressionKind::StringLiteral(<>),
+}
+
+StringPiece: StringPiece = {
+    Span<TokenStringMiddle> => StringPiece::Literal(<>),
+    TokenStringSubStart <Expr> TokenStringSubEnd => StringPiece::Substitute(<>),
 }
 
 //Path: Path = {

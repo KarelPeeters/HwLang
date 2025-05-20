@@ -447,6 +447,19 @@ pub fn check_type_is_bool_array(
     Err(diags.report(diag.finish()))
 }
 
+pub fn check_type_is_string(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> Result<String, ErrorGuaranteed> {
+    check_type_contains_compile_value(diags, reason, &Type::String, value.as_ref(), false)?;
+
+    match value.inner {
+        CompileValue::String(value_inner) => Ok(value_inner),
+        _ => Err(diags.report_internal_error(value.span, "expected string value, should have already been checked")),
+    }
+}
+
 pub fn check_hardware_type_for_bit_operation(
     diags: &Diagnostics,
     ty: Spanned<&Type>,

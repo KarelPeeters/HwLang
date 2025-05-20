@@ -31,30 +31,38 @@ pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Resu
 //   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
 // TODO remove string here? only deal with offset, simplifying the lifetime
 pub struct Tokenizer<'s> {
-    file: FileId,
+    // happy path state
     curr_byte: usize,
     left: std::str::Chars<'s>,
-    emit_incomplete_token: bool,
+    mode_stack: Vec<(Pos, Mode)>,
+    mode: Mode,
+
+    // error path state
     incomplete_err: Option<TokenError>,
     errored: bool,
+
+    // fixed settings
+    file: FileId,
+    emit_incomplete_token: bool,
     fixed_tokens_grouped_by_length: &'static [Vec<FixedTokenInfo>],
 }
 
-macro_rules! pattern_whitespace {
-    () => {
-        ' ' | '\t' | '\n' | '\r'
-    };
+/// https://peps.python.org/pep-0701/
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum Mode {
+    Normal,
+    NormalInSubExpression,
+    StringMiddle { subs: bool },
 }
 
+#[rustfmt::skip]
+macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
+#[rustfmt::skip]
 macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
-
+#[rustfmt::skip]
 macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' }; }
-
-macro_rules! pattern_decimal_digit {
-    () => {
-        '0'..='9'
-    };
-}
+#[rustfmt::skip]
+macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
 
 impl<'s> Tokenizer<'s> {
     pub fn new(file: FileId, source: &'s str, emit_incomplete_token: bool) -> Self {
@@ -62,6 +70,8 @@ impl<'s> Tokenizer<'s> {
             file,
             curr_byte: 0,
             left: source.chars(),
+            mode_stack: vec![],
+            mode: Mode::Normal,
             emit_incomplete_token,
             incomplete_err: None,
             errored: false,
@@ -112,35 +122,103 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
-    // TODO generate this match state machine
+    // TODO automatically generate most of this match logic
     // TODO try memchr where it applies, see if it's actually faster
-    fn next_inner(&mut self) -> Result<Option<Token>, TokenError> {
+    fn next_inner_ty(&mut self) -> Result<Option<TokenType>, TokenError> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
-        let peek = {
-            let mut iter = self.left.clone();
-            [
-                iter.next().unwrap_or('\0'),
-                iter.next().unwrap_or('\0'),
-                iter.next().unwrap_or('\0'),
-            ]
+        // handle string modes
+        match self.mode {
+            Mode::Normal => {
+                // fallthrough
+            }
+            Mode::NormalInSubExpression => {
+                if self.peek() == Some('}') {
+                    self.skip(1);
+                    self.mode = Mode::StringMiddle { subs: true };
+                    return Ok(Some(TokenType::StringSubEnd));
+                } else {
+                    // fallthrough
+                }
+            }
+            Mode::StringMiddle { subs: allow_subs } => {
+                let (ty, next_mode) = match self.peek() {
+                    Some('"') => {
+                        self.skip(1);
+                        let (_, next_mode) = self.mode_stack.pop().unwrap();
+                        (TokenType::StringEnd, next_mode)
+                    }
+                    // TODO handle escapes (ie. {{)
+                    Some('{') if allow_subs => {
+                        self.skip(1);
+                        (TokenType::StringSubStart, Mode::NormalInSubExpression)
+                    }
+                    Some(_) => {
+                        // TODO handle escapes (eg. \n, \u, {{, \", ...)
+                        self.skip_while(|c| !(c == '"' || (allow_subs && c == '{')));
+                        (TokenType::StringMiddle, Mode::StringMiddle { subs: allow_subs })
+                    }
+                    None => {
+                        return Err(TokenError::StringLiteralMissingEnd {
+                            start,
+                            eof: self.curr_pos(),
+                        });
+                    }
+                };
+
+                self.mode = next_mode;
+                return Ok(Some(ty));
+            }
         };
 
+        // get the first couple of chars
+        let peek = {
+            let mut iter = self.left.clone();
+            let first = match iter.next() {
+                Some(first) => first,
+                None => {
+                    // end of file, valid if we're not still in a string literal
+                    return if let Some((start, _)) = self.mode_stack.last() {
+                        Err(TokenError::StringLiteralMissingEnd {
+                            start: *start,
+                            eof: self.curr_pos(),
+                        })
+                    } else {
+                        Ok(None)
+                    };
+                }
+            };
+
+            [first, iter.next().unwrap_or('\0'), iter.next().unwrap_or('\0')]
+        };
         let mut skip_fixed = |n: usize, ty: TokenType| {
             self.skip(n);
             ty
         };
 
         let ty = match peek {
-            ['\0', _, _] => return Ok(None),
-
             // custom
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
                 TokenType::WhiteSpace
             }
+
+            ['"', _, _] => {
+                let start = self.curr_pos();
+                self.skip(1);
+                self.mode_stack.push((start, self.mode));
+                self.mode = Mode::StringMiddle { subs: true };
+                TokenType::StringStart
+            }
+            ['r', '"', _] => {
+                self.skip(2);
+                self.mode_stack.push((start, self.mode));
+                self.mode = Mode::StringMiddle { subs: false };
+                TokenType::StringStart
+            }
+
             [pattern_id_start!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_id_continue!()));
@@ -198,24 +276,6 @@ impl<'s> Tokenizer<'s> {
                 }
             }
 
-            ['"', _, _] => {
-                self.skip(1);
-                self.skip_while(|c| c != '"');
-                match self.peek() {
-                    Some('"') => {
-                        self.skip(1);
-                    }
-                    None => {
-                        self.skip_while(|_| true);
-                        self.incomplete_err = Some(TokenError::StringLiteralMissingEnd {
-                            start,
-                            eof: self.curr_pos(),
-                        });
-                    }
-                    _ => unreachable!(),
-                }
-                TokenType::StringLiteral
-            }
             ['/', '*', _] => {
                 // block comments are allowed to nest
                 self.skip(2);
@@ -306,8 +366,17 @@ impl<'s> Tokenizer<'s> {
 
             _ => return Err(TokenError::InvalidToken { pos: start }),
         };
+        Ok(Some(ty))
+    }
 
-        let span = Span::new(self.file, start.byte, self.curr_byte);
+    fn next_inner(&mut self) -> Result<Option<Token>, TokenError> {
+        let start_byte = self.curr_byte;
+
+        let Some(ty) = self.next_inner_ty()? else {
+            return Ok(None);
+        };
+
+        let span = Span::new(self.file, start_byte, self.curr_byte);
         Ok(Some(Token { span, ty }))
     }
 
@@ -342,11 +411,15 @@ impl<'s> IntoIterator for Tokenizer<'s> {
     type IntoIter = TokenizerIterator<'s>;
 
     fn into_iter(self) -> Self::IntoIter {
-        TokenizerIterator { tokenizer: self }
+        TokenizerIterator {
+            any_err: false,
+            tokenizer: self,
+        }
     }
 }
 
 pub struct TokenizerIterator<'s> {
+    any_err: bool,
     tokenizer: Tokenizer<'s>,
 }
 
@@ -354,7 +427,13 @@ impl<'s> Iterator for TokenizerIterator<'s> {
     type Item = Result<Token, TokenError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.tokenizer.next().transpose()
+        if self.any_err {
+            return None;
+        }
+
+        let next = self.tokenizer.next();
+        self.any_err |= next.is_err();
+        next.transpose()
     }
 }
 
@@ -426,13 +505,16 @@ declare_tokens! {
         BlockComment(TC::Comment),
         LineComment(TC::Comment),
 
-        // patterns
         Identifier(TC::Identifier),
         IntLiteralBinary(TC::IntegerLiteral),
         IntLiteralDecimal(TC::IntegerLiteral),
         IntLiteralHexadecimal(TC::IntegerLiteral),
-        // TODO better string literal pattern with escape codes and string formatting expressions
-        StringLiteral(TC::StringLiteral),
+
+        StringStart(TC::StringLiteral),
+        StringEnd(TC::StringLiteral),
+        StringSubStart(TC::StringLiteral),
+        StringSubEnd(TC::StringLiteral),
+        StringMiddle(TC::StringLiteral),
     }
     fixed {
         // keywords
@@ -673,7 +755,7 @@ mod test {
 
         let expected = vec![
             Ok(Token {
-                ty: TokenType::StringLiteral,
+                ty: TokenType::StringStart,
                 span: Span::new(file, 0, 1),
             }),
             Err(TokenError::StringLiteralMissingEnd {
