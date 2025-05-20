@@ -44,7 +44,7 @@ pub struct FunctionBits {
     pub kind: FunctionBitsKind,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum FunctionBitsKind {
     ToBits,
     FromBits,

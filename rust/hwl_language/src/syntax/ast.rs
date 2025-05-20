@@ -547,7 +547,7 @@ impl<S> ClockedBlockReset<S> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub enum ResetKind {
     Async,
     Sync,
@@ -647,7 +647,7 @@ pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub value: T,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub enum ArrayLiteralElement<V> {
     Single(V),
     Spread(Span, V),

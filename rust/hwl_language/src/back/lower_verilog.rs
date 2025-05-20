@@ -1126,7 +1126,7 @@ impl VerilogType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 struct NewlineGenerator {
     any_prev: bool,
     any_curr: bool,
