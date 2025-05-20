@@ -23,12 +23,14 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
-    ExpressionKind, Identifier, IntLiteral, PortDirection, RangeLiteral, RegisterDelay, Spanned, SyncDomain, UnaryOp,
+    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
+    RegisterDelay, Spanned, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{vec_concat, VecExt};
+use std::borrow::Cow;
 
 use crate::util::iter::IterExt;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
@@ -88,24 +90,76 @@ impl HardwareValueWithImplications {
 }
 
 #[derive(Debug)]
-pub enum EvaluatedId {
+pub enum NamedOrValue {
     Named(NamedValue),
     Value(Value),
 }
 
-impl CompileItemContext<'_, '_> {
-    pub fn eval_id(&mut self, scope: &Scope, id: Identifier) -> Result<Spanned<EvaluatedId>, ErrorGuaranteed> {
+impl<'a> CompileItemContext<'a, '_> {
+    pub fn eval_general_id(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        id: GeneralIdentifier,
+    ) -> Result<Spanned<Cow<'a, str>>, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+        let source = self.refs.fixed.source;
+
+        match id {
+            GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(|s| Cow::Borrowed(s))),
+            GeneralIdentifier::FromString(span, expr) => {
+                let value = self.eval_expression_as_compile(scope, vars, &Type::String, expr, "id string")?;
+
+                check_type_contains_compile_value(
+                    diags,
+                    TypeContainsReason::Operator(span),
+                    &Type::String,
+                    value.as_ref(),
+                    false,
+                )?;
+                let value = match value.inner {
+                    CompileValue::String(str) => str,
+                    _ => return Err(diags.report_internal_error(expr.span, "expected string value")),
+                };
+
+                Ok(Spanned::new(span, Cow::Owned(value)))
+            }
+        }
+    }
+
+    pub fn eval_maybe_general_id(
+        &mut self,
+        scope: &Scope,
+        vars: &mut VariableValues,
+        id: MaybeIdentifier<GeneralIdentifier>,
+    ) -> Result<MaybeIdentifier<Spanned<Cow<'a, str>>>, ErrorGuaranteed> {
+        match id {
+            MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
+            MaybeIdentifier::Identifier(id) => {
+                let id = self.eval_general_id(scope, vars, id)?;
+                Ok(MaybeIdentifier::Identifier(id))
+            }
+        }
+    }
+
+    pub fn eval_named_or_value(
+        &mut self,
+        scope: &Scope,
+        id: Spanned<&str>,
+    ) -> Result<Spanned<NamedOrValue>, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let found = scope.find(diags, self.refs.fixed.source, id)?;
+        let found = scope.find(diags, id)?;
         let def_span = found.defining_span;
         let result = match *found.value {
-            ScopedEntry::Named(value) => EvaluatedId::Named(value),
-            ScopedEntry::Item(item) => self
-                .recurse(StackEntry::ItemUsage(id.span), |s| {
-                    Ok(EvaluatedId::Value(Value::Compile(s.eval_item(item)?.clone())))
+            ScopedEntry::Named(value) => NamedOrValue::Named(value),
+            ScopedEntry::Item(item) => {
+                let entry = StackEntry::ItemUsage(id.span);
+                self.recurse(entry, |s| {
+                    Ok(NamedOrValue::Value(Value::Compile(s.eval_item(item)?.clone())))
                 })
-                .flatten_err()?,
+                .flatten_err()?
+            }
         };
         Ok(Spanned {
             span: def_span,
@@ -200,9 +254,12 @@ impl CompileItemContext<'_, '_> {
                     .inner
             }
             &ExpressionKind::Id(id) => {
-                let result = match self.eval_id(scope, id)?.inner {
-                    EvaluatedId::Value(value) => ValueWithImplications::simple(value),
-                    EvaluatedId::Named(value) => match value {
+                let id = self.eval_general_id(scope, vars, id)?;
+                let id = id.as_ref().map_inner(Cow::as_ref);
+
+                let result = match self.eval_named_or_value(scope, id)?.inner {
+                    NamedOrValue::Value(value) => ValueWithImplications::simple(value),
+                    NamedOrValue::Named(value) => match value {
                         // TODO report error when combinatorial block
                         //   reads something it has not written yet but will later write to
                         // TODO more generally, report combinatorial cycles
@@ -378,8 +435,7 @@ impl CompileItemContext<'_, '_> {
                     let mut scope_body = Scope::new_child(scope_span, scope);
                     scope_body.maybe_declare(
                         diags,
-                        source,
-                        index,
+                        Ok(index.spanned_str(source)),
                         Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
                     );
 
@@ -634,7 +690,7 @@ impl CompileItemContext<'_, '_> {
             ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
-                let domain = self.eval_domain(scope, domain);
+                let domain = self.eval_domain(scope, vars, domain);
 
                 let value = value?;
                 let domain = domain?;
@@ -1406,31 +1462,36 @@ impl CompileItemContext<'_, '_> {
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {}", actual));
 
         let result = match self.refs.get_expr(expr) {
-            &ExpressionKind::Id(id) => match self.eval_id(scope, id)?.inner {
-                EvaluatedId::Value(_) => return Err(build_err("value")),
-                EvaluatedId::Named(s) => match s {
-                    NamedValue::Variable(v) => {
-                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
-                    }
-                    NamedValue::Port(port) => {
-                        // check direction
-                        let direction = self.ports[port].direction;
-                        match direction.inner {
-                            PortDirection::Input => return Err(build_err("input port")),
-                            PortDirection::Output => {}
-                        }
+            &ExpressionKind::Id(id) => {
+                let id = self.eval_general_id(scope, vars, id)?;
+                let id = id.as_ref().map_inner(Cow::as_ref);
 
-                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
-                    }
-                    NamedValue::PortInterface(_) => return Err(build_err("port interface")),
-                    NamedValue::Wire(w) => {
-                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
-                    }
-                    NamedValue::Register(r) => {
-                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Register(r)))
-                    }
-                },
-            },
+                match self.eval_named_or_value(scope, id)?.inner {
+                    NamedOrValue::Value(_) => return Err(build_err("value")),
+                    NamedOrValue::Named(s) => match s {
+                        NamedValue::Variable(v) => {
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
+                        }
+                        NamedValue::Port(port) => {
+                            // check direction
+                            let direction = self.ports[port].direction;
+                            match direction.inner {
+                                PortDirection::Input => return Err(build_err("input port")),
+                                PortDirection::Output => {}
+                            }
+
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
+                        }
+                        NamedValue::PortInterface(_) => return Err(build_err("port interface")),
+                        NamedValue::Wire(w) => {
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
+                        }
+                        NamedValue::Register(r) => {
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Register(r)))
+                        }
+                    },
+                }
+            }
             &ExpressionKind::ArrayIndex(inner_target, ref indices) => {
                 let inner_target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, inner_target);
                 let array_steps = indices
@@ -1456,35 +1517,40 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
-                &ExpressionKind::Id(base) => match self.eval_id(scope, base)?.inner {
-                    EvaluatedId::Named(NamedValue::PortInterface(base)) => {
-                        // get port
-                        let port_interface_info = &self.port_interfaces[base];
-                        let interface_info = self
-                            .refs
-                            .shared
-                            .elaboration_arenas
-                            .interface_info(port_interface_info.view.interface)?;
-                        let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                        let port = port_interface_info.ports[port_index];
+                &ExpressionKind::Id(base) => {
+                    let base = self.eval_general_id(scope, vars, base)?;
+                    let base = base.as_ref().map_inner(Cow::as_ref);
 
-                        // check direction
-                        let direction = self.ports[port].direction;
-                        match direction.inner {
-                            PortDirection::Input => return Err(build_err("input port")),
-                            PortDirection::Output => {}
+                    match self.eval_named_or_value(scope, base)?.inner {
+                        NamedOrValue::Named(NamedValue::PortInterface(base)) => {
+                            // get port
+                            let port_interface_info = &self.port_interfaces[base];
+                            let interface_info = self
+                                .refs
+                                .shared
+                                .elaboration_arenas
+                                .interface_info(port_interface_info.view.interface)?;
+                            let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                            let port = port_interface_info.ports[port_index];
+
+                            // check direction
+                            let direction = self.ports[port].direction;
+                            match direction.inner {
+                                PortDirection::Input => return Err(build_err("input port")),
+                                PortDirection::Output => {}
+                            }
+
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
                         }
-
-                        AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
+                        _ => {
+                            return Err(diags.report_simple(
+                                "dot index only supported on interface ports",
+                                base.span,
+                                "got other named value here",
+                            ));
+                        }
                     }
-                    _ => {
-                        return Err(diags.report_simple(
-                            "dot index only supported on interface ports",
-                            base.span,
-                            "got other named value here",
-                        ));
-                    }
-                },
+                }
                 _ => {
                     return Err(diags.report_simple(
                         "dot index only supported on interface ports",
@@ -1508,18 +1574,20 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_expression_as_domain_signal(
         &mut self,
         scope: &Scope,
+        vars: &mut VariableValues,
         expr: Expression,
     ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let build_err =
             |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual));
-        self.try_eval_expression_as_domain_signal(scope, expr, build_err)
+        self.try_eval_expression_as_domain_signal(scope, vars, expr, build_err)
             .map_err(|e| e.into_inner())
     }
 
     pub fn try_eval_expression_as_domain_signal<E>(
         &mut self,
         scope: &Scope,
+        vars: &mut VariableValues,
         expr: Expression,
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
@@ -1533,15 +1601,18 @@ impl CompileItemContext<'_, '_> {
                 inner,
             ) => {
                 let inner = self
-                    .try_eval_expression_as_domain_signal(scope, inner, build_err)?
+                    .try_eval_expression_as_domain_signal(scope, vars, inner, build_err)?
                     .inner;
                 Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let value = self.eval_id(scope, id).map_err(|e| Either::Right(e))?;
+                let id = self.eval_general_id(scope, vars, id).map_err(Either::Right)?;
+                let id = id.as_ref().map_inner(Cow::as_ref);
+
+                let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
-                    EvaluatedId::Value(_) => Err(build_err("value")),
-                    EvaluatedId::Named(s) => match s {
+                    NamedOrValue::Value(_) => Err(build_err("value")),
+                    NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(_) => Err(build_err("variable")),
                         NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
                         NamedValue::PortInterface(_) => Err(build_err("port interface")),
@@ -1563,11 +1634,12 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_domain_sync(
         &mut self,
         scope: &Scope,
+        vars: &mut VariableValues,
         domain: SyncDomain<Expression>,
     ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
         let SyncDomain { clock, reset } = domain;
-        let clock = self.eval_expression_as_domain_signal(scope, clock);
-        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, reset));
+        let clock = self.eval_expression_as_domain_signal(scope, vars, clock);
+        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, vars, reset));
         Ok(SyncDomain {
             clock: clock?.inner,
             reset: reset.transpose()?.map(|r| r.inner),
@@ -1577,12 +1649,13 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_domain(
         &mut self,
         scope: &Scope,
+        vars: &mut VariableValues,
         domain: Spanned<DomainKind<Expression>>,
     ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
         let result = match domain.inner {
             DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
-            DomainKind::Sync(domain) => self.eval_domain_sync(scope, domain).map(DomainKind::Sync),
+            DomainKind::Sync(domain) => self.eval_domain_sync(scope, vars, domain).map(DomainKind::Sync),
         };
 
         Ok(Spanned {
@@ -1594,10 +1667,11 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_port_domain(
         &mut self,
         scope: &Scope,
+        vars: &mut VariableValues,
         domain: Spanned<DomainKind<Expression>>,
     ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let result = self.eval_domain(scope, domain)?;
+        let result = self.eval_domain(scope, vars, domain)?;
 
         Ok(Spanned {
             span: result.span,

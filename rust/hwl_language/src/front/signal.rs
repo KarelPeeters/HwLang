@@ -76,11 +76,10 @@ pub enum SignalOrVariable {
 
 impl Signal {
     pub fn to_diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
-        let source = s.refs.fixed.source;
         match self {
             Signal::Port(port) => &s.ports[port].name,
-            Signal::Wire(wire) => s.wires[wire].id.str(source).unwrap_or("_"),
-            Signal::Register(reg) => s.registers[reg].id.str(source).unwrap_or("_"),
+            Signal::Wire(wire) => s.wires[wire].id.as_diagnostic_str(),
+            Signal::Register(reg) => s.registers[reg].id.as_diagnostic_str(),
         }
     }
 

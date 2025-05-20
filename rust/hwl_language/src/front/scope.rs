@@ -1,13 +1,13 @@
 use crate::front::compile::{Port, PortInterface, Register, Variable, Wire};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
-use crate::syntax::ast::{Identifier, MaybeIdentifier};
+use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
-use crate::syntax::source::{FileId, SourceDatabase};
-use crate::util::data::IndexMapExt;
+use crate::syntax::source::FileId;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
+use std::borrow::Borrow;
 use std::fmt::Debug;
 
 // TODO use string interning to avoid a bunch of string equality checks and hashing
@@ -48,6 +48,7 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     values: IndexMap<String, DeclaredValue>,
+    any_id_result: Result<(), ErrorGuaranteed>,
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
@@ -86,6 +87,7 @@ impl<'p> Scope<'p> {
             parent: ScopeParent::None(file),
             content: ScopeContent {
                 values: IndexMap::new(),
+                any_id_result: Ok(()),
             },
         }
     }
@@ -96,6 +98,7 @@ impl<'p> Scope<'p> {
             parent: ScopeParent::Some(parent),
             content: ScopeContent {
                 values: IndexMap::new(),
+                any_id_result: Ok(()),
             },
         }
     }
@@ -139,43 +142,65 @@ impl<'p> Scope<'p> {
     /// This function always appears to succeed, errors are instead reported as diags.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare(
+    pub fn declare<'t>(
         &mut self,
         diags: &Diagnostics,
-        source: &SourceDatabase,
-        id: Identifier,
+        id: Result<Spanned<impl Borrow<str>>, ErrorGuaranteed>,
         value: Result<ScopedEntry, ErrorGuaranteed>,
     ) {
-        let id_str = id.str(source);
+        let id = id.as_ref_ok().map(|id| id.as_ref().map_inner(|s| s.borrow()));
+        self.declare_impl(diags, id, value)
+    }
 
-        if let Some(declared) = self.content.values.get_mut(id_str) {
-            // get all spans
-            let mut spans = match declared {
-                DeclaredValue::Once { value: _, span } => vec![*span],
-                DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
-                DeclaredValue::Error(_) => return,
-                DeclaredValue::FailedCapture(_, _) => {
-                    diags.report_internal_error(id.span, "declaring in scope that already has failed capture value");
-                    return;
-                }
-            };
-
-            // report error
-            // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
-            let mut diag = Diagnostic::new("identifier declared multiple times");
-            for span in &spans {
-                diag = diag.add_info(*span, "previously declared here");
+    pub fn declare_impl(
+        &mut self,
+        diags: &Diagnostics,
+        id: Result<Spanned<&str>, ErrorGuaranteed>,
+        value: Result<ScopedEntry, ErrorGuaranteed>,
+    ) {
+        let id = match id {
+            Ok(id) => id,
+            Err(e) => {
+                self.content.any_id_result = Err(e);
+                return;
             }
-            let diag = diag.add_error(id.span, "declared again here").finish();
-            let err = diags.report(diag);
+        };
 
-            // insert error value into scope to avoid downstream errors
-            //   caused by only considering the first declared value
-            spans.push(id.span);
-            *declared = DeclaredValue::Multiple { spans, err }
-        } else {
-            let declared = DeclaredValue::Once { value, span: id.span };
-            self.content.values.insert_first(id_str.to_owned(), declared);
+        match self.content.values.entry(id.inner.to_owned()) {
+            Entry::Occupied(mut entry) => {
+                // already declared, report error
+                let declared = entry.get_mut();
+
+                // get all spans
+                let mut spans = match declared {
+                    DeclaredValue::Once { value: _, span } => vec![*span],
+                    DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
+                    DeclaredValue::Error(_) => return,
+                    DeclaredValue::FailedCapture(_, _) => {
+                        // TODO is this really not reachable in normal code?
+                        diags
+                            .report_internal_error(id.span, "declaring in scope that already has failed capture value");
+                        return;
+                    }
+                };
+
+                // report error
+                // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
+                let mut diag = Diagnostic::new("identifier declared multiple times");
+                for span in &spans {
+                    diag = diag.add_info(*span, "previously declared here");
+                }
+                let diag = diag.add_error(id.span, "declared again here").finish();
+                let err = diags.report(diag);
+
+                // insert error value into scope to avoid downstream errors
+                //   caused by only considering the first declared value
+                spans.push(id.span);
+                *declared = DeclaredValue::Multiple { spans, err };
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(DeclaredValue::Once { value, span: id.span });
+            }
         }
     }
 
@@ -196,26 +221,22 @@ impl<'p> Scope<'p> {
     pub fn maybe_declare(
         &mut self,
         diags: &Diagnostics,
-        source: &SourceDatabase,
-        id: MaybeIdentifier,
+        id: Result<MaybeIdentifier<Spanned<impl Borrow<str>>>, ErrorGuaranteed>,
         entry: Result<ScopedEntry, ErrorGuaranteed>,
     ) {
-        match id {
-            MaybeIdentifier::Identifier(id) => self.declare(diags, source, id, entry),
-            MaybeIdentifier::Dummy(_) => {}
-        }
+        let id = match id {
+            Ok(MaybeIdentifier::Dummy(_)) => return,
+            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
+            Err(e) => Err(e),
+        };
+        self.declare(diags, id, entry);
     }
 
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s>(
-        &'s self,
-        diags: &Diagnostics,
-        source: &SourceDatabase,
-        id: Identifier,
-    ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
-        self.find_impl(diags, id.str(source), Some(id.span), self.span, true)
+    pub fn find<'s, 't>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+        self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 
     pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> Result<ScopeFound, ErrorGuaranteed> {

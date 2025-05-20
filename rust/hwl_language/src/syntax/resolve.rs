@@ -3,13 +3,13 @@ use crate::syntax::ast::{
     BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
     ExpressionKind, ExpressionKindIndex, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
-    Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface,
-    ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
-    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
-    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement,
-    StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, WhileStatement, WireDeclaration,
-    WireDeclarationKind,
+    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item,
+    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
+    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
+    ReturnStatement, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, WhileStatement,
+    WireDeclaration, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::SourceDatabase;
@@ -66,7 +66,11 @@ macro_rules! check_skip {
 #[derive(Debug)]
 struct DeclScope<'p> {
     parent: Option<&'p DeclScope<'p>>,
+
+    // TODO add regex patterns for general identifiers based on their f-strings to avoid a bunch of false positives
+    //   (in general change this whole setup to be regex-set-based)
     map: ScopeMap,
+    general: Vec<(Span, Conditional)>,
 }
 
 type ScopeMap = IndexMap<String, Vec<(Span, Conditional)>>;
@@ -82,6 +86,7 @@ impl<'p> DeclScope<'p> {
         Self {
             parent: None,
             map: IndexMap::new(),
+            general: vec![],
         }
     }
 
@@ -89,6 +94,7 @@ impl<'p> DeclScope<'p> {
         Self {
             parent: Some(parent),
             map: IndexMap::new(),
+            general: vec![],
         }
     }
 
@@ -114,6 +120,10 @@ impl<'p> DeclScope<'p> {
         }
     }
 
+    fn declare_general(&mut self, span: Span) {
+        self.general.push((span, Conditional::No));
+    }
+
     fn find(&self, source: &SourceDatabase, id: Identifier) -> FindDefinition {
         let mut curr = self;
         let mut result = vec![];
@@ -130,6 +140,10 @@ impl<'p> DeclScope<'p> {
                     }
                 }
             }
+            for &(span, _cond) in &curr.general {
+                result.push(span);
+            }
+
             if any_certain {
                 break;
             }
@@ -578,7 +592,7 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_statement(&self, scope: &mut DeclScope, stmt: &BlockStatement) -> Result<(), FindDefinition> {
+    fn visit_statement(&self, scope: &mut DeclScope, stmt: &BlockStatement) -> FindDefinitionResult {
         let stmt_span = stmt.span;
         match &stmt.inner {
             BlockStatementKind::CommonDeclaration(decl) => {
@@ -700,7 +714,7 @@ impl ResolveContext<'_> {
                     }
                     self.visit_expression(&scope, ty)?;
                     self.visit_expression(&scope, init)?;
-                    scope.maybe_declare(self.source, id);
+                    self.visit_and_declare_maybe_general(&mut scope, id)?;
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
                     let &WireDeclaration { id, ref kind } = decl;
@@ -736,7 +750,7 @@ impl ResolveContext<'_> {
                         }
                     }
 
-                    scope.maybe_declare(self.source, id);
+                    self.visit_and_declare_maybe_general(&mut scope, id)?;
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     let &RegOutPortMarker { id, init } = decl;
@@ -845,7 +859,19 @@ impl ResolveContext<'_> {
                 self.visit_expression(&scope_inner, expression)?;
             }
             &ExpressionKind::Id(id) => {
-                return self.visit_id_usage(scope, id);
+                match id {
+                    GeneralIdentifier::Simple(id) => {
+                        self.visit_id_usage(scope, id)?;
+                    }
+                    GeneralIdentifier::FromString(span, expr) => {
+                        self.visit_expression(scope, expr)?;
+
+                        // TODO support find on general ids?
+                        //   For now this should find all ids in any scope, which is not very useful.
+                        //   Maybe with regexes this becomes slightly more useful.
+                        let _ = span;
+                    }
+                }
             }
             ExpressionKind::ArrayLiteral(elems) => {
                 for &elem in elems {
@@ -962,7 +988,31 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> Result<(), FindDefinition> {
+    fn visit_and_declare_general(&self, scope: &mut DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
+        match id {
+            GeneralIdentifier::Simple(id) => {
+                scope.declare(self.source, id);
+            }
+            GeneralIdentifier::FromString(span, expr) => {
+                self.visit_expression(scope, expr)?;
+                scope.declare_general(span);
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_and_declare_maybe_general(
+        &self,
+        scope: &mut DeclScope,
+        id: MaybeGeneralIdentifier,
+    ) -> FindDefinitionResult {
+        match id {
+            MaybeGeneralIdentifier::Dummy(_) => Ok(()),
+            MaybeGeneralIdentifier::Identifier(id) => self.visit_and_declare_general(scope, id),
+        }
+    }
+
+    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
         check_skip!(self, id.span);
         Err(scope.find(self.source, id))
     }

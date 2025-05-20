@@ -569,7 +569,7 @@ where
     // create result variable
     let var_ir_info = IrVariableInfo {
         ty: ty.as_ir(),
-        debug_info_id: debug_info_id.as_spanned_string(source),
+        debug_info_id: debug_info_id.spanned_string(source),
     };
     let var_ir = ctx.new_ir_variable(diags, span_merge, var_ir_info)?;
 

@@ -57,6 +57,7 @@ extern {
         "external" => TokenType::External,
         "__builtin" => TokenType::Builtin,
         "unsafe_value_with_domain" => TokenType::UnsafeValueWithDomain,
+        "id_from_str" => TokenType::IdFromStr,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -207,12 +208,12 @@ ModuleStatementKind: ModuleStatementKind = {
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
-    "reg" <id:MaybeId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
+    "reg" <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
         let decl = RegDeclaration { id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    "wire" <id:MaybeId> <kind:WireDeclarationKind> ";" => {
+    "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
         let decl = WireDeclaration { id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
@@ -270,7 +271,10 @@ InstancePortConnections: Vec<Spanned<PortConnection>> = {
 // TODO find a way to avoid having to create a fake expression for the value here
 PortConnection: PortConnection = {
     <id:Id> <expr:("=" <Expr>)?> => {
-        let expr = expr.unwrap_or_else(|| Spanned::new(id.span, arena_expr.push(ExpressionKind::Id(id.clone()))));
+        let expr = expr.unwrap_or_else(|| {
+            let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
+            Spanned::new(id.span, arena_expr.push(kind))
+        });
         PortConnection { id, expr }
     }
 }
@@ -761,7 +765,7 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     "{" <statements:BlockStatement*> <expression:Expr> "}" if allow_block == "true"
         => ExpressionKind::Block(BlockExpression { statements, expression }),
     // misc
-    <id:Id> => ExpressionKind::Id(id),
+    <id:GeneralId> => ExpressionKind::Id(id),
     "type" => ExpressionKind::Type,
     "fn" => ExpressionKind::TypeFunction,
     // TODO this should maybe not be an expression kind after all, there's only a few specific places it's allowed in
@@ -791,9 +795,21 @@ Id: Identifier = {
     <span:Span<TokenIdentifier>> => Identifier { span },
 }
 
-MaybeId: MaybeIdentifier = {
+GeneralId: GeneralIdentifier = {
+    Id => GeneralIdentifier::Simple(<>),
+    Spanned<GeneralIdFromString> => GeneralIdentifier::FromString(<>.span, <>.inner),
+}
+
+GeneralIdFromString: Expression = {
+    "id_from_str" "(" <Expr> ")",
+}
+
+MaybeId = MaybeIdImpl<Id>;
+MaybeGeneralId = MaybeIdImpl<GeneralId>;
+
+MaybeIdImpl<I>: MaybeIdentifier<I> = {
     <span:Span<"_">> => MaybeIdentifier::Dummy(span),
-    <id:Id> => MaybeIdentifier::Identifier(id),
+    I => MaybeIdentifier::Identifier(<>),
 }
 
 #[inline]

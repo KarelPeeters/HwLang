@@ -563,7 +563,7 @@ pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
     let span = debug_info_id.span();
     let var_ir_info = IrVariableInfo {
         ty: expr.ty.as_ir(),
-        debug_info_id: debug_info_id.as_spanned_string(refs.fixed.source),
+        debug_info_id: debug_info_id.spanned_string(refs.fixed.source),
     };
     let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;
 

@@ -259,7 +259,8 @@ impl CompileItemContext<'_, '_> {
                         Ok(ScopedEntry::Named(NamedValue::Variable(var)))
                     });
 
-                    scope.maybe_declare(diags, self.refs.fixed.source, id, entry);
+                    let id = Ok(id.spanned_str(self.refs.fixed.source));
+                    scope.maybe_declare(diags, id, entry);
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Assignment(stmt) => {
@@ -889,8 +890,7 @@ impl CompileItemContext<'_, '_> {
                         );
                         scope_inner.maybe_declare(
                             diags,
-                            self.refs.fixed.source,
-                            declare_id,
+                            Ok(declare_id.spanned_str(self.refs.fixed.source)),
                             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                         );
                         &scope_inner
@@ -1047,8 +1047,7 @@ impl CompileItemContext<'_, '_> {
                 );
                 scope_inner.maybe_declare(
                     diags,
-                    self.refs.fixed.source,
-                    declare_id,
+                    Ok(declare_id.spanned_str(self.refs.fixed.source)),
                     Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                 );
                 &scope_inner
@@ -1197,8 +1196,7 @@ impl CompileItemContext<'_, '_> {
             let mut scope_index = Scope::new_child(stmt.span, scope_parent);
             scope_index.maybe_declare(
                 diags,
-                self.refs.fixed.source,
-                index_id,
+                Ok(index_id.spanned_str(self.refs.fixed.source)),
                 Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
             );
 

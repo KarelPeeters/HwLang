@@ -419,7 +419,7 @@ impl CompileItemContext<'_, '_> {
                         vars.var_new_immutable_init(&mut self.variables, decl_id, decl_span, Ok(Value::Compile(v)));
                     ScopedEntry::Named(NamedValue::Variable(var))
                 });
-                scope.maybe_declare(diags, self.refs.fixed.source, decl_id, entry);
+                scope.maybe_declare(diags, Ok(decl_id.spanned_str(self.refs.fixed.source)), entry);
             }
             CommonDeclaration::ConstBlock(decl) => {
                 // elaborate, don't declare anything

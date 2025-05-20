@@ -446,7 +446,7 @@ pub struct RegOutPortMarker {
 
 #[derive(Debug, Clone)]
 pub struct RegDeclaration {
-    pub id: MaybeIdentifier,
+    pub id: MaybeGeneralIdentifier,
     pub sync: Option<Spanned<SyncDomain<Expression>>>,
     pub ty: Expression,
     pub init: Expression,
@@ -454,7 +454,7 @@ pub struct RegDeclaration {
 
 #[derive(Debug, Clone)]
 pub struct WireDeclaration {
-    pub id: MaybeIdentifier,
+    pub id: MaybeGeneralIdentifier,
     pub kind: WireDeclarationKind,
 }
 
@@ -591,7 +591,7 @@ pub enum ExpressionKind {
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Expression),
     Block(BlockExpression),
-    Id(Identifier),
+    Id(GeneralIdentifier),
 
     // Literals
     IntLiteral(IntLiteral),
@@ -750,17 +750,26 @@ pub enum IntLiteral {
     Hexadecimal(Span),
 }
 
-// TODO intern identifiers?
+// TODO rename back to Identifier?
 #[derive(Debug, Copy, Clone)]
 pub struct Identifier {
     pub span: Span,
 }
 
+// TODO intern identifiers?
 #[derive(Debug, Copy, Clone)]
-pub enum MaybeIdentifier {
-    Dummy(Span),
-    Identifier(Identifier),
+pub enum GeneralIdentifier {
+    Simple(Identifier),
+    FromString(Span, Expression),
 }
+
+#[derive(Debug, Copy, Clone)]
+pub enum MaybeIdentifier<I = Identifier> {
+    Dummy(Span),
+    Identifier(I),
+}
+
+pub type MaybeGeneralIdentifier = MaybeIdentifier<GeneralIdentifier>;
 
 // TODO move to parser utilities module
 pub fn build_binary_op(
@@ -887,12 +896,41 @@ impl Identifier {
         source.span_str(self.span)
     }
 
-    pub fn as_spanned_string(self, source: &SourceDatabase) -> Spanned<String> {
-        Spanned::new(self.span, self.str(source).to_owned())
+    pub fn spanned_str(self, source: &SourceDatabase) -> Spanned<&str> {
+        Spanned::new(self.span, self.str(source))
+    }
+
+    pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<String> {
+        self.spanned_str(source).map_inner(str::to_owned)
     }
 }
 
-impl MaybeIdentifier {
+impl<I> MaybeIdentifier<I> {
+    pub fn map_id<J>(self, f: impl FnOnce(I) -> J) -> MaybeIdentifier<J> {
+        match self {
+            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(f(id)),
+        }
+    }
+
+    pub fn as_ref(&self) -> MaybeIdentifier<&I> {
+        match self {
+            &MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id),
+        }
+    }
+}
+
+impl<T> MaybeIdentifier<Spanned<T>> {
+    pub fn span(&self) -> Span {
+        match self {
+            &MaybeIdentifier::Dummy(span) => span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+}
+
+impl MaybeIdentifier<Identifier> {
     pub fn span(self) -> Span {
         match self {
             MaybeIdentifier::Dummy(span) => span,
@@ -900,15 +938,54 @@ impl MaybeIdentifier {
         }
     }
 
-    pub fn str(self, source: &SourceDatabase) -> Option<&str> {
+    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
         match self {
-            MaybeIdentifier::Dummy(_) => None,
-            MaybeIdentifier::Identifier(id) => Some(id.str(source)),
+            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Identifier(id) => {
+                MaybeIdentifier::Identifier(Spanned::new(id.span, source.span_str(id.span)))
+            }
         }
     }
 
-    pub fn as_spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
-        Spanned::new(self.span(), self.str(source).map(str::to_owned))
+    pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
+        match self {
+            MaybeIdentifier::Dummy(span) => Spanned::new(span, None),
+            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(source.span_str(id.span).to_owned())),
+        }
+    }
+}
+
+impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
+    pub fn as_diagnostic_str(&self) -> &str {
+        match self {
+            MaybeIdentifier::Dummy(_) => "_",
+            MaybeIdentifier::Identifier(id) => id.inner.as_ref(),
+        }
+    }
+
+    pub fn spanned_string(&self) -> Spanned<Option<String>> {
+        match self {
+            MaybeIdentifier::Dummy(span) => Spanned::new(*span, None),
+            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.inner.as_ref().to_owned())),
+        }
+    }
+}
+
+impl GeneralIdentifier {
+    pub fn span(self) -> Span {
+        match self {
+            GeneralIdentifier::Simple(id) => id.span,
+            GeneralIdentifier::FromString(span, _) => span,
+        }
+    }
+}
+
+impl MaybeIdentifier<GeneralIdentifier> {
+    pub fn span(self) -> Span {
+        match self {
+            MaybeIdentifier::Dummy(span) => span,
+            MaybeIdentifier::Identifier(id) => id.span(),
+        }
     }
 }
 

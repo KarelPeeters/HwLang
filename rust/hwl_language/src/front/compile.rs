@@ -11,8 +11,8 @@ use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, 
 use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire,
 };
-use crate::syntax::ast::{self, Expression, ExpressionKind, PortDirection, Visibility};
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, PortDirection, Visibility};
+use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -444,7 +444,7 @@ pub struct PortInterfaceInfo {
 
 #[derive(Debug)]
 pub struct WireInfo {
-    pub id: MaybeIdentifier,
+    pub id: MaybeIdentifier<Spanned<String>>,
     pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrWire,
@@ -452,7 +452,7 @@ pub struct WireInfo {
 
 #[derive(Debug)]
 pub struct RegisterInfo {
-    pub id: MaybeIdentifier,
+    pub id: MaybeIdentifier<Spanned<String>>,
     pub domain: Result<Option<Spanned<SyncDomain<DomainSignal>>>, ErrorGuaranteed>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrRegister,
@@ -550,7 +550,11 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             let mut scope = Scope::new_root(ast.span, file);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
-                    scope.maybe_declare(diags, source, info.id, Ok(ScopedEntry::Item(ast_item_ref)));
+                    scope.maybe_declare(
+                        diags,
+                        Ok(info.id.spanned_str(source)),
+                        Ok(ScopedEntry::Item(ast_item_ref)),
+                    );
                 }
             }
             scope
@@ -584,7 +588,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                     for entry in entries {
                         let &ast::ImportEntry { span: _, id, as_ } = entry;
                         let source_value = source_scope
-                            .and_then(|source_scope| source_scope.find(diags, source, id))
+                            .and_then(|source_scope| source_scope.find(diags, id.spanned_str(source)))
                             .map(|found| found.value.clone());
 
                         // check visibility, but still proceed as if the import succeeded
@@ -623,7 +627,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     for (target_file, items) in zip_eq(source.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
-                scope.maybe_declare(diags, source, target_id, value);
+                scope.maybe_declare(diags, Ok(target_id.spanned_str(source)), value);
             }
         }
     }
