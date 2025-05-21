@@ -30,14 +30,15 @@ use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{vec_concat, VecExt};
-use std::borrow::Cow;
 
 use crate::util::iter::IterExt;
+use crate::util::store::ArcOrRef;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
 use annotate_snippets::Level;
 use itertools::{enumerate, Either};
 use std::cmp::{max, min};
 use std::ops::Sub;
+use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 // TODO better name
@@ -101,17 +102,17 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         id: GeneralIdentifier,
-    ) -> Result<Spanned<Cow<'a, str>>, ErrorGuaranteed> {
+    ) -> Result<Spanned<ArcOrRef<'a, str>>, ErrorGuaranteed> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
         match id {
-            GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(|s| Cow::Borrowed(s))),
+            GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(|s| ArcOrRef::Ref(s))),
             GeneralIdentifier::FromString(span, expr) => {
                 let value = self.eval_expression_as_compile(scope, vars, &Type::String, expr, "id string")?;
                 let value = check_type_is_string(diags, TypeContainsReason::Operator(span), value)?;
 
-                Ok(Spanned::new(span, Cow::Owned(value)))
+                Ok(Spanned::new(span, ArcOrRef::Arc(value)))
             }
         }
     }
@@ -121,7 +122,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         id: MaybeIdentifier<GeneralIdentifier>,
-    ) -> Result<MaybeIdentifier<Spanned<Cow<'a, str>>>, ErrorGuaranteed> {
+    ) -> Result<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>, ErrorGuaranteed> {
         match id {
             MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
             MaybeIdentifier::Identifier(id) => {
@@ -244,7 +245,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, vars, id)?;
-                let id = id.as_ref().map_inner(Cow::as_ref);
+                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
                     NamedOrValue::Value(value) => ValueWithImplications::simple(value),
@@ -350,17 +351,27 @@ impl<'a> CompileItemContext<'a, '_> {
                                 }
                             };
 
-                            let value_str = match value_inner {
-                                CompileValue::Undefined => Cow::Borrowed("undef"),
-                                CompileValue::Bool(b) => Cow::Borrowed(if b { "true" } else { "false" }),
-                                CompileValue::Int(i) => Cow::Owned(i.to_string()),
-                                CompileValue::String(s) => Cow::Owned(s),
+                            let tmp;
+                            let value_str = match &value_inner {
+                                CompileValue::Undefined => "undef",
+                                &CompileValue::Bool(b) => {
+                                    if b {
+                                        "true"
+                                    } else {
+                                        "false"
+                                    }
+                                }
+                                CompileValue::Int(i) => {
+                                    tmp = i.to_string();
+                                    tmp.as_str()
+                                }
+                                CompileValue::String(s) => s.as_str(),
                                 _ => {
-                                    let mdg = format!(
+                                    let msg = format!(
                                         "string substitution for values with type {}",
                                         value_inner.ty().diagnostic_string()
                                     );
-                                    return Err(diags.report_todo(value.span, mdg));
+                                    return Err(diags.report_todo(value.span, msg));
                                 }
                             };
                             s.push_str(&value_str);
@@ -368,7 +379,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 }
 
-                Value::Compile(CompileValue::String(s))
+                Value::Compile(CompileValue::String(Arc::new(s)))
             }
             ExpressionKind::ArrayLiteral(values) => {
                 self.eval_array_literal(ctx, ctx_block, scope, vars, expected_ty, expr.span, values)?
@@ -583,7 +594,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let result = lengths
                     .into_iter()
                     .rev()
-                    .fold(base.inner, |acc, len| Type::Array(Box::new(acc), len));
+                    .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
             &ExpressionKind::DotIdIndex(base, index) => {
@@ -968,7 +979,7 @@ impl<'a> CompileItemContext<'a, '_> {
             } else {
                 // TODO check if there is any possible variant for this index string,
                 //   otherwise we'll get confusing and delayed error messages
-                let func = FunctionValue::EnumNewInfer(unique, index_str.to_owned());
+                let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.to_owned()));
                 Ok(ValueInner::Value(Value::Compile(CompileValue::Function(func))))
             };
         }
@@ -1067,7 +1078,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let expected_ty_curr = match v {
                     ArrayLiteralElement::Single(_) => expected_ty_inner,
                     ArrayLiteralElement::Spread(_, _) => {
-                        &Type::Array(Box::new(expected_ty_inner.clone()), BigUint::ZERO)
+                        &Type::Array(Arc::new(expected_ty_inner.clone()), BigUint::ZERO)
                     }
                 };
 
@@ -1147,7 +1158,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
 
             Value::Hardware(HardwareValue {
-                ty: HardwareType::Tuple(result_ty),
+                ty: HardwareType::Tuple(Arc::new(result_ty)),
                 domain: result_domain,
                 expr: self.large.push_expr(IrExpressionLarge::TupleLiteral(result_expr)),
             })
@@ -1160,14 +1171,14 @@ impl<'a> CompileItemContext<'a, '_> {
                 .into_iter()
                 .map(|v| unwrap_match!(v.inner, Value::Compile(CompileValue::Type(v)) => v))
                 .collect();
-            Value::Compile(CompileValue::Type(Type::Tuple(tys)))
+            Value::Compile(CompileValue::Type(Type::Tuple(Arc::new(tys))))
         } else {
             // all compile
             let values = values
                 .into_iter()
                 .map(|v| unwrap_match!(v.inner, Value::Compile(v) => v))
                 .collect();
-            Value::Compile(CompileValue::Tuple(values))
+            Value::Compile(CompileValue::Tuple(Arc::new(values)))
         })
     }
 
@@ -1330,14 +1341,14 @@ impl<'a> CompileItemContext<'a, '_> {
                 ("fn", "print", [value]) => {
                     if ctx.is_ir_context() {
                         if let Value::Compile(CompileValue::String(value)) = value {
-                            let stmt = Spanned::new(expr_span, IrStatement::PrintLn(value.clone()));
+                            let stmt = Spanned::new(expr_span, IrStatement::PrintLn((**value).clone()));
                             ctx.push_ir_statement(diags, ctx_block, stmt)?;
-                            return Ok(Value::Compile(CompileValue::UNIT));
+                            return Ok(Value::Compile(CompileValue::unit()));
                         }
                         // fallthough
                     } else {
                         print_compile(value);
-                        return Ok(Value::Compile(CompileValue::UNIT));
+                        return Ok(Value::Compile(CompileValue::unit()));
                     }
                 }
                 (
@@ -1346,7 +1357,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     &[Value::Compile(CompileValue::Bool(cond)), Value::Compile(CompileValue::String(ref msg))],
                 ) => {
                     return if cond {
-                        Ok(Value::Compile(CompileValue::UNIT))
+                        Ok(Value::Compile(CompileValue::unit()))
                     } else {
                         Err(diags.report_simple(
                             format!("assertion failed with message {:?}", msg),
@@ -1481,7 +1492,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let result = match self.refs.get_expr(expr) {
             &ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, vars, id)?;
-                let id = id.as_ref().map_inner(Cow::as_ref);
+                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 match self.eval_named_or_value(scope, id)?.inner {
                     NamedOrValue::Value(_) => return Err(build_err("value")),
@@ -1536,7 +1547,7 @@ impl<'a> CompileItemContext<'a, '_> {
             &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
                 &ExpressionKind::Id(base) => {
                     let base = self.eval_general_id(scope, vars, base)?;
-                    let base = base.as_ref().map_inner(Cow::as_ref);
+                    let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
                     match self.eval_named_or_value(scope, base)?.inner {
                         NamedOrValue::Named(NamedValue::PortInterface(base)) => {
@@ -1624,7 +1635,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, vars, id).map_err(Either::Right)?;
-                let id = id.as_ref().map_inner(Cow::as_ref);
+                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
@@ -1746,14 +1757,14 @@ impl<'a> CompileItemContext<'a, '_> {
                     end_inc,
                 }
             }
-            Value::Compile(CompileValue::Array(iter)) => ForIterator::CompileArray(iter.into_iter()),
+            Value::Compile(CompileValue::Array(array)) => ForIterator::CompileArray { next: 0, array },
             Value::Hardware(HardwareValue {
                 ty: HardwareType::Array(ty_inner, len),
                 domain,
                 expr: array_expr,
             }) => {
                 let base = HardwareValue {
-                    ty: (*ty_inner, len),
+                    ty: (Arc::unwrap_or_clone(ty_inner), len),
                     domain,
                     expr: array_expr,
                 };
@@ -1917,7 +1928,10 @@ pub enum ForIterator {
         next: BigInt,
         end_inc: Option<BigInt>,
     },
-    CompileArray(std::vec::IntoIter<CompileValue>),
+    CompileArray {
+        next: usize,
+        array: Arc<Vec<CompileValue>>,
+    },
     HardwareArray {
         next: BigUint,
         base: HardwareValue<(HardwareType, BigUint)>,
@@ -1940,7 +1954,15 @@ impl Iterator for ForIterator {
                 *next += 1;
                 Some(curr)
             }
-            ForIterator::CompileArray(iter) => iter.next().map(Value::Compile),
+            ForIterator::CompileArray { next, array } => {
+                if *next < array.len() {
+                    let curr = array[*next].clone();
+                    *next += 1;
+                    Some(Value::Compile(curr))
+                } else {
+                    None
+                }
+            }
             ForIterator::HardwareArray { next, base } => {
                 let HardwareValue {
                     ty: (ty_inner, ty_len),
@@ -2137,7 +2159,7 @@ pub fn eval_binary_expression(
                             for _ in 0..right_inner {
                                 result.extend_from_slice(&left_inner);
                             }
-                            Value::Compile(CompileValue::Array(result))
+                            Value::Compile(CompileValue::Array(Arc::new(result)))
                         }
                         Value::Compile(_) => {
                             return Err(diags.report_internal_error(
@@ -2155,7 +2177,7 @@ pub fn eval_binary_expression(
                             let result_expr =
                                 IrExpressionLarge::ArrayLiteral(left_ty_inner_hw.as_ir(), result_len.clone(), elements);
                             Value::Hardware(HardwareValue {
-                                ty: HardwareType::Array(Box::new(left_ty_inner_hw.clone()), result_len),
+                                ty: HardwareType::Array(Arc::new(left_ty_inner_hw.clone()), result_len),
                                 domain: value.domain,
                                 expr: large.push_expr(result_expr),
                             })
@@ -2696,7 +2718,7 @@ fn array_literal_combine_values(
                     let value_ty = match value {
                         ArrayLiteralElement::Single(value) => value.inner.ty(),
                         ArrayLiteralElement::Spread(_, values) => match values.inner.ty() {
-                            Type::Array(ty, _) => *ty,
+                            Type::Array(ty, _) => Arc::unwrap_or_clone(ty),
                             _ => Type::Undefined,
                         },
                     };
@@ -2763,7 +2785,7 @@ fn array_literal_combine_values(
                     check_type_contains_value(
                         diags,
                         TypeContainsReason::Operator(expr_span),
-                        &Type::Array(Box::new(expected_ty_inner.clone()), len.clone()),
+                        &Type::Array(Arc::new(expected_ty_inner.clone()), len.clone()),
                         Spanned {
                             span: elem_inner.span,
                             inner: &Value::Hardware(value_ir.clone()),
@@ -2784,7 +2806,7 @@ fn array_literal_combine_values(
         let result_expr =
             IrExpressionLarge::ArrayLiteral(expected_ty_inner_hw.as_ir(), result_len.clone(), result_exprs);
         Ok(Value::Hardware(HardwareValue {
-            ty: HardwareType::Array(Box::new(expected_ty_inner_hw), result_len),
+            ty: HardwareType::Array(Arc::new(expected_ty_inner_hw), result_len),
             domain: result_domain,
             expr: large.push_expr(result_expr),
         }))
@@ -2808,10 +2830,10 @@ fn array_literal_combine_values(
                             ))
                         }
                     };
-                    result.extend(elem_inner_array)
+                    result.extend(elem_inner_array.iter().cloned())
                 }
             }
         }
-        Ok(Value::Compile(CompileValue::Array(result)))
+        Ok(Value::Compile(CompileValue::Array(Arc::new(result))))
     }
 }

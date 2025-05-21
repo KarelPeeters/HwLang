@@ -11,6 +11,7 @@ use itertools::{zip_eq, Itertools};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
 use std::ops::{AddAssign, RangeBounds};
+use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 // TODO add an arena for types?
@@ -25,8 +26,8 @@ pub enum Type {
     Bool,
     String,
     Int(IncRange<BigInt>),
-    Tuple(Vec<Type>),
-    Array(Box<Type>, BigUint),
+    Tuple(Arc<Vec<Type>>),
+    Array(Arc<Type>, BigUint),
     // TODO avoid storing copy of field types
     Struct(ElaboratedStruct, Vec<Type>),
     Enum(ElaboratedEnum, Vec<Option<Type>>),
@@ -42,14 +43,14 @@ pub enum Type {
 pub enum HardwareType {
     Bool,
     Int(ClosedIncRange<BigInt>),
-    Tuple(Vec<HardwareType>),
-    Array(Box<HardwareType>, BigUint),
+    Tuple(Arc<Vec<HardwareType>>),
+    Array(Arc<HardwareType>, BigUint),
     Struct(ElaboratedStruct, Vec<HardwareType>),
-    // TODO allow configuring whether this is stored compactly or more like a tuple,
-    //   the first is better for memory but the second may be better for timing
     Enum(HardwareEnum),
 }
 
+// TODO for struct and enum, convert to hardware once, during initial elaboration, then just point to that
+// TODO allow configuring memory layout
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct HardwareEnum {
     pub elab: ElaboratedEnum,
@@ -133,7 +134,13 @@ pub trait Typed {
 pub struct NonHardwareType;
 
 impl Type {
-    pub const UNIT: Type = Type::Tuple(Vec::new());
+    pub fn unit() -> Type {
+        Type::Tuple(Arc::new(vec![]))
+    }
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, Type::Tuple(inner) if inner.is_empty())
+    }
 
     pub fn union(&self, other: &Type, allow_compound_subtype: bool) -> Type {
         match (self, other) {
@@ -179,8 +186,8 @@ impl Type {
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
-                    Type::Tuple(
-                        zip_eq(a, b)
+                    Type::Tuple(Arc::new(
+                        zip_eq(a.iter(), b.iter())
                             .map(|(a, b)| {
                                 if allow_compound_subtype {
                                     a.union(b, allow_compound_subtype)
@@ -191,7 +198,7 @@ impl Type {
                                 }
                             })
                             .collect_vec(),
-                    )
+                    ))
                 } else {
                     Type::Any
                 }
@@ -199,13 +206,13 @@ impl Type {
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
                     let inner = if allow_compound_subtype {
-                        a_inner.union(b_inner, allow_compound_subtype)
+                        Arc::new(a_inner.union(b_inner, allow_compound_subtype))
                     } else if a_inner == b_inner {
-                        *a_inner.clone()
+                        a_inner.clone()
                     } else {
-                        Type::Any
+                        Arc::new(Type::Any)
                     };
-                    Type::Array(Box::new(inner), a_len.clone())
+                    Type::Array(inner, a_len.clone())
                 } else {
                     // TODO into list once that exists?
                     Type::Any
@@ -276,10 +283,10 @@ impl Type {
                 .iter()
                 .map(Type::as_hardware_type)
                 .try_collect()
-                .map(HardwareType::Tuple),
+                .map(|v| HardwareType::Tuple(Arc::new(v))),
             Type::Array(inner, len) => inner
                 .as_hardware_type()
-                .map(|inner| HardwareType::Array(Box::new(inner), len.clone())),
+                .map(|inner| HardwareType::Array(Arc::new(inner), len.clone())),
             Type::Struct(item, fields) => fields
                 .iter()
                 .map(Type::as_hardware_type)
@@ -358,8 +365,8 @@ impl HardwareType {
         match self {
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(range.clone().into_range()),
-            HardwareType::Tuple(inner) => Type::Tuple(inner.iter().map(HardwareType::as_type).collect_vec()),
-            HardwareType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
+            HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
+            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
             HardwareType::Struct(item, fields) => {
                 Type::Struct(*item, fields.iter().map(HardwareType::as_type).collect_vec())
             }
@@ -468,14 +475,14 @@ impl HardwareType {
             }
             (HardwareType::Tuple(ty_inners), CompileValue::Tuple(v_inners)) => {
                 assert_eq!(ty_inners.len(), v_inners.len());
-                for (ty_inner, v_inner) in zip_eq(ty_inners, v_inners) {
+                for (ty_inner, v_inner) in zip_eq(ty_inners.iter(), v_inners.iter()) {
                     ty_inner.value_to_bits_impl(diags, span, v_inner, result)?;
                 }
                 Ok(())
             }
             (HardwareType::Array(ty_inner, ty_len), CompileValue::Array(v_inner)) => {
                 assert_eq!(ty_len, &BigUint::from(v_inner.len()));
-                for v_inner in v_inner {
+                for v_inner in v_inner.iter() {
                     ty_inner.value_to_bits_impl(diags, span, v_inner, result)?;
                 }
                 Ok(())
@@ -566,19 +573,19 @@ impl HardwareType {
                     Err(err_internal())
                 }
             }
-            HardwareType::Tuple(inners) => Ok(CompileValue::Array(
+            HardwareType::Tuple(inners) => Ok(CompileValue::Array(Arc::new(
                 inners
                     .iter()
                     .map(|inner| inner.value_from_bits_impl(diags, span, bits))
                     .try_collect()?,
-            )),
+            ))),
             HardwareType::Array(inner, len) => {
                 let len = usize::try_from(len).map_err(|_| err_internal())?;
-                Ok(CompileValue::Array(
+                Ok(CompileValue::Array(Arc::new(
                     (0..len)
                         .map(|_| inner.value_from_bits_impl(diags, span, bits))
                         .try_collect()?,
-                ))
+                )))
             }
             HardwareType::Struct(item, fields) => {
                 let inners = fields

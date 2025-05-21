@@ -27,6 +27,7 @@ use annotate_snippets::Level;
 use itertools::{zip_eq, Itertools};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum BlockEnd<S = BlockEndStopping> {
@@ -128,7 +129,7 @@ impl BranchMatched {
 enum PatternEqual {
     Bool(bool),
     Int(BigInt),
-    String(String),
+    String(Arc<String>),
 }
 
 type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;

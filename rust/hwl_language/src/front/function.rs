@@ -26,16 +26,17 @@ use itertools::{enumerate, Itertools};
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
+use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub enum FunctionValue {
-    User(UserFunctionValue),
+    User(Arc<UserFunctionValue>),
     Bits(FunctionBits),
     StructNew(ElaboratedStruct),
     StructNewInfer(UniqueDeclaration),
     EnumNew(ElaboratedEnum, usize),
-    EnumNewInfer(UniqueDeclaration, String),
+    EnumNewInfer(UniqueDeclaration, Arc<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -657,8 +658,8 @@ impl CompileItemContext<'_, '_> {
                         .transpose()?;
 
                     // evaluate block
-                    let ty_unit = &Type::UNIT;
-                    let expected_ret_ty = ret_ty.as_ref().map_or(ty_unit, |ty| &ty.inner);
+                    let ty_unit = Type::unit();
+                    let expected_ret_ty = ret_ty.as_ref().map_or(&ty_unit, |ty| &ty.inner);
                     let (ir_block, end) = s.elaborate_block_raw(ctx, &scope, vars, Some(expected_ret_ty), body)?;
 
                     // check return type
@@ -731,9 +732,9 @@ impl CompileItemContext<'_, '_> {
                     Value::Compile(value) => {
                         // TODO dedicated compile-time bits value that's faster than a boxed array of bools
                         let bits = ty_hw.value_to_bits(diags, span_call, value)?;
-                        Value::Compile(CompileValue::Array(
+                        Value::Compile(CompileValue::Array(Arc::new(
                             bits.into_iter().map(CompileValue::Bool).collect_vec(),
-                        ))
+                        )))
                     }
                     Value::Hardware(value_raw) => {
                         let value = value_raw.clone().soft_expand_to_type(&mut self.large, ty_hw);
@@ -741,7 +742,7 @@ impl CompileItemContext<'_, '_> {
                         let expr = self
                             .large
                             .push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr.clone()));
-                        let ty_bits = HardwareType::Array(Box::new(HardwareType::Bool), width);
+                        let ty_bits = HardwareType::Array(Arc::new(HardwareType::Bool), width);
 
                         Value::Hardware(HardwareValue {
                             ty: ty_bits,
@@ -793,10 +794,10 @@ fn check_function_return_value(
         BlockEnd::Normal => {
             // no return, only allowed for unit-returning functions
             match ret_ty {
-                None => Ok(Value::Compile(CompileValue::UNIT)),
+                None => Ok(Value::Compile(CompileValue::unit())),
                 Some(ret_ty) => {
-                    if ret_ty.inner == Type::UNIT {
-                        Ok(Value::Compile(CompileValue::UNIT))
+                    if ret_ty.inner.is_unit() {
+                        Ok(Value::Compile(CompileValue::unit()))
                     } else {
                         let diag = Diagnostic::new("control flow reaches end of function with return type")
                             .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
@@ -813,10 +814,10 @@ fn check_function_return_value(
         BlockEnd::Stopping(BlockEndReturn { span_keyword, value }) => {
             // return, check type
             match (ret_ty, value) {
-                (None, None) => Ok(Value::Compile(CompileValue::UNIT)),
+                (None, None) => Ok(Value::Compile(CompileValue::unit())),
                 (Some(ret_ty), None) => {
-                    if ret_ty.inner == Type::UNIT {
-                        Ok(Value::Compile(CompileValue::UNIT))
+                    if ret_ty.inner.is_unit() {
+                        Ok(Value::Compile(CompileValue::unit()))
                     } else {
                         let diag = Diagnostic::new("missing return value in function with return type")
                             .add_error(span_keyword, "return here without value")
@@ -832,12 +833,18 @@ fn check_function_return_value(
                     }
                 }
                 (None, Some(ret_value)) => {
-                    let is_unit = match &ret_value.inner {
-                        Value::Compile(v) => v == &CompileValue::UNIT,
-                        Value::Hardware(_) => false,
+                    let as_unit = match ret_value.inner {
+                        Value::Compile(v) => {
+                            if v.is_unit() {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        }
+                        Value::Hardware(_) => None,
                     };
-                    if is_unit {
-                        Ok(Value::Compile(CompileValue::UNIT))
+                    if let Some(unit) = as_unit {
+                        Ok(Value::Compile(unit))
                     } else {
                         let diag = Diagnostic::new("return value in function without return type")
                             .add_error(ret_value.span, "return value here")
@@ -1013,12 +1020,14 @@ impl FunctionValue {
         }
 
         match self {
-            FunctionValue::User(UserFunctionValue {
-                decl_span,
-                scope_captured,
-                params,
-                body,
-            }) => {
+            FunctionValue::User(func) => {
+                let UserFunctionValue {
+                    decl_span,
+                    scope_captured,
+                    params,
+                    body,
+                } = &**func;
+
                 // these are both derivable from the decl_span, so redundant
                 // TODO actually remove them from the struct
                 let _ = (params, body);

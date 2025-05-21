@@ -8,6 +8,7 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use indexmap::IndexSet;
 use itertools::Itertools;
+use std::sync::Arc;
 use std::vec;
 use unwrap_match::unwrap_match;
 
@@ -387,8 +388,8 @@ impl IrType {
         match self {
             IrType::Bool => Type::Bool,
             IrType::Int(range) => Type::Int(range.clone().into_range()),
-            IrType::Tuple(inner) => Type::Tuple(inner.iter().map(IrType::as_type).collect()),
-            IrType::Array(inner, len) => Type::Array(Box::new(inner.as_type()), len.clone()),
+            IrType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(IrType::as_type).collect())),
+            IrType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
         }
     }
 

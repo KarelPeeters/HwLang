@@ -25,6 +25,7 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum ElaboratedModule<I = ElaboratedModuleInternal, E = ElaboratedModuleExternal> {
@@ -226,7 +227,7 @@ impl CompileItemContext<'_, '_> {
             Item::CommonDeclaration(decl) => {
                 let mut vars = VariableValues::new_root(&self.variables);
                 let value = self.eval_declaration(file_scope, &mut vars, &decl.inner)?;
-                Ok(value.unwrap_or(CompileValue::UNIT))
+                Ok(value.unwrap_or_else(CompileValue::unit))
             }
             Item::ModuleInternal(module) => {
                 let ItemDefModuleInternal {
@@ -394,7 +395,7 @@ impl CompileItemContext<'_, '_> {
                         inner: body_inner,
                     },
                 };
-                Ok(CompileValue::Function(FunctionValue::User(function)))
+                Ok(CompileValue::Function(FunctionValue::User(Arc::new(function))))
             }
         }
     }
@@ -456,7 +457,7 @@ impl CompileItemContext<'_, '_> {
                         inner: FunctionBody::ItemBody(body),
                     },
                 };
-                Ok(CompileValue::Function(FunctionValue::User(func)))
+                Ok(CompileValue::Function(FunctionValue::User(Arc::new(func))))
             }
         }
     }

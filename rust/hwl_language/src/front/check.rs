@@ -8,6 +8,7 @@ use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
 use itertools::Itertools;
+use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 impl CompileItemContext<'_, '_> {
@@ -416,8 +417,8 @@ pub fn check_type_is_bool_array(
                     Value::Compile(c) => {
                         let c = unwrap_match!(c, CompileValue::Array(c) => c);
                         let result = c
-                            .into_iter()
-                            .map(|c| unwrap_match!(c, CompileValue::Bool(c) => c))
+                            .iter()
+                            .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
                             .collect_vec();
                         Ok(Value::Compile(result))
                     }
@@ -432,10 +433,10 @@ pub fn check_type_is_bool_array(
     }
 
     let expected_ty_str = match expected_len {
-        None => Type::Array(Box::new(Type::Bool), BigUint::ZERO)
+        None => Type::Array(Arc::new(Type::Bool), BigUint::ZERO)
             .diagnostic_string()
             .replace("0", "_"),
-        Some(expected_len) => Type::Array(Box::new(Type::Bool), expected_len.clone()).diagnostic_string(),
+        Some(expected_len) => Type::Array(Arc::new(Type::Bool), expected_len.clone()).diagnostic_string(),
     };
     let value_ty_str = value.inner.ty().diagnostic_string();
     let mut diag = Diagnostic::new("value does not fit in type").add_error(
@@ -443,7 +444,7 @@ pub fn check_type_is_bool_array(
         format!("expected `{}`, got type `{}`", expected_ty_str, value_ty_str),
     );
 
-    diag = reason.add_diag_info(diag, &Type::Array(Box::new(Type::Bool), BigUint::ZERO));
+    diag = reason.add_diag_info(diag, &Type::Array(Arc::new(Type::Bool), BigUint::ZERO));
     Err(diags.report(diag.finish()))
 }
 
@@ -451,7 +452,7 @@ pub fn check_type_is_string(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
-) -> Result<String, ErrorGuaranteed> {
+) -> Result<Arc<String>, ErrorGuaranteed> {
     check_type_contains_compile_value(diags, reason, &Type::String, value.as_ref(), false)?;
 
     match value.inner {

@@ -8,6 +8,7 @@ use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::{enumerate, Itertools};
 use std::convert::identity;
+use std::sync::Arc;
 
 // TODO just provide both as default args, by now it's pretty clear that this uses HardwareValue almost always
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -23,11 +24,11 @@ pub enum CompileValue {
 
     Bool(bool),
     Int(BigInt),
-    String(String),
+    String(Arc<String>),
 
     IntRange(IncRange<BigInt>),
-    Tuple(Vec<CompileValue>),
-    Array(Vec<CompileValue>),
+    Tuple(Arc<Vec<CompileValue>>),
+    Array(Arc<Vec<CompileValue>>),
     // TODO avoid storing copy of field types
     Struct(ElaboratedStruct, Vec<Type>, Vec<CompileValue>),
     Enum(ElaboratedEnum, Vec<Option<Type>>, (usize, Option<Box<CompileValue>>)),
@@ -89,10 +90,10 @@ impl Typed for CompileValue {
                 end_inc: Some(value.clone()),
             }),
             CompileValue::String(_) => Type::String,
-            CompileValue::Tuple(values) => Type::Tuple(values.iter().map(|v| v.ty()).collect()),
+            CompileValue::Tuple(values) => Type::Tuple(Arc::new(values.iter().map(|v| v.ty()).collect())),
             CompileValue::Array(values) => {
                 let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty(), true));
-                Type::Array(Box::new(inner), BigUint::from(values.len()))
+                Type::Array(Arc::new(inner), BigUint::from(values.len()))
             }
             CompileValue::Struct(item, fields, _) => Type::Struct(*item, fields.clone()),
             CompileValue::Enum(item, types, _) => Type::Enum(*item, types.clone()),
@@ -106,8 +107,14 @@ impl Typed for CompileValue {
 }
 
 impl CompileValue {
-    // Empty tuples are considered types, since all their inner values are types.
-    pub const UNIT: CompileValue = CompileValue::Type(Type::UNIT);
+    pub fn unit() -> Self {
+        // Empty tuples are considered types, since all their inner values are types.
+        CompileValue::Type(Type::unit())
+    }
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, CompileValue::Type(ty) if ty.is_unit())
+    }
 
     pub fn contains_undefined(&self) -> bool {
         match self {
@@ -144,7 +151,7 @@ impl CompileValue {
             e: impl Fn(IrExpression) -> E,
             f: impl FnOnce(Vec<E>) -> IrExpressionLarge,
         ) -> Result<HardwareValueResult, ErrorGuaranteed> {
-            let mut hardware_values = vec![];
+            let mut hardware_values = Vec::with_capacity(values.len());
             let mut all_undefined = true;
             let mut any_undefined = false;
 

@@ -104,7 +104,6 @@ impl<'p> Scope<'p> {
     }
 
     pub fn restore_child_from_content(span: Span, parent: &'p Scope<'p>, values: ScopeContent) -> Self {
-        // assert_eq!(Some(parent.content.check), values.parent_check);
         Scope {
             span,
             parent: ScopeParent::Some(parent),

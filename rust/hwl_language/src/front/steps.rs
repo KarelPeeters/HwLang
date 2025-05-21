@@ -7,6 +7,7 @@ use crate::syntax::ast::Spanned;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::Itertools;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
@@ -166,7 +167,7 @@ impl ArraySteps<ArrayStep> {
         let result_ty = slice_lens
             .into_iter()
             .rev()
-            .fold(curr_ty.inner, |acc, len| Type::Array(Box::new(acc), len));
+            .fold(curr_ty.inner, |acc, len| Type::Array(Arc::new(acc), len));
 
         Ok((result_ty, Ok(steps_ir)))
     }
@@ -191,8 +192,13 @@ impl ArraySteps<ArrayStep> {
                             ArrayStepCompile::ArrayIndex(index) => {
                                 let index =
                                     check_range_index_compile(diags, Spanned::new(step.span, index), value_len)?;
-                                let mut curr_inner = curr_inner;
-                                Value::Compile(curr_inner.swap_remove(index))
+
+                                let result = match Arc::try_unwrap(curr_inner) {
+                                    Ok(mut curr_inner) => curr_inner.swap_remove(index),
+                                    Err(curr_inner) => curr_inner[index].clone(),
+                                };
+
+                                Value::Compile(result)
                             }
                             ArrayStepCompile::ArraySlice { start, len } => {
                                 let SliceInfo { start, len } = check_range_slice_compile(
@@ -201,9 +207,16 @@ impl ArraySteps<ArrayStep> {
                                     len.as_ref().map(|len| Spanned::new(step.span, len)),
                                     value_len,
                                 )?;
-                                let mut curr_inner = curr_inner;
-                                let slice = curr_inner.drain(start..start + len).collect();
-                                Value::Compile(CompileValue::Array(slice))
+
+                                let result = match Arc::try_unwrap(curr_inner) {
+                                    Ok(mut curr_inner) => {
+                                        // TODO maybe re-use the existing allocation instead by draining before/after?
+                                        curr_inner.drain(start..start + len).collect()
+                                    }
+                                    Err(curr_inner) => curr_inner[start..start + len].iter().cloned().collect(),
+                                };
+
+                                Value::Compile(CompileValue::Array(Arc::new(result)))
                             }
                         }
                     }
@@ -314,7 +327,7 @@ impl ArraySteps<ArrayStep> {
 
                     // build final value
                     let next_ty = match slice_len {
-                        None => *curr_array_inner_ty.clone(),
+                        None => Arc::unwrap_or_clone(curr_array_inner_ty),
                         Some(slice_len) => HardwareType::Array(curr_array_inner_ty.clone(), slice_len),
                     };
                     Value::Hardware(HardwareValue {
@@ -354,7 +367,7 @@ impl ArraySteps<&ArrayStepCompile> {
             };
 
             let mut old_curr_inner = match old_curr.inner {
-                CompileValue::Array(curr) => curr,
+                CompileValue::Array(curr) => Arc::unwrap_or_clone(curr),
                 _ => {
                     let diag = Diagnostic::new("expected array value for array access")
                         .add_info(
@@ -373,7 +386,7 @@ impl ArraySteps<&ArrayStepCompile> {
                     let index = check_range_index_compile(diags, Spanned::new(step.span, index), array_len)?;
                     let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[index].clone());
                     old_curr_inner[index] = set_compile_value_impl(diags, old_next, rest, op_span, new_curr)?;
-                    Ok(CompileValue::Array(old_curr_inner))
+                    Ok(CompileValue::Array(Arc::new(old_curr_inner)))
                 }
                 ArrayStepCompile::ArraySlice { start, len } => {
                     let new_curr_inner = match new_curr.inner {
@@ -409,7 +422,7 @@ impl ArraySteps<&ArrayStepCompile> {
                         old_curr_inner[start + i] = set_compile_value_impl(diags, old_next, rest, op_span, new_next)?;
                     }
 
-                    Ok(CompileValue::Array(old_curr_inner))
+                    Ok(CompileValue::Array(Arc::new(old_curr_inner)))
                 }
             }
         }

@@ -39,15 +39,16 @@ use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
+use crate::util::store::ArcOrRef;
 use crate::util::{result_pair, result_pair_split, ResultExt};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use itertools::{enumerate, Either, Itertools};
-use std::borrow::Cow;
 use std::fmt::Debug;
 use std::hash::Hash;
+
 // TODO split this file into header/body
 
 type SignalsInScope = Vec<Spanned<Signal>>;
@@ -1528,7 +1529,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
                             &ExpressionKind::Id(id) => {
                                 let id = self.ctx.eval_general_id(scope, vars, id)?;
-                                let id = id.as_ref().map_inner(Cow::as_ref);
+                                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
                                 let named = self.ctx.eval_named_or_value(scope, id)?;
 
                                 let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
@@ -1843,7 +1844,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         &mut self,
         scope_body: &Scope,
         vars_body: &VariableValues,
-        id: &MaybeIdentifier<Spanned<Cow<str>>>,
+        id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
         decl_span: Span,
         decl: &WireDeclaration,
     ) -> Result<(Wire, Option<Spanned<IrCombinatorialProcess>>), ErrorGuaranteed> {
@@ -2044,7 +2045,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         &mut self,
         scope_body: &Scope,
         vars_body: &VariableValues,
-        id: &MaybeIdentifier<Spanned<Cow<str>>>,
+        id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
         decl: &RegDeclaration,
     ) -> Result<RegisterInit, ErrorGuaranteed> {
         let ctx = &mut self.ctx;
