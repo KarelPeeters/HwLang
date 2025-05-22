@@ -1,4 +1,5 @@
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::compile::CompileRefs;
+use crate::front::diagnostic::ErrorGuaranteed;
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::item::{ElaboratedEnum, ElaboratedInterface, ElaboratedModule, ElaboratedStruct};
@@ -6,6 +7,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType, IrVariable};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::ResultExt;
 use itertools::{enumerate, Itertools};
 use std::convert::identity;
 use std::sync::Arc;
@@ -29,9 +31,9 @@ pub enum CompileValue {
     IntRange(IncRange<BigInt>),
     Tuple(Arc<Vec<CompileValue>>),
     Array(Arc<Vec<CompileValue>>),
-    // TODO avoid storing copy of field types
-    Struct(ElaboratedStruct, Vec<Type>, Vec<CompileValue>),
-    Enum(ElaboratedEnum, Vec<Option<Type>>, (usize, Option<Box<CompileValue>>)),
+
+    Struct(ElaboratedStruct, Arc<Vec<CompileValue>>),
+    Enum(ElaboratedEnum, (usize, Option<Box<CompileValue>>)),
 
     Function(FunctionValue),
     Module(ElaboratedModule),
@@ -95,8 +97,8 @@ impl Typed for CompileValue {
                 let inner = values.iter().fold(Type::Undefined, |acc, v| acc.union(&v.ty(), true));
                 Type::Array(Arc::new(inner), BigUint::from(values.len()))
             }
-            CompileValue::Struct(item, fields, _) => Type::Struct(*item, fields.clone()),
-            CompileValue::Enum(item, types, _) => Type::Enum(*item, types.clone()),
+            &CompileValue::Struct(item, _) => Type::Struct(item),
+            &CompileValue::Enum(elab, _) => Type::Enum(elab),
             CompileValue::IntRange(_) => Type::Range,
             CompileValue::Function(_) => Type::Function,
             CompileValue::Module(_) => Type::Module,
@@ -121,8 +123,8 @@ impl CompileValue {
             CompileValue::Undefined => true,
             CompileValue::Tuple(values) => values.iter().any(CompileValue::contains_undefined),
             CompileValue::Array(values) => values.iter().any(CompileValue::contains_undefined),
-            CompileValue::Struct(_, _, values) => values.iter().any(CompileValue::contains_undefined),
-            CompileValue::Enum(_, _, (_, value)) => value.as_ref().is_some_and(|v| v.contains_undefined()),
+            CompileValue::Struct(_, values) => values.iter().any(CompileValue::contains_undefined),
+            CompileValue::Enum(_, (_, value)) => value.as_ref().is_some_and(|v| v.contains_undefined()),
             CompileValue::Type(_)
             | CompileValue::Bool(_)
             | CompileValue::Int(_)
@@ -137,13 +139,13 @@ impl CompileValue {
 
     pub fn try_as_hardware_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
     ) -> Result<HardwareValueResult, ErrorGuaranteed> {
         fn map_array<'t, E>(
-            diags: &Diagnostics,
+            refs: CompileRefs,
             large: &mut IrLargeArena,
             span: Span,
             values: &[CompileValue],
@@ -156,7 +158,7 @@ impl CompileValue {
             let mut any_undefined = false;
 
             for (i, value) in enumerate(values) {
-                match value.try_as_hardware_value(diags, large, span, t(i))? {
+                match value.try_as_hardware_value(refs, large, span, t(i))? {
                     HardwareValueResult::Defined(v) => {
                         all_undefined = false;
                         hardware_values.push(e(v))
@@ -183,6 +185,7 @@ impl CompileValue {
             Ok(result)
         }
 
+        let diags = refs.diags;
         let err_type = || diags.report_internal_error(span, "type mismatch while converting to hardware value");
 
         match self {
@@ -202,7 +205,7 @@ impl CompileValue {
             },
             CompileValue::Tuple(values) => match ty {
                 HardwareType::Tuple(tys) if tys.len() == values.len() => map_array(
-                    diags,
+                    refs,
                     large,
                     span,
                     values,
@@ -214,21 +217,23 @@ impl CompileValue {
             },
             CompileValue::Array(values) => match ty {
                 HardwareType::Array(inner_ty, len) if len == &BigUint::from(values.len()) => map_array(
-                    diags,
+                    refs,
                     large,
                     span,
                     values,
                     |_i| inner_ty,
                     IrArrayLiteralElement::Single,
-                    |e| IrExpressionLarge::ArrayLiteral(inner_ty.as_ir(), len.clone(), e),
+                    |e| IrExpressionLarge::ArrayLiteral(inner_ty.as_ir(refs), len.clone(), e),
                 ),
                 _ => Err(err_type()),
             },
-            CompileValue::Struct(item_value, _, values) => match ty {
-                HardwareType::Struct(item, fields) if item == item_value => {
-                    assert_eq!(fields.len(), values.len());
+            &CompileValue::Struct(elab_value, ref values) => match ty {
+                &HardwareType::Struct(elab_ty) if elab_ty.inner() == elab_value => {
+                    let info = refs.shared.elaboration_arenas.struct_info(elab_ty.inner());
+                    let fields = info.fields_hw.as_ref_ok().unwrap();
+
                     map_array(
-                        diags,
+                        refs,
                         large,
                         span,
                         values,
@@ -239,27 +244,33 @@ impl CompileValue {
                 }
                 _ => Err(err_type()),
             },
-            &CompileValue::Enum(item_value, _, (variant_index, ref content_value)) => match ty {
-                HardwareType::Enum(hw_enum) if hw_enum.elab == item_value => {
+            &CompileValue::Enum(item_value, (variant_index, ref content_value)) => match ty {
+                &HardwareType::Enum(hw_enum) if hw_enum.inner() == item_value => {
+                    let info = refs.shared.elaboration_arenas.enum_info(hw_enum.inner());
+                    let info_hw = info.hw.as_ref_ok().unwrap();
+
                     // convert content to bits and then ir expression
                     let content_ir = content_value
                         .as_ref()
                         .map(|content_value| {
-                            let content_ty = hw_enum.variants[variant_index].as_ref().unwrap();
-                            let content_bits = content_ty.value_to_bits(diags, span, content_value)?;
+                            let content_ty = info_hw.content_types[variant_index].as_ref().unwrap();
+                            let content_bits = content_ty.value_to_bits(refs, span, content_value)?;
 
                             let content_elements = content_bits
                                 .into_iter()
                                 .map(|b| IrArrayLiteralElement::Single(IrExpression::Bool(b)))
                                 .collect_vec();
-                            let content_ir =
-                                IrExpressionLarge::ArrayLiteral(IrType::Bool, content_ty.size_bits(), content_elements);
+                            let content_ir = IrExpressionLarge::ArrayLiteral(
+                                IrType::Bool,
+                                content_ty.size_bits(refs),
+                                content_elements,
+                            );
                             Ok(large.push_expr(content_ir))
                         })
                         .transpose()?;
 
                     // build the entire ir expression
-                    let result = hw_enum.build_ir_expression(large, variant_index, content_ir)?;
+                    let result = info_hw.build_ir_expression(refs, large, variant_index, content_ir)?;
                     Ok(HardwareValueResult::Defined(result))
                 }
                 _ => Err(err_type()),
@@ -278,12 +289,13 @@ impl CompileValue {
 
     pub fn as_ir_expression_or_undefined(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<IrExpression>, ErrorGuaranteed> {
-        match self.try_as_hardware_value(diags, large, span, ty_hw)? {
+        let diags = refs.diags;
+        match self.try_as_hardware_value(refs, large, span, ty_hw)? {
             HardwareValueResult::Defined(v) => Ok(MaybeUndefined::Defined(v)),
             HardwareValueResult::Undefined => Ok(MaybeUndefined::Undefined),
             HardwareValueResult::PartiallyUndefined => Err(diags.report_todo(span, "partially undefined values")),
@@ -292,12 +304,12 @@ impl CompileValue {
 
     pub fn as_hardware_value_or_undefined(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<MaybeUndefined<HardwareValue>, ErrorGuaranteed> {
-        let hw_value = self.as_ir_expression_or_undefined(diags, large, span, ty_hw)?;
+        let hw_value = self.as_ir_expression_or_undefined(refs, large, span, ty_hw)?;
         let typed_expr = hw_value.map_inner(|expr| HardwareValue {
             ty: ty_hw.clone(),
             domain: ValueDomain::CompileTime,
@@ -308,12 +320,13 @@ impl CompileValue {
 
     pub fn as_hardware_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
     ) -> Result<HardwareValue, ErrorGuaranteed> {
-        match self.as_hardware_value_or_undefined(diags, large, span, ty_hw)? {
+        let diags = refs.diags;
+        match self.as_hardware_value_or_undefined(refs, large, span, ty_hw)? {
             MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
             MaybeUndefined::Undefined => Err(diags.report_simple(
                 "undefined values are not allowed here",
@@ -347,11 +360,11 @@ impl CompileValue {
                     .join(", ");
                 format!("[{}]", values)
             }
-            CompileValue::Struct(_, _, values) => {
+            CompileValue::Struct(_, values) => {
                 let values = values.iter().map(CompileValue::diagnostic_string).join(", ");
                 format!("struct({})", values)
             }
-            CompileValue::Enum(_, _, (index, value)) => match value {
+            CompileValue::Enum(_, (index, value)) => match value {
                 None => format!("enum({})", index),
                 Some(value) => format!("enum({}, {})", index, value.diagnostic_string()),
             },
@@ -471,13 +484,13 @@ impl Value {
     /// It it still the responsibility of the caller to typecheck the resulting expression.
     pub fn as_hardware_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
     ) -> Result<HardwareValue, ErrorGuaranteed> {
         match self {
-            Value::Compile(v) => v.as_hardware_value(diags, large, span, ty),
+            Value::Compile(v) => v.as_hardware_value(refs, large, span, ty),
             Value::Hardware(v) => Ok(v.clone().soft_expand_to_type(large, ty)),
         }
     }

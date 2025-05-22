@@ -102,7 +102,7 @@ impl CompileRefs<'_, '_> {
             port_types,
             &mut |ctx, scope_params, vars, &(port_id, ty)| {
                 let ty_eval = ctx.eval_expression_as_ty(scope_params, vars, ty).and_then(|ty| {
-                    match ty.inner.as_hardware_type() {
+                    match ty.inner.as_hardware_type(self) {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                         Err(_) => Err(diags.report_simple(
                             "interface ports must have hardware types",

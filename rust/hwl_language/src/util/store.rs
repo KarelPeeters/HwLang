@@ -10,7 +10,7 @@ pub enum ArcOrRef<'a, R: ?Sized + ToOwned + 'a> {
 impl<'a, R: ?Sized + ToOwned + 'a> AsRef<R> for ArcOrRef<'a, R> {
     fn as_ref(&self) -> &R {
         match self {
-            ArcOrRef::Arc(arc) => (&**arc).borrow(),
+            ArcOrRef::Arc(arc) => (**arc).borrow(),
             ArcOrRef::Ref(r) => r,
         }
     }

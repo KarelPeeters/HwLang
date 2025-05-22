@@ -1,4 +1,4 @@
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
@@ -462,13 +462,13 @@ pub fn check_type_is_string(
 }
 
 pub fn check_hardware_type_for_bit_operation(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     ty: Spanned<&Type>,
 ) -> Result<HardwareType, ErrorGuaranteed> {
-    ty.inner.as_hardware_type().map_err(|_| {
+    ty.inner.as_hardware_type(refs).map_err(|_| {
         let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
             .add_error(ty.span, format!("actual type `{}`", ty.inner.diagnostic_string()))
             .finish();
-        diags.report(diag)
+        refs.diags.report(diag)
     })
 }

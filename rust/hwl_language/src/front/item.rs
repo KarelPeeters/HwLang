@@ -6,7 +6,7 @@ use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::Type;
+use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, Value};
 use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
@@ -16,7 +16,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::Span;
-use crate::util::big_int::BigInt;
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::sync::ComputeOnceMap;
 use crate::util::ResultExt;
@@ -74,29 +74,23 @@ impl ElaborationArenas {
         }
     }
 
-    pub fn module_internal_info(
-        &self,
-        elab: ElaboratedModuleInternal,
-    ) -> Result<&ElaboratedModuleInternalInfo, ErrorGuaranteed> {
+    pub fn module_internal_info(&self, elab: ElaboratedModuleInternal) -> &ElaboratedModuleInternalInfo {
         self.elaborated_modules_internal.get(elab)
     }
 
-    pub fn module_external_info(
-        &self,
-        elab: ElaboratedModuleExternal,
-    ) -> Result<&ElaboratedModuleExternalInfo, ErrorGuaranteed> {
+    pub fn module_external_info(&self, elab: ElaboratedModuleExternal) -> &ElaboratedModuleExternalInfo {
         self.elaborated_modules_external.get(elab)
     }
 
-    pub fn interface_info(&self, elab: ElaboratedInterface) -> Result<&ElaboratedInterfaceInfo, ErrorGuaranteed> {
+    pub fn interface_info(&self, elab: ElaboratedInterface) -> &ElaboratedInterfaceInfo {
         self.elaborated_interfaces.get(elab)
     }
 
-    pub fn struct_info(&self, elab: ElaboratedStruct) -> Result<&ElaboratedStructInfo, ErrorGuaranteed> {
+    pub fn struct_info(&self, elab: ElaboratedStruct) -> &ElaboratedStructInfo {
         self.elaborated_structs.get(elab)
     }
 
-    pub fn enum_info(&self, elab: ElaboratedEnum) -> Result<&ElaboratedEnumInfo, ErrorGuaranteed> {
+    pub fn enum_info(&self, elab: ElaboratedEnum) -> &ElaboratedEnumInfo {
         self.elaborated_enums.get(elab)
     }
 
@@ -122,8 +116,10 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
         }
     }
 
-    pub fn get(&self, id: E) -> Result<&F, ErrorGuaranteed> {
-        self.id_to_info.get(&id).unwrap().as_ref_ok()
+    pub fn get(&self, id: E) -> &F {
+        // The key only gets out if the computation was successful,
+        //   so we can safely unwrap here (twice).
+        self.id_to_info.get(&id).unwrap().as_ref_ok().unwrap()
     }
 
     pub fn elaborate(
@@ -144,7 +140,7 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
             id
         });
 
-        let info = self.get(id)?;
+        let info = self.id_to_info.get(&id).unwrap().as_ref_ok()?;
         Ok((id, info))
     }
 }
@@ -185,11 +181,33 @@ pub enum FunctionItemBody {
     Enum(UniqueDeclaration, ExtraList<EnumVariant>),
 }
 
+/// Newtype wrapper that promises that the fields are representable in hardware.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct HardwareChecked<T> {
+    inner: T,
+}
+
+impl<T: Copy> HardwareChecked<T> {
+    pub fn new_unchecked(inner: T) -> Self {
+        HardwareChecked { inner }
+    }
+
+    pub fn inner(self) -> T {
+        self.inner
+    }
+}
+
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
     pub unique: UniqueDeclaration,
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
+    pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct NonHardwareStruct {
+    pub first_failing_field: usize,
 }
 
 #[derive(Debug)]
@@ -197,6 +215,19 @@ pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
     pub span_body: Span,
     pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
+    pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct NonHardwareEnum {
+    pub first_failing_variant: usize,
+}
+
+#[derive(Debug)]
+pub struct HardwareEnumInfo {
+    pub content_types: Vec<Option<HardwareType>>,
+    // TODO remove once this (or something similar enough) is cached in HardwareType
+    pub max_content_size: usize,
 }
 
 impl ElaboratedEnumInfo {
@@ -600,34 +631,23 @@ impl CompileItemContext<'_, '_> {
             FunctionItemBody::Struct(unique, ref fields) => {
                 let item_params = ElaboratedItemParams { unique, params };
 
-                let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
+                let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
                     |_| self.elaborate_struct_new(scope_params, vars, unique, body.span, fields),
                 )?;
-
-                let fields = result_info
-                    .fields
-                    .values()
-                    .map(|(_, ty)| ty.inner.clone())
-                    .collect_vec();
-                Ok(CompileValue::Type(Type::Struct(result_id, fields)))
+                Ok(CompileValue::Type(Type::Struct(result_id)))
             }
             FunctionItemBody::Enum(unique, ref variants) => {
                 let item_params = ElaboratedItemParams { unique, params };
 
-                let (result_id, result_info) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
+                let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
                     item_params,
                     ElaboratedEnum,
                     |_| self.elaborate_enum_new(scope_params, vars, unique, body.span, variants),
                 )?;
 
-                let variants = result_info
-                    .variants
-                    .values()
-                    .map(|(_, ty)| ty.as_ref().map(|ty| ty.inner.clone()))
-                    .collect_vec();
-                Ok(CompileValue::Type(Type::Enum(result_id, variants)))
+                Ok(CompileValue::Type(Type::Enum(result_id)))
             }
         }
     }
@@ -672,10 +692,23 @@ impl CompileItemContext<'_, '_> {
         self.compile_elaborate_extra_list(&mut scope, vars, fields, &mut visit_field)?;
         any_field_err?;
 
+        // check if this struct can be represented in hardware
+        //   we do this once now instead of each time we need to know this
+        let fields_hw = fields_eval
+            .iter()
+            .enumerate()
+            .map(|(i, (_, (_, ty)))| {
+                ty.inner
+                    .as_hardware_type(self.refs)
+                    .map_err(|_| NonHardwareStruct { first_failing_field: i })
+            })
+            .try_collect_vec();
+
         Ok(ElaboratedStructInfo {
             unique,
             span_body,
             fields: fields_eval,
+            fields_hw,
         })
     }
 
@@ -720,10 +753,47 @@ impl CompileItemContext<'_, '_> {
         self.compile_elaborate_extra_list(&mut scope, vars, variants, &mut visit_variant)?;
         any_variant_err?;
 
+        // check if this enum can be represented in hardware
+        //   we do this once now instead of each time we need to know this
+        let mut size_err = Ok(());
+        let hw = variants_eval
+            .iter()
+            .enumerate()
+            .map(|(i, (_, (_, ty)))| {
+                ty.as_ref()
+                    .map(|ty| ty.inner.as_hardware_type(self.refs))
+                    .transpose()
+                    .map_err(|_| NonHardwareEnum {
+                        first_failing_variant: i,
+                    })
+            })
+            .try_collect_vec()
+            .and_then(|content_types| {
+                let max_content_size = content_types
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .map(|ty| ty.size_bits(self.refs))
+                    .max()
+                    .unwrap_or(BigUint::ZERO);
+                let max_content_size = usize::try_from(max_content_size).map_err(|size| {
+                    size_err = Err(diags.report_simple("enum size too large", span_body, format!("got size {size}")));
+                    NonHardwareEnum {
+                        first_failing_variant: 0,
+                    }
+                })?;
+                Ok(HardwareEnumInfo {
+                    content_types,
+                    max_content_size,
+                })
+            });
+
+        size_err?;
+
         Ok(ElaboratedEnumInfo {
             unique,
             span_body,
             variants: variants_eval,
+            hw,
         })
     }
 }

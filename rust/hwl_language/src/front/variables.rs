@@ -1,4 +1,4 @@
-use crate::front::compile::{ArenaVariables, Variable, VariableInfo};
+use crate::front::compile::{ArenaVariables, CompileRefs, Variable, VariableInfo};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
@@ -8,7 +8,6 @@ use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
-use crate::syntax::source::SourceDatabase;
 use crate::util::arena::{IndexType, RandomCheck};
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
@@ -335,8 +334,7 @@ struct NeedsHardwareMerge;
 
 // TODO take implications from before the merge into account while merging, requires implications to be in the flow
 pub fn merge_variable_branches<C: ExpressionContext>(
-    diags: &Diagnostics,
-    source: &SourceDatabase,
+    refs: CompileRefs,
     ctx: &mut C,
     large: &mut IrLargeArena,
     variables: &ArenaVariables,
@@ -451,7 +449,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
                         (&mut **block, Spanned::new(span_merge, value.value()))
                     })
                     .collect_vec();
-                let merged = merge_hardware_values(diags, source, ctx, large, span_merge, variables[var].id, children)?;
+                let merged = merge_hardware_values(refs, ctx, large, span_merge, variables[var].id, children)?;
 
                 let value_and_version = (merged.to_general_expression(), parent.kind.increment_version());
                 MaybeAssignedValue::Assigned(AssignedValue {
@@ -506,8 +504,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
 }
 
 fn merge_hardware_values<'a, C: ExpressionContext>(
-    diags: &Diagnostics,
-    source: &SourceDatabase,
+    refs: CompileRefs,
     ctx: &mut C,
     large: &mut IrLargeArena,
     span_merge: Span,
@@ -517,10 +514,12 @@ fn merge_hardware_values<'a, C: ExpressionContext>(
 where
     C::Block: 'a,
 {
+    let diags = refs.diags;
+
     // check that all types are hardware
     // (we do this before finding the common type to get nicer error messages)
     let value_ty_hw = |value: Spanned<&Value>| {
-        value.inner.ty().as_hardware_type().map_err(|_| {
+        value.inner.ty().as_hardware_type(refs).map_err(|_| {
             let ty_str = value.inner.ty().diagnostic_string();
             let diag = Diagnostic::new("merging if assignments needs hardware type")
                 .add_info(debug_info_id.span(), "for this variable")
@@ -545,7 +544,7 @@ where
     let ty = tys.iter().fold(Type::Undefined, |a, t| a.union(&t.as_type(), false));
 
     // convert common to hardware too
-    let ty = ty.as_hardware_type().map_err(|_| {
+    let ty = ty.as_hardware_type(refs).map_err(|_| {
         let ty_str = ty.diagnostic_string();
 
         let mut diag = Diagnostic::new("merging if assignments needs hardware type")
@@ -568,15 +567,15 @@ where
 
     // create result variable
     let var_ir_info = IrVariableInfo {
-        ty: ty.as_ir(),
-        debug_info_id: debug_info_id.spanned_string(source),
+        ty: ty.as_ir(refs),
+        debug_info_id: debug_info_id.spanned_string(refs.fixed.source),
     };
     let var_ir = ctx.new_ir_variable(diags, span_merge, var_ir_info)?;
 
     // store values into that variable
     let mut domain = ValueDomain::CompileTime;
     for (block, value) in children {
-        let value = value.inner.as_hardware_value(diags, large, value.span, &ty)?;
+        let value = value.inner.as_hardware_value(refs, large, value.span, &ty)?;
         let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
         ctx.push_ir_statement(diags, block, Spanned::new(span_merge, store))?;
         domain = domain.join(value.domain);

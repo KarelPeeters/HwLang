@@ -141,7 +141,7 @@ impl<'p> Scope<'p> {
     /// This function always appears to succeed, errors are instead reported as diags.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'t>(
+    pub fn declare(
         &mut self,
         diags: &Diagnostics,
         id: Result<Spanned<impl Borrow<str>>, ErrorGuaranteed>,
@@ -234,7 +234,7 @@ impl<'p> Scope<'p> {
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s, 't>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+    pub fn find<'s>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
         self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 

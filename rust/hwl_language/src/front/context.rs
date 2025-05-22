@@ -45,7 +45,6 @@ pub trait ExpressionContext {
     fn new_ir_register(
         &mut self,
         ctx: &CompileItemContext,
-        diags: &Diagnostics,
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
@@ -128,13 +127,15 @@ impl ExpressionContext for CompileTimeExpressionContext {
     fn new_ir_register(
         &mut self,
         ctx: &CompileItemContext,
-        diags: &Diagnostics,
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
     ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
-        let _ = (ctx, ty, init);
-        Err(diags.report_internal_error(debug_info_id.span, "trying to create register in compile-time context"))
+        let _ = (ty, init);
+        Err(ctx
+            .refs
+            .diags
+            .report_internal_error(debug_info_id.span, "trying to create register in compile-time context"))
     }
 
     fn report_assignment(
@@ -312,11 +313,11 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
     fn new_ir_register(
         &mut self,
         ctx: &CompileItemContext,
-        diags: &Diagnostics,
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
     ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
+        let diags = ctx.refs.diags;
         let span = debug_info_id.span;
 
         let error_not_clocked = |block_span: Span, block_kind: &str| {
@@ -335,7 +336,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
                 extra_registers,
             } => {
                 let reg_info = IrRegisterInfo {
-                    ty: ty.as_ir(),
+                    ty: ty.as_ir(ctx.refs),
                     debug_info_id,
                     debug_info_ty: ty.clone(),
                     debug_info_domain: domain.inner.diagnostic_string(ctx),

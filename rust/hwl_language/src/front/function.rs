@@ -4,7 +4,10 @@ use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, Sta
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
-use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, UniqueDeclaration};
+use crate::front::item::{
+    ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, HardwareChecked, NonHardwareEnum,
+    NonHardwareStruct, UniqueDeclaration,
+};
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
@@ -379,14 +382,14 @@ impl CompileItemContext<'_, '_> {
                 Ok((None, result))
             }
             &FunctionValue::StructNew(struct_elab) => {
-                let result = self.call_struct_new(struct_elab, args)?;
+                let result = self.call_struct_new(span_call, struct_elab, args)?;
                 Ok((None, result))
             }
             &FunctionValue::StructNewInfer(func_unique) => match *expected_ty {
-                Type::Struct(expected_elab, _) => {
-                    let expected_info = self.refs.shared.elaboration_arenas.struct_info(expected_elab)?;
+                Type::Struct(expected_elab) => {
+                    let expected_info = self.refs.shared.elaboration_arenas.struct_info(expected_elab);
                     if expected_info.unique == func_unique {
-                        let result = self.call_struct_new(expected_elab, args)?;
+                        let result = self.call_struct_new(span_call, expected_elab, args)?;
                         Ok((None, result))
                     } else {
                         Err(diags.report(error_unique_mismatch(
@@ -405,8 +408,8 @@ impl CompileItemContext<'_, '_> {
                 Ok((None, result))
             }
             &FunctionValue::EnumNewInfer(unique, ref variant_str) => match expected_ty {
-                &Type::Enum(elab, _) => {
-                    let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+                &Type::Enum(elab) => {
+                    let info = self.refs.shared.elaboration_arenas.enum_info(elab);
                     let variant_index = info.find_variant(diags, Spanned::new(span_target, variant_str))?;
                     let result = self.call_enum_new(span_call, elab, variant_index, &args)?;
                     Ok((None, result))
@@ -421,6 +424,7 @@ impl CompileItemContext<'_, '_> {
     //   (this might need a major re-think, currently args are always evaluated in advance)
     fn call_struct_new(
         &mut self,
+        span_call: Span,
         elab: ElaboratedStruct,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> Result<Value, ErrorGuaranteed> {
@@ -429,7 +433,8 @@ impl CompileItemContext<'_, '_> {
             span_body,
             unique: _,
             ref fields,
-        } = self.refs.shared.elaboration_arenas.struct_info(elab)?;
+            ref fields_hw,
+        } = self.refs.shared.elaboration_arenas.struct_info(elab);
 
         let mut matcher = ParamArgMacher::new(
             self.refs.diags,
@@ -455,37 +460,46 @@ impl CompileItemContext<'_, '_> {
             .iter()
             .find(|v| !matches!(v.inner, Value::Compile(_)))
             .map(|v| v.span);
-        Ok(if let Some(first_non_compile) = first_non_compile {
+
+        let result = if let Some(first_non_compile) = first_non_compile {
             // at least one non-compile, turn everything into IR
+            let fields_hw = match fields_hw {
+                Ok(fields_hw) => fields_hw,
+                &Err(NonHardwareStruct { first_failing_field }) => {
+                    let (field_id, field_ty) = &fields[first_failing_field];
+                    let diag = Diagnostic::new("cannot construct hardware value of struct")
+                        .add_error(span_call, "during construction of struct here")
+                        .add_info(first_non_compile, "necessary because this field value is hardware")
+                        .add_info(field_id.span, "field declared here")
+                        .add_info(
+                            field_ty.span,
+                            format!("with non-hardware type `{}`", field_ty.inner.diagnostic_string()),
+                        )
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+            };
+            let elab_hw = HardwareChecked::new_unchecked(elab);
+
             let mut result_ty = vec![];
             let mut result_domain = ValueDomain::CompileTime;
             let mut result_expr = vec![];
 
             for (i, value) in enumerate(field_values) {
-                let expected_ty_inner = &fields[i].1.inner;
-                let expected_ty_inner_hw = expected_ty_inner.as_hardware_type().map_err(|_| {
-                    let message = format!(
-                        "struct field has type `{}` which is not representable in hardware",
-                        expected_ty_inner.diagnostic_string()
-                    );
-                    let diag = Diagnostic::new("hardware struct fields need to be representable in hardware")
-                        .add_error(value.span, message)
-                        .add_info(first_non_compile, "necessary because this other field is not a compile-time value, which forces the entire struct to be hardware")
-                        .finish();
-                    diags.report(diag)
-                })?;
+                let expected_ty_inner_hw = &fields_hw[i];
 
                 let value_ir =
                     value
                         .inner
-                        .as_hardware_value(diags, &mut self.large, value.span, &expected_ty_inner_hw)?;
+                        .as_hardware_value(self.refs, &mut self.large, value.span, expected_ty_inner_hw)?;
+
                 result_ty.push(value_ir.ty);
                 result_domain = result_domain.join(value_ir.domain);
                 result_expr.push(value_ir.expr);
             }
 
             Value::Hardware(HardwareValue {
-                ty: HardwareType::Struct(elab, result_ty),
+                ty: HardwareType::Struct(elab_hw),
                 domain: result_domain,
                 expr: self.large.push_expr(IrExpressionLarge::TupleLiteral(result_expr)),
             })
@@ -495,9 +509,9 @@ impl CompileItemContext<'_, '_> {
                 .into_iter()
                 .map(|v| unwrap_match!(&v.inner, Value::Compile(v) => v.clone()))
                 .collect();
-            let field_tys = fields.values().map(|(_, ty)| ty.inner.clone()).collect();
-            Value::Compile(CompileValue::Struct(elab, field_tys, values))
-        })
+            Value::Compile(CompileValue::Struct(elab, Arc::new(values)))
+        };
+        Ok(result)
     }
 
     fn call_enum_new(
@@ -509,7 +523,7 @@ impl CompileItemContext<'_, '_> {
     ) -> Result<Value, ErrorGuaranteed> {
         let diags = self.refs.diags;
 
-        let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+        let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &(variant_id, ref variant_content) = &enum_info.variants[variant_index];
         let variant_content = variant_content.as_ref().unwrap();
 
@@ -524,45 +538,42 @@ impl CompileItemContext<'_, '_> {
         let content = matcher.resolve_param(variant_id, variant_content.as_ref(), None)?;
         matcher.finish()?;
 
-        let variant_tys = enum_info
-            .variants
-            .iter()
-            .map(|(_, (_, t))| t.as_ref().map(|t| t.inner.clone()))
-            .collect_vec();
-
         let result = match content.inner {
             Value::Compile(content) => Value::Compile(CompileValue::Enum(
                 elab,
-                variant_tys,
                 (variant_index, Some(Box::new(content.clone()))),
             )),
             Value::Hardware(content_inner) => {
-                // get hardware version of enum type
-                let ty = Type::Enum(elab, variant_tys);
-                let ty_hw = ty.as_hardware_type().map_err(|_| {
-                    let diag = Diagnostic::new(format!(
-                        "enum type `{}` is not representable in hardware",
-                        ty.diagnostic_string()
-                    ))
-                    .add_error(span_call, "enum variant constructed here")
-                    .add_info(content.span, "content value is hardware")
-                    .finish();
-                    diags.report(diag)
-                })?;
-                let hw_enum = match &ty_hw {
-                    HardwareType::Enum(hw_enum) => hw_enum,
-                    _ => return Err(diags.report_internal_error(span_call, "expected hardware enum")),
+                let enum_info_hw = match &enum_info.hw {
+                    Ok(hw_info) => hw_info,
+                    &Err(NonHardwareEnum { first_failing_variant }) => {
+                        let (variant_id, variant_content) = &enum_info.variants[first_failing_variant];
+                        let variant_content = variant_content.as_ref().unwrap();
+
+                        let diag = Diagnostic::new("cannot construct hardware value of struct")
+                            .add_error(span_call, "during construction of struct here")
+                            .add_info(content.span, "necessary because this content value is hardware")
+                            .add_info(variant_id.span, "variant declared here")
+                            .add_info(
+                                variant_content.span,
+                                format!("with non-hardware type `{}`", variant_content.inner.diagnostic_string()),
+                            )
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
                 };
+                let ty_hw = HardwareChecked::new_unchecked(elab);
 
                 // build new expression
                 let content_bits = self.large.push_expr(IrExpressionLarge::ToBits(
-                    content_inner.ty.as_ir(),
+                    content_inner.ty.as_ir(self.refs),
                     content_inner.expr.clone(),
                 ));
-                let expr = hw_enum.build_ir_expression(&mut self.large, variant_index, Some(content_bits))?;
+                let expr =
+                    enum_info_hw.build_ir_expression(self.refs, &mut self.large, variant_index, Some(content_bits))?;
 
                 Value::Hardware(HardwareValue {
-                    ty: ty_hw,
+                    ty: HardwareType::Enum(ty_hw),
                     domain: content_inner.domain,
                     expr,
                 })
@@ -725,13 +736,13 @@ impl CompileItemContext<'_, '_> {
                     false,
                 )?;
 
-                let ty_ir = ty_hw.as_ir();
+                let ty_ir = ty_hw.as_ir(self.refs);
                 let width = ty_ir.size_bits();
 
                 let result = match &value.inner {
                     Value::Compile(value) => {
                         // TODO dedicated compile-time bits value that's faster than a boxed array of bools
-                        let bits = ty_hw.value_to_bits(diags, span_call, value)?;
+                        let bits = ty_hw.value_to_bits(self.refs, span_call, value)?;
                         Value::Compile(CompileValue::Array(Arc::new(
                             bits.into_iter().map(CompileValue::Bool).collect_vec(),
                         )))
@@ -754,21 +765,23 @@ impl CompileItemContext<'_, '_> {
                 Ok(result)
             }
             FunctionBitsKind::FromBits => {
-                let ty_ir = ty_hw.as_ir();
+                let ty_ir = ty_hw.as_ir(self.refs);
                 let width = ty_ir.size_bits();
 
                 let value =
                     check_type_is_bool_array(diags, TypeContainsReason::Operator(span_call), value, Some(&width))?;
 
                 let result = match value {
-                    Value::Compile(v) => Value::Compile(ty_hw.value_from_bits(diags, span_call, &v).map_err(|_| {
-                        let msg = format!(
-                            "while converting value `{:?}` into type `{}`",
-                            v,
-                            ty_hw.diagnostic_string()
-                        );
-                        diags.report_simple("`from_bits` failed", span_call, msg)
-                    })?),
+                    Value::Compile(v) => {
+                        Value::Compile(ty_hw.value_from_bits(self.refs, span_call, &v).map_err(|_| {
+                            let msg = format!(
+                                "while converting value `{:?}` into type `{}`",
+                                v,
+                                ty_hw.diagnostic_string()
+                            );
+                            diags.report_simple("`from_bits` failed", span_call, msg)
+                        })?)
+                    }
                     Value::Hardware(v) => {
                         let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
                         Value::Hardware(HardwareValue {

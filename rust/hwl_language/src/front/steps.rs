@@ -1,3 +1,4 @@
+use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
@@ -66,13 +67,15 @@ impl ArraySteps<ArrayStep> {
 
     pub fn apply_to_hardware_type(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         ty: Spanned<&HardwareType>,
     ) -> Result<(HardwareType, Vec<IrTargetStep>), ErrorGuaranteed> {
+        let diags = refs.diags;
+
         let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type), false)?;
         let steps = steps.unwrap();
 
-        let result_ty_hw = result_ty.as_hardware_type().map_err(|_| {
+        let result_ty_hw = result_ty.as_hardware_type(refs).map_err(|_| {
             diags.report_internal_error(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
@@ -174,10 +177,11 @@ impl ArraySteps<ArrayStep> {
 
     pub fn apply_to_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         value: Spanned<Value>,
     ) -> Result<Value, ErrorGuaranteed> {
+        let diags = refs.diags;
         let ArraySteps { steps } = self;
 
         let mut curr = value;
@@ -213,7 +217,7 @@ impl ArraySteps<ArrayStep> {
                                         // TODO maybe re-use the existing allocation instead by draining before/after?
                                         curr_inner.drain(start..start + len).collect()
                                     }
-                                    Err(curr_inner) => curr_inner[start..start + len].iter().cloned().collect(),
+                                    Err(curr_inner) => curr_inner[start..start + len].to_vec(),
                                 };
 
                                 Value::Compile(CompileValue::Array(Arc::new(result)))
@@ -230,7 +234,7 @@ impl ArraySteps<ArrayStep> {
                 (step_inner, curr_inner) => {
                     // convert curr to hardware
                     let ty = curr_inner.ty();
-                    let ty = ty.as_hardware_type().map_err(|_| {
+                    let ty = ty.as_hardware_type(refs).map_err(|_| {
                         let diag = Diagnostic::new("hardware array indexing target needs to have hardware type")
                             .add_error(
                                 curr.span,
@@ -243,7 +247,7 @@ impl ArraySteps<ArrayStep> {
                             .finish();
                         diags.report(diag)
                     })?;
-                    let curr_inner = curr_inner.as_hardware_value(diags, large, curr.span, &ty)?;
+                    let curr_inner = curr_inner.as_hardware_value(refs, large, curr.span, &ty)?;
                     let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
                         HardwareType::Array(curr_array_inner_ty, curr_array_len) => {
                             (curr_array_inner_ty, curr_array_len)
@@ -433,10 +437,12 @@ impl ArraySteps<&ArrayStepCompile> {
 
     pub fn get_compile_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         value: Spanned<CompileValue>,
     ) -> Result<CompileValue, ErrorGuaranteed> {
+        let diags = refs.diags;
+
         // TODO avoid clones
         let self_mapped = ArraySteps {
             steps: self
@@ -447,7 +453,7 @@ impl ArraySteps<&ArrayStepCompile> {
         };
         let value_span = value.span;
 
-        let result = self_mapped.apply_to_value(diags, large, value.map_inner(Value::Compile))?;
+        let result = self_mapped.apply_to_value(refs, large, value.map_inner(Value::Compile))?;
         match result {
             Value::Compile(result) => Ok(result),
             Value::Hardware(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),

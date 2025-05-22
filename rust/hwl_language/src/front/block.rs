@@ -405,7 +405,6 @@ impl CompileItemContext<'_, '_> {
         final_else: &Option<Block<BlockStatement>>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
 
         let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
@@ -526,8 +525,7 @@ impl CompileItemContext<'_, '_> {
                 else_end_err?;
 
                 merge_variable_branches(
-                    diags,
-                    source,
+                    self.refs,
                     ctx,
                     &mut self.large,
                     &self.variables,
@@ -588,8 +586,8 @@ impl CompileItemContext<'_, '_> {
         let mut cover_enum_variant: HashMap<usize, Span> = HashMap::new();
 
         // some type-specific handling
-        let cover_enum_count = if let &Type::Enum(elab, _) = &target_ty {
-            let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+        let cover_enum_count = if let &Type::Enum(elab) = &target_ty {
+            let info = self.refs.shared.elaboration_arenas.enum_info(elab);
             Some(info.variants.len())
         } else {
             None
@@ -687,7 +685,7 @@ impl CompileItemContext<'_, '_> {
                     }
                     &MatchPattern::EnumVariant(variant, id_content) => {
                         let elab = match target_ty {
-                            Type::Enum(elab, _) => elab,
+                            Type::Enum(elab) => elab,
                             _ => {
                                 return Err(diags.report_simple(
                                     "expected enum type for enum variant pattern",
@@ -696,7 +694,7 @@ impl CompileItemContext<'_, '_> {
                                 ))
                             }
                         };
-                        let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+                        let info = self.refs.shared.elaboration_arenas.enum_info(elab);
 
                         let variant_str = variant.str(self.refs.fixed.source);
                         let variant_index = info.find_variant(diags, Spanned::new(variant.span, variant_str))?;
@@ -757,8 +755,8 @@ impl CompileItemContext<'_, '_> {
                     (true, false) => "value not covered: true",
                     _ => unreachable!(),
                 },
-                Type::Enum(elab, _) => {
-                    let info = self.refs.shared.elaboration_arenas.enum_info(elab)?;
+                Type::Enum(elab) => {
+                    let info = self.refs.shared.elaboration_arenas.enum_info(elab);
 
                     let mut not_covered = vec![];
                     for (i, (id, _)) in info.variants.iter().enumerate() {
@@ -859,7 +857,7 @@ impl CompileItemContext<'_, '_> {
                     _ => return Err(diags.report_internal_error(pattern_span, "unexpected range/value")),
                 },
                 MatchPattern::EnumVariant(pattern_index, id_content) => match &cond {
-                    CompileValue::Enum(_, _, (value_index, value_content)) => {
+                    CompileValue::Enum(_, (value_index, value_content)) => {
                         if pattern_index == *value_index {
                             let declare_content = match (id_content, value_content) {
                                 (Some(id_content), Some(value_content)) => {
@@ -921,7 +919,6 @@ impl CompileItemContext<'_, '_> {
         branch_patterns: Vec<CheckedMatchPattern>,
     ) -> Result<BlockEnd, ErrorGuaranteed> {
         let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
 
         let mut if_stack_cond_block = vec![];
         let mut if_stack_vars = vec![];
@@ -995,7 +992,11 @@ impl CompileItemContext<'_, '_> {
                         HardwareType::Enum(cond_ty) => cond_ty,
                         _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw enum/value")),
                     };
-                    let ty_content = &target_ty.variants[pattern_index];
+
+                    let info = self.refs.shared.elaboration_arenas.enum_info(target_ty.inner());
+                    let info_hw = info.hw.as_ref_ok().unwrap();
+
+                    let ty_content = &info_hw.content_types[pattern_index];
 
                     let target_tag = large.push_expr(IrExpressionLarge::TupleIndex {
                         base: target.expr.clone(),
@@ -1016,10 +1017,12 @@ impl CompileItemContext<'_, '_> {
                             let target_content_bits = large.push_expr(IrExpressionLarge::ArraySlice {
                                 base: target_content_all_bits,
                                 start: IrExpression::Int(BigInt::ZERO),
-                                len: ty_content.size_bits(),
+                                len: ty_content.size_bits(self.refs),
                             });
-                            let target_content =
-                                large.push_expr(IrExpressionLarge::FromBits(ty_content.as_ir(), target_content_bits));
+                            let target_content = large.push_expr(IrExpressionLarge::FromBits(
+                                ty_content.as_ir(self.refs),
+                                target_content_bits,
+                            ));
 
                             let declare_value = HardwareValue {
                                 ty: ty_content.clone(),
@@ -1078,8 +1081,7 @@ impl CompileItemContext<'_, '_> {
             .map(|((_, b), vars)| (b, vars.into_content()))
             .collect_vec();
         merge_variable_branches(
-            diags,
-            source,
+            self.refs,
             ctx,
             &mut self.large,
             &self.variables,

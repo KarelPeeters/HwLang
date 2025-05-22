@@ -276,7 +276,7 @@ impl Compile {
             value.clone()
         };
 
-        compile_value_to_py(py, &slf, value)
+        compile_value_to_py(py, &slf, &value)
     }
 }
 
@@ -305,6 +305,9 @@ impl IncRange {
 
 #[pymethods]
 impl Function {
+    // TODO implement this on more/all values, not just functions and modules
+    //   (eg. struct/enum constructors, int type construction, ...)
+    //   just follow exactly what expression eval does, ideally share most code with it
     #[pyo3(signature = (*args, **kwargs))]
     fn __call__(
         &self,
@@ -387,7 +390,7 @@ impl Function {
             }
         };
 
-        compile_value_to_py(py, &self.compile, returned)
+        compile_value_to_py(py, &self.compile, &returned)
     }
 }
 
@@ -422,8 +425,7 @@ impl Module {
 
         // get the right ir module
         let diags = Diagnostics::new();
-        let ir_module =
-            map_diag_error(source, &diags, state.elaboration_arenas.module_internal_info(module))?.module_ir;
+        let ir_module = state.elaboration_arenas.module_internal_info(module).module_ir;
 
         // check that all modules are resolved
         let ir_database = state.finish_ir_database(&diags, dummy_span);

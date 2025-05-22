@@ -72,7 +72,7 @@ pub fn compile(
 
             match result {
                 &CompileValue::Module(ElaboratedModule::Internal(elab)) => {
-                    let info = shared.elaboration_arenas.module_internal_info(elab)?;
+                    let info = shared.elaboration_arenas.module_internal_info(elab);
                     Ok((top_item, info.module_ir))
                 }
                 _ => Err(diags.report_internal_error(parsed[top_item].id.span(), "top items should be modules")),

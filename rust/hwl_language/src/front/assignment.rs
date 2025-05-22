@@ -123,7 +123,7 @@ impl CompileItemContext<'_, '_> {
 
         // get inner type and steps
         let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
-        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
+        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
         // evaluate the full value
         let value = match op.inner {
@@ -132,13 +132,13 @@ impl CompileItemContext<'_, '_> {
                 // TODO apply implications
                 let target_base_eval = target_base_signal.as_hardware_value(self, target_base.span)?;
                 let target_eval = target_steps.apply_to_value(
-                    diags,
+                    self.refs,
                     &mut self.large,
                     Spanned::new(target.span, Value::Hardware(target_base_eval)),
                 )?;
 
                 let value_eval = eval_binary_expression(
-                    diags,
+                    self.refs,
                     &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
@@ -169,7 +169,7 @@ impl CompileItemContext<'_, '_> {
         // convert value to hardware
         let value_hw = value
             .inner
-            .as_hardware_value(diags, &mut self.large, value.span, &target_ty)?;
+            .as_hardware_value(self.refs, &mut self.large, value.span, &target_ty)?;
 
         // check domains
         let value_domain = Spanned {
@@ -266,7 +266,7 @@ impl CompileItemContext<'_, '_> {
                         ValueWithImplications::simple(vars.var_get(diags, target.span, var)?.value()),
                     );
                     let value_eval = eval_binary_expression(
-                        diags,
+                        self.refs,
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
@@ -322,9 +322,10 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let target_eval = target_steps.apply_to_value(diags, &mut self.large, target_base_eval.clone())?;
+                    let target_eval =
+                        target_steps.apply_to_value(self.refs, &mut self.large, target_base_eval.clone())?;
                     let value_eval = eval_binary_expression(
-                        diags,
+                        self.refs,
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
@@ -352,7 +353,7 @@ impl CompileItemContext<'_, '_> {
 
             // figure out the inner type and steps
             let (target_inner_ty, target_steps_ir) =
-                target_steps.apply_to_hardware_type(diags, target_base_ty.as_ref())?;
+                target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
             let reason = TypeContainsReason::Assignment {
                 span_target: target.span,
                 span_target_ty: target_base_ty.span,
@@ -362,7 +363,7 @@ impl CompileItemContext<'_, '_> {
             // do the current assignment
             let value_ir = value
                 .inner
-                .as_hardware_value(diags, &mut self.large, value.span, &target_inner_ty)?;
+                .as_hardware_value(self.refs, &mut self.large, value.span, &target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
                 base: IrAssignmentTargetBase::Variable(target_base_ir_var),
                 steps: target_steps_ir,
@@ -391,9 +392,9 @@ impl CompileItemContext<'_, '_> {
                 None => right_eval,
                 Some(op_inner) => {
                     let target_eval =
-                        target_steps.get_compile_value(diags, &mut self.large, target_base_eval.clone())?;
+                        target_steps.get_compile_value(self.refs, &mut self.large, target_base_eval.clone())?;
                     let value = eval_binary_expression(
-                        diags,
+                        self.refs,
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
@@ -442,7 +443,8 @@ impl CompileItemContext<'_, '_> {
         var: Variable,
         target_base_eval: &Value,
     ) -> Result<HardwareValue<Spanned<HardwareType>, IrVariable>, ErrorGuaranteed> {
-        let diags = self.refs.diags;
+        let refs = self.refs;
+        let diags = refs.diags;
 
         // pick a type and convert the current base value to hardware
         // TODO allow just inferring types, the user can specify one if they really want to
@@ -456,7 +458,7 @@ impl CompileItemContext<'_, '_> {
                 .finish();
             diags.report(diag)
         })?;
-        let target_base_ty_hw = target_base_ty.inner.as_hardware_type().map_err(|_| {
+        let target_base_ty_hw = target_base_ty.inner.as_hardware_type(refs).map_err(|_| {
             let diag = Diagnostic::new("variable needs hardware type because it is assigned a hardware value")
                 .add_error(
                     target_span,
@@ -471,14 +473,9 @@ impl CompileItemContext<'_, '_> {
         })?;
 
         let target_base_ir_expr =
-            target_base_eval.as_hardware_value(diags, &mut self.large, target_base_span, &target_base_ty_hw)?;
-        let result = store_ir_expression_in_new_variable(
-            self.refs,
-            ctx,
-            ctx_block,
-            self.variables[var].id,
-            target_base_ir_expr,
-        )?;
+            target_base_eval.as_hardware_value(refs, &mut self.large, target_base_span, &target_base_ty_hw)?;
+        let result =
+            store_ir_expression_in_new_variable(refs, ctx, ctx_block, self.variables[var].id, target_base_ir_expr)?;
 
         Ok(HardwareValue {
             ty: Spanned::new(target_base_ty.span, result.ty),
@@ -562,7 +559,7 @@ pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
 
     let span = debug_info_id.span();
     let var_ir_info = IrVariableInfo {
-        ty: expr.ty.as_ir(),
+        ty: expr.ty.as_ir(refs),
         debug_info_id: debug_info_id.spanned_string(refs.fixed.source),
     };
     let var_ir = ctx.new_ir_variable(diags, span, var_ir_info)?;

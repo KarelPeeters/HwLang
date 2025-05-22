@@ -488,7 +488,7 @@ fn push_connector_single(
         let ir_port = ports_ir.push(IrPortInfo {
             name: id.str(source).to_owned(),
             direction: direction.inner,
-            ty: ty.inner.as_ir(),
+            ty: ty.inner.as_ir(ctx.refs),
             debug_span: id.span,
             debug_info_ty: ty.inner.diagnostic_string(),
             debug_info_domain: domain.inner.diagnostic_string(ctx),
@@ -542,7 +542,7 @@ fn push_connector_interface(
             interface,
             view: view_name,
         } = &view;
-        let interface = ctx.refs.shared.elaboration_arenas.interface_info(*interface)?;
+        let interface = ctx.refs.shared.elaboration_arenas.interface_info(*interface);
         let view_info = interface.views.get(view_name).unwrap();
 
         let port_dirs = view_info.port_dirs.as_ref_ok()?;
@@ -563,7 +563,7 @@ fn push_connector_interface(
             let ir_port = ports_ir.push(IrPortInfo {
                 name: ir_name,
                 direction: direction.inner,
-                ty: ty.inner.as_ir(),
+                ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
                 debug_info_ty: ty.inner.diagnostic_string(),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
@@ -1202,7 +1202,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     unique: _,
                     module_ir,
                     connectors,
-                } = ctx.refs.shared.elaboration_arenas.module_internal_info(module)?;
+                } = ctx.refs.shared.elaboration_arenas.module_internal_info(module);
                 (
                     ElaboratedModule::Internal(*module_ir),
                     connectors,
@@ -1216,7 +1216,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     generic_args,
                     port_names,
                     connectors,
-                } = ctx.refs.shared.elaboration_arenas.module_external_info(module)?;
+                } = ctx.refs.shared.elaboration_arenas.module_external_info(module);
                 (
                     ElaboratedModule::External((module_name, generic_args, port_names)),
                     connectors,
@@ -1470,22 +1470,26 @@ impl BodyElaborationContext<'_, '_, '_> {
                         check_domain?;
 
                         // convert value to ir
-                        let connection_value_ir_raw = connection_value
-                            .as_ref()
-                            .map_inner(|v| {
-                                Ok(
-                                    v.as_hardware_value(diags, &mut self.ctx.large, value_expr.span, &ty.inner)?
-                                        .expr,
-                                )
-                            })
-                            .transpose()?;
+                        let connection_value_ir_raw =
+                            connection_value
+                                .as_ref()
+                                .map_inner(|v| {
+                                    Ok(v.as_hardware_value(
+                                        self.ctx.refs,
+                                        &mut self.ctx.large,
+                                        value_expr.span,
+                                        &ty.inner,
+                                    )?
+                                    .expr)
+                                })
+                                .transpose()?;
 
                         // build extra wire and process if necessary
                         let connection_value_ir = if !ctx_block.statements.is_empty()
                             || connection_value_ir_raw.inner.contains_variable(&self.ctx.large)
                         {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
-                                ty: ty.inner.as_ir(),
+                                ty: ty.inner.as_ir(self.ctx.refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
                                 debug_info_ty: ty.inner.clone(),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(self.ctx),
@@ -1660,7 +1664,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     .refs
                     .shared
                     .elaboration_arenas
-                    .interface_info(connector_view.interface)?;
+                    .interface_info(connector_view.interface);
                 let view_info = interface_info.views.get(&connector_view.view).unwrap();
                 let value_view_info = interface_info.views.get(&value_info.view.view).unwrap();
 
@@ -1963,7 +1967,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                     Some(ty) => Ok(ty),
                     None => {
                         let v_ty = value_eval.inner.ty();
-                        match v_ty.as_hardware_type() {
+                        match v_ty.as_hardware_type(ctx.refs) {
                             Ok(v_ty_hw) => Ok(Spanned::new(value_eval.span, v_ty_hw)),
                             Err(_) => Err(diags.report_simple(
                                 "wire value has non-hardware type",
@@ -1997,7 +2001,7 @@ impl BodyElaborationContext<'_, '_, '_> {
         // build wire
         let debug_info_domain = domain.map_or_else(|| "inferred".to_string(), |d| d.inner.diagnostic_string(ctx));
         let ir_wire = self.ir_wires.push(IrWireInfo {
-            ty: ty.inner.as_ir(),
+            ty: ty.inner.as_ir(ctx.refs),
             debug_info_id: id.spanned_string(),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain,
@@ -2016,7 +2020,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             // convert value to hardware
             let value_hw = value
                 .inner
-                .as_hardware_value(diags, &mut ctx.large, value.span, &ty.inner)?;
+                .as_hardware_value(ctx.refs, &mut ctx.large, value.span, &ty.inner)?;
 
             // append assignment to process
             let target = IrAssignmentTarget::wire(ir_wire);
@@ -2088,7 +2092,7 @@ impl BodyElaborationContext<'_, '_, '_> {
             .as_ref()
             .map_or_else(|| "inferred".to_string(), |sync| sync.inner.diagnostic_string(ctx));
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            ty: ty.inner.as_ir(),
+            ty: ty.inner.as_ir(ctx.refs),
             debug_info_id: id.spanned_string(),
             debug_info_ty: ty.inner.clone(),
             debug_info_domain,
@@ -2194,7 +2198,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         // build register
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
-            ty: port_info.ty.inner.as_ir(),
+            ty: port_info.ty.inner.as_ir(ctx.refs),
             debug_info_id: id.map_inner(|s| Some(s.to_owned())),
             debug_info_ty: port_info.ty.inner.clone(),
             debug_info_domain: domain.diagnostic_string(ctx),
@@ -2405,7 +2409,7 @@ fn pull_register_init_into_process(
                 if let Some(init) = register_initial_values.get(&reg) {
                     let init = init.as_ref_ok()?;
                     let init_ir = init.inner.as_ir_expression_or_undefined(
-                        diags,
+                        ctx.refs,
                         &mut ctx.large,
                         init.span,
                         &reg_info.ty.inner,
