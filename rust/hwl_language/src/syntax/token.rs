@@ -1,6 +1,7 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use std::borrow::Cow;
 use strum::EnumIter;
 
 use crate::syntax::pos::{Pos, Span};
@@ -419,6 +420,11 @@ impl<'s> Tokenizer<'s> {
 
         result.inspect_err(|_| self.errored = true)
     }
+}
+
+pub fn apply_string_literal_escapes(raw: &str) -> Cow<str> {
+    // TODO actually do escapes here, keep in sync with tokenizer state machine
+    Cow::Borrowed(raw)
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {

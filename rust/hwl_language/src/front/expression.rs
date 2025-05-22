@@ -31,6 +31,7 @@ use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{vec_concat, VecExt};
 
+use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
@@ -337,8 +338,9 @@ impl<'a> CompileItemContext<'a, '_> {
                 for &piece in pieces {
                     match piece {
                         StringPiece::Literal(span) => {
-                            // TODO handle escapes
-                            s.push_str(source.span_str(span));
+                            let raw = source.span_str(span);
+                            let escaped = apply_string_literal_escapes(raw);
+                            s.push_str(escaped.as_ref());
                         }
                         StringPiece::Substitute(value) => {
                             let value = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, value)?;

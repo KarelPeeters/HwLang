@@ -8,13 +8,15 @@ use crate::syntax::ast::{
     MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, WhileStatement,
-    WireDeclaration, WireDeclarationKind,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    WhileStatement, WireDeclaration, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::SourceDatabase;
+use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
+use regex::Regex;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum FindDefinition<S = Vec<Span>> {
@@ -66,14 +68,14 @@ macro_rules! check_skip {
 #[derive(Debug)]
 struct DeclScope<'p> {
     parent: Option<&'p DeclScope<'p>>,
-
-    // TODO add regex patterns for general identifiers based on their f-strings to avoid a bunch of false positives
-    //   (in general change this whole setup to be regex-set-based)
-    map: ScopeMap,
-    general: Vec<(Span, Conditional)>,
+    content: DeclScopeContent,
 }
 
-type ScopeMap = IndexMap<String, Vec<(Span, Conditional)>>;
+#[derive(Debug)]
+struct DeclScopeContent {
+    fixed: IndexMap<String, Vec<(Span, Conditional)>>,
+    patterns: Vec<(Regex, Span, Conditional)>,
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Conditional {
@@ -85,29 +87,42 @@ impl<'p> DeclScope<'p> {
     fn new_root() -> Self {
         Self {
             parent: None,
-            map: IndexMap::new(),
-            general: vec![],
+            content: DeclScopeContent {
+                fixed: IndexMap::new(),
+                patterns: vec![],
+            },
         }
     }
 
     fn new_child(parent: &'p DeclScope<'p>) -> Self {
         Self {
             parent: Some(parent),
-            map: IndexMap::new(),
-            general: vec![],
+            content: DeclScopeContent {
+                fixed: IndexMap::new(),
+                patterns: vec![],
+            },
         }
     }
 
-    fn merge_conditional_child(&mut self, map: ScopeMap) {
-        for (k, v) in map {
+    fn merge_conditional_child(&mut self, content: DeclScopeContent) {
+        let DeclScopeContent { fixed, patterns: regex } = content;
+        for (k, v) in fixed {
             for (span, _) in v {
-                self.map.entry(k.clone()).or_default().push((span, Conditional::Yes));
+                self.content
+                    .fixed
+                    .entry(k.clone())
+                    .or_default()
+                    .push((span, Conditional::Yes));
             }
+        }
+        for (k, v, _) in regex {
+            self.content.patterns.push((k, v, Conditional::Yes));
         }
     }
 
     fn declare(&mut self, source: &SourceDatabase, id: Identifier) {
-        self.map
+        self.content
+            .fixed
             .entry(id.str(source).to_owned())
             .or_default()
             .push((id.span, Conditional::No));
@@ -120,18 +135,19 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn declare_general(&mut self, span: Span) {
-        self.general.push((span, Conditional::No));
+    fn declare_general(&mut self, key: Regex, span: Span) {
+        self.content.patterns.push((key, span, Conditional::No));
     }
 
-    fn find(&self, source: &SourceDatabase, id: Identifier) -> FindDefinition {
+    fn find(&self, id: &str) -> FindDefinition {
         let mut curr = self;
         let mut result = vec![];
 
         loop {
             let mut any_certain = false;
 
-            if let Some(entries) = curr.map.get(id.str(source)) {
+            let DeclScopeContent { fixed, patterns } = &curr.content;
+            if let Some(entries) = fixed.get(id) {
                 for &(span, cond) in entries {
                     result.push(span);
                     match cond {
@@ -140,8 +156,12 @@ impl<'p> DeclScope<'p> {
                     }
                 }
             }
-            for &(span, _cond) in &curr.general {
-                result.push(span);
+            for &(ref regex, span, c) in patterns {
+                if regex.is_match(id) {
+                    // pattern matches are never certain, even if they're not conditional
+                    let _ = c;
+                    result.push(span);
+                }
             }
 
             if any_certain {
@@ -508,7 +528,7 @@ impl ResolveContext<'_> {
                     self.visit_if_stmt(&mut scope_inner, if_stmt, &mut |s: &mut DeclScope, b| {
                         self.visit_extra_list(s, b, f)
                     })?;
-                    scope_parent.merge_conditional_child(scope_inner.map);
+                    scope_parent.merge_conditional_child(scope_inner.content);
                 }
             }
         }
@@ -873,6 +893,16 @@ impl ResolveContext<'_> {
                     }
                 }
             }
+            ExpressionKind::StringLiteral(pieces) => {
+                for piece in pieces {
+                    match piece {
+                        StringPiece::Literal(_span) => {}
+                        &StringPiece::Substitute(expr) => {
+                            self.visit_expression(scope, expr)?;
+                        }
+                    }
+                }
+            }
             ExpressionKind::ArrayLiteral(elems) => {
                 for &elem in elems {
                     self.visit_array_literal_element(scope, elem)?;
@@ -981,8 +1011,7 @@ impl ResolveContext<'_> {
             | ExpressionKind::Type
             | ExpressionKind::TypeFunction
             | ExpressionKind::IntLiteral(_)
-            | ExpressionKind::BoolLiteral(_)
-            | ExpressionKind::StringLiteral(_) => {}
+            | ExpressionKind::BoolLiteral(_) => {}
         }
 
         Ok(())
@@ -995,7 +1024,34 @@ impl ResolveContext<'_> {
             }
             GeneralIdentifier::FromString(span, expr) => {
                 self.visit_expression(scope, expr)?;
-                scope.declare_general(span);
+
+                // build a pattern that matches all possible substitutions
+                let pattern = match &self.arena_expressions[expr.inner] {
+                    ExpressionKind::StringLiteral(pieces) => {
+                        let mut pattern = String::new();
+                        pattern.push('^');
+
+                        for piece in pieces {
+                            match piece {
+                                &StringPiece::Literal(s) => {
+                                    let literal = apply_string_literal_escapes(self.source.span_str(s));
+                                    pattern.push_str(&regex::escape(literal.as_ref()));
+                                }
+                                StringPiece::Substitute(_expr) => {
+                                    pattern.push_str(".*");
+                                }
+                            }
+                        }
+
+                        pattern.push('$');
+                        Regex::new(&pattern).unwrap()
+                    }
+
+                    // default to a regex that matches everything
+                    _ => Regex::new("").unwrap(),
+                };
+
+                scope.declare_general(pattern, span);
             }
         }
         Ok(())
@@ -1013,7 +1069,8 @@ impl ResolveContext<'_> {
     }
 
     fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
+        // TODO support visiting general IDs too
         check_skip!(self, id.span);
-        Err(scope.find(self.source, id))
+        Err(scope.find(id.str(self.source)))
     }
 }
