@@ -935,7 +935,6 @@ impl ResolveContext<'_> {
 
                     self.visit_expression(&scope, module)?;
 
-                    check_skip!(self, port_connections.span);
                     for conn in &port_connections.inner {
                         let &PortConnection { id, expr } = &conn.inner;
                         // TODO try resolving port name, needs type info

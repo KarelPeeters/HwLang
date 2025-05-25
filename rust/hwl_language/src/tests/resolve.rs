@@ -80,6 +80,15 @@ fn resolve_in_const_clock() {
 }
 
 #[test]
+fn resolve_second_instance() {
+    let src = "module parent ports(x: in async bool) { instance foo ports(x); instance foo ports(x); }";
+    println!("first");
+    test_resolve(src, 59, FindDefinition::Found(&[20..21]));
+    println!("second");
+    test_resolve(src, 82, FindDefinition::Found(&[20..21]));
+}
+
+#[test]
 fn resolve_wire_process_after() {
     let src = "module foo ports() { comb { val _ = x; } wire x = false; }";
     test_resolve(src, 36, FindDefinition::Found(&[46..47]));
