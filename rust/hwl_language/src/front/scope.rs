@@ -288,7 +288,7 @@ impl<'p> Scope<'p> {
             }
         }
 
-        // TODO insert error entry to supress future errors that ask for the same identifier?
+        // TODO insert error entry to suppress future errors that ask for the same identifier?
         let info_parents = if check_parents { " and its parents" } else { "" };
 
         // TODO add fuzzy-matched suggestions as info

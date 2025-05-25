@@ -90,7 +90,7 @@ impl CompileRefs<'_, '_> {
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = scope_params.to_scope(&mut ctx.variables, &mut vars, self, span)?;
+        let scope_params = scope_params.to_scope(&mut ctx.variables, &mut vars, self, span);
 
         // elaborate port types
         let mut scope_ports = Scope::new_child(span_body, &scope_params);

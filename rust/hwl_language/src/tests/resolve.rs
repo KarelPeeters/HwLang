@@ -78,3 +78,33 @@ fn resolve_in_const_clock() {
     let src = "const a = 1; const { val _ = a; }";
     test_resolve(src, 29, FindDefinition::Found(&[6..7]));
 }
+
+#[test]
+fn resolve_wire_process_after() {
+    let src = "module foo ports() { comb { val _ = x; } wire x = false; }";
+    test_resolve(src, 36, FindDefinition::Found(&[46..47]));
+}
+
+#[test]
+fn resolve_pub_wire_top() {
+    let src = "module foo ports() { pub wire x = false; wire y = x; }";
+    test_resolve(src, 50, FindDefinition::Found(&[30..31]));
+}
+
+#[test]
+fn resolve_pub_wire_if() {
+    let src = "module foo ports() { if (true) { pub wire x = false; } wire y = x; }";
+    test_resolve(src, 64, FindDefinition::Found(&[42..43]));
+}
+
+#[test]
+fn resolve_pub_wire_for() {
+    let src = "module foo ports() { for (i in 0..1) { pub wire x = false; } wire y = x; }";
+    test_resolve(src, 70, FindDefinition::Found(&[48..49]));
+}
+
+#[test]
+fn resolve_pub_wire_if_after() {
+    let src = "module foo ports() { wire y = x; if (true) { pub wire x = false; } }";
+    test_resolve(src, 30, FindDefinition::Found(&[54..55]));
+}

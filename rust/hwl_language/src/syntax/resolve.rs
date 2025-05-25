@@ -9,7 +9,7 @@ use crate::syntax::ast::{
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    WhileStatement, WireDeclaration, WireDeclarationKind,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::SourceDatabase;
@@ -120,23 +120,23 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn declare(&mut self, source: &SourceDatabase, id: Identifier) {
+    fn declare(&mut self, source: &SourceDatabase, cond: Conditional, id: Identifier) {
         self.content
             .fixed
             .entry(id.str(source).to_owned())
             .or_default()
-            .push((id.span, Conditional::No));
+            .push((id.span, cond));
     }
 
-    fn maybe_declare(&mut self, source: &SourceDatabase, id: MaybeIdentifier) {
+    fn maybe_declare(&mut self, source: &SourceDatabase, cond: Conditional, id: MaybeIdentifier) {
         match id {
             MaybeIdentifier::Dummy(_) => {}
-            MaybeIdentifier::Identifier(id) => self.declare(source, id),
+            MaybeIdentifier::Identifier(id) => self.declare(source, cond, id),
         }
     }
 
-    fn declare_general(&mut self, key: Regex, span: Span) {
-        self.content.patterns.push((key, span, Conditional::No));
+    fn declare_general(&mut self, cond: Conditional, key: Regex, span: Span) {
+        self.content.patterns.push((key, span, cond));
     }
 
     fn find(&self, id: &str) -> FindDefinition {
@@ -195,14 +195,14 @@ impl ResolveContext<'_> {
         let mut scope_file = DeclScope::new_root();
         for item in items {
             if let Some(info) = item.info().declaration {
-                scope_file.maybe_declare(self.source, info.id);
+                scope_file.maybe_declare(self.source, Conditional::No, info.id);
             }
 
             if let Item::Import(item) = item {
                 let mut visit_entry = |entry: &ImportEntry| {
                     let &ImportEntry { span: _, id, as_ } = entry;
                     let result = as_.unwrap_or(MaybeIdentifier::Identifier(id));
-                    scope_file.maybe_declare(self.source, result);
+                    scope_file.maybe_declare(self.source, Conditional::No, result);
                 };
                 match &item.entry.inner {
                     ImportFinalKind::Single(entry) => {
@@ -248,7 +248,10 @@ impl ResolveContext<'_> {
                     self.visit_port_item(scope_ports, port)?
                 })?;
 
-                self.visit_block_module(&scope_ports, body)?;
+                let mut scope_body = DeclScope::new_child(&scope_ports);
+                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body);
+
+                self.visit_block_module_inner(&mut scope_body, body)?;
                 Ok(())
             }
             Item::ModuleExternal(decl) => {
@@ -292,7 +295,7 @@ impl ResolveContext<'_> {
                 let mut scope_body = DeclScope::new_child(&scope_params);
                 self.visit_extra_list(&mut scope_body, port_types, &mut |scope_body, &(port_name, port_ty)| {
                     self.visit_expression(scope_body, port_ty)?;
-                    scope_body.declare(self.source, port_name);
+                    scope_body.declare(self.source, Conditional::No, port_name);
                     Ok(())
                 })?;
 
@@ -303,7 +306,7 @@ impl ResolveContext<'_> {
                         port_dirs,
                         &mut |scope_body, &(port_name, _port_dir)| self.visit_id_usage(scope_body, port_name),
                     )?;
-                    scope_body.maybe_declare(self.source, id);
+                    scope_body.maybe_declare(self.source, Conditional::No, id);
                 }
 
                 Ok(())
@@ -336,7 +339,7 @@ impl ResolveContext<'_> {
                         self.visit_expression(scope_ports, interface)?;
                     }
                 }
-                scope_ports.declare(self.source, id);
+                scope_ports.declare(self.source, Conditional::No, id);
                 Ok(())
             }
             ModulePortItem::Block(block) => {
@@ -356,7 +359,7 @@ impl ResolveContext<'_> {
                             self.visit_expression(scope_ports, interface)?;
                         }
                     }
-                    scope_ports.declare(self.source, id);
+                    scope_ports.declare(self.source, Conditional::No, id);
                     Ok(())
                 })?;
 
@@ -486,7 +489,7 @@ impl ResolveContext<'_> {
                     }
                 };
 
-                scope_parent.maybe_declare(self.source, id);
+                scope_parent.maybe_declare(self.source, Conditional::No, id);
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -506,7 +509,7 @@ impl ResolveContext<'_> {
             if let Some(default) = default {
                 self.visit_expression(scope, default)?;
             }
-            scope.declare(self.source, id);
+            scope.declare(self.source, Conditional::No, id);
             Ok(())
         })
     }
@@ -591,7 +594,7 @@ impl ResolveContext<'_> {
         }
 
         let mut scope_inner = DeclScope::new_child(scope);
-        scope_inner.maybe_declare(self.source, index);
+        scope_inner.maybe_declare(self.source, Conditional::No, index);
 
         f(&scope_inner, body)?;
 
@@ -632,7 +635,7 @@ impl ResolveContext<'_> {
                 if let Some(init) = init {
                     self.visit_expression(scope, init)?;
                 }
-                scope.maybe_declare(self.source, id);
+                scope.maybe_declare(self.source, Conditional::No, id);
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -671,7 +674,7 @@ impl ResolveContext<'_> {
                     match &pattern.inner {
                         MatchPattern::Dummy => {}
                         &MatchPattern::Val(id) => {
-                            scope_inner.declare(self.source, id);
+                            scope_inner.declare(self.source, Conditional::No, id);
                         }
                         &MatchPattern::Equal(expr) => {
                             self.visit_expression(scope, expr)?;
@@ -681,7 +684,7 @@ impl ResolveContext<'_> {
                         }
                         &MatchPattern::EnumVariant(_variant, id) => {
                             if let Some(id) = id {
-                                scope_inner.maybe_declare(self.source, id);
+                                scope_inner.maybe_declare(self.source, Conditional::No, id);
                             }
                         }
                     }
@@ -715,29 +718,129 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
+    fn collect_module_body_pub_declarations(
+        &self,
+        scope_body: &mut DeclScope,
+        cond: Conditional,
+        curr_block: &Block<ModuleStatement>,
+    ) {
+        for stmt in &curr_block.statements {
+            match &stmt.inner {
+                // control flow
+                ModuleStatementKind::Block(block) => {
+                    self.collect_module_body_pub_declarations(scope_body, cond, block);
+                }
+                ModuleStatementKind::If(if_stmt) => {
+                    let IfStatement {
+                        initial_if,
+                        else_ifs,
+                        final_else,
+                    } = if_stmt;
+
+                    let IfCondBlockPair {
+                        span: _,
+                        span_if: _,
+                        cond: _,
+                        block,
+                    } = initial_if;
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+
+                    for else_if in else_ifs {
+                        let IfCondBlockPair {
+                            span: _,
+                            span_if: _,
+                            cond: _,
+                            block,
+                        } = else_if;
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+                    }
+
+                    if let Some(final_else) = final_else {
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else);
+                    }
+                }
+                ModuleStatementKind::For(for_stmt) => {
+                    let ForStatement {
+                        span_keyword: _,
+                        index: _,
+                        index_ty: _,
+                        iter: _,
+                        body,
+                    } = for_stmt;
+
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body);
+                }
+
+                // potentially public declarations
+                ModuleStatementKind::RegDeclaration(decl) => {
+                    let &RegDeclaration {
+                        vis,
+                        id,
+                        sync: _,
+                        ty: _,
+                        init: _,
+                    } = decl;
+                    match vis {
+                        Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Private => {}
+                    }
+                }
+                ModuleStatementKind::WireDeclaration(decl) => {
+                    let &WireDeclaration { vis, id, kind: _ } = decl;
+                    match vis {
+                        Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Private => {}
+                    }
+                }
+
+                // no public declarations
+                ModuleStatementKind::CommonDeclaration(_) => {}
+                ModuleStatementKind::RegOutPortMarker(_) => {}
+                ModuleStatementKind::CombinatorialBlock(_) => {}
+                ModuleStatementKind::ClockedBlock(_) => {}
+                ModuleStatementKind::Instance(_) => {}
+            }
+        }
+    }
+
     fn visit_block_module(&self, scope_parent: &DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
+        let mut scope = DeclScope::new_child(scope_parent);
+        self.visit_block_module_inner(&mut scope, block)
+    }
+
+    fn visit_block_module_inner(&self, scope: &mut DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
         let Block { span, statements } = block;
         check_skip!(self, span);
 
         // match the two-pass system from the main compiler
-        let mut scope = DeclScope::new_child(scope_parent);
         for stmt in statements {
             match &stmt.inner {
                 ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.visit_common_declaration(&mut scope, decl)?;
+                    self.visit_common_declaration(scope, decl)?;
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let &RegDeclaration { id, sync, ty, init } = decl;
+                    let &RegDeclaration {
+                        vis,
+                        id,
+                        sync,
+                        ty,
+                        init,
+                    } = decl;
 
                     if let Some(sync) = sync {
                         self.visit_domain_sync(&scope, sync.inner)?;
                     }
                     self.visit_expression(&scope, ty)?;
                     self.visit_expression(&scope, init)?;
-                    self.visit_and_declare_maybe_general(&mut scope, id)?;
+
+                    match vis {
+                        // public declarations were already collected earlier
+                        Visibility::Public(_) => {}
+                        Visibility::Private => self.visit_and_declare_maybe_general(scope, Conditional::No, id)?,
+                    }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { id, ref kind } = decl;
+                    let &WireDeclaration { vis, id, ref kind } = decl;
 
                     match *kind {
                         WireDeclarationKind::Clock {
@@ -770,7 +873,11 @@ impl ResolveContext<'_> {
                         }
                     }
 
-                    self.visit_and_declare_maybe_general(&mut scope, id)?;
+                    match vis {
+                        // public declarations were already collected earlier
+                        Visibility::Public(_) => {}
+                        Visibility::Private => self.visit_and_declare_maybe_general(scope, Conditional::No, id)?,
+                    }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     let &RegOutPortMarker { id, init } = decl;
@@ -794,7 +901,7 @@ impl ResolveContext<'_> {
                     self.visit_block_module(&scope, block)?;
                 }
                 ModuleStatementKind::If(stmt) => {
-                    self.visit_if_stmt(&mut scope, stmt, &mut |s, b| self.visit_block_module(s, b))?;
+                    self.visit_if_stmt(scope, stmt, &mut |s, b| self.visit_block_module(s, b))?;
                 }
                 ModuleStatementKind::For(stmt) => {
                     self.visit_for_stmt(&scope, stmt, |s, b| self.visit_block_module(s, b))?
@@ -943,7 +1050,7 @@ impl ResolveContext<'_> {
                 self.visit_expression(scope, iter)?;
 
                 let mut scope_inner = DeclScope::new_child(scope);
-                scope_inner.maybe_declare(self.source, index);
+                scope_inner.maybe_declare(self.source, Conditional::No, index);
 
                 self.visit_array_literal_element(&scope_inner, body)?;
             }
@@ -1017,14 +1124,40 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_and_declare_general(&self, scope: &mut DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
+    fn visit_and_declare_general(
+        &self,
+        scope: &mut DeclScope,
+        cond: Conditional,
+        id: GeneralIdentifier,
+    ) -> FindDefinitionResult {
+        match id {
+            GeneralIdentifier::Simple(_) => {}
+            GeneralIdentifier::FromString(_, expr) => {
+                self.visit_expression(scope, expr)?;
+            }
+        }
+        self.declare_general(scope, cond, id);
+        Ok(())
+    }
+
+    fn visit_and_declare_maybe_general(
+        &self,
+        scope: &mut DeclScope,
+        cond: Conditional,
+        id: MaybeGeneralIdentifier,
+    ) -> FindDefinitionResult {
+        match id {
+            MaybeGeneralIdentifier::Dummy(_) => Ok(()),
+            MaybeGeneralIdentifier::Identifier(id) => self.visit_and_declare_general(scope, cond, id),
+        }
+    }
+
+    fn declare_general(&self, scope: &mut DeclScope, cond: Conditional, id: GeneralIdentifier) {
         match id {
             GeneralIdentifier::Simple(id) => {
-                scope.declare(self.source, id);
+                scope.declare(self.source, cond, id);
             }
             GeneralIdentifier::FromString(span, expr) => {
-                self.visit_expression(scope, expr)?;
-
                 // build a pattern that matches all possible substitutions
                 let pattern = match &self.arena_expressions[expr.inner] {
                     ExpressionKind::StringLiteral(pieces) => {
@@ -1051,20 +1184,15 @@ impl ResolveContext<'_> {
                     _ => Regex::new("").unwrap(),
                 };
 
-                scope.declare_general(pattern, span);
+                scope.declare_general(cond, pattern, span);
             }
         }
-        Ok(())
     }
 
-    fn visit_and_declare_maybe_general(
-        &self,
-        scope: &mut DeclScope,
-        id: MaybeGeneralIdentifier,
-    ) -> FindDefinitionResult {
+    fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
         match id {
-            MaybeGeneralIdentifier::Dummy(_) => Ok(()),
-            MaybeGeneralIdentifier::Identifier(id) => self.visit_and_declare_general(scope, id),
+            MaybeGeneralIdentifier::Dummy(_) => {}
+            MaybeGeneralIdentifier::Identifier(id) => self.declare_general(scope, cond, id),
         }
     }
 

@@ -15,7 +15,7 @@ pub struct FileContent {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Visibility<S> {
+pub enum Visibility<S = Span> {
     Public(S),
     Private,
 }
@@ -27,7 +27,7 @@ pub enum Item {
     // non-declaring items
     Import(ItemImport),
     // common declarations that are allowed anywhere
-    CommonDeclaration(Spanned<CommonDeclaration<Visibility<Span>>>),
+    CommonDeclaration(Spanned<CommonDeclaration<Visibility>>),
     // declarations that are only allowed top-level
     // TODO maybe we should also just allow module declarations anywhere?
     ModuleInternal(ItemDefModuleInternal),
@@ -131,7 +131,7 @@ pub struct FunctionDeclaration {
 #[derive(Debug, Clone)]
 pub struct ItemDefModuleInternal {
     pub span: Span,
-    pub vis: Visibility<Span>,
+    pub vis: Visibility,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub ports: Spanned<ExtraList<ModulePortItem>>,
@@ -141,7 +141,7 @@ pub struct ItemDefModuleInternal {
 #[derive(Debug, Clone)]
 pub struct ItemDefModuleExternal {
     pub span: Span,
-    pub vis: Visibility<Span>,
+    pub vis: Visibility,
     pub span_ext: Span,
     pub id: Identifier,
     pub params: Option<Parameters>,
@@ -151,7 +151,7 @@ pub struct ItemDefModuleExternal {
 #[derive(Debug, Clone)]
 pub struct ItemDefInterface {
     pub span: Span,
-    pub vis: Visibility<Span>,
+    pub vis: Visibility,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub span_body: Span,
@@ -446,6 +446,7 @@ pub struct RegOutPortMarker {
 
 #[derive(Debug, Clone)]
 pub struct RegDeclaration {
+    pub vis: Visibility,
     pub id: MaybeGeneralIdentifier,
     pub sync: Option<Spanned<SyncDomain<Expression>>>,
     pub ty: Expression,
@@ -454,6 +455,7 @@ pub struct RegDeclaration {
 
 #[derive(Debug, Clone)]
 pub struct WireDeclaration {
+    pub vis: Visibility,
     pub id: MaybeGeneralIdentifier,
     pub kind: WireDeclarationKind,
 }
@@ -1004,7 +1006,7 @@ pub struct ItemInfo {
 
 #[derive(Debug)]
 pub struct ItemDeclarationInfo {
-    pub vis: Visibility<Span>,
+    pub vis: Visibility,
     pub id: MaybeIdentifier,
 }
 

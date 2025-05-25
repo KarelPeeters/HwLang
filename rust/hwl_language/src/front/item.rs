@@ -419,7 +419,7 @@ impl CompileItemContext<'_, '_> {
                 };
                 let function = UserFunctionValue {
                     decl_span: id.span(),
-                    scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
+                    scope_captured: CapturedScope::from_scope(diags, scope, vars),
                     params: params.clone(),
                     body: Spanned {
                         span: body.span,
@@ -481,7 +481,7 @@ impl CompileItemContext<'_, '_> {
                 // build function
                 let func = UserFunctionValue {
                     decl_span: span_decl,
-                    scope_captured: CapturedScope::from_scope(diags, scope, vars)?,
+                    scope_captured: CapturedScope::from_scope(diags, scope, vars),
                     params: params.clone(),
                     body: Spanned {
                         span: span_body,
@@ -517,7 +517,7 @@ impl CompileItemContext<'_, '_> {
                     ElaboratedModuleInternal,
                     |item_params| {
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
+                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
 
                         let ast = &refs.fixed.parsed[ast_ref];
 
@@ -589,7 +589,7 @@ impl CompileItemContext<'_, '_> {
                             .transpose()?;
 
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
+                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
@@ -617,7 +617,7 @@ impl CompileItemContext<'_, '_> {
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
-                let scope_captured = CapturedScope::from_scope(diags, scope_params, vars)?;
+                let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
 
                 let refs = self.refs;
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(

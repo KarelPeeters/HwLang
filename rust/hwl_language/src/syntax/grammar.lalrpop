@@ -212,13 +212,13 @@ ModuleStatementKind: ModuleStatementKind = {
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
-    "reg" <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
-        let decl = RegDeclaration { id, sync, ty, init };
+    <vis:Vis> "reg" <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
+        let decl = RegDeclaration { vis, id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
     // TODO allow clocks as wires
-    "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
-        let decl = WireDeclaration { id, kind };
+    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
+        let decl = WireDeclaration { vis, id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -821,7 +821,7 @@ MaybeIdImpl<I>: MaybeIdentifier<I> = {
 }
 
 #[inline]
-Vis: Visibility<Span> = {
+Vis: Visibility = {
     <span:Span<"pub">> => Visibility::Public(span),
     => Visibility::Private,
 }

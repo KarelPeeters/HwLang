@@ -25,9 +25,9 @@ use crate::mid::ir::{
     IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModulePortBlock, ModulePortInBlock,
-    ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection,
-    PortSingleKindInner, ResetKind, WireDeclarationKind,
+    self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModuleInstance, ModulePortBlock,
+    ModulePortInBlock, ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind,
+    PortDirection, PortSingleKindInner, ResetKind, Visibility, WireDeclarationKind,
 };
 use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
@@ -48,10 +48,7 @@ use indexmap::IndexMap;
 use itertools::{enumerate, Either, Itertools};
 use std::fmt::Debug;
 use std::hash::Hash;
-
 // TODO split this file into header/body
-
-type SignalsInScope = Vec<Spanned<Signal>>;
 
 new_index_type!(pub Connector);
 
@@ -124,7 +121,7 @@ impl CompileRefs<'_, '_> {
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
         let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span)?;
+        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span);
 
         // elaborate ports
         // TODO we actually need a full context here?
@@ -180,7 +177,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces, variables);
         let mut vars = VariableValues::restore_root_from_content(&ctx.variables, vars);
 
-        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span)?;
+        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span);
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
@@ -369,21 +366,21 @@ impl CompileRefs<'_, '_> {
         Ok((connectors, scope_ports, ports_ir))
     }
 
-    fn elaborate_module_body_impl(
+    fn elaborate_module_body_impl<'a>(
         &self,
-        mut ctx_item: CompileItemContext,
+        mut ctx_item: CompileItemContext<'a, '_>,
         vars: &VariableValues,
         scope_header: &Scope,
         def_id: MaybeIdentifier,
         debug_info_params: Option<Vec<(String, CompileValue)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
-        body: &Block<ModuleStatement>,
+        body: &'a Block<ModuleStatement>,
     ) -> Result<IrModuleInfo, ErrorGuaranteed> {
         let drivers = Drivers::new(&ctx_item.ports);
 
-        let mut signals_in_scope: SignalsInScope = vec![];
-        for (port, port_info) in &ctx_item.ports {
-            signals_in_scope.push(Spanned::new(port_info.span, Signal::Port(port)));
+        let mut signals_in_scope = vec![];
+        for (port, _) in &ctx_item.ports {
+            signals_in_scope.push(Signal::Port(port));
         }
 
         let mut ctx = BodyElaborationContext {
@@ -396,14 +393,17 @@ impl CompileRefs<'_, '_> {
             register_initial_values: IndexMap::new(),
             out_port_register_connections: IndexMap::new(),
 
-            pass_1_next_statement_index: 0,
+            pass_0_next_statement_index: 0,
             clocked_block_statement_index_to_process_index: IndexMap::new(),
             children: vec![],
             delayed_error: Ok(()),
         };
 
-        // process declarations
-        ctx.elaborate_block(scope_header, vars, &mut signals_in_scope, body, true);
+        // process declarations and collect processes and instantiations
+        let (todo, _) = ctx.pass_0_declarations_collect(scope_header, vars, body, true);
+
+        // process the collected processes and instantiations
+        ctx.pass_1_elaborate_children(vars, scope_header, todo);
 
         // stop if any errors have happened so far, we don't want spurious errors about drivers
         ctx.delayed_error?;
@@ -642,9 +642,11 @@ struct BodyElaborationContext<'c, 'a, 's> {
     register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
     out_port_register_connections: IndexMap<Port, Register>,
 
-    pass_1_next_statement_index: usize,
+    pass_0_next_statement_index: usize,
     clocked_block_statement_index_to_process_index: IndexMap<usize, usize>,
     children: Vec<Spanned<Child>>,
+
+    // TODO rename and rethink this
     delayed_error: Result<(), ErrorGuaranteed>,
 }
 
@@ -749,98 +751,153 @@ pub struct ExtraRegisterInit {
     pub init: IrExpression,
 }
 
-impl BodyElaborationContext<'_, '_, '_> {
-    fn elaborate_block(
+pub struct ModuleTodo<'a> {
+    span: Span,
+    scope: Option<ScopeContent>,
+    vars: VariableValuesContent,
+    children: Vec<ModuleChildTodo<'a>>,
+}
+
+pub enum ModuleChildTodo<'a> {
+    Nested(ModuleTodo<'a>),
+
+    CombinatorialBlock(usize, Spanned<&'a CombinatorialBlock>),
+    ClockedBlock(usize, Spanned<&'a ClockedBlock>),
+    Instance(usize, Spanned<&'a ModuleInstance>),
+}
+
+type PublicDeclarations<'a> = Vec<(
+    Result<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>, ErrorGuaranteed>,
+    Result<ScopedEntry, ErrorGuaranteed>,
+)>;
+
+impl<'a> BodyElaborationContext<'_, 'a, '_> {
+    #[must_use]
+    fn pass_0_declarations_collect(
         &mut self,
-        scope: &Scope,
-        vars: &VariableValues,
-        signals: &mut SignalsInScope,
-        block: &Block<ModuleStatement>,
+        scope_outer: &Scope,
+        vars_outer: &VariableValues,
+        block_outer: &'a Block<ModuleStatement>,
         is_root_block: bool,
-    ) {
-        // TODO fully implement graph-ness,
-        //   in the current implementation eg. types and initializes still can't refer to future declarations
-        let mut scope_inner = Scope::new_child(block.span, scope);
-        let mut vars_inner = VariableValues::new_child(vars);
-
-        let signals_len_before = signals.len();
-        self.pass_0_declarations(&mut scope_inner, &mut vars_inner, signals, block, is_root_block);
-        let signals_len_after = signals.len();
-
-        self.pass_1_processes(&scope_inner, &vars_inner, signals, block);
-        assert_eq!(signals_len_after, signals.len());
-        signals.truncate(signals_len_before);
-    }
-
-    fn pass_0_declarations(
-        &mut self,
-        scope: &mut Scope,
-        vars: &mut VariableValues,
-        signals: &mut SignalsInScope,
-        body: &Block<ModuleStatement>,
-        is_root_block: bool,
-    ) {
+    ) -> (ModuleTodo<'a>, PublicDeclarations<'a>) {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
 
-        let Block { span: _, statements } = body;
+        let Block { span: _, statements } = block_outer;
+
+        let mut scope = Scope::new_child(block_outer.span, scope_outer);
+        let mut vars = VariableValues::new_child(vars_outer);
+
+        let mut todo_children = vec![];
+        let mut pub_declarations = vec![];
+
         for stmt in statements {
-            let stmt_span = stmt.span;
+            let stmt_index = self.pass_0_next_statement_index;
+            self.pass_0_next_statement_index += 1;
+
             match &stmt.inner {
-                // non declarations, skip
-                ModuleStatementKind::CombinatorialBlock(_) => {}
-                ModuleStatementKind::ClockedBlock(_) => {}
-                ModuleStatementKind::Instance(_) => {}
-                // these will get their own two-phase process during the second pass
-                ModuleStatementKind::If(_) => {}
-                ModuleStatementKind::For(_) => {}
-                ModuleStatementKind::Block(_) => {}
-                // declarations
+                // control flow: evaluate now and visit the children immediately
+                ModuleStatementKind::Block(block) => {
+                    let (todo, decls) = self.pass_0_declarations_collect(&scope, &vars, block, false);
+                    process_todo_and_decls(
+                        diags,
+                        &mut scope,
+                        &mut todo_children,
+                        &mut pub_declarations,
+                        todo,
+                        decls,
+                    );
+                }
+                ModuleStatementKind::If(if_stmt) => {
+                    match self.ctx.compile_if_statement_choose_block(&scope, &vars, if_stmt) {
+                        Ok(block) => {
+                            if let Some(block) = block {
+                                let (todo, decls) = self.pass_0_declarations_collect(&scope, &vars, block, false);
+                                process_todo_and_decls(
+                                    diags,
+                                    &mut scope,
+                                    &mut todo_children,
+                                    &mut pub_declarations,
+                                    todo,
+                                    decls,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            self.delayed_error = Err(e);
+                        }
+                    }
+                }
+                ModuleStatementKind::For(for_stmt) => {
+                    let for_stmt = Spanned::new(stmt.span, for_stmt);
+                    match self.elaborate_for(&scope, &vars, for_stmt) {
+                        Ok((todo, decls)) => {
+                            process_todo_and_decls(
+                                diags,
+                                &mut scope,
+                                &mut todo_children,
+                                &mut pub_declarations,
+                                todo,
+                                decls,
+                            );
+                        }
+                        Err(e) => self.delayed_error = Err(e),
+                    }
+                }
+
+                // declarations: evaluate and declare now
                 ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.ctx.eval_and_declare_declaration(scope, vars, decl)
+                    self.ctx.eval_and_declare_declaration(&mut scope, &mut vars, decl);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let id = self.ctx.eval_maybe_general_id(scope, vars, decl.id);
+                    let id = self.ctx.eval_maybe_general_id(&scope, &mut vars, decl.id);
 
                     let entry = id.as_ref_ok().and_then(|id| {
-                        let reg = self.elaborate_module_declaration_reg(scope, vars, id, decl);
-                        reg.map(|reg_init| {
-                            let RegisterInit { reg, init } = reg_init;
-                            self.register_initial_values.insert_first(reg, init);
-                            self.drivers.reg_drivers.insert_first(reg, Ok(IndexMap::new()));
-                            signals.push(Spanned::new(decl.id.span(), Signal::Register(reg)));
-                            ScopedEntry::Named(NamedValue::Register(reg))
-                        })
+                        let reg_init = self.elaborate_module_declaration_reg(&scope, &vars, id, decl)?;
+
+                        let RegisterInit { reg, init } = reg_init;
+                        self.register_initial_values.insert_first(reg, init);
+                        self.drivers.reg_drivers.insert_first(reg, Ok(IndexMap::new()));
+
+                        Ok(ScopedEntry::Named(NamedValue::Register(reg)))
                     });
+
+                    if let Err(e) = entry {
+                        self.delayed_error = Err(e);
+                    }
+
+                    match &decl.vis {
+                        Visibility::Public(_) => {
+                            pub_declarations.push((id.clone(), entry.clone()));
+                        }
+                        Visibility::Private => {}
+                    }
 
                     scope.maybe_declare(diags, id, entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let id = self.ctx.eval_maybe_general_id(scope, vars, decl.id);
+                    let id = self.ctx.eval_maybe_general_id(&scope, &mut vars, decl.id);
 
-                    let elab_tuple = id
-                        .as_ref_ok()
-                        .and_then(|id| self.elaborate_module_declaration_wire(scope, vars, id, stmt_span, decl));
-
-                    let entry = match elab_tuple {
-                        Ok((wire, process)) => {
-                            let mut drivers = IndexMap::new();
-                            if let Some(process) = process {
-                                drivers.insert_first(Driver::WireDeclaration, process.span);
-                                let child = Child::Finished(IrModuleChild::CombinatorialProcess(process.inner));
-                                self.children.push(Spanned::new(stmt_span, child));
-                            }
-                            self.drivers.wire_drivers.insert_first(wire, Ok(drivers));
-
-                            signals.push(Spanned::new(decl.id.span(), Signal::Wire(wire)));
-
-                            Ok(ScopedEntry::Named(NamedValue::Wire(wire)))
+                    let entry = id.as_ref_ok().and_then(|id| {
+                        let (wire, process) =
+                            self.elaborate_module_declaration_wire(&scope, &vars, id, stmt.span, decl)?;
+                        if let Some(process) = process {
+                            self.children
+                                .push(process.map_inner(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
                         }
-                        Err(e) => {
-                            self.delayed_error = Err(e);
-                            Err(e)
+                        Ok(ScopedEntry::Named(NamedValue::Wire(wire)))
+                    });
+
+                    if let Err(e) = entry {
+                        self.delayed_error = Err(e);
+                    }
+
+                    match &decl.vis {
+                        Visibility::Public(_) => {
+                            pub_declarations.push((id.clone(), entry.clone()));
                         }
-                    };
+                        Visibility::Private => {}
+                    }
 
                     scope.maybe_declare(diags, id, entry);
                 }
@@ -848,12 +905,13 @@ impl BodyElaborationContext<'_, '_, '_> {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
                     //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(scope, vars, stmt_span, decl, is_root_block) {
+                    match self.elaborate_module_declaration_reg_out_port(&scope, &vars, stmt.span, decl, is_root_block)
+                    {
                         Ok((port, reg_init)) => {
                             let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
                             if let Ok(port_drivers) = port_drivers.as_ref_mut_ok() {
                                 assert!(port_drivers.is_empty());
-                                port_drivers.insert_first(Driver::OutputPortConnectionToReg, stmt_span);
+                                port_drivers.insert_first(Driver::OutputPortConnectionToReg, stmt.span);
                             }
 
                             self.drivers.reg_drivers.insert_first(reg_init.reg, Ok(IndexMap::new()));
@@ -865,93 +923,99 @@ impl BodyElaborationContext<'_, '_, '_> {
                                 Ok(decl.id.spanned_str(source)),
                                 Ok(ScopedEntry::Named(NamedValue::Register(reg_init.reg))),
                             );
-                            signals.push(Spanned::new(decl.id.span, Signal::Register(reg_init.reg)));
                         }
                         Err(e) => self.delayed_error = Err(e),
                     }
+                }
+
+                // processes: collect and evaluate later, after all declarations have been processed
+                ModuleStatementKind::CombinatorialBlock(child) => {
+                    todo_children.push(ModuleChildTodo::CombinatorialBlock(
+                        stmt_index,
+                        Spanned::new(stmt.span, child),
+                    ));
+                }
+                ModuleStatementKind::ClockedBlock(child) => {
+                    todo_children.push(ModuleChildTodo::ClockedBlock(
+                        stmt_index,
+                        Spanned::new(stmt.span, child),
+                    ));
+                }
+                ModuleStatementKind::Instance(child) => {
+                    todo_children.push(ModuleChildTodo::Instance(stmt_index, Spanned::new(stmt.span, child)));
                 }
             }
         }
+
+        let todo = ModuleTodo {
+            span: block_outer.span,
+            scope: Some(scope.into_content()),
+            vars: vars.into_content(),
+            children: todo_children,
+        };
+        (todo, pub_declarations)
     }
 
-    fn pass_1_processes(
-        &mut self,
-        scope: &Scope,
-        vars: &VariableValues,
-        signals: &mut SignalsInScope,
-        body: &Block<ModuleStatement>,
-    ) {
-        let Block { span: _, statements } = body;
+    fn pass_1_elaborate_children(&mut self, vars_parent: &VariableValues, scope_parent: &Scope, todo: ModuleTodo) {
+        let ModuleTodo {
+            span: span_block,
+            scope,
+            vars,
+            children,
+        } = todo;
 
-        for stmt in statements {
-            let stmt_index = self.pass_1_next_statement_index;
-            self.pass_1_next_statement_index += 1;
+        let vars = VariableValues::restore_child_from_content(&self.ctx.variables, vars_parent, vars);
 
-            match &stmt.inner {
-                // control flow
-                ModuleStatementKind::Block(block) => {
-                    self.elaborate_block(scope, vars, signals, block, false);
-                }
-                ModuleStatementKind::If(if_stmt) => {
-                    match self.ctx.compile_if_statement_choose_block(scope, vars, if_stmt) {
-                        Ok(block) => {
-                            if let Some(block) = block {
-                                self.elaborate_block(scope, vars, signals, block, false);
-                            }
-                        }
-                        Err(e) => self.delayed_error = Err(e),
-                    }
-                }
-                ModuleStatementKind::For(for_stmt) => {
-                    let for_stmt = Spanned::new(stmt.span, for_stmt);
-                    match self.elaborate_for(scope, vars, signals, for_stmt) {
-                        Ok(()) => {}
-                        Err(e) => self.delayed_error = Err(e),
-                    }
-                }
-                // declarations, already handled
-                ModuleStatementKind::CommonDeclaration(_) => {}
-                ModuleStatementKind::RegDeclaration(_) => {}
-                ModuleStatementKind::WireDeclaration(_) => {}
-                ModuleStatementKind::RegOutPortMarker(_) => {}
-                // blocks, handle now
-                ModuleStatementKind::CombinatorialBlock(block) => {
-                    let mut vars_inner = self.new_vars_for_process(vars, signals);
+        let scope_slot;
+        let scope = if let Some(scope) = scope {
+            scope_slot = Scope::restore_child_from_content(span_block, scope_parent, scope);
+            &scope_slot
+        } else {
+            scope_parent
+        };
 
-                    let ir_process = self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block);
+        for child in children {
+            match child {
+                ModuleChildTodo::Nested(inner) => {
+                    self.pass_1_elaborate_children(&vars, scope, inner);
+                }
+                ModuleChildTodo::CombinatorialBlock(stmt_index, block) => {
+                    let mut vars_inner = self.new_vars_for_process(&vars);
+
+                    let ir_process =
+                        self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block.inner);
                     match ir_process {
                         Ok(ir_process) => {
                             let child = Child::Finished(IrModuleChild::CombinatorialProcess(ir_process));
-                            self.children.push(Spanned::new(stmt.span, child))
+                            self.children.push(Spanned::new(block.span, child))
                         }
                         Err(e) => self.delayed_error = Err(e),
                     }
                 }
-                ModuleStatementKind::ClockedBlock(block) => {
-                    let mut vars_inner = self.new_vars_for_process(vars, signals);
-                    let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block);
+                ModuleChildTodo::ClockedBlock(stmt_index, block) => {
+                    let mut vars_inner = self.new_vars_for_process(&vars);
+                    let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block.inner);
 
                     match ir_process {
                         Ok(ir_process) => {
                             let child_index = self.children.len();
                             let child = Child::Clocked(ir_process);
-                            self.children.push(Spanned::new(stmt.span, child));
+                            self.children.push(Spanned::new(block.span, child));
                             self.clocked_block_statement_index_to_process_index
                                 .insert_first(stmt_index, child_index);
                         }
                         Err(e) => self.delayed_error = Err(e),
                     }
                 }
-                ModuleStatementKind::Instance(instance) => {
-                    let mut vars_inner = self.new_vars_for_process(vars, signals);
-                    let child_ir = self.elaborate_instance(scope, &mut vars_inner, stmt_index, instance);
-
+                ModuleChildTodo::Instance(stmt_index, child) => {
+                    let child_ir = self.elaborate_instance(scope, &vars, stmt_index, child.inner);
                     match child_ir {
                         Ok(child_ir) => {
-                            let child = Child::Finished(child_ir);
-                            self.children.push(Spanned::new(stmt.span, child));
+                            self.children.push(Spanned::new(child.span, Child::Finished(child_ir)));
                         }
-                        Err(e) => self.delayed_error = Err(e),
+                        Err(e) => {
+                            self.delayed_error = Err(e);
+                        }
                     }
                 }
             }
@@ -1093,29 +1157,37 @@ impl BodyElaborationContext<'_, '_, '_> {
         })
     }
 
-    /// We want to create new [VariableValues] for each process, to be able to reset the variables that exist and to reset the version counters.
-    /// TODO is any of that actually necessary?
-    fn new_vars_for_process<'p>(
-        &self,
-        vars_parent: &'p VariableValues<'p>,
-        signals_in_scope: &[Spanned<Signal>],
-    ) -> VariableValues<'p> {
+    /// We create a separate [VariableValues] for each process for a couple of reasons:
+    /// * This helps ensure that there are no accidental writes to variables outside of the block scope.
+    /// * This allows us to immediately discard local variables after the process is done.
+    /// * This is a convenient place to initialize signal versions.
+    fn new_vars_for_process<'p>(&self, vars_parent: &'p VariableValues<'p>) -> VariableValues<'p> {
+        let diags = self.ctx.refs.diags;
+
         let mut vars = VariableValues::new_child(vars_parent);
-        for &signal in signals_in_scope {
-            // we're creating a new instance of variables here, and we know none of these signals are duplicate,
-            //   so we can unwrap
-            let _ = vars.signal_new(self.ctx.refs.diags, signal);
+
+        let mut add_signal = |signal, span| {
+            let _ = vars.signal_new(diags, Spanned::new(span, signal));
+        };
+        for (port, port_info) in &self.ctx.ports {
+            add_signal(Signal::Port(port), port_info.span);
         }
+        for (wire, wire_info) in &self.ctx.wires {
+            add_signal(Signal::Wire(wire), wire_info.id.span());
+        }
+        for (register, register_info) in &self.ctx.registers {
+            add_signal(Signal::Register(register), register_info.id.span());
+        }
+
         vars
     }
 
     fn elaborate_for(
         &mut self,
-        scope: &Scope,
+        scope_parent: &Scope,
         vars: &VariableValues,
-        signals: &mut SignalsInScope,
-        for_stmt: Spanned<&ForStatement<ModuleStatement>>,
-    ) -> Result<(), ErrorGuaranteed> {
+        for_stmt: Spanned<&'a ForStatement<ModuleStatement>>,
+    ) -> Result<(ModuleTodo<'a>, PublicDeclarations<'a>), ErrorGuaranteed> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
 
@@ -1128,8 +1200,9 @@ impl BodyElaborationContext<'_, '_, '_> {
         } = for_stmt.inner;
         let iter_span = iter.span;
 
+        let mut scope_for = Scope::new_child(for_stmt.span, scope_parent);
         let mut vars_inner = VariableValues::new_child(vars);
-        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(scope, &mut vars_inner, index_ty));
+        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut vars_inner, index_ty));
 
         let mut ctx = CompileTimeExpressionContext {
             span: for_stmt.span,
@@ -1137,10 +1210,13 @@ impl BodyElaborationContext<'_, '_, '_> {
         };
         let iter = self
             .ctx
-            .eval_expression_as_for_iterator(&mut ctx, &mut (), scope, &mut vars_inner, iter);
+            .eval_expression_as_for_iterator(&mut ctx, &mut (), &scope_for, &mut vars_inner, iter);
 
         let index_ty = index_ty.transpose()?;
         let iter = iter?;
+
+        let mut todo_children = vec![];
+        let mut pub_declarations = vec![];
 
         // TODO allow break?
         for index_value in iter {
@@ -1159,7 +1235,7 @@ impl BodyElaborationContext<'_, '_, '_> {
                 )?;
             }
 
-            let mut scope_inner = Scope::new_child(index.span().join(body.span), scope);
+            let mut scope_inner = Scope::new_child(index.span().join(body.span), &scope_for);
             let var = vars_inner.var_new_immutable_init(&mut self.ctx.variables, index, span_keyword, Ok(index_value));
 
             scope_inner.maybe_declare(
@@ -1168,32 +1244,48 @@ impl BodyElaborationContext<'_, '_, '_> {
                 Ok(ScopedEntry::Named(NamedValue::Variable(var))),
             );
 
-            self.elaborate_block(&scope_inner, &vars_inner, signals, body, false);
+            let (todo, decls) = self.pass_0_declarations_collect(&scope_inner, &vars_inner, body, false);
+            process_todo_and_decls(
+                diags,
+                &mut scope_for,
+                &mut todo_children,
+                &mut pub_declarations,
+                todo,
+                decls,
+            );
         }
 
-        Ok(())
+        let todo = ModuleTodo {
+            span: for_stmt.span,
+            scope: None,
+            vars: vars_inner.into_content(),
+            children: todo_children,
+        };
+
+        Ok((todo, pub_declarations))
     }
 
     fn elaborate_instance(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        vars: &VariableValues,
         stmt_index: usize,
-        instance: &ast::ModuleInstance,
+        instance: &ModuleInstance,
     ) -> Result<IrModuleChild, ErrorGuaranteed> {
         let refs = self.ctx.refs;
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
         let source = ctx.refs.fixed.source;
 
-        let &ast::ModuleInstance {
+        let &ModuleInstance {
             ref name,
             span_keyword,
             module,
             ref port_connections,
         } = instance;
 
-        let elaborated_module = ctx.eval_expression_as_module(scope, vars, span_keyword, module)?;
+        let mut vars = VariableValues::new_child(vars);
+        let elaborated_module = ctx.eval_expression_as_module(scope, &mut vars, span_keyword, module)?;
 
         let (instance_info, connectors, def_ports_span) = match elaborated_module {
             ElaboratedModule::Internal(module) => {
@@ -1261,7 +1353,7 @@ impl BodyElaborationContext<'_, '_, '_> {
 
                     let connections = self.elaborate_instance_port_connection(
                         scope,
-                        vars,
+                        &mut vars,
                         stmt_index,
                         connectors,
                         &single_to_signal,
@@ -1855,7 +1947,8 @@ impl BodyElaborationContext<'_, '_, '_> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
-        let WireDeclaration { id: _, kind } = decl;
+        // declaration and visibility are handled in the caller
+        let WireDeclaration { vis: _, id: _, kind } = decl;
 
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut vars_inner = VariableValues::new_child(vars_body);
@@ -2064,7 +2157,14 @@ impl BodyElaborationContext<'_, '_, '_> {
 
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let &RegDeclaration { id: _, sync, ty, init } = decl;
+        // declaration and visibility are handled in the caller
+        let &RegDeclaration {
+            vis: _,
+            id: _,
+            sync,
+            ty,
+            init,
+        } = decl;
 
         // evaluate
         let sync = sync
@@ -2222,6 +2322,25 @@ impl BodyElaborationContext<'_, '_, '_> {
         });
         Ok((port, RegisterInit { reg, init }))
     }
+}
+
+fn process_todo_and_decls<'a>(
+    diags: &Diagnostics,
+    scope: &mut Scope,
+    todo_children: &mut Vec<ModuleChildTodo<'a>>,
+    decls_children: &mut PublicDeclarations<'a>,
+    todo: ModuleTodo<'a>,
+    decls: PublicDeclarations<'a>,
+) {
+    if !todo.children.is_empty() {
+        todo_children.push(ModuleChildTodo::Nested(todo));
+    }
+
+    for (id, entry) in &decls {
+        let id_ref = id.as_ref_ok().map(|id| id.as_ref().map_id(|id| id.as_ref()));
+        scope.maybe_declare(diags, id_ref, entry.clone());
+    }
+    decls_children.extend(decls);
 }
 
 enum ConnectionSignal {

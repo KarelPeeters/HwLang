@@ -605,7 +605,7 @@ impl CompileItemContext<'_, '_> {
 
         // recreate captured scope
         let span_scope = params.span.join(body.span);
-        let scope_captured = scope_captured.to_scope(&mut self.variables, vars, self.refs, span_scope)?;
+        let scope_captured = scope_captured.to_scope(&mut self.variables, vars, self.refs, span_scope);
 
         // map params into scope
         let mut scope = Scope::new_child(span_scope, &scope_captured);
@@ -886,11 +886,7 @@ impl CapturedScope {
         }
     }
 
-    pub fn from_scope(
-        diags: &Diagnostics,
-        scope: &Scope,
-        vars: &VariableValues,
-    ) -> Result<CapturedScope, ErrorGuaranteed> {
+    pub fn from_scope(diags: &Diagnostics, scope: &Scope, vars: &VariableValues) -> CapturedScope {
         // TODO should we build this incrementally, or build a normal hashmap once and then sort it at the end?
         // it's fine to use a hashmap here, this will be sorted into a BTreeMap later
         let mut child_values = HashMap::new();
@@ -916,7 +912,9 @@ impl CapturedScope {
                                     ScopedEntry::Named(named) => match named {
                                         &NamedValue::Variable(var) => {
                                             // TODO these spans are probably wrong
-                                            let maybe = vars.var_get_maybe(diags, span, var)?;
+                                            let maybe = vars
+                                                .var_get_maybe(diags, span, var)
+                                                .expect("variable should be present");
                                             maybe_assigned_to_captured(maybe)
                                         }
                                         NamedValue::Port(_)
@@ -947,10 +945,10 @@ impl CapturedScope {
             }
         };
 
-        Ok(CapturedScope {
+        CapturedScope {
             parent_file,
             child_values: child_values.into_iter().collect(),
-        })
+        }
     }
 
     pub fn to_scope<'s>(
@@ -959,13 +957,19 @@ impl CapturedScope {
         vars: &mut VariableValues,
         refs: CompileRefs<'_, 's>,
         scope_span: Span,
-    ) -> Result<Scope<'s>, ErrorGuaranteed> {
+    ) -> Scope<'s> {
         let CapturedScope {
             parent_file,
             child_values,
         } = self;
 
-        let parent_file = refs.shared.file_scopes.get(parent_file).unwrap().as_ref_ok()?;
+        let parent_file = refs
+            .shared
+            .file_scopes
+            .get(parent_file)
+            .unwrap()
+            .as_ref_ok()
+            .expect("file scope should be valid since the capturing succeeded");
         let mut scope = Scope::new_child(scope_span, parent_file);
 
         // TODO we need a span, even for errors
@@ -1001,7 +1005,7 @@ impl CapturedScope {
             scope.declare_already_checked(id.clone(), declared);
         }
 
-        Ok(scope)
+        scope
     }
 }
 

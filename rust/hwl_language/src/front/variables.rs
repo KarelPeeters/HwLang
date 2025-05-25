@@ -118,7 +118,7 @@ impl<'p> VariableValues<'p> {
         }
     }
 
-    pub fn restore_root_from_content(variables: &ArenaVariables, content: VariableValuesContent) -> Self {
+    pub fn restore_root_from_content(arena: &ArenaVariables, content: VariableValuesContent) -> Self {
         let VariableValuesContent {
             check,
             next_version_if_root,
@@ -126,10 +126,39 @@ impl<'p> VariableValues<'p> {
             signal_versions,
         } = content;
 
-        assert_eq!(variables.check(), check);
+        assert_eq!(arena.check(), check);
         let next_version = next_version_if_root.expect("expected root content");
         let kind = ParentKind::Root {
             next_version: Cell::new(next_version),
+        };
+
+        Self {
+            kind,
+            check,
+            var_values,
+            signal_versions,
+        }
+    }
+
+    pub fn restore_child_from_content(
+        arena: &ArenaVariables,
+        parent: &'p VariableValues,
+        content: VariableValuesContent,
+    ) -> Self {
+        let VariableValuesContent {
+            check,
+            next_version_if_root,
+            var_values,
+            signal_versions,
+        } = content;
+
+        assert_eq!(arena.check(), check);
+        assert_eq!(parent.check(), check);
+        assert!(next_version_if_root.is_none());
+
+        let kind = ParentKind::Child {
+            parent,
+            next_version: parent.kind.next_version(),
         };
 
         Self {
