@@ -1981,6 +1981,13 @@ impl BodyElaborationContext<'_, '_, '_> {
                 let ty = ty?;
                 let domain = domain?.map_inner(ValueDomain::from_domain_kind);
 
+                // check type/value
+                let reason = TypeContainsReason::Assignment {
+                    span_target: id.span(),
+                    span_target_ty: ty.span,
+                };
+                check_type_contains_value(diags, reason, &ty.inner.as_type(), value_eval.as_ref(), false, false)?;
+
                 let value_tuple = (process_block, ctx_expr.finish(), value_eval);
                 (Some(domain), ty, Some(value_tuple))
             }
