@@ -480,7 +480,7 @@ impl WireInfo {
     }
 
     pub fn domain(&mut self, diags: &Diagnostics, use_span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        get_inferred(diags, "wire", "domain", &mut self.domain, self.id.span(), use_span).map(|d| *d)
+        get_inferred(diags, "wire", "domain", &mut self.domain, self.id.span(), use_span).copied()
     }
 
     pub fn suggest_ty(
@@ -537,7 +537,7 @@ impl RegisterInfo {
         diags: &Diagnostics,
         span: Span,
     ) -> Result<Spanned<SyncDomain<DomainSignal>>, ErrorGuaranteed> {
-        get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).map(|d| *d)
+        get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).copied()
     }
 
     pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
