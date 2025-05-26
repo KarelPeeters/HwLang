@@ -185,7 +185,7 @@ impl<'p> Scope<'p> {
 
                 // report error
                 // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
-                let mut diag = Diagnostic::new("identifier declared multiple times");
+                let mut diag = Diagnostic::new(format!("identifier `{}` declared multiple times", id.inner));
                 for span in &spans {
                     diag = diag.add_info(*span, "previously declared here");
                 }
