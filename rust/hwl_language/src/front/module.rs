@@ -881,10 +881,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     let entry = id.as_ref_ok().and_then(|id| {
                         let (wire, process) =
                             self.elaborate_module_declaration_wire(&scope, &vars, id, stmt.span, decl)?;
+                        let mut drivers = IndexMap::new();
                         if let Some(process) = process {
+                            drivers.insert_first(Driver::WireDeclaration, process.span);
                             self.children
                                 .push(process.map_inner(|c| Child::Finished(IrModuleChild::CombinatorialProcess(c))));
                         }
+                        self.drivers.wire_drivers.insert_first(wire, Ok(drivers));
                         Ok(ScopedEntry::Named(NamedValue::Wire(wire)))
                     });
 
