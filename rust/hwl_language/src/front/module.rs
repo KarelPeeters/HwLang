@@ -15,8 +15,8 @@ use crate::front::function::CapturedScope;
 use crate::front::item::{ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Polarized, Signal};
-use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined, Value};
+use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
+use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined};
 use crate::front::variables::{VariableValues, VariableValuesContent};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
@@ -408,6 +408,9 @@ impl CompileRefs<'_, '_> {
         // stop if any errors have happened so far, we don't want spurious errors about drivers
         ctx.delayed_error?;
 
+        // check that types and domains were inferred for everything
+        ctx.pass_2_check_inferred()?;
+
         // check driver validness
         // TODO more checking: combinatorial blocks can't read values they will later write,
         //   unless they have already written them
@@ -447,11 +450,11 @@ impl CompileRefs<'_, '_> {
             .map(|c| {
                 let c_inner = match c.inner {
                     Child::Finished(c) => c,
-                    Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)),
+                    Child::Clocked(c) => IrModuleChild::ClockedProcess(c.finish(ctx.ctx)?),
                 };
-                Spanned::new(c.span, c_inner)
+                Ok(Spanned::new(c.span, c_inner))
             })
-            .collect();
+            .try_collect_all_vec()?;
 
         let source = self.fixed.source;
         Ok(IrModuleInfo {
@@ -663,13 +666,15 @@ struct ChildClockedProcess {
 }
 
 impl ChildClockedProcess {
-    pub fn finish(self, ctx: &mut CompileItemContext) -> IrClockedProcess {
+    pub fn finish(self, ctx: &mut CompileItemContext) -> Result<IrClockedProcess, ErrorGuaranteed> {
         let ChildClockedProcess {
             locals,
             clock_signal,
             clock_block,
             reset,
         } = self;
+
+        let clock_signal_ir = Spanned::new(clock_signal.span, ctx.domain_signal_to_ir(clock_signal)?);
 
         let (clock_block, async_reset) = match reset {
             None => {
@@ -682,7 +687,8 @@ impl ChildClockedProcess {
                     signal: reset_signal,
                     reg_inits,
                 } = reset;
-                let reset_signal_ir = reset_signal.map_inner(|s| ctx.domain_signal_to_ir(s));
+
+                let reset_signal_ir = Spanned::new(reset_signal.span, ctx.domain_signal_to_ir(reset_signal)?);
 
                 match kind.inner {
                     ResetKind::Async => {
@@ -729,12 +735,12 @@ impl ChildClockedProcess {
             }
         };
 
-        IrClockedProcess {
+        Ok(IrClockedProcess {
             locals,
-            clock_signal: clock_signal.map_inner(|s| ctx.domain_signal_to_ir(s)),
+            clock_signal: clock_signal_ir,
             clock_block,
             async_reset,
-        }
+        })
     }
 }
 
@@ -1634,11 +1640,19 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
                                     NamedOrValue::Named(NamedValue::Wire(wire)) => {
                                         let wire_info = &mut self.ctx.wires[wire];
+
+                                        let wire_domain = wire_info.suggest_domain(connector_domain);
+                                        let wire_ty =
+                                            wire_info.suggest_ty(self.ctx.refs, &mut self.ir_wires, ty.as_ref());
+
+                                        let wire_domain = wire_domain?;
+                                        let wire_ty = wire_ty?;
+
                                         (
-                                            IrWireOrPort::Wire(wire_info.ir),
+                                            IrWireOrPort::Wire(wire_ty.ir),
                                             Signal::Wire(wire),
-                                            wire_info.suggest_domain(connector_domain),
-                                            &wire_info.ty,
+                                            wire_domain,
+                                            &wire_ty.ty,
                                         )
                                     }
                                     NamedOrValue::Named(NamedValue::Port(port)) => {
@@ -1858,6 +1872,50 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         }
     }
 
+    fn pass_2_check_inferred(&mut self) -> Result<(), ErrorGuaranteed> {
+        let ctx = &*self.ctx;
+        let diags = ctx.refs.diags;
+
+        let mut any_err = Ok(());
+
+        for (_, wire_info) in &ctx.wires {
+            if let Ok(None) = wire_info.domain {
+                any_err = Err(diags.report_simple(
+                    "could not infer domain for wire",
+                    wire_info.id.span(),
+                    "wire declared here",
+                ));
+            }
+            if let Ok(None) = wire_info.typed {
+                any_err = Err(diags.report_simple(
+                    "could not infer type for wire",
+                    wire_info.id.span(),
+                    "wire declared here",
+                ));
+            }
+
+            if let (Ok(Some(domain)), Ok(Some(typed))) = (wire_info.domain, &wire_info.typed) {
+                self.ir_wires[typed.ir].debug_info_domain = domain.inner.diagnostic_string(ctx);
+            }
+        }
+
+        for (_, reg_info) in &ctx.registers {
+            if let Ok(None) = reg_info.domain {
+                any_err = Err(diags.report_simple(
+                    "could not infer domain for register",
+                    reg_info.id.span(),
+                    "register declared here",
+                ));
+            }
+
+            if let Ok(Some(domain)) = reg_info.domain {
+                self.ir_registers[reg_info.ir].debug_info_domain = domain.inner.diagnostic_string(ctx);
+            }
+        }
+
+        any_err
+    }
+
     fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
         // check exactly one valid driver for each signal
         // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
@@ -1948,84 +2006,75 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         decl: &WireDeclaration,
     ) -> Result<(Wire, Option<Spanned<IrCombinatorialProcess>>), ErrorGuaranteed> {
         let ctx = &mut self.ctx;
+        let refs = ctx.refs;
         let diags = ctx.refs.diags;
 
         // declaration and visibility are handled in the caller
-        let WireDeclaration { vis: _, id: _, kind } = decl;
+        let &WireDeclaration {
+            vis: _,
+            id: _,
+            kind,
+            assign_span_and_value,
+        } = decl;
+
+        // create wire immediately, we'll will in the domain and type later
+        let id_owned = id
+            .as_ref()
+            .map_id(|id| id.as_ref().map_inner(|s| s.as_ref().to_owned()));
+        let wire = ctx.wires.push(WireInfo {
+            id: id_owned,
+            domain: Ok(None),
+            typed: Ok(None),
+        });
 
         let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
         let mut vars_inner = VariableValues::new_child(vars_body);
 
-        let (domain, ty, value) = match *kind {
-            WireDeclarationKind::Clock {
-                span_clock,
-                ref span_assign_and_value,
-            } => {
-                let value_tuple = span_assign_and_value
-                    .map(|(span_assign, value)| {
-                        let block_kind = BlockKind::WireValue { span_value: value.span };
-                        let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
-                        let mut process_block = ctx_expr.new_ir_block();
-
-                        let value = ctx.eval_expression(
-                            &mut ctx_expr,
-                            &mut process_block,
-                            scope_body,
-                            &mut vars_inner,
-                            &Type::Bool,
-                            value,
-                        )?;
-
-                        let reason = TypeContainsReason::Assignment {
-                            span_target: id.span(),
-                            span_target_ty: span_clock,
-                        };
-                        let check_ty =
-                            check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false);
-
-                        let check_domain = ctx.check_valid_domain_crossing(
-                            span_assign,
-                            Spanned::new(id.span(), ValueDomain::Clock),
-                            Spanned::new(value.span, value.inner.domain()),
-                            "wire declaration value",
-                        );
-
-                        check_ty?;
-                        check_domain?;
-
-                        Ok((process_block, ctx_expr.finish(), value))
-                    })
-                    .transpose()?;
-
-                (
-                    Some(Spanned::new(span_clock, ValueDomain::Clock)),
-                    Spanned::new(span_clock, HardwareType::Bool),
-                    value_tuple,
-                )
-            }
-            WireDeclarationKind::NormalWithValue {
-                domain,
-                ty,
-                span_assign,
-                value,
-            } => {
-                // eval domain and ty
+        // eval domain and value
+        let (domain, ty) = match kind {
+            WireDeclarationKind::Clock { span_clock } => (
+                Some(Spanned::new(span_clock, ValueDomain::Clock)),
+                Some(Spanned::new(span_clock, HardwareType::Bool)),
+            ),
+            WireDeclarationKind::Normal { domain, ty } => {
                 let domain = domain
-                    .map(|domain| ctx.eval_domain(scope_body, &mut vars_inner, domain))
+                    .map(|domain| {
+                        let domain = ctx.eval_domain(scope_body, &mut vars_inner, domain)?;
+                        Ok(domain.map_inner(ValueDomain::from_domain_kind))
+                    })
                     .transpose();
                 let ty = ty
                     .map(|ty| ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire"))
                     .transpose();
 
+                let domain = domain?;
                 let ty = ty?;
 
+                (domain, ty)
+            }
+        };
+
+        // eval value and infer domain and ty from it
+        let process = match assign_span_and_value {
+            None => {
+                // just set the domain and type
+                if let Some(domain) = domain {
+                    self.ctx.wires[wire].suggest_domain(domain)?;
+                }
+                if let Some(ty) = ty.as_ref() {
+                    self.ctx.wires[wire].suggest_ty(refs, &mut self.ir_wires, ty.as_ref())?;
+                }
+
+                None
+            }
+            Some((assign_span, value)) => {
                 // eval value
                 let block_kind = BlockKind::WireValue { span_value: value.span };
                 let mut ctx_expr = IrBuilderExpressionContext::new(block_kind, &mut report_assignment);
                 let mut process_block = ctx_expr.new_ir_block();
 
                 let expected_ty = ty.as_ref().map_or(Type::Any, |ty| ty.inner.as_type());
-                let value_eval = ctx.eval_expression(
+                let value = ctx.eval_expression(
                     &mut ctx_expr,
                     &mut process_block,
                     scope_body,
@@ -2034,115 +2083,70 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     value,
                 )?;
 
-                // decide and check domain
-                let domain = domain?;
-                let value_domain = value_eval.as_ref().map_inner(Value::domain);
-
+                // infer or check domain
+                let value_domain = value.as_ref().map_inner(|v| v.domain());
                 let domain = match domain {
+                    None => Ok(value_domain),
                     Some(domain) => ctx
-                        .check_valid_domain_crossing(
-                            span_assign,
-                            domain.map_inner(ValueDomain::from_domain_kind),
-                            value_domain,
-                            "wire declaration value",
-                        )
+                        .check_valid_domain_crossing(assign_span, domain, value_domain, "wire declaration value")
                         .map(|()| domain),
-                    None => {
-                        let domain = match value_domain.inner {
-                            ValueDomain::CompileTime | ValueDomain::Const => DomainKind::Const,
-                            ValueDomain::Async => DomainKind::Async,
-                            ValueDomain::Sync(s) => DomainKind::Sync(s),
-                            ValueDomain::Clock => return Err(diags.report_todo(decl_span, "infer clock domain")),
-                        };
-                        Ok(Spanned::new(value.span, domain))
-                    }
                 };
 
-                // decide and check ty
+                // infer or check type
                 let ty = match ty {
-                    Some(ty) => Ok(ty),
-                    None => {
-                        let v_ty = value_eval.inner.ty();
-                        match v_ty.as_hardware_type(ctx.refs) {
-                            Ok(v_ty_hw) => Ok(Spanned::new(value_eval.span, v_ty_hw)),
-                            Err(_) => Err(diags.report_simple(
-                                "wire value has non-hardware type",
-                                value.span,
-                                format!("value has type {:?}", v_ty.diagnostic_string()),
-                            )),
+                    None => match value.inner.ty().as_hardware_type(refs) {
+                        Ok(ty) => Ok(Spanned::new(value.span, ty)),
+                        Err(e) => {
+                            let _: NonHardwareType = e;
+                            let err_msg = format!(
+                                "value with type `{}` cannot be represented in hardware",
+                                value.inner.ty().diagnostic_string()
+                            );
+                            let diag = Diagnostic::new("cannot assign non-hardware value to wire")
+                                .add_error(value.span, err_msg)
+                                .add_info(assign_span, "assignment to wire here")
+                                .finish();
+                            Err(diags.report(diag))
                         }
+                    },
+                    Some(ty) => {
+                        let reason = TypeContainsReason::Assignment {
+                            span_target: id.span(),
+                            span_target_ty: ty.span,
+                        };
+                        check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref(), false, false)
+                            .map(|()| ty)
                     }
                 };
-
-                let ty = ty?;
-                let domain = domain?.map_inner(ValueDomain::from_domain_kind);
-
-                // check type/value
-                let reason = TypeContainsReason::Assignment {
-                    span_target: id.span(),
-                    span_target_ty: ty.span,
-                };
-                check_type_contains_value(diags, reason, &ty.inner.as_type(), value_eval.as_ref(), false, false)?;
-
-                let value_tuple = (process_block, ctx_expr.finish(), value_eval);
-                (Some(domain), ty, Some(value_tuple))
-            }
-            WireDeclarationKind::NormalWithoutValue { domain, ty } => {
-                let domain = domain
-                    .map(|domain| ctx.eval_domain(scope_body, &mut vars_inner, domain))
-                    .transpose();
-                let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "wire");
 
                 let domain = domain?;
                 let ty = ty?;
 
-                let domain = domain.map(|d| d.map_inner(ValueDomain::from_domain_kind));
-                (domain, ty, None)
+                // create the wire by suggesting the domain and ty
+                let wire_info = &mut ctx.wires[wire];
+                wire_info.suggest_domain(domain)?;
+                let wire_info_typed = wire_info.suggest_ty(refs, &mut self.ir_wires, ty.as_ref())?;
+
+                // append final assignment to process
+                // TODO if the value is a signal and there are no statement or locals, skip the process (to avoid delta cycle)
+                // TODO maybe processes should be changed to explicitly list the things they're driving?
+                let value_hw =
+                    value
+                        .inner
+                        .as_hardware_value(refs, &mut ctx.large, value.span, &wire_info_typed.ty.inner)?;
+                let target = IrAssignmentTarget::wire(wire_info_typed.ir);
+
+                let stmt = IrStatement::Assign(target, value_hw.expr);
+                process_block.statements.push(Spanned::new(decl_span, stmt));
+
+                let process = IrCombinatorialProcess {
+                    locals: ctx_expr.finish(),
+                    block: process_block,
+                };
+                let process = Spanned::new(decl_span, process);
+
+                Some(process)
             }
-        };
-
-        // build wire
-        let debug_info_domain = domain.map_or_else(|| "inferred".to_string(), |d| d.inner.diagnostic_string(ctx));
-        let ir_wire = self.ir_wires.push(IrWireInfo {
-            ty: ty.inner.as_ir(ctx.refs),
-            debug_info_id: id.spanned_string(),
-            debug_info_ty: ty.inner.clone(),
-            debug_info_domain,
-        });
-        let wire = ctx.wires.push(WireInfo {
-            id: id
-                .as_ref()
-                .map_id(|id| id.as_ref().map_inner(|s| s.as_ref().to_owned())),
-            domain: Ok(domain),
-            ty: ty.clone(),
-            ir: ir_wire,
-        });
-
-        // TODO if the value is a signal and there are not statements or locals, skip the process (to avoid delta cycle)
-        let process = if let Some((mut process_block, locals, value)) = value {
-            // convert value to hardware
-            let value_hw = value
-                .inner
-                .as_hardware_value(ctx.refs, &mut ctx.large, value.span, &ty.inner)?;
-
-            // append assignment to process
-            let target = IrAssignmentTarget::wire(ir_wire);
-            let stmt = IrStatement::Assign(target, value_hw.expr);
-
-            let stmt = Spanned {
-                span: value.span,
-                inner: stmt,
-            };
-            process_block.statements.push(stmt);
-
-            // finish process
-            let process = IrCombinatorialProcess {
-                locals,
-                block: process_block,
-            };
-            Some(Spanned::new(value.span, process))
-        } else {
-            None
         };
 
         Ok((wire, process))

@@ -10,6 +10,7 @@ use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
 use crate::mid::ir::{
     IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire,
+    IrWireInfo,
 };
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, PortDirection, Visibility};
 use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
@@ -446,6 +447,11 @@ pub struct PortInterfaceInfo {
 pub struct WireInfo {
     pub id: MaybeIdentifier<Spanned<String>>,
     pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
+    pub typed: Result<Option<WireInfoTyped>, ErrorGuaranteed>,
+}
+
+#[derive(Debug)]
+pub struct WireInfoTyped {
     pub ty: Spanned<HardwareType>,
     pub ir: IrWire,
 }
@@ -469,25 +475,48 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Spanned<ValueDomain> {
-        match self.domain {
-            Ok(Some(domain)) => domain,
-            Ok(None) | Err(_) => {
-                self.domain = Ok(Some(suggest));
-                suggest
-            }
-        }
+    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        Ok(*self.domain.as_ref_mut_ok()?.get_or_insert_with(|| suggest))
     }
 
-    pub fn domain(&mut self, diags: &Diagnostics, span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        get_domain(diags, "wire", &mut self.domain, self.id.span(), span)
+    pub fn domain(&mut self, diags: &Diagnostics, use_span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        get_inferred(diags, "wire", "domain", &mut self.domain, self.id.span(), use_span).map(|d| *d)
+    }
+
+    pub fn suggest_ty(
+        &mut self,
+        refs: CompileRefs,
+        ir_wires: &mut Arena<IrWire, IrWireInfo>,
+        suggest: Spanned<&HardwareType>,
+    ) -> Result<&WireInfoTyped, ErrorGuaranteed> {
+        Ok(self.typed.as_ref_mut_ok()?.get_or_insert_with(|| {
+            let ir = ir_wires.push(IrWireInfo {
+                ty: suggest.inner.as_ir(refs),
+                debug_info_id: self.id.spanned_string(),
+                debug_info_ty: suggest.inner.clone(),
+                // placeholder, will be filled in later during the final module pass
+                debug_info_domain: String::new(),
+            });
+
+            WireInfoTyped {
+                ty: suggest.cloned(),
+                ir,
+            }
+        }))
+    }
+
+    pub fn typed(&mut self, diags: &Diagnostics, use_span: Span) -> Result<&WireInfoTyped, ErrorGuaranteed> {
+        get_inferred(diags, "wire", "type", &mut self.typed, self.id.span(), use_span)
     }
 
     pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
+        let domain = self.domain(diags, span)?.inner;
+        let typed = self.typed(diags, span)?;
+
         Ok(HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: self.domain(diags, span)?.inner,
-            expr: IrExpression::Wire(self.ir),
+            ty: typed.ty.inner.clone(),
+            domain,
+            expr: IrExpression::Wire(typed.ir),
         })
     }
 }
@@ -508,7 +537,7 @@ impl RegisterInfo {
         diags: &Diagnostics,
         span: Span,
     ) -> Result<Spanned<SyncDomain<DomainSignal>>, ErrorGuaranteed> {
-        get_domain(diags, "register", &mut self.domain, self.id.span(), span)
+        get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).map(|d| *d)
     }
 
     pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
@@ -521,23 +550,31 @@ impl RegisterInfo {
     }
 }
 
-fn get_domain<D: Copy>(
+fn get_inferred<'s, T>(
     diags: &Diagnostics,
     kind: &str,
-    slot: &mut Result<Option<D>, ErrorGuaranteed>,
+    inferred: &str,
+    slot: &'s mut Result<Option<T>, ErrorGuaranteed>,
     decl_span: Span,
-    usage_span: Span,
-) -> Result<D, ErrorGuaranteed> {
-    (*slot)?.ok_or_else(|| {
-        let diag = Diagnostic::new(format!("{kind} domain is not yet known"))
-            .add_error(usage_span, format!("{kind} used here before domain could be inferred"))
-            .add_info(decl_span, "declared here without domain")
-            .footer(Level::Help, "explicitly add a domain to the declaration")
-            .finish();
-        let e = diags.report(diag);
-        *slot = Err(e);
-        e
-    })
+    use_span: Span,
+) -> Result<&'s T, ErrorGuaranteed> {
+    match *slot {
+        Ok(Some(ref inferred)) => Ok(inferred),
+        Err(e) => Err(e),
+        Ok(None) => {
+            let diag = Diagnostic::new(format!("{kind} {inferred} is not yet known"))
+                .add_error(
+                    use_span,
+                    format!("{kind} used here before {inferred} could be inferred"),
+                )
+                .add_info(decl_span, format!("declared here without {inferred}"))
+                .footer(Level::Help, format!("explicitly add a {inferred} to the declaration"))
+                .finish();
+            let e = diags.report(diag);
+            *slot = Err(e);
+            Err(e)
+        }
+    }
 }
 
 fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
@@ -813,18 +850,24 @@ impl CompileShared {
 
 // TODO move somewhere else
 impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&mut self, signal: DomainSignal) -> IrExpression {
-        let Polarized { inverted, signal } = signal;
+    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> Result<IrExpression, ErrorGuaranteed> {
+        let signal_span = signal.span;
+        let Polarized { inverted, signal } = signal.inner;
+
         let inner = match signal {
             Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
-            Signal::Wire(wire) => IrExpression::Wire(self.wires[wire].ir),
+            Signal::Wire(wire) => {
+                let typed = self.wires[wire].typed(self.refs.diags, signal_span)?;
+                IrExpression::Wire(typed.ir)
+            }
             Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
         };
-        if inverted {
+        let result = if inverted {
             self.large.push_expr(IrExpressionLarge::BoolNot(inner))
         } else {
             inner
-        }
+        };
+        Ok(result)
     }
 }
 

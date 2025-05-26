@@ -458,23 +458,17 @@ pub struct WireDeclaration {
     pub vis: Visibility,
     pub id: MaybeGeneralIdentifier,
     pub kind: WireDeclarationKind,
+    pub assign_span_and_value: Option<(Span, Expression)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum WireDeclarationKind {
     Clock {
         span_clock: Span,
-        span_assign_and_value: Option<(Span, Expression)>,
     },
-    NormalWithValue {
+    Normal {
         domain: Option<Spanned<DomainKind<Expression>>>,
         ty: Option<Expression>,
-        span_assign: Span,
-        value: Expression,
-    },
-    NormalWithoutValue {
-        domain: Option<Spanned<DomainKind<Expression>>>,
-        ty: Expression,
     },
 }
 

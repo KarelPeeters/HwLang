@@ -15,6 +15,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use crate::util::ResultExt;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget<B = AssignmentTargetBase> {
@@ -68,7 +69,12 @@ impl CompileItemContext<'_, '_> {
         // figure out expected type if any
         let target_base_ty = match target_base.inner {
             AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
-            AssignmentTargetBase::Wire(wire) => Some(self.wires[wire].ty.as_ref().map_inner(HardwareType::as_type)),
+            AssignmentTargetBase::Wire(wire) => {
+                let typed = self.wires[wire].typed.as_ref_ok()?;
+                typed
+                    .as_ref()
+                    .map(|typed| typed.ty.as_ref().map_inner(HardwareType::as_type))
+            }
             AssignmentTargetBase::Register(reg) => {
                 Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
             }
@@ -122,7 +128,9 @@ impl CompileItemContext<'_, '_> {
         ctx.report_assignment(self, Spanned::new(target_base.span, target_base_signal), vars)?;
 
         // get inner type and steps
-        let target_base_ty = target_base_signal.ty(self).map_inner(Clone::clone);
+        let target_base_ty = target_base_signal
+            .ty(diags, self, target_base.span)?
+            .map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
         // evaluate the full value
@@ -194,7 +202,7 @@ impl CompileItemContext<'_, '_> {
 
         // get ir target
         let target_ir = IrAssignmentTarget {
-            base: target_base_signal.as_ir_target_base(self),
+            base: target_base_signal.as_ir_target_base(diags, self, target_base.span)?,
             steps: target_steps_ir,
         };
 

@@ -786,7 +786,12 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, kind: _ } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        id,
+                        kind: _,
+                        assign_span_and_value: _,
+                    } = decl;
                     match vis {
                         Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
@@ -828,10 +833,10 @@ impl ResolveContext<'_> {
                     } = decl;
 
                     if let Some(sync) = sync {
-                        self.visit_domain_sync(&scope, sync.inner)?;
+                        self.visit_domain_sync(scope, sync.inner)?;
                     }
-                    self.visit_expression(&scope, ty)?;
-                    self.visit_expression(&scope, init)?;
+                    self.visit_expression(scope, ty)?;
+                    self.visit_expression(scope, init)?;
 
                     match vis {
                         // public declarations were already collected earlier
@@ -840,37 +845,27 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, ref kind } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        id,
+                        kind,
+                        assign_span_and_value,
+                    } = decl;
 
-                    match *kind {
-                        WireDeclarationKind::Clock {
-                            span_clock: _,
-                            span_assign_and_value,
-                        } => {
-                            if let Some((_, value)) = span_assign_and_value {
-                                self.visit_expression(&scope, value)?;
-                            }
-                        }
-                        WireDeclarationKind::NormalWithValue {
-                            domain,
-                            ty,
-                            span_assign: _,
-                            value,
-                        } => {
+                    match kind {
+                        WireDeclarationKind::Clock { span_clock: _ } => {}
+                        WireDeclarationKind::Normal { domain, ty } => {
                             if let Some(domain) = domain {
-                                self.visit_domain(&scope, domain.inner)?;
+                                self.visit_domain(scope, domain.inner)?;
                             }
                             if let Some(ty) = ty {
-                                self.visit_expression(&scope, ty)?;
+                                self.visit_expression(scope, ty)?;
                             }
-                            self.visit_expression(&scope, value)?;
                         }
-                        WireDeclarationKind::NormalWithoutValue { domain, ty } => {
-                            if let Some(domain) = domain {
-                                self.visit_domain(&scope, domain.inner)?;
-                            }
-                            self.visit_expression(&scope, ty)?;
-                        }
+                    }
+
+                    if let Some((_, value)) = assign_span_and_value {
+                        self.visit_expression(scope, value)?;
                     }
 
                     match vis {
@@ -881,8 +876,8 @@ impl ResolveContext<'_> {
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     let &RegOutPortMarker { id, init } = decl;
-                    self.visit_expression(&scope, init)?;
-                    self.visit_id_usage(&scope, id)?;
+                    self.visit_expression(scope, init)?;
+                    self.visit_id_usage(scope, id)?;
                 }
 
                 // no declarations, handled in the second pass
@@ -898,17 +893,17 @@ impl ResolveContext<'_> {
         for stmt in statements {
             match &stmt.inner {
                 ModuleStatementKind::Block(block) => {
-                    self.visit_block_module(&scope, block)?;
+                    self.visit_block_module(scope, block)?;
                 }
                 ModuleStatementKind::If(stmt) => {
                     self.visit_if_stmt(scope, stmt, &mut |s, b| self.visit_block_module(s, b))?;
                 }
                 ModuleStatementKind::For(stmt) => {
-                    self.visit_for_stmt(&scope, stmt, |s, b| self.visit_block_module(s, b))?
+                    self.visit_for_stmt(scope, stmt, |s, b| self.visit_block_module(s, b))?
                 }
                 ModuleStatementKind::CombinatorialBlock(stmt) => {
                     let CombinatorialBlock { span_keyword: _, block } = stmt;
-                    self.visit_block_statements(&scope, block)?;
+                    self.visit_block_statements(scope, block)?;
                 }
                 ModuleStatementKind::ClockedBlock(stmt) => {
                     let &ClockedBlock {
@@ -918,12 +913,12 @@ impl ResolveContext<'_> {
                         reset,
                         ref block,
                     } = stmt;
-                    self.visit_expression(&scope, clock)?;
+                    self.visit_expression(scope, clock)?;
                     if let Some(reset) = reset {
                         let ClockedBlockReset { kind: _, signal } = reset.inner;
-                        self.visit_expression(&scope, signal)?;
+                        self.visit_expression(scope, signal)?;
                     }
-                    self.visit_block_statements(&scope, block)?;
+                    self.visit_block_statements(scope, block)?;
                 }
                 ModuleStatementKind::Instance(stmt) => {
                     let &ModuleInstance {
@@ -933,13 +928,13 @@ impl ResolveContext<'_> {
                         ref port_connections,
                     } = stmt;
 
-                    self.visit_expression(&scope, module)?;
+                    self.visit_expression(scope, module)?;
 
                     for conn in &port_connections.inner {
                         let &PortConnection { id, expr } = &conn.inner;
                         // TODO try resolving port name, needs type info
                         let _ = id;
-                        self.visit_expression(&scope, expr)?;
+                        self.visit_expression(scope, expr)?;
                     }
                 }
 

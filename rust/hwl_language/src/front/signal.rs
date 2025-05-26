@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, Port, Register, Variable, Wire};
-use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
 use crate::front::types::HardwareType;
 use crate::front::value::HardwareValue;
@@ -83,11 +83,16 @@ impl Signal {
         }
     }
 
-    pub fn ty<'s>(self, state: &'s CompileItemContext) -> Spanned<&'s HardwareType> {
+    pub fn ty<'s>(
+        self,
+        diags: &Diagnostics,
+        state: &'s mut CompileItemContext,
+        use_span: Span,
+    ) -> Result<Spanned<&'s HardwareType>, ErrorGuaranteed> {
         match self {
-            Signal::Port(port) => state.ports[port].ty.as_ref(),
-            Signal::Wire(wire) => state.wires[wire].ty.as_ref(),
-            Signal::Register(reg) => state.registers[reg].ty.as_ref(),
+            Signal::Port(port) => Ok(state.ports[port].ty.as_ref()),
+            Signal::Wire(wire) => state.wires[wire].typed(diags, use_span).map(|typed| typed.ty.as_ref()),
+            Signal::Register(reg) => Ok(state.registers[reg].ty.as_ref()),
         }
     }
 
@@ -99,7 +104,7 @@ impl Signal {
         let diags = state.refs.diags;
         match self {
             Signal::Port(port) => Ok(state.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
-            Signal::Wire(wire) => Ok(state.wires[wire].suggest_domain(suggest_domain)),
+            Signal::Wire(wire) => state.wires[wire].suggest_domain(suggest_domain),
             Signal::Register(reg) => {
                 let reg_info = &mut state.registers[reg];
                 if let Some(domain) = reg_info.domain? {
@@ -125,11 +130,18 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_target_base(self, state: &CompileItemContext) -> IrAssignmentTargetBase {
+    pub fn as_ir_target_base(
+        self,
+        diags: &Diagnostics,
+        state: &mut CompileItemContext,
+        use_span: Span,
+    ) -> Result<IrAssignmentTargetBase, ErrorGuaranteed> {
         match self {
-            Signal::Port(port) => IrAssignmentTargetBase::Port(state.ports[port].ir),
-            Signal::Wire(wire) => IrAssignmentTargetBase::Wire(state.wires[wire].ir),
-            Signal::Register(reg) => IrAssignmentTargetBase::Register(state.registers[reg].ir),
+            Signal::Port(port) => Ok(IrAssignmentTargetBase::Port(state.ports[port].ir)),
+            Signal::Wire(wire) => Ok(IrAssignmentTargetBase::Wire(
+                state.wires[wire].typed(diags, use_span)?.ir,
+            )),
+            Signal::Register(reg) => Ok(IrAssignmentTargetBase::Register(state.registers[reg].ir)),
         }
     }
 

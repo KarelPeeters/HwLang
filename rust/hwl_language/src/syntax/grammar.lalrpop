@@ -216,9 +216,8 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = RegDeclaration { vis, id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
-    // TODO allow clocks as wires
-    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
-        let decl = WireDeclaration { vis, id, kind };
+    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> <assign_span_and_value:(Span<"="> Expr)?> ";" => {
+        let decl = WireDeclaration { vis, id, kind, assign_span_and_value };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -508,21 +507,18 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
 }
 
 WireDeclarationKind: WireDeclarationKind = {
-    ":" <span_clock:Span<"clock">> <span_assign_and_value:(<Span<"=">> <Expr>)?>
-        => WireDeclarationKind::Clock { span_clock, span_assign_and_value },
+    ":" <span_clock:Span<"clock">>
+        => WireDeclarationKind::Clock { span_clock },
     
     // manually expanded because ":" should be present iff at least one of domain or ty is present
-    ":" <domain:Spanned<DomainKind>> <ty:Expr> <span_assign:Span<"=">> <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: Some(ty), span_assign, value },
-    ":" <domain:Spanned<DomainKind>> <span_assign:Span<"=">> <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: Some(domain), ty: None, span_assign, value },
-    ":" <ty:Expr> <span_assign:Span<"=">> <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: None, ty: Some(ty), span_assign, value },
-    <span_assign:Span<"=">> <value:Expr>
-        => WireDeclarationKind::NormalWithValue { domain: None, ty: None, span_assign, value },
-    
-    ":" <domain:(Spanned<DomainKind>)?> <ty:Expr>
-        => WireDeclarationKind::NormalWithoutValue { domain, ty },
+    ":" <domain:Spanned<DomainKind>> <ty:Expr>
+        => WireDeclarationKind::Normal { domain: Some(domain), ty: Some(ty) },
+    ":" <domain:Spanned<DomainKind>>
+        => WireDeclarationKind::Normal { domain: Some(domain), ty: None },
+    ":" <ty:Expr>
+        => WireDeclarationKind::Normal { domain: None, ty: Some(ty) },
+    ()
+        => WireDeclarationKind::Normal { domain: None, ty: None },
 }
 
 PortDirection: PortDirection = {

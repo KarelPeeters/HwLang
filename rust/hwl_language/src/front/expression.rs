@@ -281,7 +281,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
                                 wire_info
-                                    .suggest_domain(Spanned::new(expr.span, ValueDomain::Sync(block_domain.inner)));
+                                    .suggest_domain(Spanned::new(expr.span, ValueDomain::Sync(block_domain.inner)))?;
                             }
                             let wire_value = wire_info.as_hardware_value(diags, expr.span)?;
 
