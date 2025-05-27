@@ -1210,8 +1210,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let iter_span = iter.span;
 
         let mut scope_for = Scope::new_child(for_stmt.span, scope_parent);
-        let mut vars_inner = VariableValues::new_child(vars);
-        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut vars_inner, index_ty));
+        let mut vars_for = VariableValues::new_child(vars);
+        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut vars_for, index_ty));
 
         let mut ctx = CompileTimeExpressionContext {
             span: for_stmt.span,
@@ -1219,7 +1219,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         };
         let iter = self
             .ctx
-            .eval_expression_as_for_iterator(&mut ctx, &mut (), &scope_for, &mut vars_inner, iter);
+            .eval_expression_as_for_iterator(&mut ctx, &mut (), &scope_for, &mut vars_for, iter);
 
         let index_ty = index_ty.transpose()?;
         let iter = iter?;
@@ -1245,6 +1245,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             }
 
             let mut scope_inner = Scope::new_child(index.span().join(body.span), &scope_for);
+            let mut vars_inner = VariableValues::new_child(&vars_for);
             let var = vars_inner.var_new_immutable_init(&mut self.ctx.variables, index, span_keyword, Ok(index_value));
 
             scope_inner.maybe_declare(
@@ -1254,20 +1255,34 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             );
 
             let (todo, decls) = self.pass_0_declarations_collect(&scope_inner, &vars_inner, body, false);
+
+            // wrap the children in an additional layer to jeep track of the inner scope
+            let scope_inner = scope_inner.into_content();
+
+            let mut todo_children_inner = vec![];
             process_todo_and_decls(
                 diags,
                 &mut scope_for,
-                &mut todo_children,
+                &mut todo_children_inner,
                 &mut pub_declarations,
                 todo,
                 decls,
             );
+
+            if !todo_children_inner.is_empty() {
+                todo_children.push(ModuleChildTodo::Nested(ModuleTodo {
+                    span: body.span,
+                    scope: Some(scope_inner),
+                    vars: vars_inner.into_content(),
+                    children: todo_children_inner,
+                }))
+            }
         }
 
         let todo = ModuleTodo {
             span: for_stmt.span,
-            scope: None,
-            vars: vars_inner.into_content(),
+            scope: Some(scope_for.into_content()),
+            vars: vars_for.into_content(),
             children: todo_children,
         };
 
