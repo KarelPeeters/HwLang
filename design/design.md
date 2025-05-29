@@ -437,6 +437,7 @@ Capitalization:
 * Allow cycles!
 * Mostly implicit from file system with option to create additional nested namespaces in a file?
 * private/public functions and modules
+  * https://journal.stuffwithstuff.com/2025/05/26/access-control-syntax/
 
 ### Compiler flow
 
