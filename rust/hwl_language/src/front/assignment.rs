@@ -7,7 +7,7 @@ use crate::front::expression::{eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Polarized, Signal};
 use crate::front::steps::ArraySteps;
-use crate::front::types::{HardwareType, Type};
+use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, Value};
 use crate::front::variables::{MaybeAssignedValue, VariableValues};
 use crate::mid::ir::{
@@ -15,7 +15,6 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
-use crate::util::ResultExt;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget<B = AssignmentTargetBase> {
@@ -70,10 +69,8 @@ impl CompileItemContext<'_, '_> {
         let target_base_ty = match target_base.inner {
             AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
             AssignmentTargetBase::Wire(wire) => {
-                let typed = self.wires[wire].typed.as_ref_ok()?;
-                typed
-                    .as_ref()
-                    .map(|typed| typed.ty.as_ref().map_inner(HardwareType::as_type))
+                let typed = self.wires[wire].typed_maybe(self.refs, &self.wire_interfaces)?;
+                typed.map(|typed| typed.ty.map_inner(|ty| ty.as_type()))
             }
             AssignmentTargetBase::Register(reg) => {
                 Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
@@ -117,7 +114,6 @@ impl CompileItemContext<'_, '_> {
         };
 
         // handle hardware signal assignment
-        ctx.check_ir_context(diags, stmt.span, "hardware assignment")?;
         let clocked_block_domain = match ctx.block_domain() {
             BlockDomain::CompileTime => unreachable!(),
             BlockDomain::Combinatorial => None,
@@ -127,10 +123,29 @@ impl CompileItemContext<'_, '_> {
         // TODO report exact range/sub-access that is being assigned
         ctx.report_assignment(self, Spanned::new(target_base.span, target_base_signal), vars)?;
 
+        // suggest target type
+        if target_steps.is_empty() && op.inner.is_none() {
+            let right_ty = right_eval
+                .inner
+                .ty()
+                .as_hardware_type(self.refs)
+                .map_err(|_: NonHardwareType| {
+                    let msg_value = format!(
+                        "assigned value is non-hardware with type `{}`",
+                        right_eval.inner.ty().diagnostic_string()
+                    );
+                    let diag = Diagnostic::new("assignment to hardware signal requires hardware type")
+                        .add_error(right_eval.span, msg_value)
+                        .add_info(op.span, "assignment to hardware signal here")
+                        .finish();
+                    diags.report(diag)
+                })?;
+            let ir_wires = ctx.get_ir_wires(diags, stmt.span)?;
+            target_base_signal.suggest_ty(self, ir_wires, Spanned::new(target_base.span, &right_ty))?;
+        }
+
         // get inner type and steps
-        let target_base_ty = target_base_signal
-            .ty(diags, self, target_base.span)?
-            .map_inner(Clone::clone);
+        let target_base_ty = target_base_signal.ty(self, target_base.span)?.map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
         // evaluate the full value
@@ -202,7 +217,7 @@ impl CompileItemContext<'_, '_> {
 
         // get ir target
         let target_ir = IrAssignmentTarget {
-            base: target_base_signal.as_ir_target_base(diags, self, target_base.span)?,
+            base: target_base_signal.as_ir_target_base(self, target_base.span)?,
             steps: target_steps_ir,
         };
 

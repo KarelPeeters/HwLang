@@ -43,8 +43,8 @@ impl ElaboratedInterfaceInfo {
         diags: &Diagnostics,
         source: &SourceDatabase,
         index: Identifier,
-    ) -> Result<&ElaboratedInterfaceViewInfo, ErrorGuaranteed> {
-        match self.views.get(index.str(source)) {
+    ) -> Result<(usize, &ElaboratedInterfaceViewInfo), ErrorGuaranteed> {
+        match self.views.get_index_of(index.str(source)) {
             None => {
                 let diag = Diagnostic::new("dot index does not match any interface view")
                     .add_error(index.span, "this identifier should match a view")
@@ -52,7 +52,7 @@ impl ElaboratedInterfaceInfo {
                     .finish();
                 Err(diags.report(diag))
             }
-            Some(view) => Ok(view),
+            Some(index) => Ok((index, &self.views[index])),
         }
     }
 }

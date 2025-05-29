@@ -185,6 +185,15 @@ pub enum IrWireOrPort {
     Port(IrPort),
 }
 
+impl IrWireOrPort {
+    pub fn as_expression(self) -> IrExpression {
+        match self {
+            IrWireOrPort::Wire(wire) => IrExpression::Wire(wire),
+            IrWireOrPort::Port(port) => IrExpression::Port(port),
+        }
+    }
+}
+
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
 pub type IrWires = Arena<IrWire, IrWireInfo>;
 pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;

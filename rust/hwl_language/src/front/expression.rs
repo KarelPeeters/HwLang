@@ -4,7 +4,7 @@ use crate::front::check::{
     check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_string,
     check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, CompileRefs, Port, PortInterface, StackEntry};
+use crate::front::compile::{CompileItemContext, CompileRefs, Port, PortInterface, StackEntry, Wire, WireInterface};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
@@ -47,6 +47,7 @@ use unwrap_match::unwrap_match;
 pub enum ValueInner {
     Value(ValueWithImplications),
     PortInterface(PortInterface),
+    WireInterface(WireInterface),
 }
 
 pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
@@ -189,7 +190,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
         match value {
             ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
-            ValueInner::PortInterface(_) => Err(self.refs.diags.report_simple(
+            ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_simple(
                 "interface instance expression not allowed here",
                 expr.span,
                 "this expression evaluates to an interface instance",
@@ -268,7 +269,6 @@ impl<'a> CompileItemContext<'a, '_> {
                             }
                         },
                         NamedValue::Port(port) => {
-                            ctx.check_ir_context(diags, expr.span, "port")?;
                             return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
                         }
                         NamedValue::PortInterface(interface) => {
@@ -276,18 +276,11 @@ impl<'a> CompileItemContext<'a, '_> {
                             return Ok(ValueInner::PortInterface(interface));
                         }
                         NamedValue::Wire(wire) => {
+                            return self.eval_wire(ctx, vars, Spanned::new(expr.span, wire));
+                        }
+                        NamedValue::WireInterface(interface) => {
                             ctx.check_ir_context(diags, expr.span, "wire")?;
-                            let wire_info = &mut self.wires[wire];
-
-                            if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
-                                wire_info
-                                    .suggest_domain(Spanned::new(expr.span, ValueDomain::Sync(block_domain.inner)))?;
-                            }
-                            let wire_value = wire_info.as_hardware_value(diags, expr.span)?;
-
-                            let versioned = vars.signal_versioned(Signal::Wire(wire));
-                            let with_implications = apply_implications(ctx, &mut self.large, versioned, wire_value);
-                            Value::Hardware(with_implications)
+                            return Ok(ValueInner::WireInterface(interface));
                         }
                         NamedValue::Register(reg) => {
                             ctx.check_ir_context(diags, expr.span, "register")?;
@@ -659,7 +652,9 @@ impl<'a> CompileItemContext<'a, '_> {
                         }
                     }
                     ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
-                    ValueInner::PortInterface(_) => return Err(err_not_tuple("port interface")),
+                    ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
+                        return Err(err_not_tuple("interface instance"))
+                    }
                 }
             }
             &ExpressionKind::Call(target, ref args) => {
@@ -837,10 +832,12 @@ impl<'a> CompileItemContext<'a, '_> {
                     .refs
                     .shared
                     .elaboration_arenas
-                    .interface_info(port_interface_info.view.interface);
+                    .interface_info(port_interface_info.view.inner.interface);
+
                 let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
                     let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
                         .add_error(index.span, "attempt to access port here")
+                        .add_info(port_interface_info.view.span, "port interface set here")
                         .add_info(interface_info.id.span(), "interface declared here")
                         .finish();
                     diags.report(diag)
@@ -849,17 +846,37 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 return self.eval_port(ctx, vars, Spanned::new(expr_span, port));
             }
+            ValueInner::WireInterface(wire_interface) => {
+                let wire_interface_info = &self.wire_interfaces[wire_interface];
+                let interface_info = self
+                    .refs
+                    .shared
+                    .elaboration_arenas
+                    .interface_info(wire_interface_info.interface.inner);
+
+                let wire_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
+                    let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
+                        .add_error(index.span, "attempt to access port here")
+                        .add_info(wire_interface_info.interface.span, "wire interface set here")
+                        .add_info(interface_info.id.span(), "interface declared here")
+                        .finish();
+                    diags.report(diag)
+                })?;
+                let wire = wire_interface_info.wires[wire_index];
+
+                return self.eval_wire(ctx, vars, Spanned::new(expr_span, wire));
+            }
             ValueInner::Value(base_eval) => base_eval,
         };
 
         // interface views
         if let &Value::Compile(CompileValue::Interface(base_interface)) = &base_eval {
             let info = self.refs.shared.elaboration_arenas.interface_info(base_interface);
-            let _ = info.get_view(diags, self.refs.fixed.source, index)?;
+            let (view_index, _) = info.get_view(diags, self.refs.fixed.source, index)?;
 
             let interface_view = ElaboratedInterfaceView {
                 interface: base_interface,
-                view: index_str.to_owned(),
+                view_index,
             };
             let result = Value::Compile(CompileValue::InterfaceView(interface_view));
             return Ok(ValueInner::Value(result));
@@ -1048,6 +1065,8 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
         let port_info = &self.ports[port.inner];
 
+        ctx.check_ir_context(diags, port.span, "port")?;
+
         match port_info.direction.inner {
             PortDirection::Input => {
                 let versioned = vars.signal_versioned(Signal::Port(port.inner));
@@ -1059,10 +1078,34 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
+    fn eval_wire<C: ExpressionContext>(
+        &mut self,
+        ctx: &mut C,
+        vars: &VariableValues,
+        wire: Spanned<Wire>,
+    ) -> Result<ValueInner, ErrorGuaranteed> {
+        let diags = self.refs.diags;
+
+        ctx.check_ir_context(diags, wire.span, "wire")?;
+        let wire_info = &mut self.wires[wire.inner];
+
+        if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
+            wire_info.suggest_domain(
+                &mut self.wire_interfaces,
+                Spanned::new(wire.span, ValueDomain::Sync(block_domain.inner)),
+            )?;
+        }
+        let wire_value = wire_info.as_hardware_value(self.refs, &mut self.wire_interfaces, wire.span)?;
+
+        let versioned = vars.signal_versioned(Signal::Wire(wire.inner));
+        let with_implications = apply_implications(ctx, &mut self.large, versioned, wire_value);
+        Ok(ValueInner::Value(Value::Hardware(with_implications)))
+    }
+
     fn eval_array_literal<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        ctx_block: &mut <C as ExpressionContext>::Block,
+        ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
@@ -1101,7 +1144,7 @@ impl<'a> CompileItemContext<'a, '_> {
     fn eval_tuple_literal<C: ExpressionContext>(
         &mut self,
         ctx: &mut C,
-        ctx_block: &mut <C as ExpressionContext>::Block,
+        ctx_block: &mut C::Block,
         scope: &Scope,
         vars: &mut VariableValues,
         expected_ty: &Type,
@@ -1513,7 +1556,9 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
                         }
-                        NamedValue::PortInterface(_) => return Err(build_err("port interface")),
+                        NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
+                            return Err(build_err("interface instance"))
+                        }
                         NamedValue::Wire(w) => {
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
                         }
@@ -1560,7 +1605,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 .refs
                                 .shared
                                 .elaboration_arenas
-                                .interface_info(port_interface_info.view.interface);
+                                .interface_info(port_interface_info.view.inner.interface);
                             let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
                             let port = port_interface_info.ports[port_index];
 
@@ -1573,9 +1618,22 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
                         }
+                        NamedOrValue::Named(NamedValue::WireInterface(base)) => {
+                            // get port
+                            let wire_interface_info = &self.wire_interfaces[base];
+                            let interface_info = self
+                                .refs
+                                .shared
+                                .elaboration_arenas
+                                .interface_info(wire_interface_info.interface.inner);
+                            let (wire_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                            let wire = wire_interface_info.wires[wire_index];
+
+                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(wire)))
+                        }
                         _ => {
                             return Err(diags.report_simple(
-                                "dot index only supported on interface ports",
+                                "dot index is only allowed on port/wire interfaces",
                                 base.span,
                                 "got other named value here",
                             ));
@@ -1584,7 +1642,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 _ => {
                     return Err(diags.report_simple(
-                        "dot index only supported on interface ports",
+                        "dot index is only allowed on port/wire interfaces",
                         base.span,
                         "got other expression here",
                     ))
@@ -1646,7 +1704,9 @@ impl<'a> CompileItemContext<'a, '_> {
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(_) => Err(build_err("variable")),
                         NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
-                        NamedValue::PortInterface(_) => Err(build_err("port interface")),
+                        NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
+                            Err(build_err("interface instance"))
+                        }
                         NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
                         NamedValue::Register(r) => Ok(Polarized::new(Signal::Register(r))),
                     },

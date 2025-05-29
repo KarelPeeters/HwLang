@@ -9,7 +9,7 @@ use crate::syntax::ast::{
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationKind,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::SourceDatabase;
@@ -786,12 +786,7 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration {
-                        vis,
-                        id,
-                        kind: _,
-                        assign_span_and_value: _,
-                    } = decl;
+                    let &WireDeclaration { vis, id, kind: _ } = decl;
                     match vis {
                         Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
@@ -845,27 +840,39 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration {
-                        vis,
-                        id,
-                        kind,
-                        assign_span_and_value,
-                    } = decl;
+                    let &WireDeclaration { vis, id, kind } = decl;
 
                     match kind {
-                        WireDeclarationKind::Clock { span_clock: _ } => {}
-                        WireDeclarationKind::Normal { domain, ty } => {
+                        WireDeclarationKind::Normal {
+                            domain_ty,
+                            assign_span_and_value,
+                        } => {
+                            match domain_ty {
+                                WireDeclarationDomainTyKind::Clock { span_clock: _ } => {}
+                                WireDeclarationDomainTyKind::Normal { domain, ty } => {
+                                    if let Some(domain) = domain {
+                                        self.visit_domain(scope, domain.inner)?;
+                                    }
+                                    if let Some(ty) = ty {
+                                        self.visit_expression(scope, ty)?;
+                                    }
+                                }
+                            }
+
+                            if let Some((_, value)) = assign_span_and_value {
+                                self.visit_expression(scope, value)?;
+                            }
+                        }
+                        WireDeclarationKind::Interface {
+                            domain,
+                            span_keyword: _,
+                            interface,
+                        } => {
                             if let Some(domain) = domain {
                                 self.visit_domain(scope, domain.inner)?;
                             }
-                            if let Some(ty) = ty {
-                                self.visit_expression(scope, ty)?;
-                            }
+                            self.visit_expression(scope, interface)?;
                         }
-                    }
-
-                    if let Some((_, value)) = assign_span_and_value {
-                        self.visit_expression(scope, value)?;
                     }
 
                     match vis {

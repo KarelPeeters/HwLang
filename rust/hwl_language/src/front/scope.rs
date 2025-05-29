@@ -1,4 +1,4 @@
-use crate::front::compile::{Port, PortInterface, Register, Variable, Wire};
+use crate::front::compile::{Port, PortInterface, Register, Variable, Wire, WireInterface};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
@@ -34,6 +34,7 @@ pub enum NamedValue {
     Port(Port),
     PortInterface(PortInterface),
     Wire(Wire),
+    WireInterface(WireInterface),
     Register(Register),
 }
 

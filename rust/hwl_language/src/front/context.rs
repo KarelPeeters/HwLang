@@ -9,7 +9,7 @@ use crate::front::value::MaybeUndefined;
 use crate::front::variables::{ValueVersioned, VariableValues};
 use crate::mid::ir::{
     IrBlock, IrExpression, IrRegister, IrRegisterInfo, IrRegisters, IrStatement, IrVariable, IrVariableInfo,
-    IrVariables,
+    IrVariables, IrWires,
 };
 use crate::syntax::ast::{Spanned, SyncDomain};
 use crate::syntax::pos::Span;
@@ -80,6 +80,8 @@ pub trait ExpressionContext {
     fn is_ir_context(&self) -> bool;
 
     fn check_ir_context(&self, diags: &Diagnostics, span: Span, reason: &str) -> Result<(), ErrorGuaranteed>;
+
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed>;
 }
 
 pub struct CompileTimeExpressionContext {
@@ -207,6 +209,10 @@ impl ExpressionContext for CompileTimeExpressionContext {
             .finish();
         Err(diags.report(diag))
     }
+
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed> {
+        Err(diags.report_internal_error(span, "trying to get IR wires in compile-time context"))
+    }
 }
 
 // TODO rename to hardware
@@ -215,6 +221,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
 //   probably as part of the "coverage" tracking for combinatorial loops (=don't read before write)
 pub struct IrBuilderExpressionContext<'a> {
     report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+    pub ir_wires: &'a mut IrWires,
     block_kind: BlockKind<'a>,
     ir_variables: IrVariables,
     condition_domains: Vec<Spanned<ValueDomain>>,
@@ -252,10 +259,12 @@ impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
         block_kind: BlockKind<'a>,
         report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+        ir_wires: &'a mut IrWires,
     ) -> Self {
         Self {
             block_kind,
             report_assignment,
+            ir_wires,
             ir_variables: IrVariables::new(),
             condition_domains: vec![],
             implications: vec![],
@@ -469,5 +478,10 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
 
     fn check_ir_context(&self, _: &Diagnostics, _: Span, _: &str) -> Result<(), ErrorGuaranteed> {
         Ok(())
+    }
+
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed> {
+        let _ = (diags, span);
+        Ok(self.ir_wires)
     }
 }

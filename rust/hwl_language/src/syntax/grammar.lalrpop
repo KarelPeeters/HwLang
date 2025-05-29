@@ -216,8 +216,8 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = RegDeclaration { vis, id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
-    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> <assign_span_and_value:(Span<"="> Expr)?> ";" => {
-        let decl = WireDeclaration { vis, id, kind, assign_span_and_value };
+    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
+        let decl = WireDeclaration { vis, id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
@@ -507,18 +507,25 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
 }
 
 WireDeclarationKind: WireDeclarationKind = {
+    <domain_ty:WireDeclarationDomainTyKind> <assign_span_and_value:(Span<"="> Expr)?>
+        => WireDeclarationKind::Normal { domain_ty, assign_span_and_value },
+    ":" <domain:Spanned<DomainKind>?> <span_keyword:Span<"interface">> <interface:Expr>
+        => WireDeclarationKind::Interface { domain, span_keyword, interface },
+}
+
+WireDeclarationDomainTyKind: WireDeclarationDomainTyKind = {
     ":" <span_clock:Span<"clock">>
-        => WireDeclarationKind::Clock { span_clock },
+        => WireDeclarationDomainTyKind::Clock { span_clock },
     
     // manually expanded because ":" should be present iff at least one of domain or ty is present
     ":" <domain:Spanned<DomainKind>> <ty:Expr>
-        => WireDeclarationKind::Normal { domain: Some(domain), ty: Some(ty) },
+        => WireDeclarationDomainTyKind::Normal { domain: Some(domain), ty: Some(ty) },
     ":" <domain:Spanned<DomainKind>>
-        => WireDeclarationKind::Normal { domain: Some(domain), ty: None },
+        => WireDeclarationDomainTyKind::Normal { domain: Some(domain), ty: None },
     ":" <ty:Expr>
-        => WireDeclarationKind::Normal { domain: None, ty: Some(ty) },
+        => WireDeclarationDomainTyKind::Normal { domain: None, ty: Some(ty) },
     ()
-        => WireDeclarationKind::Normal { domain: None, ty: None },
+        => WireDeclarationDomainTyKind::Normal { domain: None, ty: None },
 }
 
 PortDirection: PortDirection = {

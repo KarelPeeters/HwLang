@@ -1,7 +1,7 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
-use crate::front::item::{ElaboratedModule, ElaborationArenas};
+use crate::front::item::{ElaboratedInterface, ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::front::signal::Polarized;
@@ -255,6 +255,7 @@ pub struct CompileItemContext<'a, 's> {
     pub ports: ArenaPorts,
     pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
+    pub wire_interfaces: Arena<WireInterface, WireInterfaceInfo>,
     pub registers: Arena<Register, RegisterInfo>,
     pub large: IrLargeArena,
 
@@ -299,6 +300,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
             ports,
             port_interfaces,
             wires: Arena::new(),
+            wire_interfaces: Arena::new(),
             registers: Arena::new(),
             large: IrLargeArena::new(),
             origin,
@@ -408,7 +410,14 @@ new_index_type!(pub Variable);
 new_index_type!(pub Port);
 new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
+new_index_type!(pub WireInterface);
 new_index_type!(pub Register);
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum WireOrPort<W = Wire, P = Port> {
+    Wire(W),
+    Port(P),
+}
 
 #[derive(Debug)]
 pub struct ConstantInfo {
@@ -438,22 +447,56 @@ pub struct PortInfo {
 #[derive(Debug)]
 pub struct PortInterfaceInfo {
     pub id: Identifier,
-    pub view: ElaboratedInterfaceView,
+    pub view: Spanned<ElaboratedInterfaceView>,
     pub domain: Spanned<DomainKind<Polarized<Port>>>,
     pub ports: Vec<Port>,
 }
 
 #[derive(Debug)]
-pub struct WireInfo {
-    pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
-    pub typed: Result<Option<WireInfoTyped>, ErrorGuaranteed>,
+pub enum WireInfo {
+    Single(WireInfoSingle),
+    Interface(WireInfoInInterface),
 }
 
 #[derive(Debug)]
-pub struct WireInfoTyped {
-    pub ty: Spanned<HardwareType>,
+pub struct WireInfoSingle {
+    pub id: MaybeIdentifier<Spanned<String>>,
+    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
+    pub typed: Result<Option<WireInfoTyped<HardwareType>>, ErrorGuaranteed>,
+}
+
+#[derive(Debug)]
+pub struct WireInfoInInterface {
+    pub decl_span: Span,
+    pub interface: Spanned<WireInterface>,
+    pub index: usize,
+    pub diagnostic_string: String,
     pub ir: IrWire,
+}
+
+#[derive(Debug)]
+pub struct WireInterfaceInfo {
+    pub id: MaybeIdentifier<Spanned<String>>,
+    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
+    pub interface: Spanned<ElaboratedInterface>,
+    pub wires: Vec<Wire>,
+    // TODO rename
+    pub ir_wires: Vec<IrWire>,
+}
+
+#[derive(Debug)]
+pub struct WireInfoTyped<T> {
+    pub ty: Spanned<T>,
+    pub ir: IrWire,
+}
+
+impl<T> WireInfoTyped<T> {
+    pub fn as_ref(&self) -> WireInfoTyped<&T> {
+        WireInfoTyped {
+            ty: self.ty.as_ref(),
+            ir: self.ir,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -475,49 +518,163 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        Ok(*self.domain.as_ref_mut_ok()?.get_or_insert_with(|| suggest))
+    pub fn decl_span(&self) -> Span {
+        match self {
+            WireInfo::Single(slf) => slf.id.span(),
+            WireInfo::Interface(slf) => slf.decl_span,
+        }
     }
 
-    pub fn domain(&mut self, diags: &Diagnostics, use_span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        get_inferred(diags, "wire", "domain", &mut self.domain, self.id.span(), use_span).copied()
+    pub fn diagnostic_str(&self) -> &str {
+        match self {
+            WireInfo::Single(slf) => slf.id.diagnostic_str(),
+            WireInfo::Interface(slf) => &slf.diagnostic_string,
+        }
     }
 
-    pub fn suggest_ty(
+    pub fn suggest_domain(
         &mut self,
-        refs: CompileRefs,
+        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
+        suggest: Spanned<ValueDomain>,
+    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        match self {
+            WireInfo::Single(slf) => Ok(*slf.domain.as_ref_mut_ok()?.get_or_insert(suggest)),
+            WireInfo::Interface(slf) => wire_interfaces[slf.interface.inner].suggest_domain(suggest),
+        }
+    }
+
+    pub fn domain(
+        &mut self,
+        diags: &Diagnostics,
+        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
+        use_span: Span,
+    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        let (decl_span, slot) = match self {
+            WireInfo::Single(slf) => (slf.id.span(), &mut slf.domain),
+            WireInfo::Interface(slf) => {
+                let info = &mut wire_interfaces[slf.interface.inner];
+                (info.id.span(), &mut info.domain)
+            }
+        };
+
+        get_inferred(diags, "wire", "domain", slot, decl_span, use_span).copied()
+    }
+
+    pub fn suggest_ty<'s>(
+        &'s mut self,
+        refs: CompileRefs<'_, 's>,
+        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
         ir_wires: &mut Arena<IrWire, IrWireInfo>,
         suggest: Spanned<&HardwareType>,
-    ) -> Result<&WireInfoTyped, ErrorGuaranteed> {
-        Ok(self.typed.as_ref_mut_ok()?.get_or_insert_with(|| {
-            let ir = ir_wires.push(IrWireInfo {
-                ty: suggest.inner.as_ir(refs),
-                debug_info_id: self.id.spanned_string(),
-                debug_info_ty: suggest.inner.clone(),
-                // placeholder, will be filled in later during the final module pass
-                debug_info_domain: String::new(),
-            });
+    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
+        match self {
+            WireInfo::Single(slf) => {
+                // take the suggestion into account
+                Ok(slf
+                    .typed
+                    .as_ref_mut_ok()?
+                    .get_or_insert_with(|| {
+                        let ir = ir_wires.push(IrWireInfo {
+                            ty: suggest.inner.as_ir(refs),
+                            debug_info_id: slf.id.spanned_string(),
+                            debug_info_ty: suggest.inner.clone(),
+                            // will be filled in later during the inference checking pass
+                            debug_info_domain: String::new(),
+                        });
 
-            WireInfoTyped {
-                ty: suggest.cloned(),
-                ir,
+                        WireInfoTyped {
+                            ty: suggest.cloned(),
+                            ir,
+                        }
+                    })
+                    .as_ref())
             }
-        }))
+            WireInfo::Interface(slf) => {
+                // ignore the suggestion, just get the type
+                let wire_interface = &wire_interfaces[slf.interface.inner];
+                let elab_interface = refs
+                    .shared
+                    .elaboration_arenas
+                    .interface_info(wire_interface.interface.inner);
+
+                Ok(WireInfoTyped {
+                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ir: slf.ir,
+                })
+            }
+        }
     }
 
-    pub fn typed(&mut self, diags: &Diagnostics, use_span: Span) -> Result<&WireInfoTyped, ErrorGuaranteed> {
-        get_inferred(diags, "wire", "type", &mut self.typed, self.id.span(), use_span)
+    pub fn typed<'s>(
+        &'s mut self,
+        refs: CompileRefs<'_, 's>,
+        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
+        use_span: Span,
+    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
+        match self {
+            WireInfo::Single(slf) => {
+                get_inferred(refs.diags, "wire", "type", &mut slf.typed, slf.id.span(), use_span).map(|ty| ty.as_ref())
+            }
+            WireInfo::Interface(slf) => {
+                let wire_interface = &wire_interfaces[slf.interface.inner];
+                let elab_interface = refs
+                    .shared
+                    .elaboration_arenas
+                    .interface_info(wire_interface.interface.inner);
+
+                Ok(WireInfoTyped {
+                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ir: slf.ir,
+                })
+            }
+        }
     }
 
-    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
-        let domain = self.domain(diags, span)?.inner;
-        let typed = self.typed(diags, span)?;
+    pub fn typed_maybe<'s>(
+        &'s mut self,
+        refs: CompileRefs<'_, 's>,
+        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
+    ) -> Result<Option<WireInfoTyped<&'s HardwareType>>, ErrorGuaranteed> {
+        match self {
+            WireInfo::Single(slf) => slf
+                .typed
+                .as_ref_ok()
+                .map(|typed| typed.as_ref().map(WireInfoTyped::as_ref)),
+            WireInfo::Interface(slf) => {
+                let wire_interface = &wire_interfaces[slf.interface.inner];
+                let elab_interface = refs
+                    .shared
+                    .elaboration_arenas
+                    .interface_info(wire_interface.interface.inner);
+
+                Ok(Some(WireInfoTyped {
+                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ir: slf.ir,
+                }))
+            }
+        }
+    }
+
+    pub fn as_hardware_value(
+        &mut self,
+        refs: CompileRefs,
+        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
+        use_span: Span,
+    ) -> Result<HardwareValue, ErrorGuaranteed> {
+        let domain = self.domain(refs.diags, wire_interfaces, use_span)?.inner;
+        let typed = self.typed(refs, wire_interfaces, use_span)?;
 
         Ok(HardwareValue {
             ty: typed.ty.inner.clone(),
             domain,
             expr: IrExpression::Wire(typed.ir),
         })
+    }
+}
+
+impl WireInterfaceInfo {
+    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+        Ok(*self.domain.as_ref_mut_ok()?.get_or_insert(suggest))
     }
 }
 
@@ -857,7 +1014,7 @@ impl CompileItemContext<'_, '_> {
         let inner = match signal {
             Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
             Signal::Wire(wire) => {
-                let typed = self.wires[wire].typed(self.refs.diags, signal_span)?;
+                let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, signal_span)?;
                 IrExpression::Wire(typed.ir)
             }
             Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),

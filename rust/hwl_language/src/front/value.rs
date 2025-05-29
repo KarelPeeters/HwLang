@@ -41,10 +41,10 @@ pub enum CompileValue {
     InterfaceView(ElaboratedInterfaceView),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedInterfaceView {
     pub interface: ElaboratedInterface,
-    pub view: String,
+    pub view_index: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

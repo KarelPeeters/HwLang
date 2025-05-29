@@ -532,6 +532,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
     Ok(())
 }
 
+// TODO at this point we should know that this is an ir context already
 fn merge_hardware_values<'a, C: ExpressionContext>(
     refs: CompileRefs,
     ctx: &mut C,

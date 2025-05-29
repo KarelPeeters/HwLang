@@ -920,7 +920,8 @@ impl CapturedScope {
                                         NamedValue::Port(_)
                                         | NamedValue::Wire(_)
                                         | NamedValue::Register(_)
-                                        | NamedValue::PortInterface(_) => {
+                                        | NamedValue::PortInterface(_)
+                                        | NamedValue::WireInterface(_) => {
                                             Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
                                         }
                                     },
