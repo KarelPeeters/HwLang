@@ -168,14 +168,14 @@ fn main_inner(args: Args) -> ExitCode {
         std::fs::create_dir_all("../ignored").unwrap();
         std::fs::write(
             "../ignored/lowered.v",
-            lowered.as_ref().map_or(&String::new(), |s| &s.verilog_source),
+            lowered.as_ref().map_or("// failed", |s| &s.verilog_source),
         )
         .unwrap();
 
         // save simulator code
         std::fs::write(
             "../ignored/lowered.cpp",
-            simulator_code.as_ref().unwrap_or(&String::new()),
+            simulator_code.as_ref().map_or("// failed", String::as_str),
         )
         .unwrap();
     }
