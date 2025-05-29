@@ -8,8 +8,8 @@ use crate::syntax::ast::{
     MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ReturnStatement, Spanned, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
+    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::SourceDatabase;
@@ -73,8 +73,8 @@ struct DeclScope<'p> {
 
 #[derive(Debug)]
 struct DeclScopeContent {
-    fixed: IndexMap<String, Vec<(Span, Conditional)>>,
-    patterns: Vec<(Regex, Span, Conditional)>,
+    simple: IndexMap<String, Vec<(Span, Conditional)>>,
+    pattern: Vec<(Regex, Span, Conditional)>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -83,13 +83,28 @@ enum Conditional {
     No,
 }
 
+#[derive(Debug, Clone)]
+enum EvaluatedId<S> {
+    Simple(S),
+    Pattern(Regex),
+}
+
+impl EvaluatedId<&str> {
+    pub fn into_owned(self) -> EvaluatedId<String> {
+        match self {
+            EvaluatedId::Simple(s) => EvaluatedId::Simple(s.to_owned()),
+            EvaluatedId::Pattern(regex) => EvaluatedId::Pattern(regex),
+        }
+    }
+}
+
 impl<'p> DeclScope<'p> {
     fn new_root() -> Self {
         Self {
             parent: None,
             content: DeclScopeContent {
-                fixed: IndexMap::new(),
-                patterns: vec![],
+                simple: IndexMap::new(),
+                pattern: vec![],
             },
         }
     }
@@ -98,69 +113,103 @@ impl<'p> DeclScope<'p> {
         Self {
             parent: Some(parent),
             content: DeclScopeContent {
-                fixed: IndexMap::new(),
-                patterns: vec![],
+                simple: IndexMap::new(),
+                pattern: vec![],
             },
         }
     }
 
     fn merge_conditional_child(&mut self, content: DeclScopeContent) {
-        let DeclScopeContent { fixed, patterns: regex } = content;
+        let DeclScopeContent {
+            simple: fixed,
+            pattern: regex,
+        } = content;
         for (k, v) in fixed {
             for (span, _) in v {
                 self.content
-                    .fixed
+                    .simple
                     .entry(k.clone())
                     .or_default()
                     .push((span, Conditional::Yes));
             }
         }
         for (k, v, _) in regex {
-            self.content.patterns.push((k, v, Conditional::Yes));
+            self.content.pattern.push((k, v, Conditional::Yes));
+        }
+    }
+
+    fn declare_impl(&mut self, cond: Conditional, id: Spanned<EvaluatedId<String>>) {
+        match id.inner {
+            EvaluatedId::Simple(id_inner) => {
+                self.content.simple.entry(id_inner).or_default().push((id.span, cond));
+            }
+            EvaluatedId::Pattern(pattern) => self.content.pattern.push((pattern, id.span, cond)),
         }
     }
 
     fn declare(&mut self, source: &SourceDatabase, cond: Conditional, id: Identifier) {
-        self.content
-            .fixed
-            .entry(id.str(source).to_owned())
-            .or_default()
-            .push((id.span, cond));
+        let id_eval = EvaluatedId::Simple(id.str(source).to_owned());
+        self.declare_impl(cond, Spanned::new(id.span, id_eval));
     }
 
     fn maybe_declare(&mut self, source: &SourceDatabase, cond: Conditional, id: MaybeIdentifier) {
         match id {
             MaybeIdentifier::Dummy(_) => {}
-            MaybeIdentifier::Identifier(id) => self.declare(source, cond, id),
+            MaybeIdentifier::Identifier(id) => {
+                self.declare(source, cond, id);
+            }
         }
     }
 
-    fn declare_general(&mut self, cond: Conditional, key: Regex, span: Span) {
-        self.content.patterns.push((key, span, cond));
-    }
-
-    fn find(&self, id: &str) -> FindDefinition {
+    fn find(&self, id: EvaluatedId<&str>) -> FindDefinition {
         let mut curr = self;
         let mut result = vec![];
 
         loop {
             let mut any_certain = false;
 
-            let DeclScopeContent { fixed, patterns } = &curr.content;
-            if let Some(entries) = fixed.get(id) {
-                for &(span, cond) in entries {
-                    result.push(span);
-                    match cond {
-                        Conditional::Yes => {}
-                        Conditional::No => any_certain = true,
+            let DeclScopeContent {
+                simple: fixed,
+                pattern: patterns,
+            } = &curr.content;
+
+            // check simple
+            match &id {
+                &EvaluatedId::Simple(id) => {
+                    if let Some(entries) = fixed.get(id) {
+                        for &(span, cond) in entries {
+                            result.push(span);
+                            match cond {
+                                Conditional::Yes => {}
+                                Conditional::No => any_certain = true,
+                            }
+                        }
+                    }
+                }
+                EvaluatedId::Pattern(id) => {
+                    for (key, entries) in fixed {
+                        if id.is_match(key) {
+                            for &(span, cond) in entries {
+                                result.push(span);
+                                // pattern matches matches are never certain
+                                let _ = cond;
+                            }
+                        }
                     }
                 }
             }
+
+            // check patterns
             for &(ref regex, span, c) in patterns {
-                if regex.is_match(id) {
-                    // pattern matches are never certain, even if they're not conditional
-                    let _ = c;
+                let matches = match id {
+                    EvaluatedId::Simple(id) => regex.is_match(id),
+                    // regex/regex intersection is tricky, pessimistically assume match for now
+                    EvaluatedId::Pattern(_) => true,
+                };
+                if matches {
                     result.push(span);
+                    // pattern matches matches are never certain
+                    let _ = c;
                 }
             }
 
@@ -833,10 +882,10 @@ impl ResolveContext<'_> {
                     self.visit_expression(scope, ty)?;
                     self.visit_expression(scope, init)?;
 
+                    self.visit_maybe_general(scope, id)?;
                     match vis {
-                        // public declarations were already collected earlier
                         Visibility::Public(_) => {}
-                        Visibility::Private => self.visit_and_declare_maybe_general(scope, Conditional::No, id)?,
+                        Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
@@ -875,10 +924,10 @@ impl ResolveContext<'_> {
                         }
                     }
 
+                    self.visit_maybe_general(scope, id)?;
                     match vis {
-                        // public declarations were already collected earlier
                         Visibility::Public(_) => {}
-                        Visibility::Private => self.visit_and_declare_maybe_general(scope, Conditional::No, id)?,
+                        Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
                     }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
@@ -987,19 +1036,7 @@ impl ResolveContext<'_> {
                 self.visit_expression(&scope_inner, expression)?;
             }
             &ExpressionKind::Id(id) => {
-                match id {
-                    GeneralIdentifier::Simple(id) => {
-                        self.visit_id_usage(scope, id)?;
-                    }
-                    GeneralIdentifier::FromString(span, expr) => {
-                        self.visit_expression(scope, expr)?;
-
-                        // TODO support find on general ids?
-                        //   For now this should find all ids in any scope, which is not very useful.
-                        //   Maybe with regexes this becomes slightly more useful.
-                        let _ = span;
-                    }
-                }
+                self.visit_general_id_usage(scope, id)?;
             }
             ExpressionKind::StringLiteral(pieces) => {
                 for piece in pieces {
@@ -1125,43 +1162,57 @@ impl ResolveContext<'_> {
         Ok(())
     }
 
-    fn visit_and_declare_general(
-        &self,
-        scope: &mut DeclScope,
-        cond: Conditional,
-        id: GeneralIdentifier,
-    ) -> FindDefinitionResult {
+    fn visit_maybe_general(&self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> FindDefinitionResult {
         match id {
-            GeneralIdentifier::Simple(_) => {}
-            GeneralIdentifier::FromString(_, expr) => {
-                self.visit_expression(scope, expr)?;
-            }
+            MaybeGeneralIdentifier::Dummy(_span) => {}
+            MaybeGeneralIdentifier::Identifier(id) => match id {
+                GeneralIdentifier::Simple(_id) => {}
+                GeneralIdentifier::FromString(_span, expr) => {
+                    self.visit_expression(scope, expr)?;
+                }
+            },
         }
-        self.declare_general(scope, cond, id);
+
         Ok(())
     }
 
-    fn visit_and_declare_maybe_general(
-        &self,
-        scope: &mut DeclScope,
-        cond: Conditional,
-        id: MaybeGeneralIdentifier,
-    ) -> FindDefinitionResult {
+    fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
         match id {
-            MaybeGeneralIdentifier::Dummy(_) => Ok(()),
-            MaybeGeneralIdentifier::Identifier(id) => self.visit_and_declare_general(scope, cond, id),
+            MaybeGeneralIdentifier::Dummy(_) => {}
+            MaybeGeneralIdentifier::Identifier(id) => {
+                let id = self.eval_general(id);
+                scope.declare_impl(cond, id.map_inner(|id| id.into_owned()));
+            }
         }
     }
 
-    fn declare_general(&self, scope: &mut DeclScope, cond: Conditional, id: GeneralIdentifier) {
+    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
+        check_skip!(self, id.span);
+        Err(scope.find(EvaluatedId::Simple(id.str(self.source))))
+    }
+
+    fn visit_general_id_usage(&self, scope: &DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
+        // visit inner expressions first
         match id {
-            GeneralIdentifier::Simple(id) => {
-                scope.declare(self.source, cond, id);
+            GeneralIdentifier::Simple(_id) => {}
+            GeneralIdentifier::FromString(_span, expr) => {
+                self.visit_expression(scope, expr)?;
             }
-            GeneralIdentifier::FromString(span, expr) => {
-                // build a pattern that matches all possible substitutions
-                let pattern = match &self.arena_expressions[expr.inner] {
+        }
+
+        // find the id itself
+        check_skip!(self, id.span());
+        Err(scope.find(self.eval_general(id).inner))
+    }
+
+    fn eval_general(&self, id: GeneralIdentifier) -> Spanned<EvaluatedId<&str>> {
+        let eval = match id {
+            GeneralIdentifier::Simple(id) => EvaluatedId::Simple(id.str(self.source)),
+            GeneralIdentifier::FromString(_, expr) => {
+                // TODO look even further through eg. constants, values, ...
+                match &self.arena_expressions[expr.inner] {
                     ExpressionKind::StringLiteral(pieces) => {
+                        // build a pattern that matches all possible substitutions
                         let mut pattern = String::new();
                         pattern.push('^');
 
@@ -1178,28 +1229,17 @@ impl ResolveContext<'_> {
                         }
 
                         pattern.push('$');
-                        Regex::new(&pattern).unwrap()
+                        EvaluatedId::Pattern(Regex::new(&pattern).unwrap())
                     }
-
-                    // default to a regex that matches everything
-                    _ => Regex::new("").unwrap(),
-                };
-
-                scope.declare_general(cond, pattern, span);
+                    _ => {
+                        // default to a regex that matches everything
+                        // TODO maybe it's even faster to have a separate enum branch for this case
+                        EvaluatedId::Pattern(Regex::new("").unwrap())
+                    }
+                }
             }
-        }
-    }
+        };
 
-    fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
-        match id {
-            MaybeGeneralIdentifier::Dummy(_) => {}
-            MaybeGeneralIdentifier::Identifier(id) => self.declare_general(scope, cond, id),
-        }
-    }
-
-    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
-        // TODO support visiting general IDs too
-        check_skip!(self, id.span);
-        Err(scope.find(id.str(self.source)))
+        Spanned::new(id.span(), eval)
     }
 }
