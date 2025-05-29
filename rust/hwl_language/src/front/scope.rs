@@ -49,7 +49,7 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     values: IndexMap<String, DeclaredValue>,
-    any_id_result: Result<(), ErrorGuaranteed>,
+    any_id_err: Result<(), ErrorGuaranteed>,
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
@@ -81,6 +81,12 @@ pub struct ScopeFound<'s> {
     pub value: &'s ScopedEntry,
 }
 
+#[derive(Debug)]
+pub enum TryScopeFound<'s> {
+    Found(ScopeFound<'s>),
+    NotFoundAnyIdErr(Result<(), ErrorGuaranteed>),
+}
+
 impl<'p> Scope<'p> {
     pub fn new_root(span: Span, file: FileId) -> Self {
         Scope {
@@ -88,7 +94,7 @@ impl<'p> Scope<'p> {
             parent: ScopeParent::None(file),
             content: ScopeContent {
                 values: IndexMap::new(),
-                any_id_result: Ok(()),
+                any_id_err: Ok(()),
             },
         }
     }
@@ -99,7 +105,7 @@ impl<'p> Scope<'p> {
             parent: ScopeParent::Some(parent),
             content: ScopeContent {
                 values: IndexMap::new(),
-                any_id_result: Ok(()),
+                any_id_err: Ok(()),
             },
         }
     }
@@ -161,7 +167,7 @@ impl<'p> Scope<'p> {
         let id = match id {
             Ok(id) => id,
             Err(e) => {
-                self.content.any_id_result = Err(e);
+                self.content.any_id_err = Err(e);
                 return;
             }
         };
@@ -251,64 +257,93 @@ impl<'p> Scope<'p> {
         initial_scope_span: Span,
         check_parents: bool,
     ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
-        if let Some(declared) = self.content.values.get(id) {
-            let (value, value_span) = match *declared {
-                DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
-                DeclaredValue::Multiple { spans: _, err } => return Err(err),
-                DeclaredValue::Error(err) => return Err(err),
-                DeclaredValue::FailedCapture(span, reason) => {
-                    let reason_str = match reason {
-                        FailedCaptureReason::NotCompile => "contains a non-compile-time value",
-                        FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
-                    };
+        match self.try_find_impl(diags, id, id_span, initial_scope_span, check_parents)? {
+            TryScopeFound::Found(found) => Ok(found),
+            TryScopeFound::NotFoundAnyIdErr(any_id_err) => {
+                // if any dynamic id declaration failed, propagate that error to supress superfluous errors
+                any_id_err?;
 
-                    let id_span = id_span.ok_or_else(|| {
-                        diags.report_internal_error(
-                            initial_scope_span,
-                            "tried to resolve span-less id in captured context",
-                        )
-                    })?;
+                // report an error
+                let info_parents = if check_parents { " and its parents" } else { "" };
 
-                    let diag = Diagnostic::new(format!("failed to capture identifier because {reason_str}"))
-                        .add_error(id_span, "used here")
-                        .add_info(span, "value declared here")
-                        .finish();
-                    return Err(diags.report(diag));
+                // TODO add fuzzy-matched suggestions as info
+                // TODO simplify once we we always have a span, eg. from a top config file, commandline or python callsite
+                let mut diag = Diagnostic::new(format!("undeclared identifier `{}`", id));
+                if let Some(id_span) = id_span {
+                    diag = diag.add_error(id_span, "identifier not declared");
+                    diag = diag.add_info(
+                        Span::empty_at(initial_scope_span.start()),
+                        format!("searched in the scope starting here{info_parents}"),
+                    );
+                } else {
+                    diag = diag.add_error(
+                        Span::empty_at(initial_scope_span.start()),
+                        format!("searched in the scope starting here{info_parents}"),
+                    );
                 }
-            };
 
-            return Ok(ScopeFound {
-                defining_span: value_span,
-                value,
-            });
-        }
-
-        if check_parents {
-            if let ScopeParent::Some(parent) = self.parent {
-                return parent.find_impl(diags, id, id_span, initial_scope_span, check_parents);
+                Err(diags.report(diag.finish()))
             }
         }
+    }
 
-        // TODO insert error entry to suppress future errors that ask for the same identifier?
-        let info_parents = if check_parents { " and its parents" } else { "" };
+    fn try_find_impl<'s>(
+        &'s self,
+        diags: &Diagnostics,
+        id: &str,
+        id_span: Option<Span>,
+        initial_scope_span: Span,
+        check_parents: bool,
+    ) -> Result<TryScopeFound<'s>, ErrorGuaranteed> {
+        let mut curr = self;
+        let mut any_id_err = Ok(());
 
-        // TODO add fuzzy-matched suggestions as info
-        // TODO insert identifier into the current scope to suppress downstream errors
-        // TODO simplify once we we always have a span, eg. from a top config file, commandline or python callsite
-        let mut diag = Diagnostic::new(format!("undeclared identifier `{}`", id));
-        if let Some(id_span) = id_span {
-            diag = diag.add_error(id_span, "identifier not declared");
-            diag = diag.add_info(
-                Span::empty_at(initial_scope_span.start()),
-                format!("searched in the scope starting here{info_parents}"),
-            );
-        } else {
-            diag = diag.add_error(
-                Span::empty_at(initial_scope_span.start()),
-                format!("searched in the scope starting here{info_parents}"),
-            );
+        loop {
+            if let Some(declared) = curr.content.values.get(id) {
+                let (value, value_span) = match *declared {
+                    DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
+                    DeclaredValue::Multiple { spans: _, err } => return Err(err),
+                    DeclaredValue::Error(err) => return Err(err),
+                    DeclaredValue::FailedCapture(span, reason) => {
+                        let reason_str = match reason {
+                            FailedCaptureReason::NotCompile => "contains a non-compile-time value",
+                            FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
+                        };
+
+                        let id_span = id_span.ok_or_else(|| {
+                            diags.report_internal_error(
+                                initial_scope_span,
+                                "tried to resolve span-less id in captured context",
+                            )
+                        })?;
+
+                        let diag = Diagnostic::new(format!("failed to capture identifier because {reason_str}"))
+                            .add_error(id_span, "used here")
+                            .add_info(span, "value declared here")
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                };
+
+                return Ok(TryScopeFound::Found(ScopeFound {
+                    defining_span: value_span,
+                    value,
+                }));
+            }
+
+            any_id_err = any_id_err.and(curr.content.any_id_err);
+
+            curr = if check_parents {
+                if let ScopeParent::Some(parent) = curr.parent {
+                    parent
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            };
         }
 
-        Err(diags.report(diag.finish()))
+        Ok(TryScopeFound::NotFoundAnyIdErr(any_id_err))
     }
 }
