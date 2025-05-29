@@ -451,10 +451,20 @@ impl<'a> CompileItemContext<'a, '_> {
                     _ => &Type::Any,
                 };
 
-                let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter)?;
+                let iter_eval = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter)?;
+
+                if !iter_eval.is_finite() {
+                    return Err(diags.report_simple(
+                        "array comprehension over infinite iterator would never finish",
+                        iter.span,
+                        "this iterator is infinite",
+                    ));
+                }
 
                 let mut values = vec![];
-                for index_value in iter {
+                for index_value in iter_eval {
+                    self.refs.check_should_stop(expr.span)?;
+
                     let index_value = index_value.to_maybe_compile(&mut self.large);
                     let index_var =
                         vars.var_new_immutable_init(&mut self.variables, index, span_keyword, Ok(index_value));
@@ -1999,6 +2009,16 @@ pub enum ForIterator {
         next: BigUint,
         base: HardwareValue<(HardwareType, BigUint)>,
     },
+}
+
+impl ForIterator {
+    pub fn is_finite(&self) -> bool {
+        match self {
+            ForIterator::Int { next: _, end_inc } => end_inc.is_some(),
+            ForIterator::CompileArray { .. } => true,
+            ForIterator::HardwareArray { .. } => true,
+        }
+    }
 }
 
 impl Iterator for ForIterator {
