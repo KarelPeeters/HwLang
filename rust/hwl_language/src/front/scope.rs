@@ -1,6 +1,7 @@
-use crate::front::compile::{Port, PortInterface, Register, Variable, Wire, WireInterface};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::function::FailedCaptureReason;
+use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
+use crate::front::variables::Variable;
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;

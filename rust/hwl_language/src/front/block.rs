@@ -2,7 +2,7 @@ use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_value, check_type_is_bool_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, VariableInfo};
+use crate::front::compile::CompileItemContext;
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
@@ -11,7 +11,7 @@ use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::front::variables::{merge_variable_branches, VariableValues};
+use crate::front::variables::{merge_variable_branches, VariableInfo, VariableValues};
 use crate::mid::ir::{IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ExtraItem, ExtraList, ForStatement,

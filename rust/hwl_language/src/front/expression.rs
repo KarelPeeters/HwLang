@@ -4,7 +4,7 @@ use crate::front::check::{
     check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_string,
     check_type_is_uint_compile, TypeContainsReason,
 };
-use crate::front::compile::{CompileItemContext, CompileRefs, Port, PortInterface, StackEntry, Wire, WireInterface};
+use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
@@ -12,7 +12,7 @@ use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKi
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
-use crate::front::signal::{Polarized, Signal, SignalOrVariable};
+use crate::front::signal::{Polarized, Port, PortInterface, Signal, SignalOrVariable, Wire, WireInterface};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};

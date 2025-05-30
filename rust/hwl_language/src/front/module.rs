@@ -1,11 +1,7 @@
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
-use crate::front::compile::{
-    ArenaPortInterfaces, ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs, Port, PortInfo,
-    PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInfoInInterface, WireInfoSingle, WireInterfaceInfo,
-    WireOrPort,
-};
+use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs};
 use crate::front::context::{
     BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
 };
@@ -16,7 +12,10 @@ use crate::front::function::CapturedScope;
 use crate::front::interface::ElaboratedInterfacePortInfo;
 use crate::front::item::{ElaboratedInterface, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
-use crate::front::signal::{Polarized, Signal};
+use crate::front::signal::{
+    Polarized, Port, PortInfo, PortInterfaceInfo, Register, RegisterInfo, Signal, Wire, WireInfo, WireInfoInInterface,
+    WireInfoSingle, WireInterfaceInfo, WireOrPort,
+};
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined};
 use crate::front::variables::{VariableValues, VariableValuesContent};

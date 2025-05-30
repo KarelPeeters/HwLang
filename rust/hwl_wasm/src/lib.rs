@@ -1,7 +1,8 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{compile, CollectPrintHandler, ElaborationSet};
+use hwl_language::front::compile::{compile, ElaborationSet};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};

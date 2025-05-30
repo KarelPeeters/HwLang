@@ -1,15 +1,15 @@
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, CompileRefs, Port, Register, Variable, Wire};
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
-use crate::front::signal::{Polarized, Signal};
+use crate::front::signal::{Polarized, Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, Value};
-use crate::front::variables::{MaybeAssignedValue, VariableValues};
+use crate::front::variables::{MaybeAssignedValue, Variable, VariableValues};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };

@@ -1,7 +1,8 @@
 #![no_main]
 
-use hwl_language::front::compile::{compile, ElaborationSet, NoPrintHandler};
+use hwl_language::front::compile::{compile, ElaborationSet};
 use hwl_language::front::diagnostic::Diagnostics;
+use hwl_language::front::print::NoPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FilePath, SourceDatabaseBuilder};
 use hwl_language::util::NON_ZERO_USIZE_ONE;

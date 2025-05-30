@@ -1,8 +1,9 @@
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, StdoutPrintHandler};
+use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared};
 use hwl_language::front::item::ElaboratedModule;
+use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
 use hwl_language::syntax::ast::{Arg, Args};

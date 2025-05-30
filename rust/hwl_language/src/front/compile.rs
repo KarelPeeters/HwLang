@@ -1,36 +1,35 @@
 use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
-use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
-use crate::front::item::{ElaboratedInterface, ElaboratedModule, ElaborationArenas};
+use crate::front::domain::DomainSignal;
+use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
+use crate::front::print::PrintHandler;
 use crate::front::scope::{Scope, ScopedEntry};
-use crate::front::signal::Polarized;
 use crate::front::signal::Signal;
-use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
-use crate::mid::ir::{
-    IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo, IrPort, IrRegister, IrWire,
-    IrWireInfo,
+use crate::front::signal::{
+    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInterface,
+    WireInterfaceInfo,
 };
-use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, PortDirection, Visibility};
-use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
+use crate::front::value::{CompileValue, Value};
+use crate::front::variables::{Variable, VariableInfo};
+use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
+use crate::syntax::ast::Spanned;
+use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
+use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::data::IndexMapExt;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
-use crate::{new_index_type, throw};
 use annotate_snippets::Level;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, zip_eq, Itertools};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-// TODO keep this file for the core compile loop and multithreading, move everything else out
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -405,335 +404,6 @@ pub enum CompileStackEntry {
     FunctionRun(AstRefItem, Vec<Value>),
 }
 
-// TODO move these somewhere else
-new_index_type!(pub Variable);
-new_index_type!(pub Port);
-new_index_type!(pub PortInterface);
-new_index_type!(pub Wire);
-new_index_type!(pub WireInterface);
-new_index_type!(pub Register);
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum WireOrPort<W = Wire, P = Port> {
-    Wire(W),
-    Port(P),
-}
-
-#[derive(Debug)]
-pub struct ConstantInfo {
-    pub id: MaybeIdentifier,
-    pub value: CompileValue,
-}
-
-#[derive(Debug)]
-pub struct VariableInfo {
-    pub id: MaybeIdentifier,
-    pub mutable: bool,
-    pub ty: Option<Spanned<Type>>,
-}
-
-// TODO move this stuff into signals?
-#[derive(Debug)]
-pub struct PortInfo {
-    pub span: Span,
-    pub name: String,
-    pub direction: Spanned<PortDirection>,
-    pub domain: Spanned<PortDomain<Port>>,
-    pub ty: Spanned<HardwareType>,
-    pub ir: IrPort,
-    // TODO include interface this is a part of if any?
-}
-
-#[derive(Debug)]
-pub struct PortInterfaceInfo {
-    pub id: Identifier,
-    pub view: Spanned<ElaboratedInterfaceView>,
-    pub domain: Spanned<DomainKind<Polarized<Port>>>,
-    pub ports: Vec<Port>,
-}
-
-#[derive(Debug)]
-pub enum WireInfo {
-    Single(WireInfoSingle),
-    Interface(WireInfoInInterface),
-}
-
-#[derive(Debug)]
-pub struct WireInfoSingle {
-    pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
-    pub typed: Result<Option<WireInfoTyped<HardwareType>>, ErrorGuaranteed>,
-}
-
-#[derive(Debug)]
-pub struct WireInfoInInterface {
-    pub decl_span: Span,
-    pub interface: Spanned<WireInterface>,
-    pub index: usize,
-    pub diagnostic_string: String,
-    pub ir: IrWire,
-}
-
-#[derive(Debug)]
-pub struct WireInterfaceInfo {
-    pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
-    pub interface: Spanned<ElaboratedInterface>,
-    pub wires: Vec<Wire>,
-    // TODO rename
-    pub ir_wires: Vec<IrWire>,
-}
-
-#[derive(Debug)]
-pub struct WireInfoTyped<T> {
-    pub ty: Spanned<T>,
-    pub ir: IrWire,
-}
-
-impl<T> WireInfoTyped<T> {
-    pub fn as_ref(&self) -> WireInfoTyped<&T> {
-        WireInfoTyped {
-            ty: self.ty.as_ref(),
-            ir: self.ir,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct RegisterInfo {
-    pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<SyncDomain<DomainSignal>>>, ErrorGuaranteed>,
-    pub ty: Spanned<HardwareType>,
-    pub ir: IrRegister,
-}
-
-impl PortInfo {
-    pub fn as_hardware_value(&self) -> HardwareValue {
-        HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: ValueDomain::from_port_domain(self.domain.inner),
-            expr: IrExpression::Port(self.ir),
-        }
-    }
-}
-
-impl WireInfo {
-    pub fn decl_span(&self) -> Span {
-        match self {
-            WireInfo::Single(slf) => slf.id.span(),
-            WireInfo::Interface(slf) => slf.decl_span,
-        }
-    }
-
-    pub fn diagnostic_str(&self) -> &str {
-        match self {
-            WireInfo::Single(slf) => slf.id.diagnostic_str(),
-            WireInfo::Interface(slf) => &slf.diagnostic_string,
-        }
-    }
-
-    pub fn suggest_domain(
-        &mut self,
-        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
-        suggest: Spanned<ValueDomain>,
-    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        match self {
-            WireInfo::Single(slf) => Ok(*slf.domain.as_ref_mut_ok()?.get_or_insert(suggest)),
-            WireInfo::Interface(slf) => wire_interfaces[slf.interface.inner].suggest_domain(suggest),
-        }
-    }
-
-    pub fn domain(
-        &mut self,
-        diags: &Diagnostics,
-        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
-        use_span: Span,
-    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        let (decl_span, slot) = match self {
-            WireInfo::Single(slf) => (slf.id.span(), &mut slf.domain),
-            WireInfo::Interface(slf) => {
-                let info = &mut wire_interfaces[slf.interface.inner];
-                (info.id.span(), &mut info.domain)
-            }
-        };
-
-        get_inferred(diags, "wire", "domain", slot, decl_span, use_span).copied()
-    }
-
-    pub fn suggest_ty<'s>(
-        &'s mut self,
-        refs: CompileRefs<'_, 's>,
-        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
-        ir_wires: &mut Arena<IrWire, IrWireInfo>,
-        suggest: Spanned<&HardwareType>,
-    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
-        match self {
-            WireInfo::Single(slf) => {
-                // take the suggestion into account
-                Ok(slf
-                    .typed
-                    .as_ref_mut_ok()?
-                    .get_or_insert_with(|| {
-                        let ir = ir_wires.push(IrWireInfo {
-                            ty: suggest.inner.as_ir(refs),
-                            debug_info_id: slf.id.spanned_string(),
-                            debug_info_ty: suggest.inner.clone(),
-                            // will be filled in later during the inference checking pass
-                            debug_info_domain: String::new(),
-                        });
-
-                        WireInfoTyped {
-                            ty: suggest.cloned(),
-                            ir,
-                        }
-                    })
-                    .as_ref())
-            }
-            WireInfo::Interface(slf) => {
-                // ignore the suggestion, just get the type
-                let wire_interface = &wire_interfaces[slf.interface.inner];
-                let elab_interface = refs
-                    .shared
-                    .elaboration_arenas
-                    .interface_info(wire_interface.interface.inner);
-
-                Ok(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
-                    ir: slf.ir,
-                })
-            }
-        }
-    }
-
-    pub fn typed<'s>(
-        &'s mut self,
-        refs: CompileRefs<'_, 's>,
-        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
-        use_span: Span,
-    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
-        match self {
-            WireInfo::Single(slf) => {
-                get_inferred(refs.diags, "wire", "type", &mut slf.typed, slf.id.span(), use_span).map(|ty| ty.as_ref())
-            }
-            WireInfo::Interface(slf) => {
-                let wire_interface = &wire_interfaces[slf.interface.inner];
-                let elab_interface = refs
-                    .shared
-                    .elaboration_arenas
-                    .interface_info(wire_interface.interface.inner);
-
-                Ok(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
-                    ir: slf.ir,
-                })
-            }
-        }
-    }
-
-    pub fn typed_maybe<'s>(
-        &'s mut self,
-        refs: CompileRefs<'_, 's>,
-        wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
-    ) -> Result<Option<WireInfoTyped<&'s HardwareType>>, ErrorGuaranteed> {
-        match self {
-            WireInfo::Single(slf) => slf
-                .typed
-                .as_ref_ok()
-                .map(|typed| typed.as_ref().map(WireInfoTyped::as_ref)),
-            WireInfo::Interface(slf) => {
-                let wire_interface = &wire_interfaces[slf.interface.inner];
-                let elab_interface = refs
-                    .shared
-                    .elaboration_arenas
-                    .interface_info(wire_interface.interface.inner);
-
-                Ok(Some(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
-                    ir: slf.ir,
-                }))
-            }
-        }
-    }
-
-    pub fn as_hardware_value(
-        &mut self,
-        refs: CompileRefs,
-        wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
-        use_span: Span,
-    ) -> Result<HardwareValue, ErrorGuaranteed> {
-        let domain = self.domain(refs.diags, wire_interfaces, use_span)?.inner;
-        let typed = self.typed(refs, wire_interfaces, use_span)?;
-
-        Ok(HardwareValue {
-            ty: typed.ty.inner.clone(),
-            domain,
-            expr: IrExpression::Wire(typed.ir),
-        })
-    }
-}
-
-impl WireInterfaceInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
-        Ok(*self.domain.as_ref_mut_ok()?.get_or_insert(suggest))
-    }
-}
-
-impl RegisterInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<SyncDomain<DomainSignal>>) -> Spanned<SyncDomain<DomainSignal>> {
-        match self.domain {
-            Ok(Some(domain)) => domain,
-            Ok(None) | Err(_) => {
-                self.domain = Ok(Some(suggest));
-                suggest
-            }
-        }
-    }
-
-    pub fn domain(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-    ) -> Result<Spanned<SyncDomain<DomainSignal>>, ErrorGuaranteed> {
-        get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).copied()
-    }
-
-    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
-        let domain = self.domain(diags, span)?;
-        Ok(HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: ValueDomain::Sync(domain.inner),
-            expr: IrExpression::Register(self.ir),
-        })
-    }
-}
-
-fn get_inferred<'s, T>(
-    diags: &Diagnostics,
-    kind: &str,
-    inferred: &str,
-    slot: &'s mut Result<Option<T>, ErrorGuaranteed>,
-    decl_span: Span,
-    use_span: Span,
-) -> Result<&'s T, ErrorGuaranteed> {
-    match *slot {
-        Ok(Some(ref inferred)) => Ok(inferred),
-        Err(e) => Err(e),
-        Ok(None) => {
-            let diag = Diagnostic::new(format!("{kind} {inferred} is not yet known"))
-                .add_error(
-                    use_span,
-                    format!("{kind} used here before {inferred} could be inferred"),
-                )
-                .add_info(decl_span, format!("declared here without {inferred}"))
-                .footer(Level::Help, format!("explicitly add a {inferred} to the declaration"))
-                .finish();
-            let e = diags.report(diag);
-            *slot = Err(e);
-            Err(e)
-        }
-    }
-}
-
 fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
     let CompileFixed { source, parsed } = fixed;
 
@@ -1025,42 +695,5 @@ impl CompileItemContext<'_, '_> {
             inner
         };
         Ok(result)
-    }
-}
-
-// TODO rename/expand to handle all external interactions: IO, env vars, ...
-pub trait PrintHandler {
-    fn println(&self, s: &str);
-}
-
-pub struct NoPrintHandler;
-
-impl PrintHandler for NoPrintHandler {
-    fn println(&self, _: &str) {}
-}
-
-pub struct StdoutPrintHandler;
-
-impl PrintHandler for StdoutPrintHandler {
-    fn println(&self, s: &str) {
-        println!("{}", s);
-    }
-}
-
-pub struct CollectPrintHandler(Mutex<Vec<String>>);
-
-impl CollectPrintHandler {
-    pub fn new() -> Self {
-        CollectPrintHandler(Mutex::new(Vec::new()))
-    }
-
-    pub fn finish(self) -> Vec<String> {
-        self.0.into_inner().unwrap()
-    }
-}
-
-impl PrintHandler for CollectPrintHandler {
-    fn println(&self, s: &str) {
-        self.0.lock().unwrap().push(s.to_string());
     }
 }

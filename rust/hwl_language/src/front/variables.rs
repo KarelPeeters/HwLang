@@ -1,4 +1,4 @@
-use crate::front::compile::{ArenaVariables, CompileRefs, Variable, VariableInfo};
+use crate::front::compile::{ArenaVariables, CompileRefs};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::ValueDomain;
@@ -6,6 +6,7 @@ use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{IrAssignmentTarget, IrLargeArena, IrStatement, IrVariable, IrVariableInfo};
+use crate::new_index_type;
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::{IndexType, RandomCheck};
@@ -14,6 +15,15 @@ use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{zip_eq, Itertools};
 use std::cell::Cell;
+
+new_index_type!(pub Variable);
+
+#[derive(Debug)]
+pub struct VariableInfo {
+    pub id: MaybeIdentifier,
+    pub mutable: bool,
+    pub ty: Option<Spanned<Type>>,
+}
 
 // TODO this is really not just the variable values any more, it also tracks value version states
 //   and will probably track combinatorial coverage in the future. This is more like a SSA-style "flow" state.

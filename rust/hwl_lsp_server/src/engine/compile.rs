@@ -6,8 +6,9 @@ use crate::server::state::{OrSendError, RequestError, RequestResult, ServerState
 use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
-use hwl_language::front::compile::{compile, ElaborationSet, NoPrintHandler};
+use hwl_language::front::compile::{compile, ElaborationSet};
 use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
+use hwl_language::front::print::NoPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::util::NON_ZERO_USIZE_ONE;

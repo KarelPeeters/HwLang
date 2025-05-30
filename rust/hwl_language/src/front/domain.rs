@@ -1,6 +1,6 @@
-use crate::front::compile::{CompileItemContext, Port};
-use crate::front::signal::Polarized;
+use crate::front::compile::CompileItemContext;
 use crate::front::signal::Signal;
+use crate::front::signal::{Polarized, Port};
 use crate::syntax::ast::{DomainKind, Spanned, SyncDomain};
 
 #[derive(Debug)]
