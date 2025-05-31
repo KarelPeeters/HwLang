@@ -1,10 +1,9 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use hwl_language::back::lower_verilator::{
-    lower_verilator, LoweredVerilator, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
-};
+use hwl_language::back::lower_verilator::{lower_verilator, LoweredVerilator};
 use hwl_language::back::lower_verilog::{lower_to_verilog, LoweredVerilog};
+use hwl_language::back::wrap_verilator::{VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError};
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;

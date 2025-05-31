@@ -4,10 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+wrap_verilator = ["dep:dlopen2"]
+
 [dependencies]
 annotate-snippets.workspace = true
 dashmap.workspace = true
-dlopen2.workspace = true
+dlopen2 = { workspace = true, optional = true }
 indexmap.workspace = true
 itertools.workspace = true
 lalrpop-util.workspace = true

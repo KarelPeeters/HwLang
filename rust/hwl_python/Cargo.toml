@@ -9,7 +9,7 @@ name = "hwl"
 crate-type = ["cdylib"]
 
 [dependencies]
-hwl_language.workspace = true
+hwl_language = { workspace = true, features = ["wrap_verilator"] }
 
 itertools.workspace = true
 num-bigint.workspace = true
