@@ -1,4 +1,4 @@
-import std.types.[bool, int, uint, natural, any, Option, Either];
+import std.types.[bool, int, uint, natural, any];
 import std.math.[gcd, min, max];
 import std.util.[print, assert];
 import examples.axi_gearbox_v2.axi_gearbox_v2;
@@ -13,6 +13,10 @@ pub module top ports(
 
     input: interface sync(clk, rst) axi_stream([input_width]bool).input,
     output: interface sync(clk, rst) axi_stream([output_width]bool).output,
+
+    huge_input: in sync(clk, rst) int(1024),
+    huge_output_comb: out sync(clk, rst) int(1024),
+    huge_output_clocked: out sync(clk, rst) int(1024),
 ) {
     instance axi_gearbox_v2(
         input_width=input_width,
@@ -23,4 +27,13 @@ pub module top ports(
         input,
         output,
     );
+
+    comb {
+        huge_output_comb = huge_input;
+    }
+
+    reg out huge_output_clocked = 0;
+    clocked(clk, async rst) {
+        huge_output_clocked = huge_input;
+    }
 }

@@ -33,7 +33,7 @@ use hwl_language::{
     util::{io::IoErrorWithPath, ResultExt},
 };
 use itertools::{enumerate, Either, Itertools};
-use pyo3::exceptions::{PyIOError, PyKeyError};
+use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
 use pyo3::types::PyIterator;
 use pyo3::{
     create_exception,
@@ -602,22 +602,25 @@ impl VerilatedInstance {
 #[pymethods]
 impl VerilatedPorts {
     fn __getattr__(&self, attr: &str, py: Python) -> PyResult<VerilatedPort> {
-        let py_instance = &self.instance;
-
-        let instance = &py_instance.borrow(py).instance;
-        let port = *instance
-            .ports_named()
-            .get(attr)
-            .ok_or_else(|| PyKeyError::new_err(format!("port {} not found", attr)))?;
-
+        let port = self.get_port(attr, py)?;
         Ok(VerilatedPort {
-            instance: py_instance.clone_ref(py),
+            instance: self.instance.clone_ref(py),
             port,
         })
     }
 
     fn __getitem__(&self, key: &str, py: Python) -> PyResult<VerilatedPort> {
         self.__getattr__(key, py)
+    }
+
+    fn __setattr__(&mut self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+        // setting values directly is not actually allowed, but we can return a nicer error message than
+        //   the misleading "ports does not have attribute"
+        let _ = self.get_port(attr, py)?;
+        let _ = value;
+
+        let msg = format!("cannot set port value directly, use `ports.{attr}.value = value` instead)");
+        Err(PyValueError::new_err(msg))
     }
 
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
@@ -632,6 +635,17 @@ impl VerilatedPorts {
             .cloned()
             .collect_vec();
         ports.into_pyobject(py)?.try_iter()
+    }
+}
+
+impl VerilatedPorts {
+    fn get_port(&self, name: &str, py: Python) -> PyResult<IrPort> {
+        let instance = &self.instance.borrow(py).instance;
+        instance
+            .ports_named()
+            .get(name)
+            .copied()
+            .ok_or_else(|| PyKeyError::new_err(format!("port {name} not found")))
     }
 }
 

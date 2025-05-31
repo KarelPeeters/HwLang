@@ -36,12 +36,31 @@ for port_name in top_instance.ports:
     port = top_instance.ports[port_name]
     print(port.name, port.direction, port.type, port.value)
 
-print(top_instance.ports.clk.type)
+print(top_instance.ports.clk.value)
 
+# test async propagation
+top_instance.ports.huge_input.value = 0
+top_instance.step(1)
+print(top_instance.ports.huge_output_comb.value)
+print(top_instance.ports.huge_output_clocked.value)
+
+top_instance.ports.huge_input.value = 7
 top_instance.step(1)
 
-# for i in range(16):
-#     top_instance.ports.clk.value = False
-#     top_instance.step(1)
-#     top_instance.ports.clk.value = True
-#     top_instance.step(1)
+print("after comb")
+print(top_instance.ports.huge_output_comb.value)
+print(top_instance.ports.huge_output_clocked.value)
+
+top_instance.ports.clk.value = True
+top_instance.step(1)
+
+print("after pos")
+print(top_instance.ports.huge_output_comb.value)
+print(top_instance.ports.huge_output_clocked.value)
+
+top_instance.ports.clk.value = False
+top_instance.step(1)
+
+print("after neg")
+print(top_instance.ports.huge_output_comb.value)
+print(top_instance.ports.huge_output_clocked.value)
