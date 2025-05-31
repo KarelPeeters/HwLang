@@ -23,7 +23,7 @@ use std::num::NonZeroU32;
 
 #[derive(Debug, Clone)]
 pub struct LoweredVerilog {
-    pub verilog_source: String,
+    pub source: String,
 
     // TODO should this be a string or a lowered name? we don't want to expose too many implementation details
     pub top_module_name: String,
@@ -59,7 +59,7 @@ pub fn lower_to_verilog(
 
     let top_name = ctx.module_map.get(&top_module).unwrap().name.clone();
     Ok(LoweredVerilog {
-        verilog_source: ctx.lowered_modules.join("\n\n"),
+        source: ctx.lowered_modules.join("\n\n"),
         top_module_name: top_name.0.clone(),
         debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.name.0)).collect(),
     })
@@ -297,7 +297,7 @@ fn lower_module_ports(
         port_lines.push((
             is_actual_port,
             format!("{dir_str} {ty_str}{lower_name}"),
-            format!("{debug_info_domain} {debug_info_ty}"),
+            format!("{debug_info_domain} {}", debug_info_ty.inner),
         ));
 
         port_name_map.insert_first(port, lower_name);

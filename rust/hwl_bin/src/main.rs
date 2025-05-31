@@ -169,7 +169,7 @@ fn main_inner(args: Args) -> ExitCode {
         std::fs::create_dir_all("../ignored").unwrap();
         std::fs::write(
             "../ignored/lowered.v",
-            lowered.as_ref().map_or("// failed", |s| &s.verilog_source),
+            lowered.as_ref().map_or("// failed", |s| &s.source),
         )
         .unwrap();
 

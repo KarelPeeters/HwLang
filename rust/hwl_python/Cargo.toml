@@ -13,4 +13,5 @@ hwl_language.workspace = true
 
 itertools.workspace = true
 num-bigint.workspace = true
+num_cpus.workspace = true
 pyo3.workspace = true

@@ -71,6 +71,7 @@ pub struct Idx {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct RandomCheck(NonZeroU16);
 
+#[derive(Clone)]
 pub struct Arena<K: IndexType, T> {
     values: Vec<T>,
     check: RandomCheck,
@@ -297,6 +298,10 @@ impl Hash for Idx {
 impl RandomCheck {
     pub fn new() -> Self {
         Self(rand::random())
+    }
+
+    pub fn inner(&self) -> NonZeroU16 {
+        self.0
     }
 }
 

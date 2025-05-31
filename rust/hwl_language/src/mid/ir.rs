@@ -1,11 +1,10 @@
-use crate::front::types::{ClosedIncRange, HardwareType, Type};
+use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
 use crate::syntax::ast::{PortDirection, Spanned};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::sync::Arc;
@@ -67,7 +66,7 @@ new_index_type!(pub IrVariable);
 new_index_type!(pub IrRegister);
 new_index_type!(pub IrWire);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrModuleInfo {
     pub ports: Arena<IrPort, IrPortInfo>,
     pub registers: Arena<IrRegister, IrRegisterInfo>,
@@ -81,18 +80,18 @@ pub struct IrModuleInfo {
     pub debug_info_generic_args: Option<Vec<(String, CompileValue)>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrPortInfo {
     pub name: String,
     pub direction: PortDirection,
     pub ty: IrType,
 
     pub debug_span: Span,
-    pub debug_info_ty: String,
+    pub debug_info_ty: Spanned<String>,
     pub debug_info_domain: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrRegisterInfo {
     pub ty: IrType,
 
@@ -101,7 +100,7 @@ pub struct IrRegisterInfo {
     pub debug_info_domain: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrWireInfo {
     pub ty: IrType,
 
@@ -110,14 +109,14 @@ pub struct IrWireInfo {
     pub debug_info_domain: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrVariableInfo {
     pub ty: IrType,
 
     pub debug_info_id: Spanned<Option<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrModuleChild {
     ClockedProcess(IrClockedProcess),
     CombinatorialProcess(IrCombinatorialProcess),
@@ -136,7 +135,7 @@ pub enum IrModuleChild {
 ///   have fully finished running
 ///
 /// If a local is read without being written to, the resulting value is undefined.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrClockedProcess {
     // TODO rename to variables
     pub locals: IrVariables,
@@ -145,26 +144,26 @@ pub struct IrClockedProcess {
     pub async_reset: Option<IrAsyncResetInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrAsyncResetInfo {
     pub signal: Spanned<IrExpression>,
     pub resets: Vec<Spanned<(IrRegister, IrExpression)>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrCombinatorialProcess {
     pub locals: IrVariables,
     pub block: IrBlock,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrModuleInternalInstance {
     pub name: Option<String>,
     pub module: IrModule,
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrModuleExternalInstance {
     pub name: Option<String>,
     pub module_name: String,
@@ -173,7 +172,7 @@ pub struct IrModuleExternalInstance {
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrPortConnection {
     Input(Spanned<IrExpression>),
     Output(Option<IrWireOrPort>),
@@ -199,12 +198,12 @@ pub type IrWires = Arena<IrWire, IrWireInfo>;
 pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;
 pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrBlock {
     pub statements: Vec<Spanned<IrStatement>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrStatement {
     Assign(IrAssignmentTarget, IrExpression),
     Block(IrBlock),
@@ -212,14 +211,14 @@ pub enum IrStatement {
     PrintLn(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrIfStatement {
     pub condition: IrExpression,
     pub then_block: IrBlock,
     pub else_block: Option<IrBlock>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrAssignmentTarget {
     pub base: IrAssignmentTargetBase,
     pub steps: Vec<IrTargetStep>,
@@ -250,7 +249,7 @@ impl IrAssignmentTarget {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrAssignmentTargetBase {
     Port(IrPort),
     Register(IrRegister),
@@ -259,7 +258,7 @@ pub enum IrAssignmentTargetBase {
 }
 
 // TODO re-use from frontend?
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrTargetStep {
     ArrayIndex(IrExpression),
     ArraySlice(IrExpression, BigUint),
@@ -289,7 +288,7 @@ pub enum IrExpression {
     Large(IrExpressionLargeIndex),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrExpressionLarge {
     // actual expressions
     BoolNot(IrExpression),
@@ -393,26 +392,19 @@ impl IrIntCompareOp {
 }
 
 impl IrType {
-    pub fn as_type(&self) -> Type {
+    /// Note: converting from [HardwareType] to [IrType] is potentially lossy,
+    /// so this function cannot always return the original type.
+    pub fn as_type_hw(&self) -> HardwareType {
         match self {
-            IrType::Bool => Type::Bool,
-            IrType::Int(range) => Type::Int(range.clone().into_range()),
-            IrType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(IrType::as_type).collect())),
-            IrType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
-        }
-    }
-
-    pub fn size_bits(&self) -> BigUint {
-        match self {
-            IrType::Bool => BigUint::ONE,
-            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range).size_bits()),
-            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
-            IrType::Array(inner, len) => inner.size_bits() * len,
+            IrType::Bool => HardwareType::Bool,
+            IrType::Int(range) => HardwareType::Int(range.clone()),
+            IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
+            IrType::Array(inner, len) => HardwareType::Array(Arc::new(inner.as_type_hw()), len.clone()),
         }
     }
 
     pub fn diagnostic_string(&self) -> String {
-        self.as_type().diagnostic_string()
+        self.as_type_hw().diagnostic_string()
     }
 }
 

@@ -63,7 +63,7 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         .map(|d| d.to_string(&source, diag_settings))
         .join("\n\n");
 
-    let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.verilog_source);
+    let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.source);
     let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
 
     CompileAndLowerResult {

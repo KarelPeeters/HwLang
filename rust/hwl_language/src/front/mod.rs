@@ -1,4 +1,5 @@
 pub mod assignment;
+pub mod bits;
 pub mod block;
 pub mod check;
 pub mod compile;

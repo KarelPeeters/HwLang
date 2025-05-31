@@ -1,11 +1,16 @@
+use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared};
+use hwl_language::back::lower_verilator::{
+    lower_verilator, LoweredVerilator, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
+};
+use hwl_language::back::lower_verilog::{lower_to_verilog, LoweredVerilog};
+use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::variables::VariableValues;
+use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::FilePath;
@@ -28,7 +33,9 @@ use hwl_language::{
     },
     util::{io::IoErrorWithPath, ResultExt},
 };
-use itertools::{enumerate, Itertools};
+use itertools::{enumerate, Either, Itertools};
+use pyo3::exceptions::{PyIOError, PyKeyError};
+use pyo3::types::PyIterator;
 use pyo3::{
     create_exception,
     exceptions::PyException,
@@ -36,6 +43,7 @@ use pyo3::{
     types::{PyDict, PyTuple},
 };
 use std::path::Path;
+use std::process::Command;
 
 mod check;
 mod convert;
@@ -103,13 +111,34 @@ struct ModuleVerilog {
 }
 
 #[pyclass]
-struct Simulator {}
+struct ModuleVerilated {
+    compile: Py<Compile>,
+    lib: VerilatedLib,
+}
+
+#[pyclass(unsendable)]
+struct VerilatedInstance {
+    module: Py<ModuleVerilated>,
+    instance: RustVerilatedInstance,
+}
+
+#[pyclass(unsendable)]
+struct VerilatedPorts {
+    instance: Py<VerilatedInstance>,
+}
+
+#[pyclass(unsendable)]
+struct VerilatedPort {
+    instance: Py<VerilatedInstance>,
+    port: IrPort,
+}
 
 create_exception!(hwl, HwlException, PyException);
 create_exception!(hwl, SourceSetException, HwlException);
 create_exception!(hwl, DiagnosticException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
 create_exception!(hwl, GenerateVerilogException, HwlException);
+create_exception!(hwl, VerilationException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -123,7 +152,10 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Function>()?;
     m.add_class::<Module>()?;
     m.add_class::<ModuleVerilog>()?;
-    m.add_class::<Simulator>()?;
+    m.add_class::<ModuleVerilated>()?;
+    m.add_class::<VerilatedInstance>()?;
+    m.add_class::<VerilatedPorts>()?;
+    m.add_class::<VerilatedPort>()?;
     m.add("HwlException", py.get_type::<HwlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
@@ -217,67 +249,68 @@ impl Parsed {
 #[pymethods]
 impl Compile {
     fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
-        let value = {
-            // unwrap self
-            let slf_ref = &mut *slf.borrow_mut(py);
-            let state = &slf_ref.state;
+        // TODO move this somewhere common, the commandline will also need this
+        // unwrap self
+        let slf_ref = &mut *slf.borrow_mut(py);
+        let state = &slf_ref.state;
 
-            let parsed_ref = slf_ref.parsed.borrow(py);
-            let parsed = &parsed_ref.parsed;
-            let source = &parsed_ref.source.borrow(py).source;
+        let parsed_ref = slf_ref.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source = &parsed_ref.source.borrow(py).source;
 
-            // find directory, file and scope
-            if path.is_empty() {
-                return Err(ResolveException::new_err("resolve path cannot be empty"));
-            }
-            let steps: Vec<&str> = path.split('.').collect_vec();
-            let (item_name, steps) = steps.split_last().unwrap();
+        // find directory, file and scope
+        if path.is_empty() {
+            return Err(ResolveException::new_err("resolve path cannot be empty"));
+        }
+        let steps: Vec<&str> = path.split('.').collect_vec();
+        let (item_name, steps) = steps.split_last().unwrap();
 
-            let mut curr_dir = source.root_directory();
-            for (i_step, &step) in enumerate(steps) {
-                curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
-                    ResolveException::new_err(format!(
-                        "path `{}` does not have child `{}`",
-                        steps[..i_step].iter().join("."),
-                        step
-                    ))
-                })?;
-            }
-            let file = source[curr_dir].file.ok_or_else(|| {
-                ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
+        let mut curr_dir = source.root_directory();
+        for (i_step, &step) in enumerate(steps) {
+            curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
+                ResolveException::new_err(format!(
+                    "path `{}` does not have child `{}`",
+                    steps[..i_step].iter().join("."),
+                    step
+                ))
             })?;
-            let scope = state.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
+        }
+        let file = source[curr_dir].file.ok_or_else(|| {
+            ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
+        })?;
+        let scope = state.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
 
-            // look up the item
-            let diags = Diagnostics::new();
-            let found = map_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
-            let item = match found.value {
-                &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-                ScopedEntry::Named(_) => {
-                    let e = diags.report_internal_error(
-                        found.defining_span,
-                        "file scope should only contain items, not named/value",
-                    );
-                    return Err(convert_diag_error(source, &diags, e));
-                }
-            };
-
-            // evaluate the item
-            let refs = CompileRefs {
-                fixed: CompileFixed { source, parsed },
-                shared: state,
-                diags: &diags,
-                print_handler: &StdoutPrintHandler,
-                should_stop: &|| false,
-            };
-            let mut item_ctx = CompileItemContext::new_empty(refs, None);
-
-            let value = item_ctx.eval_item(item);
-            let value = map_diag_error(source, &diags, value)?;
-            value.clone()
+        // look up the item
+        let diags = Diagnostics::new();
+        let found = map_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
+        let item = match found.value {
+            &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
+            ScopedEntry::Named(_) => {
+                let e = diags.report_internal_error(
+                    found.defining_span,
+                    "file scope should only contain items, not named/value",
+                );
+                return Err(convert_diag_error(source, &diags, e));
+            }
         };
 
-        compile_value_to_py(py, &slf, &value)
+        // evaluate the item
+        let refs = CompileRefs {
+            fixed: CompileFixed { source, parsed },
+            shared: state,
+            diags: &diags,
+            print_handler: &StdoutPrintHandler,
+            should_stop: &|| false,
+        };
+        let mut item_ctx = CompileItemContext::new_empty(refs, None);
+
+        let value = item_ctx.eval_item(item);
+        let value = map_diag_error(source, &diags, value)?;
+
+        refs.run_elaboration_loop();
+        check_diags(source, &diags)?;
+
+        compile_value_to_py(py, &slf, value)
     }
 }
 
@@ -397,15 +430,124 @@ impl Function {
 
 #[pymethods]
 impl Module {
-    fn generate_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
+    fn as_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
+        let (_, _, lowered) = self.lower_verilog_impl(py)?;
+        Ok(ModuleVerilog {
+            module_name: lowered.top_module_name,
+            source: lowered.source,
+        })
+    }
+
+    fn as_verilated(&self, build_dir: &str, py: Python) -> PyResult<ModuleVerilated> {
+        // check build_dir
+        let build_dir = Path::new(build_dir);
+        if !build_dir.exists() {
+            return Err(PyIOError::new_err(format!(
+                "build_dir `{}` does not exist",
+                build_dir.display()
+            )));
+        }
+        if !build_dir.is_dir() {
+            return Err(PyIOError::new_err(format!(
+                "build_dir `{}` is not a directory",
+                build_dir.display()
+            )));
+        }
+
+        // lower
+        let (ir_database, ir_module, lowered_verilog) = self.lower_verilog_impl(py)?;
+        let lowered_verilator = lower_verilator(&ir_database.ir_modules, ir_module);
+
+        let LoweredVerilog {
+            source: source_verilog,
+            top_module_name,
+            debug_info_module_map: _,
+        } = lowered_verilog;
+        let LoweredVerilator {
+            source: source_cpp,
+            top_class_name,
+        } = lowered_verilator;
+
+        // write to files
+        // TODO only write if changed to avoid unnecessary rebuilds? or does verilator already do that for us?
+        let name_verilog = "lowered.v";
+        std::fs::write(build_dir.join(name_verilog), &source_verilog)?;
+        let name_cpp = "lowered.cpp";
+        std::fs::write(build_dir.join(name_cpp), &source_cpp)?;
+
+        // verilate
+        // TODO proper command error handling:
+        //   https://users.rust-lang.org/t/best-error-handing-practices-when-using-std-command/42259
+        // TODO get everything properly incremental
+        Command::new("verilator")
+            .arg("-cc")
+            .arg("-CFLAGS")
+            .arg("-fPIC")
+            .arg("-Wno-widthexpand")
+            .arg("--top-module")
+            .arg(&top_module_name)
+            .arg("--prefix")
+            .arg(&top_class_name)
+            .arg(name_verilog)
+            .arg(name_cpp)
+            .current_dir(build_dir)
+            .status()
+            .map_err(|e| VerilationException::new_err(format!("verilator failed: {e}")))?;
+
+        // compile
+        let obj_dir = build_dir.join("obj_dir");
+        Command::new("make")
+            .arg("-f")
+            .arg(format!("{}.mk", top_class_name))
+            .arg("-j")
+            .arg(num_cpus::get().to_string())
+            .current_dir(&obj_dir)
+            .status()
+            .map_err(|e| VerilationException::new_err(format!("make filed: {e}")))?;
+
+        // link
+        let objects = std::fs::read_dir(&obj_dir)
+            .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {}", e)))?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "o"))
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>();
+
+        let name_so = "combined.so";
+        let path_so = obj_dir.join(name_so);
+        println!("{:?}", objects);
+
+        Command::new("g++")
+            .current_dir(obj_dir)
+            .args(objects)
+            .arg("-o")
+            .arg(name_so)
+            .arg("-shared")
+            .status()
+            .map_err(|e| VerilationException::new_err(format!("linking failed: {e}")))?;
+
+        // load library
+        let lib = unsafe {
+            VerilatedLib::new(&ir_database.ir_modules, ir_module, &path_so)
+                .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e:?}")))?
+        };
+        Ok(ModuleVerilated {
+            compile: self.compile.clone_ref(py),
+            lib,
+        })
+    }
+}
+
+impl Module {
+    fn lower_verilog_impl(&self, py: Python) -> PyResult<(PartialIrDatabase<IrModuleInfo>, IrModule, LoweredVerilog)> {
         // borrow self
-        let compile = &mut *self.compile.borrow_mut(py);
+        let compile = self.compile.borrow(py);
         let parsed_ref = compile.parsed.borrow(py);
-        let parsed = &parsed_ref.parsed;
         let source_ref = parsed_ref.source.borrow(py);
         let source = &source_ref.source;
         let dummy_span = source_ref.dummy_span;
 
+        // get the module
         let module = match self.module {
             ElaboratedModule::Internal(module) => module,
             ElaboratedModule::External(_) => {
@@ -414,22 +556,11 @@ impl Module {
                 ))
             }
         };
+        let ir_module = compile.state.elaboration_arenas.module_internal_info(module).module_ir;
 
-        // take out the old compiler
-        // TODO this is really weird, don't do this
-        let state = {
-            let fixed = CompileFixed { source, parsed };
-            let replacement_diags = Diagnostics::new();
-            let replacement_state = CompileShared::new(&replacement_diags, fixed, false, NON_ZERO_USIZE_ONE);
-            std::mem::replace(&mut compile.state, replacement_state)
-        };
-
-        // get the right ir module
+        // create temporary ir database
         let diags = Diagnostics::new();
-        let ir_module = state.elaboration_arenas.module_internal_info(module).module_ir;
-
-        // check that all modules are resolved
-        let ir_database = state.finish_ir_database(&diags, dummy_span);
+        let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
         let ir_database = map_diag_error(source, &diags, ir_database)?;
 
         // actual lowering
@@ -440,14 +571,140 @@ impl Module {
             ir_module,
         );
         let lowered = map_diag_error(source, &diags, lowered)?;
-        Ok(ModuleVerilog {
-            module_name: lowered.top_module_name,
-            source: lowered.verilog_source,
-        })
+
+        Ok((ir_database, ir_module, lowered))
     }
 }
 
 #[pymethods]
-impl Simulator {
-    // TODO
+impl ModuleVerilated {
+    fn instance(slf: Py<Self>, py: Python) -> VerilatedInstance {
+        VerilatedInstance {
+            module: slf.clone_ref(py),
+            instance: slf.borrow(py).lib.instance(),
+        }
+    }
+}
+
+#[pymethods]
+impl VerilatedInstance {
+    #[getter]
+    fn ports(slf: Py<Self>) -> VerilatedPorts {
+        VerilatedPorts { instance: slf }
+    }
+
+    fn step(&mut self, increment_time: u64) -> PyResult<()> {
+        let instance = &mut self.instance;
+        instance.step(increment_time).map_err(map_verilator_error)?;
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl VerilatedPorts {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<VerilatedPort> {
+        let py_instance = &self.instance;
+
+        let instance = &py_instance.borrow(py).instance;
+        let port = *instance
+            .ports_named()
+            .get(attr)
+            .ok_or_else(|| PyKeyError::new_err(format!("port {} not found", attr)))?;
+
+        Ok(VerilatedPort {
+            instance: py_instance.clone_ref(py),
+            port,
+        })
+    }
+
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<VerilatedPort> {
+        self.__getattr__(key, py)
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        let ports = self
+            .instance
+            .borrow(py)
+            .module
+            .borrow(py)
+            .lib
+            .ports_named()
+            .keys()
+            .cloned()
+            .collect_vec();
+        ports.into_pyobject(py)?.try_iter()
+    }
+}
+
+// TODO think about how this should look for interface ports, we probably want a "proper" mapping somewhere
+#[pymethods]
+impl VerilatedPort {
+    #[getter]
+    fn get_value(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let instance = self.instance.borrow(py);
+        let compile = &instance.module.borrow(py).compile;
+
+        let value = instance.instance.get_port(self.port).map_err(map_verilator_error)?;
+        compile_value_to_py(py, compile, &value)
+    }
+
+    #[setter]
+    fn set_value(&mut self, value: &Bound<PyAny>) -> PyResult<()> {
+        let py = value.py();
+        let mut instance = self.instance.borrow_mut(py);
+
+        let dummy_span = {
+            let module = instance.module.borrow(py);
+            let compile = module.compile.borrow(py);
+            let parsed = compile.parsed.borrow(py);
+            let source = parsed.source.borrow(py);
+            source.dummy_span
+        };
+
+        let value = compile_value_from_py(value)?;
+        let diags = Diagnostics::new();
+        let result = instance
+            .instance
+            .set_port(&diags, self.port, Spanned::new(dummy_span, &value));
+
+        // reborrow chain, annoying but seems to be necessary
+        let module = instance.module.borrow(py);
+        let compile = module.compile.borrow(py);
+        let parsed = compile.parsed.borrow(py);
+        let source = parsed.source.borrow(py);
+
+        result.map_err(|e| match e {
+            Either::Left(e) => map_verilator_error(e),
+            Either::Right(e) => convert_diag_error(&source.source, &diags, e),
+        })?;
+
+        Ok(())
+    }
+
+    #[getter]
+    fn r#type(&self, py: Python) -> Type {
+        self.map_port_info(py, |info| Type(info.ty.as_type_hw().as_type()))
+    }
+
+    #[getter]
+    fn name(&self, py: Python) -> String {
+        self.map_port_info(py, |info| info.name.clone())
+    }
+
+    #[getter]
+    fn direction(&self, py: Python) -> &'static str {
+        self.map_port_info(py, |info| info.direction.diagnostic_string())
+    }
+}
+
+impl VerilatedPort {
+    pub fn map_port_info<T>(&self, py: Python, f: impl FnOnce(&IrPortInfo) -> T) -> T {
+        let instance = self.instance.borrow(py);
+        let module = instance.module.borrow(py);
+        f(&module.lib.ports()[self.port])
+    }
+}
+
+fn map_verilator_error(e: VerilatorError) -> PyErr {
+    VerilationException::new_err(e.to_string())
 }

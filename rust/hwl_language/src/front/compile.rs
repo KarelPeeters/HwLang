@@ -206,6 +206,7 @@ pub struct CompileFixed<'a> {
     pub parsed: &'a ParsedDatabase,
 }
 
+#[derive(Debug)]
 pub enum WorkItem {
     EvaluateItem(AstRefItem),
     ElaborateModuleBody(ElaboratedModuleHeader<AstRefModuleInternal>, IrModule),
@@ -224,6 +225,7 @@ pub struct CompileShared {
     pub ir_database: Mutex<PartialIrDatabase<Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct PartialIrDatabase<M> {
     pub external_modules: IndexSet<String>,
     pub ir_modules: Arena<IrModule, M>,
@@ -654,25 +656,49 @@ impl CompileShared {
         diags: &Diagnostics,
         dummy_span: Span,
     ) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
-        if self.work_queue.pop().is_some() {
-            diags.report_internal_error(dummy_span, "not all work items have been processed");
-        }
-
-        let PartialIrDatabase {
-            external_modules,
-            ir_modules,
-        } = self.ir_database.into_inner().unwrap();
-        let ir_modules = ir_modules.try_map_values(|_, v| match v {
-            Some(Ok(v)) => Ok(v),
-            Some(Err(e)) => Err(e),
-            None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
-        })?;
-
-        Ok(PartialIrDatabase {
-            ir_modules,
-            external_modules,
-        })
+        finish_ir_database_impl(
+            diags,
+            dummy_span,
+            &self.work_queue,
+            self.ir_database.into_inner().unwrap(),
+        )
     }
+
+    pub fn finish_ir_database_ref(
+        &self,
+        diags: &Diagnostics,
+        dummy_span: Span,
+    ) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
+        let ir_database = self.ir_database.lock().unwrap().clone();
+        finish_ir_database_impl(diags, dummy_span, &self.work_queue, ir_database)
+    }
+}
+
+fn finish_ir_database_impl(
+    diags: &Diagnostics,
+    dummy_span: Span,
+    work_queue: &SharedQueue<WorkItem>,
+    ir_database: PartialIrDatabase<Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
+) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
+    if let Some(item) = work_queue.pop() {
+        println!("work queue is not empty, found item: {:?}", item);
+        return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
+    }
+
+    let PartialIrDatabase {
+        external_modules,
+        ir_modules,
+    } = ir_database;
+    let ir_modules = ir_modules.try_map_values(|_, v| match v {
+        Some(Ok(v)) => Ok(v),
+        Some(Err(e)) => Err(e),
+        None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
+    })?;
+
+    Ok(PartialIrDatabase {
+        ir_modules,
+        external_modules,
+    })
 }
 
 // TODO move somewhere else

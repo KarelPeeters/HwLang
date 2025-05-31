@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 annotate-snippets.workspace = true
 dashmap.workspace = true
+dlopen2.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
 lalrpop-util.workspace = true

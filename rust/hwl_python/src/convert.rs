@@ -67,7 +67,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
     }
 }
 
-pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
+pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
     // TODO convert some obvious python types: int, bool, range, types.any
@@ -87,11 +87,11 @@ pub fn compile_value_from_py(value: Bound<PyAny>) -> PyResult<CompileValue> {
         return Ok(CompileValue::String(Arc::new(value)));
     }
     if let Ok(value) = value.downcast::<PyTuple>() {
-        let items: Vec<_> = value.iter().map(compile_value_from_py).try_collect()?;
+        let items: Vec<_> = value.iter().map(|v| compile_value_from_py(&v)).try_collect()?;
         return Ok(CompileValue::Tuple(Arc::new(items)));
     }
     if let Ok(value) = value.downcast::<PyList>() {
-        let items: Vec<_> = value.into_iter().map(compile_value_from_py).try_collect()?;
+        let items: Vec<_> = value.into_iter().map(|v| compile_value_from_py(&v)).try_collect()?;
         return Ok(CompileValue::Array(Arc::new(items)));
     }
     if let Ok(value) = value.extract::<PyRef<IncRange>>() {
@@ -125,7 +125,7 @@ pub fn convert_python_args_and_kwargs_to_args(
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: compile_value_from_py(value)?,
+            value: compile_value_from_py(&value)?,
         });
     }
     if let Some(kwargs) = kwargs {
@@ -134,7 +134,7 @@ pub fn convert_python_args_and_kwargs_to_args(
             args_inner.push(Arg {
                 span: dummy_span,
                 name: Some(name),
-                value: compile_value_from_py(value)?,
+                value: compile_value_from_py(&value)?,
             });
         }
     }

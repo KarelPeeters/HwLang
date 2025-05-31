@@ -77,6 +77,7 @@ enum ConnectorKind {
     },
 }
 
+#[derive(Debug)]
 pub struct ElaboratedModuleHeader<A> {
     ast_ref: A,
     debug_info_params: Option<Vec<(String, CompileValue)>>,
@@ -494,7 +495,7 @@ fn push_connector_single(
             direction: direction.inner,
             ty: ty.inner.as_ir(ctx.refs),
             debug_span: id.span,
-            debug_info_ty: ty.inner.diagnostic_string(),
+            debug_info_ty: ty.as_ref().map_inner(|inner| inner.diagnostic_string()),
             debug_info_domain: domain.inner.diagnostic_string(ctx),
         });
 
@@ -566,7 +567,7 @@ fn push_connector_interface(
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
-                debug_info_ty: ty.inner.diagnostic_string(),
+                debug_info_ty: ty.as_ref().map_inner(HardwareType::diagnostic_string),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             });
             let port = ctx.ports.push(PortInfo {
