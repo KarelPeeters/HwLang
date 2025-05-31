@@ -20,6 +20,12 @@
 * for utilities, we need something more more convenient than a module and more powerful then an interface + functions
   * or is the "reg" trick inside functions enough?
 
+# Simulation
+
+* get C++ backend to be as convenient as verilator
+* add pipe backend for use with legacy simulators
+* write some good testbench examples and test cases to add to CI
+
 # Backend fixes
 
 * fix verilog backend
@@ -31,13 +37,13 @@
 
 # LSP
 
-* LSP autocomplete
-* LSP auto-import
-* (LSP) auto formatter
+* autocomplete
+* auto-import
+* auto formatter (not only LSP, also CLI)
 
 # Performance
 
-* add Arc to all potentially expensive values and hope for a free performance win
+* write profile info to firefox profile for easy viewing: https://crates.io/crates/fxprof-processed-profile
 
 # Docs
 
