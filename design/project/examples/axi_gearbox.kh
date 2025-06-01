@@ -22,7 +22,6 @@ pub module axi_gearbox(
     reg buffer: [buffer_size]T = [false] * buffer_size;
     reg level: int(0..=buffer_size) = 0;
 
-    // TODO apply implications to compound assignment operators
     // TODO range implications kind of suck for this, allow assert to add implications
     // TODO store ValueWithImplications in variables, allowing them to later be used in conditions?
     clocked(clk, async rst) {
@@ -30,12 +29,12 @@ pub module axi_gearbox(
         // input
         if (input.ready && input.valid && level <= buffer_size - input_width) {
             buffer[level+..input_width] = input.data;
-            level = level + input_width;
+            level += input_width;
         }
 
         // output
         if (output.ready && output.valid && level >= output_width) {
-            level = level - output_width;
+            level -= output_width;
             buffer[..(buffer_size - output_width)] = buffer[output_width..];
         }
     }

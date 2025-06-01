@@ -2732,7 +2732,7 @@ fn implications_eq(
     Implications { if_true, if_false }
 }
 
-fn apply_implications<C: ExpressionContext>(
+pub fn apply_implications<C: ExpressionContext>(
     ctx: &C,
     large: &mut IrLargeArena,
     versioned: Option<ValueVersioned>,

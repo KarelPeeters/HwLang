@@ -3,7 +3,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::context::ExpressionContext;
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
 use crate::front::domain::{BlockDomain, ValueDomain};
-use crate::front::expression::{eval_binary_expression, ValueWithImplications};
+use crate::front::expression::{apply_implications, eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Polarized, Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
@@ -120,9 +120,6 @@ impl CompileItemContext<'_, '_> {
             BlockDomain::Clocked(domain) => Some(domain),
         };
 
-        // TODO report exact range/sub-access that is being assigned
-        ctx.report_assignment(self, Spanned::new(target_base.span, target_base_signal), vars)?;
-
         // suggest target type
         if target_steps.is_empty() && op.inner.is_none() {
             let right_ty = right_eval
@@ -152,20 +149,27 @@ impl CompileItemContext<'_, '_> {
         let value = match op.inner {
             None => right_eval,
             Some(op_inner) => {
-                // TODO apply implications
                 let target_base_eval = target_base_signal.as_hardware_value(self, target_base.span)?;
-                let target_eval = target_steps.apply_to_value(
-                    self.refs,
-                    &mut self.large,
-                    Spanned::new(target.span, Value::Hardware(target_base_eval)),
-                )?;
+
+                let target_eval = if target_steps.is_empty() {
+                    let target_versioned = vars.signal_versioned(target_base_signal);
+                    let target_eval = apply_implications(ctx, &mut self.large, target_versioned, target_base_eval);
+                    Value::Hardware(target_eval)
+                } else {
+                    let target_eval = target_steps.apply_to_value(
+                        self.refs,
+                        &mut self.large,
+                        Spanned::new(target.span, Value::Hardware(target_base_eval)),
+                    )?;
+                    ValueWithImplications::simple(target_eval)
+                };
 
                 let value_eval = eval_binary_expression(
                     self.refs,
                     &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner),
-                    Spanned::new(target.span, ValueWithImplications::simple(target_eval)),
+                    Spanned::new(target.span, target_eval),
                     right_eval.map_inner(ValueWithImplications::simple),
                 )?
                 .value();
@@ -181,6 +185,10 @@ impl CompileItemContext<'_, '_> {
                 Spanned::new(stmt.span, Value::Hardware(value_eval))
             }
         };
+
+        // report assignment after everything has been evaluated
+        // TODO report exact range/sub-access that is being assigned
+        ctx.report_assignment(self, Spanned::new(target_base.span, target_base_signal), vars)?;
 
         // check type
         let reason = TypeContainsReason::Assignment {
