@@ -1,4 +1,5 @@
 import std.types.[bool, int, uint, natural];
+import std.util.assert;
 
 // TODO get multiple returns working in hardware
 pub fn min(x: int, y: int) -> int {
@@ -25,7 +26,7 @@ pub fn gcd(a: natural, b: natural) -> natural {
     var a = a;
     var b = b;
     while (b != 0) {
-        var t = b;
+        val t = b;
         b = a % b;
         a = t;
     }

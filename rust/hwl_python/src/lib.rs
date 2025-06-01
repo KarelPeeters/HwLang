@@ -477,6 +477,7 @@ impl Module {
         // verilate
         // TODO get everything properly incremental
         // TODO make tracing optional
+        // TODO move this compilation process to somewhere else, not in the python create
         run_command(
             Command::new("verilator")
                 .arg("-cc")
@@ -485,6 +486,7 @@ impl Module {
                 // TODO improve backend so these are no longer needed?
                 .arg("-Wno-widthexpand")
                 .arg("-Wno-cmpconst")
+                .arg("-Wno-widthtrunc")
                 .arg("--trace")
                 .arg("--top-module")
                 .arg(&top_module_name)

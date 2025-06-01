@@ -9,7 +9,11 @@ parsed = source.parse()
 compiled = parsed.compile()
 
 print("Resolving")
-top = compiled.resolve("top.top")
+input_width = 7
+output_width = 9
+
+axi_gearbox = compiled.resolve("examples.axi_gearbox.axi_gearbox")
+top = axi_gearbox(T=bool, input_width=input_width, output_width=output_width)
 print(top)
 
 print("Generating verilog")
@@ -30,12 +34,16 @@ for port_name in ports:
     print(" ", port.name, port.direction, port.type)
 
 print("Simulating")
-random.seed(0xdeadbeef + 1)
-input_length = 32
-input_data = [random.randrange(2) != 0 for _ in range(input_length)]
-input_width = 8
 
-output_width = 8
+input_length = max(8 * input_width, 8 * output_width)
+input_length = (input_length + input_width - 1) // input_width * input_width
+assert input_length % input_width == 0
+
+random.seed(0xdeadbeef + 1)
+input_data = [random.randrange(2) != 0 for _ in range(input_length)]
+# input_data = [c != "0" for i in range(input_length // 8) for c in reversed(f"{i+1:08b}")]
+# input_data = [i % 2 == 0 for i in range(input_length)]
+# input_data = [True] * input_length
 output_data = []
 
 # reset
@@ -50,7 +58,7 @@ sim.step(1)
 
 input_data_left = list(input_data)
 
-for i in range(16):
+for i in range(32):
     print(f"  clock cycle {i}")
     # print(f"  ports: {({p: ports[p].value for p in ports})}")
 
@@ -72,7 +80,7 @@ for i in range(16):
             input_data_left = input_data_left[input_width:]
 
     # read output
-    if i >= 3:
+    if i >= 5:
         if ports.output_valid.value and next_output_ready:
             print(f"  PY output handshake")
             output_data.extend(ports.output_data.value)

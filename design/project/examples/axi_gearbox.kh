@@ -1,0 +1,64 @@
+import std.types.[bool, int, uint, natural, any];
+import std.util.[typeof, print];
+import std.math.[gcd, min, max, clog2];
+
+import examples.axi_stream.axi_stream;
+
+pub module axi_gearbox(
+    T: type,
+    input_width: natural,
+    output_width: natural,
+) ports (
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        input: interface axi_stream([input_width]T).input,
+        output: interface axi_stream([output_width]T).output,
+    }
+) {
+    const buffer_size = input_width + output_width + max(input_width, output_width) - gcd(input_width, output_width);
+
+    reg buffer: [buffer_size]T = [false] * buffer_size;
+    reg level: int(0..=buffer_size) = 0;
+
+    // TODO allow output port readback
+    // TODO apply implications to compound assignment operators
+    // TODO range implications kind of suck for this, allow assert to add implications
+    // TODO store ValueWithImplications in variables, allowing them to later be used in conditions?
+    clocked(clk, async rst) {
+        val input_ready = level <= buffer_size - input_width;
+        val output_valid = level >= output_width;
+
+        // TODO does the other of these matter?
+        // input
+        if (input.valid && input_ready && level <= buffer_size - input_width) {
+            buffer[level+..input_width] = input.data;
+            level = level + input_width;
+        }
+
+        // output
+        if (output.ready && output_valid && level >= output_width) {
+            level = level - output_width;
+            buffer[..(buffer_size - output_width)] = buffer[output_width..];
+            // TODO remove
+            buffer[(buffer_size - output_width)..] = [false] * output_width;
+        }
+    }
+
+    comb {
+        input.ready = level <= buffer_size - input_width;
+        output.valid = level >= output_width;
+        output.data = buffer[..output_width];
+    }
+}
+
+const {
+    axi_gearbox(T=bool, input_width=8, output_width=8);
+
+    axi_gearbox(T=bool, input_width=8, output_width=16);
+    axi_gearbox(T=bool, input_width=16, output_width=8);
+
+    axi_gearbox(T=bool, input_width=8, output_width=3);
+    axi_gearbox(T=bool, input_width=3, output_width=8);
+}

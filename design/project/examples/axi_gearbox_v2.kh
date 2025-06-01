@@ -19,11 +19,10 @@ pub module axi_gearbox_v2(
 ) {
     const step = gcd(input_width, output_width);
     const buffer_size = input_width + output_width + min(input_width, output_width) - step;
-    // TODO off by one, bug in original?
-    const shift_bits = clog2((buffer_size - input_width) / step + 1) + 1;
+    const shift_bits = clog2((buffer_size - input_width) / step + 1);
 
     reg buffer: sync(clk, rst) [buffer_size]bool = undef;
-    reg level: sync(clk, rst) int(0..(buffer_size / step)) = 0;
+    reg level: sync(clk, rst) int(0..=(buffer_size / step)) = 0;
 
     comb {
         output.data = buffer[..output_width];
@@ -33,9 +32,8 @@ pub module axi_gearbox_v2(
 
     clocked(clk, async rst) {
         // handle input
-        // TODO off by one (<= vs <), bug in original?
         // TODO use input_ready port here? but then the level type may overflow
-        if (input.valid && level < (buffer_size - input_width) / step) {
+        if (input.valid && level <= (buffer_size - input_width) / step) {
             const data_width = input_width + step * (2**shift_bits - 1);
             const mask_width = input_width / step + (2**shift_bits - 1);
 
@@ -51,7 +49,7 @@ pub module axi_gearbox_v2(
                     // note: the range `..` we use here and the `downto` in the original have opposite directions!
                     if (input_width + 2**(i+1) > buffer_size) {
                         data[step * 2**i .. buffer_size] = data[.. buffer_size - step * 2**i];
-                        mask[2**i .. buffer_size / step] = mask[.. input_width / step + (2**i - 1)];
+                        mask[2**i .. buffer_size / step] = mask[.. buffer_size / step - 2**i];
                     } else {
                         data[step * 2**i .. input_width + step * (2**(i+1) - 1)] = data[.. input_width + step * (2**i - 1)];
                         mask[2**i .. input_width / step + (2**(i+1) - 1)] = mask[.. input_width / step + (2**i - 1)];
@@ -61,7 +59,7 @@ pub module axi_gearbox_v2(
                     if (input_width + 2**(i+1) > buffer_size) {
                         mask[input_width/step + 2**i .. buffer_size / step] = [false] * (buffer_size / step - input_width / step - 2**i);
                     } else {
-                        mask[2**i .. input_width / step + (2**(i+1) - 1)] = [false] * (input_width / step + (2**(i+1) - 1) - 2**i);
+                        mask[input_width / step + 2**i .. input_width / step + (2**(i+1) - 1)] = [false] * ((2**(i+1) - 1) - 2**i);
                     }
                 }
             }
@@ -84,10 +82,11 @@ pub module axi_gearbox_v2(
 }
 
 const {
+    axi_gearbox_v2(input_width=8, output_width=8);
+
     axi_gearbox_v2(input_width=8, output_width=16);
     axi_gearbox_v2(input_width=16, output_width=8);
 
-    // TODO why do these fail?
-    //axi_gearbox_v2(input_width=8, output_width=3);
-    //axi_gearbox_v2(input_width=3, output_width=8);
+    axi_gearbox_v2(input_width=8, output_width=3);
+    axi_gearbox_v2(input_width=3, output_width=8);
 }
