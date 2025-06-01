@@ -22,27 +22,21 @@ pub module axi_gearbox(
     reg buffer: [buffer_size]T = [false] * buffer_size;
     reg level: int(0..=buffer_size) = 0;
 
-    // TODO allow output port readback
     // TODO apply implications to compound assignment operators
     // TODO range implications kind of suck for this, allow assert to add implications
     // TODO store ValueWithImplications in variables, allowing them to later be used in conditions?
     clocked(clk, async rst) {
-        val input_ready = level <= buffer_size - input_width;
-        val output_valid = level >= output_width;
-
         // TODO does the other of these matter?
         // input
-        if (input.valid && input_ready && level <= buffer_size - input_width) {
+        if (input.ready && input.valid && level <= buffer_size - input_width) {
             buffer[level+..input_width] = input.data;
             level = level + input_width;
         }
 
         // output
-        if (output.ready && output_valid && level >= output_width) {
+        if (output.ready && output.valid && level >= output_width) {
             level = level - output_width;
             buffer[..(buffer_size - output_width)] = buffer[output_width..];
-            // TODO remove
-            buffer[(buffer_size - output_width)..] = [false] * output_width;
         }
     }
 

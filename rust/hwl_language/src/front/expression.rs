@@ -1076,16 +1076,9 @@ impl<'a> CompileItemContext<'a, '_> {
         let port_info = &self.ports[port.inner];
 
         ctx.check_ir_context(diags, port.span, "port")?;
-
-        match port_info.direction.inner {
-            PortDirection::Input => {
-                let versioned = vars.signal_versioned(Signal::Port(port.inner));
-                let with_implications =
-                    apply_implications(ctx, &mut self.large, versioned, port_info.as_hardware_value());
-                Ok(ValueInner::Value(Value::Hardware(with_implications)))
-            }
-            PortDirection::Output => Err(diags.report_todo(port.span, "read back from output port")),
-        }
+        let versioned = vars.signal_versioned(Signal::Port(port.inner));
+        let with_implications = apply_implications(ctx, &mut self.large, versioned, port_info.as_hardware_value());
+        Ok(ValueInner::Value(Value::Hardware(with_implications)))
     }
 
     fn eval_wire<C: ExpressionContext>(
