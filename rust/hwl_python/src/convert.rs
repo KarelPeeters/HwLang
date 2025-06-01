@@ -1,13 +1,14 @@
 use crate::{Compile, Function, IncRange, Module, Type, Undefined, UnsupportedValue};
 use hwl_language::util::big_int::BigInt;
 use hwl_language::{
-    front::{types::IncRange as RustIncRange, value::CompileValue},
+    front::{types::IncRange as RustIncRange, types::Type as RustType, value::CompileValue},
     syntax::{
         ast::{Arg, Args},
         pos::Span,
     },
 };
 use itertools::Itertools;
+use pyo3::types::{PyBool, PyInt, PyType};
 use pyo3::{
     exceptions::PyException,
     prelude::*,
@@ -68,9 +69,10 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
 }
 
 pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
+    let py = value.py();
+
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
-    // TODO convert some obvious python types: int, bool, range, types.any
     if value.extract::<PyRef<Undefined>>().is_ok() {
         return Ok(CompileValue::Undefined);
     }
@@ -107,6 +109,19 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     if let Ok(value) = value.extract::<PyRef<Function>>() {
         // TODO avoid clone?
         return Ok(CompileValue::Function(value.function_value.clone()));
+    }
+
+    // convert some python types with obvious equivalents
+    if let Ok(py_type) = value.downcast::<PyType>() {
+        if py_type.is(&py.get_type::<PyBool>()) {
+            return Ok(CompileValue::Type(RustType::Bool));
+        }
+        if py_type.is(&py.get_type::<PyInt>()) {
+            return Ok(CompileValue::Type(RustType::Int(RustIncRange::OPEN)));
+        }
+        if py_type.is(&py.get_type::<PyAny>()) {
+            return Ok(CompileValue::Type(RustType::Any));
+        }
     }
 
     Err(PyException::new_err(format!(
