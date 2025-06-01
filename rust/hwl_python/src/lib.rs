@@ -475,34 +475,38 @@ impl Module {
         std::fs::write(build_dir.join(name_cpp), &source_cpp)?;
 
         // verilate
-        // TODO proper command error handling:
-        //   https://users.rust-lang.org/t/best-error-handing-practices-when-using-std-command/42259
         // TODO get everything properly incremental
-        Command::new("verilator")
-            .arg("-cc")
-            .arg("-CFLAGS")
-            .arg("-fPIC")
-            .arg("-Wno-widthexpand")
-            .arg("--top-module")
-            .arg(&top_module_name)
-            .arg("--prefix")
-            .arg(&top_class_name)
-            .arg(name_verilog)
-            .arg(name_cpp)
-            .current_dir(build_dir)
-            .status()
-            .map_err(|e| VerilationException::new_err(format!("verilator failed: {e}")))?;
+        // TODO make tracing optional
+        run_command(
+            Command::new("verilator")
+                .arg("-cc")
+                .arg("-CFLAGS")
+                .arg("-fPIC")
+                // TODO improve backend so these are no longer needed?
+                .arg("-Wno-widthexpand")
+                .arg("-Wno-cmpconst")
+                .arg("--trace")
+                .arg("--top-module")
+                .arg(&top_module_name)
+                .arg("--prefix")
+                .arg(&top_class_name)
+                .arg(name_verilog)
+                .arg(name_cpp),
+            build_dir,
+            "verilator",
+        )?;
 
         // compile
         let obj_dir = build_dir.join("obj_dir");
-        Command::new("make")
-            .arg("-f")
-            .arg(format!("{}.mk", top_class_name))
-            .arg("-j")
-            .arg(num_cpus::get().to_string())
-            .current_dir(&obj_dir)
-            .status()
-            .map_err(|e| VerilationException::new_err(format!("make filed: {e}")))?;
+        run_command(
+            Command::new("make")
+                .arg("-f")
+                .arg(format!("{}.mk", top_class_name))
+                .arg("-j")
+                .arg(num_cpus::get().to_string()),
+            &obj_dir,
+            "make",
+        )?;
 
         // link
         let objects = std::fs::read_dir(&obj_dir)
@@ -514,16 +518,13 @@ impl Module {
 
         let name_so = "combined.so";
         let path_so = obj_dir.join(name_so);
-        println!("{:?}", objects);
 
-        Command::new("g++")
-            .current_dir(obj_dir)
-            .args(objects)
-            .arg("-o")
-            .arg(name_so)
-            .arg("-shared")
-            .status()
-            .map_err(|e| VerilationException::new_err(format!("linking failed: {e}")))?;
+        // TODO use faster linker
+        run_command(
+            Command::new("g++").args(objects).arg("-o").arg(name_so).arg("-shared"),
+            &obj_dir,
+            "linking",
+        )?;
 
         // load library
         let lib = unsafe {
@@ -535,6 +536,24 @@ impl Module {
             lib,
         })
     }
+}
+
+// TODO include stderr in the error message
+//   https://users.rust-lang.org/t/best-error-handing-practices-when-using-std-command/42259
+fn run_command(command: &mut Command, dir: &Path, name: &str) -> PyResult<()> {
+    let status = command
+        .current_dir(dir)
+        .status()
+        .map_err(|e| VerilationException::new_err(format!("`{name}` failed to launch: error={e:?}")))?;
+
+    if !status.success() {
+        return Err(VerilationException::new_err(format!(
+            "`{name}` failed: code={:?}",
+            status.code()
+        )));
+    }
+
+    Ok(())
 }
 
 impl Module {
@@ -577,11 +596,17 @@ impl Module {
 
 #[pymethods]
 impl ModuleVerilated {
-    fn instance(slf: Py<Self>, py: Python) -> VerilatedInstance {
-        VerilatedInstance {
+    #[pyo3(signature=(trace_path=None))]
+    fn instance(slf: Py<Self>, trace_path: Option<&str>, py: Python) -> PyResult<VerilatedInstance> {
+        let instance = slf
+            .borrow(py)
+            .lib
+            .instance(trace_path.map(Path::new))
+            .map_err(map_verilator_error)?;
+        Ok(VerilatedInstance {
             module: slf.clone_ref(py),
-            instance: slf.borrow(py).lib.instance(),
-        }
+            instance,
+        })
     }
 }
 
@@ -596,6 +621,10 @@ impl VerilatedInstance {
         let instance = &mut self.instance;
         instance.step(increment_time).map_err(map_verilator_error)?;
         Ok(())
+    }
+
+    fn save_trace(&mut self) {
+        self.instance.save_trace();
     }
 }
 
@@ -650,6 +679,7 @@ impl VerilatedPorts {
 }
 
 // TODO think about how this should look for interface ports, we probably want a "proper" mapping somewhere
+// TODO change this so .value is no longer needed, probably with separate `ports` and `info_ports` fields on the simulator
 #[pymethods]
 impl VerilatedPort {
     #[getter]
@@ -707,6 +737,12 @@ impl VerilatedPort {
     #[getter]
     fn direction(&self, py: Python) -> &'static str {
         self.map_port_info(py, |info| info.direction.diagnostic_string())
+    }
+
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyValueError::new_err(
+            "port cannot be used as a boolean, to read a boolean port use `port.value` instead",
+        ))
     }
 }
 

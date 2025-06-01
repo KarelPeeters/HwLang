@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 
 import hwl
@@ -20,47 +21,84 @@ os.makedirs(build_dir, exist_ok=True)
 top_verilated = top.as_verilated(build_dir=build_dir)
 print(top_verilated)
 
-top_instance = top_verilated.instance()
-print(top_instance)
-print(top_instance.ports)
-print(top_instance.ports.clk)
-print(list(top_instance.ports))
-print(top_instance.ports.clk.value)
+print("Creating simulator")
+sim = top_verilated.instance(trace_path=build_dir + "/trace.vcd")
+ports = sim.ports
 
-top_instance.ports.clk.value = True
-print(top_instance.ports.clk.value)
-top_instance.ports.clk.value = False
-print(top_instance.ports.clk.value)
+for port_name in ports:
+    port = ports[port_name]
+    print(" ", port.name, port.direction, port.type)
 
-for port_name in top_instance.ports:
-    port = top_instance.ports[port_name]
-    print(port.name, port.direction, port.type, port.value)
+print("Simulating")
+random.seed(0xdeadbeef + 1)
+input_length = 32
+input_data = [random.randrange(2) != 0 for _ in range(input_length)]
+input_width = 8
 
-print(top_instance.ports.clk.value)
+output_width = 8
+output_data = []
 
-# test async propagation
-top_instance.ports.huge_input.value = 0
-top_instance.step(1)
-print(top_instance.ports.huge_output_comb.value)
-print(top_instance.ports.huge_output_clocked.value)
+# reset
+ports.rst.value = True
+ports.clk.value = False
+sim.step(1)
+ports.rst.value = False
+ports.clk.value = True
+sim.step(1)
+ports.clk.value = False
+sim.step(1)
 
-top_instance.ports.huge_input.value = 7
-top_instance.step(1)
+input_data_left = list(input_data)
 
-print("after comb")
-print(top_instance.ports.huge_output_comb.value)
-print(top_instance.ports.huge_output_clocked.value)
+for i in range(16):
+    print(f"  clock cycle {i}")
+    # print(f"  ports: {({p: ports[p].value for p in ports})}")
 
-top_instance.ports.clk.value = True
-top_instance.step(1)
+    # [posedge]
+    # send input
+    # TODO all writes should actually happen after the clock edge, while all reads should happen before
+    next_input_valid = ports.input_valid.value
+    next_input_data = ports.input_data.value
+    next_output_ready = ports.output_ready.value
 
-print("after pos")
-print(top_instance.ports.huge_output_comb.value)
-print(top_instance.ports.huge_output_clocked.value)
+    if i >= 1:
+        if next_input_valid and ports.input_ready.value:
+            print(f"  PY input handshake")
+            next_input_valid = False
+            next_input_data = [False] * input_width
+        if not next_input_valid and len(input_data_left) > 0:
+            next_input_valid = True
+            next_input_data = input_data_left[:input_width]
+            input_data_left = input_data_left[input_width:]
 
-top_instance.ports.clk.value = False
-top_instance.step(1)
+    # read output
+    if i >= 3:
+        if ports.output_valid.value and next_output_ready:
+            print(f"  PY output handshake")
+            output_data.extend(ports.output_data.value)
+        next_output_ready = True
 
-print("after neg")
-print(top_instance.ports.huge_output_comb.value)
-print(top_instance.ports.huge_output_clocked.value)
+    # set clock
+    ports.clk.value = True
+    sim.step(0)
+
+    # actually do writes
+    ports.input_valid.value = next_input_valid
+    ports.input_data.value = next_input_data
+    ports.output_ready.value = next_output_ready
+    sim.step(1)
+
+    # [negedge]
+    # set clock
+    ports.clk.value = False
+    sim.step(1)
+
+sim.save_trace()
+
+print("Input data:  ", "".join(str(int(x)) for x in input_data))
+print("Output data: ", "".join(str(int(x)) for x in output_data))
+
+# plt.plot(input_data, label="output")
+# plt.plot(output_data, label="output")
+# plt.legend()
+# plt.show()

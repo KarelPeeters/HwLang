@@ -44,7 +44,7 @@ pub fn lower_verilator(modules: &IrModules, top_module: IrModule) -> LoweredVeri
             let port_name = &port_info.name;
             swriteln!(
                 f,
-                "            case {port_index}: return {prefix}_port_impl(wrapper->top.{port_name}, data_len, data);"
+                "            case {port_index}: return {prefix}_port_impl(wrapper->top->{port_name}, data_len, data);"
             );
         }
         replacements.insert_first(format!("PORTS-{}", prefix.to_uppercase()), f);

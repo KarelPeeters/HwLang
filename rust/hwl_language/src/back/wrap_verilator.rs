@@ -9,9 +9,10 @@ use crate::util::big_int::BigUint;
 use dlopen2::wrapper::{Container, WrapperApi};
 use indexmap::IndexMap;
 use itertools::{enumerate, Either, Itertools};
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void, CString, NulError};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
+use std::ptr::null;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub enum VerilatorError {
     PortTooLarge(BigUint),
     InternalError(&'static str),
     SetOutputPort(String),
+    PathContainsZeroByte,
 }
 
 impl Display for VerilatorError {
@@ -33,6 +35,7 @@ impl Display for VerilatorError {
             VerilatorError::PortTooLarge(size) => write!(f, "Port size too large: {size} bits"),
             VerilatorError::InternalError(msg) => write!(f, "Internal error: {msg}"),
             VerilatorError::SetOutputPort(port) => write!(f, "Cannot set output port `{port}`"),
+            VerilatorError::PathContainsZeroByte => write!(f, "Path cannot contain a zero byte"),
         }
     }
 }
@@ -46,8 +49,9 @@ impl From<dlopen2::Error> for VerilatorError {
 #[derive(WrapperApi)]
 struct VerilatedApi {
     check: unsafe extern "C" fn(arena_random: u16, top_module_index: usize) -> u8,
-    create_instance: unsafe extern "C" fn() -> *mut c_void,
+    create_instance: unsafe extern "C" fn(trace_path: *const c_char) -> *mut c_void,
     destroy_instance: unsafe extern "C" fn(instance: *mut c_void),
+    save_trace: unsafe extern "C" fn(instance: *mut c_void),
     step: unsafe extern "C" fn(instance: *mut c_void, increment_time: u64) -> u8,
     get_port: unsafe extern "C" fn(instance: *mut c_void, port_index: usize, data_len: usize, data: *mut u8) -> u8,
     set_port: unsafe extern "C" fn(instance: *mut c_void, port_index: usize, data_len: usize, data: *const u8) -> u8,
@@ -97,12 +101,23 @@ impl VerilatedLib {
         })
     }
 
-    pub fn instance(&self) -> VerilatedInstance {
-        let instance = unsafe { self.lib.create_instance() };
-        VerilatedInstance {
+    pub fn instance(&self, trace_path: Option<&Path>) -> Result<VerilatedInstance, VerilatorError> {
+        // convert path to C string pointer
+        let trace_path_slot;
+        let trace_path_ptr = match trace_path {
+            None => null(),
+            Some(path) => {
+                let bytes = path.as_os_str().as_encoded_bytes();
+                trace_path_slot = CString::new(bytes).map_err(|_: NulError| VerilatorError::PathContainsZeroByte)?;
+                trace_path_slot.as_ptr()
+            }
+        };
+
+        let instance = unsafe { self.lib.create_instance(trace_path_ptr) };
+        Ok(VerilatedInstance {
             lib: self.clone(),
             instance,
-        }
+        })
     }
 
     pub fn ports(&self) -> &Arena<IrPort, IrPortInfo> {
@@ -128,6 +143,10 @@ impl VerilatedInstance {
     pub fn step(&mut self, increment_time: u64) -> Result<(), VerilatorError> {
         // TODO error if any port has never been set?
         unsafe { check_result(self.lib.lib.step(self.instance, increment_time), "step") }
+    }
+
+    pub fn save_trace(&mut self) {
+        unsafe { self.lib.lib.save_trace(self.instance) }
     }
 
     pub fn ports(&self) -> &Arena<IrPort, IrPortInfo> {

@@ -5,7 +5,7 @@ import examples.axi_gearbox_v2.axi_gearbox_v2;
 import examples.axi_stream.[axi_stream, axi_passthrough];
 
 const input_width = 8;
-const output_width = 16;
+const output_width = 8;
 
 pub module top ports(
     clk: in clock,
@@ -13,27 +13,43 @@ pub module top ports(
 
     input: interface sync(clk, rst) axi_stream([input_width]bool).input,
     output: interface sync(clk, rst) axi_stream([output_width]bool).output,
-
-    huge_input: in sync(clk, rst) int(1024),
-    huge_output_comb: out sync(clk, rst) int(1024),
-    huge_output_clocked: out sync(clk, rst) int(1024),
 ) {
-    instance axi_gearbox_v2(
-        input_width=input_width,
-        output_width=output_width
-    ) ports(
-        clk,
-        rst,
-        input,
-        output,
-    );
+//    instance axi_gearbox_v2(
+//        input_width=input_width,
+//        output_width=output_width
+//    ) ports(
+//        clk,
+//        rst,
+//        input,
+//        output,
+//    );
 
-    comb {
-        huge_output_comb = huge_input;
+    // TODO allow marking interface ports as registers
+    // TODO get this to support full throughput
+    // TODO don't accept data while in reset
+    reg buffer_full: bool = false;
+    reg buffer_data: [input_width]bool = undef;
+
+    clocked(clk, async rst) {
+        val buffer_full_before = buffer_full;
+
+        // output
+        if (output.ready && buffer_full_before) {
+            print("  RTL output handshake");
+            buffer_full = false;
+        }
+
+        // input
+        if (!buffer_full_before && input.valid) {
+            print("  RTL input handshake");
+            buffer_full = true;
+            buffer_data = input.data;
+        }
     }
 
-    reg out huge_output_clocked = 0;
-    clocked(clk, async rst) {
-        huge_output_clocked = huge_input;
+    comb {
+        input.ready = !buffer_full;
+        output.valid = buffer_full;
+        output.data = buffer_data;
     }
 }

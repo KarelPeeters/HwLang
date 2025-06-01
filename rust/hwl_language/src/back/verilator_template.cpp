@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "verilated.h"
+#include "verilated_vcd_c.h"
 #include "/*[TEMPLATE-TOP-CLASS-NAME]*/.h"
 
 typedef uint8_t Result;
@@ -91,13 +92,28 @@ Result set_port_impl(VlWide<W> &port, size_t data_len, uint8_t const *data) {
     return SUCCESS;
 }
 
+// TODO rename to instance
 // The wrapper instance returned and operated on by the C API.
 class Wrapper {
    public:
-    VerilatedContext context;
-    /*[TEMPLATE-TOP-CLASS-NAME]*/ top;
+    VerilatedContext *context;
+    /*[TEMPLATE-TOP-CLASS-NAME]*/ *top;
+    VerilatedVcdC *trace;
 
-    Wrapper() : context(), top(&context) {}
+    Wrapper(char *trace_path) : context(new VerilatedContext()), top(new /*[TEMPLATE-TOP-CLASS-NAME]*/(context)), trace(nullptr) {
+        if (trace_path) {
+            context->traceEverOn(true);
+            trace = new VerilatedVcdC();
+            top->trace(trace, 1024);
+            trace->open(trace_path);
+        }
+    }
+
+    ~Wrapper() {
+        delete trace;
+        delete top;
+        delete context;
+    }
 };
 
 // TODO for verilator, generate an extra wrapper layer
@@ -113,8 +129,8 @@ extern "C" {
         return SUCCESS;
     }
 
-    Wrapper *create_instance() {
-        return new Wrapper();
+    Wrapper *create_instance(char *trace_path) {
+        return new Wrapper(trace_path);
     }
 
     void destroy_instance(Wrapper *wrapper) {
@@ -126,14 +142,26 @@ extern "C" {
     }
 
     Result step(Wrapper *wrapper, uint64_t increment_time) {
-        if (wrapper->context.gotFinish()) {
+        if (wrapper->context->gotFinish()) {
             return FINISH;
         }
 
-        wrapper->context.timeInc(increment_time);
-        wrapper->top.eval();
+        wrapper->context->timeInc(increment_time);
+        wrapper->top->eval();
+
+        if (wrapper->trace) {
+            wrapper->trace->dump(wrapper->context->time());
+        }
 
         return SUCCESS;
+    }
+
+    void save_trace(Wrapper *wrapper) {
+        if (wrapper->trace) {
+            wrapper->trace->close();
+            delete wrapper->trace;
+            wrapper->trace = nullptr;
+        }
     }
 
     Result get_port(Wrapper *wrapper, uint32_t port_index, size_t data_len, uint8_t *data) {
