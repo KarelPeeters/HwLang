@@ -510,7 +510,6 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "mimalloc",
- "serde",
  "serde_json",
  "strum",
 ]

@@ -12,6 +12,11 @@ use std::time::Duration;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+// Suppress the "unused crate" warning for `getrandom`.
+// It's in the dependency list for its side effects, not for direct use.
+#[allow(unused_imports)]
+use getrandom as _;
+
 /// This function automatically runs when the module gets initialized.
 #[wasm_bindgen(start)]
 pub fn start() {
