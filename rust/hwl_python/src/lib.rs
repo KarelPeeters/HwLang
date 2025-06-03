@@ -5,32 +5,26 @@ use hwl_language::back::lower_verilator::{lower_verilator, LoweredVerilator};
 use hwl_language::back::lower_verilog::{lower_to_verilog, LoweredVerilog};
 use hwl_language::back::wrap_verilator::{VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError};
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
+use hwl_language::front::context::CompileTimeExpressionContext;
+use hwl_language::front::diagnostic::Diagnostics;
+use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
+use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
+use hwl_language::front::value::Value;
 use hwl_language::front::variables::VariableValues;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
+use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
+use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::FilePath;
-use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
-use hwl_language::{
-    front::{
-        context::CompileTimeExpressionContext,
-        diagnostic::Diagnostics,
-        function::FunctionValue,
-        types::{IncRange as RustIncRange, Type as RustType},
-        value::Value,
-    },
-    syntax::{
-        ast::Spanned,
-        parsed::ParsedDatabase as RustParsedDatabase,
-        source::{
-            SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
-            SourceSetOrIoError,
-        },
-    },
+use hwl_language::syntax::source::{
+    SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
+    SourceSetOrIoError,
 };
+use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use hwl_util::io::IoErrorWithPath;
 use itertools::{enumerate, Either, Itertools};
 use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
