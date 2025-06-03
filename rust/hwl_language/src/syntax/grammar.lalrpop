@@ -550,7 +550,8 @@ SyncDomain: SyncDomain<Expression> = {
 // expressions
 Expr: Expression = SpannedPushArena<ExprLevelIn>;
 ExprNoIn: Expression = SpannedPushArena<ExprLevelRange>;
-ExprNoBlock: Expression = SpannedPushArena<ExprLevelArrayImpl<"no">>;
+// TODO why this random intermediate level?
+ExprNoBlock: Expression = SpannedPushArena<ExprLevelArrayImpl<"false", "true", "true">>;
 
 PushArena<T>: ExpressionKindIndex = {
     T => arena_expr.push(<>)
@@ -690,36 +691,37 @@ ExprLevelPower: ExpressionKind = {
     ExprLevelArray,
 }
 
-ExprLevelArray = ExprLevelArrayImpl<"true">;
+ExprLevelArray = ExprLevelArrayImpl<"true", "true", "true">;
 
-ExprLevelArrayImpl<allow_block>: ExpressionKind = {
-    // TODO find better array type syntax
-    // TODO we can expand this one to allow `[4][3][2]ty` without causing ambiguity, maybe even remove `[2,3]ty`
+ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: ExpressionKind = {
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:SpannedPushArena<ExprLevelCall<allow_block>>>
+    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
+        if allow_array_type == "true"
         => ExpressionKind::ArrayType(args, target),
     // array index
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "[" <args:Spanned<Separated<Expr,",">>> "]"
+    <target:SpannedPushArena<ExprLevelArrayImpl<allow_block, "false", "false">>> "[" <args:Spanned<Separated<Expr,",">>> "]"
         => ExpressionKind::ArrayIndex(target, args),
 
     // array literal
     "[" <Separated<ArrayLiteralElement,",">> "]"
+        if allow_array_literal == "true"
         => ExpressionKind::ArrayLiteral(<>),
+    // array comprehension
+    "[" <body:ArrayLiteralElement> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:ExprNoIn> "]"
+        if allow_array_literal == "true"
+        => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
+
     // tuple literal
     "(" <SeparatedAtLeastOneSep<Expr,",">> ")"
         => ExpressionKind::TupleLiteral(<>),
     "(" ")" => ExpressionKind::TupleLiteral(vec![]),
-
-    // array comprehension
-    "[" <body:ArrayLiteralElement> "for" <index:MaybeId> <span_keyword:Span<"in">> <iter:ExprNoIn> "]"
-        => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
     ExprLevelCall<allow_block>,
 }
 
 ExprLevelCall<allow_block>: ExpressionKind = {
     // normal call
-    <target:SpannedPushArena<ExprLevelDot<allow_block>>> "(" <args:Args> ")"
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:Args> ")"
         => ExpressionKind::Call(target, args),
 
     // builtins
