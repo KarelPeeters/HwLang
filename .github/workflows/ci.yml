@@ -1,0 +1,101 @@
+# TODO build and maybe even test VSCode LSP plugin
+# TODO publish crates to crates.io?
+# TODO publish wheels to pypi.org?
+# TODO add python linting
+
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-fmt:
+    name: Rust format
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo fmt
+        run: cd rust && cargo fmt --all -- --check
+
+  rust-clippy:
+    name: Rust clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo clippy
+        run: cd rust && cargo clippy --all-features
+
+  rust-build-test:
+    name: Rust build and test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo build
+        run: cd rust && cargo build --all-features
+      - name: cargo test
+        run: cd rust && cargo test --all-features
+
+  python-build-test:
+    name: Python build and test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+      - name: venv
+        run: python -m venv python/venv
+      - name: pip install
+        run: source python/venv/bin/activate && pip install maturin pytest
+      - name: maturin develop
+        run: source python/venv/bin/activate && cd rust/hwl_python && maturin develop
+      - name: pytest
+        run: source python/venv/bin/activate && cd python/tests && pytest
+
+  webdemo-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.17.0
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+      - name: Run wasm-pack
+        run: cd rust/hwl_wasm && wasm-pack build
+      - name: NPM install
+        run: cd web_demo && npm ci
+      - name: NPM build
+        run: cd web_demo && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: page
+          path: web_demo/dist
+          if-no-files-found: error
+
+  webdemo-deploy:
+    runs-on: ubuntu-latest
+    needs: webdemo-build
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: page
+          path: .
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4
