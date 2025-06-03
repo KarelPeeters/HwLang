@@ -1,8 +1,8 @@
 use crate::server::document::uri_to_path;
-use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
 use hwl_language::throw;
 use hwl_language::util::data::IndexMapExt;
-use hwl_language::util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
+use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
 use std::ffi::OsStr;

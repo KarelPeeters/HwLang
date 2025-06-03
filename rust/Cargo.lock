@@ -480,6 +480,7 @@ dependencies = [
  "annotate-snippets",
  "dashmap",
  "dlopen2",
+ "hwl_util",
  "indexmap",
  "itertools 0.13.0",
  "lalrpop",
@@ -503,6 +504,7 @@ dependencies = [
  "crossbeam-channel",
  "fluent-uri",
  "hwl_language",
+ "hwl_util",
  "indexmap",
  "itertools 0.13.0",
  "lsp-server",
@@ -518,11 +520,16 @@ name = "hwl_python"
 version = "0.1.0"
 dependencies = [
  "hwl_language",
+ "hwl_util",
  "itertools 0.13.0",
  "num-bigint",
  "num_cpus",
  "pyo3",
 ]
+
+[[package]]
+name = "hwl_util"
+version = "0.1.0"
 
 [[package]]
 name = "hwl_wasm"
@@ -531,6 +538,7 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom",
  "hwl_language",
+ "hwl_util",
  "itertools 0.13.0",
  "strum",
  "wasm-bindgen",

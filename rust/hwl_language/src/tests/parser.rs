@@ -1,10 +1,7 @@
-use std::path::Path;
-
+use crate::syntax::parse_file_content;
 use crate::syntax::source::FileId;
-use crate::{
-    syntax::parse_file_content,
-    util::io::{recurse_for_each_file, IoErrorWithPath},
-};
+use hwl_util::io::{recurse_for_each_file, IoErrorWithPath};
+use std::path::Path;
 
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();

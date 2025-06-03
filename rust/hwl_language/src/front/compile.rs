@@ -1,4 +1,3 @@
-use crate::constants::{MAX_STACK_ENTRIES, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, THREAD_STACK_SIZE};
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
 use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
@@ -30,6 +29,13 @@ use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
+
+// TODO make all of these configurable
+// TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
+//   it might also not matter, maybe every platform pre-commits stack space by now
+pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
+const MAX_STACK_ENTRIES: usize = 1024;
+const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 16;
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -104,7 +110,7 @@ pub fn compile(
                 let name = format!("compile_{thread_index}");
                 let h = std::thread::Builder::new()
                     .name(name)
-                    .stack_size(THREAD_STACK_SIZE)
+                    .stack_size(COMPILE_THREAD_STACK_SIZE)
                     .spawn_scoped(s, f)
                     .unwrap();
 

@@ -4,7 +4,7 @@ use crate::server::state::{RequestError, RequestResult, ServerState};
 use fluent_uri::enc::EStr;
 use fluent_uri::HostData;
 use hwl_language::throw;
-use hwl_language::util::io::IoErrorExt;
+use hwl_util::io::IoErrorExt;
 use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
 };

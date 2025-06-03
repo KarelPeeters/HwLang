@@ -1,10 +1,9 @@
-use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
-use hwl_language::swriteln;
-use hwl_language::util::io::{recurse_for_each_file, IoErrorWithPath};
+use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::io::{recurse_for_each_file, IoErrorWithPath};
+use hwl_util::swriteln;
 use itertools::Itertools;
 use std::ffi::OsStr;
 use std::path::Path;
-
 // TODO move the things used from hwl_language into a separate crate,
 //   so the cargo build does not appear to fail whenever _anything_ in hwl_language fails to build
 

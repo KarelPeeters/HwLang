@@ -1,9 +1,9 @@
-use crate::constants::LANGUAGE_FILE_EXTENSION;
 use crate::syntax::pos::{LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::{Arena, IndexType};
 use crate::util::data::vec_concat;
-use crate::util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use crate::{new_index_type, throw};
+use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
 use std::ffi::OsStr;

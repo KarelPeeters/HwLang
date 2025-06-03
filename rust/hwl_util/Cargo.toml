@@ -1,0 +1,12 @@
+[package]
+name = "hwl_util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+
+[dependencies]
+
+[lints]
+workspace = true

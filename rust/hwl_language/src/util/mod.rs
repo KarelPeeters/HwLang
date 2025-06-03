@@ -7,7 +7,6 @@ pub mod arena;
 pub mod big_int;
 pub mod data;
 pub mod int;
-pub mod io;
 pub mod iter;
 pub mod store;
 pub mod sync;
@@ -126,50 +125,6 @@ pub fn result_pair_split<A, B, E: Copy>(r: Result<(A, B), E>) -> (Result<A, E>, 
         Ok((a, b)) => (Ok(a), Ok(b)),
         Err(e) => (Err(e), Err(e)),
     }
-}
-
-pub trait StringMut {
-    fn as_mut_string(&mut self) -> &mut String;
-}
-
-impl StringMut for String {
-    fn as_mut_string(&mut self) -> &mut String {
-        self
-    }
-}
-
-impl<T: StringMut> StringMut for &mut T {
-    fn as_mut_string(&mut self) -> &mut String {
-        (*self).as_mut_string()
-    }
-}
-
-/// Variant of write! that only works for strings, and doesn't return a spurious error.
-#[macro_export]
-macro_rules! swrite {
-    ($dst:expr, $($arg:tt)*) => {{
-        use std::fmt::Write;
-        use $crate::util::StringMut;
-        let dst = $dst.as_mut_string();
-        write!(dst, $($arg)*).unwrap();
-    }};
-}
-
-/// Variant of writeln! that only works for strings, and doesn't return a spurious error.
-#[macro_export]
-macro_rules! swriteln {
-    ($dst:expr $(,)?) => {{
-        use std::fmt::Write;
-        use $crate::util::StringMut;
-        let dst = $dst.as_mut_string();
-        writeln!(dst).unwrap();
-    }};
-    ($dst:expr, $($arg:tt)*) => {{
-        use std::fmt::Write;
-        use $crate::util::StringMut;
-        let dst = $dst.as_mut_string();
-        writeln!(dst, $($arg)*).unwrap();
-    }};
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -686,10 +686,10 @@ impl TokenError {
 
 #[cfg(test)]
 mod test {
-    use crate::swriteln;
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
     use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
+    use hwl_util::swriteln;
     use std::collections::HashSet;
 
     fn tokenize_iter(file: FileId, source: &str, emit_incomplete_token: bool) -> Vec<Result<Token, TokenError>> {

@@ -1,8 +1,8 @@
 use crate::mid::ir::{IrModule, IrModules};
-use crate::swriteln;
 use crate::syntax::ast::PortDirection;
 use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
+use hwl_util::swriteln;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{enumerate, Itertools};
 use regex::{Captures, Regex};

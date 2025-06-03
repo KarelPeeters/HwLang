@@ -8,7 +8,7 @@ rust-version.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
-hwl_language.workspace = true
+hwl_util.workspace = true
 itertools.workspace = true
 
 [dependencies]

@@ -1,8 +1,7 @@
 use clap::Parser;
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::constants::THREAD_STACK_SIZE;
-use hwl_language::front::compile::{compile, ElaborationSet};
+use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
@@ -53,7 +52,7 @@ fn main() -> ExitCode {
         // spawn a new thread with a larger stack size
         // TODO should we do this or switch to a heap stack everywhere (mostly item visiting and verilog lowering)
         std::thread::Builder::new()
-            .stack_size(THREAD_STACK_SIZE)
+            .stack_size(COMPILE_THREAD_STACK_SIZE)
             .spawn(|| main_inner(args))
             .unwrap()
             .join()

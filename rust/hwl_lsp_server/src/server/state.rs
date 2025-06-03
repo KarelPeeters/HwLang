@@ -3,7 +3,7 @@ use crate::engine::vfs::VirtualFileSystem;
 use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
 use crossbeam_channel::SendError;
-use hwl_language::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;

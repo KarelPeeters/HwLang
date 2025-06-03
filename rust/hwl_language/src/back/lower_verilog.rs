@@ -9,12 +9,13 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{PortDirection, Spanned};
 use crate::syntax::pos::Span;
+use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
 use crate::util::{separator_non_trailing, Indent, ResultExt};
-use crate::{swrite, swriteln, throw};
+use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
 use itertools::enumerate;
 use lazy_static::lazy_static;

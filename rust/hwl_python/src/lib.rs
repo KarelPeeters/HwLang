@@ -13,7 +13,7 @@ use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::FilePath;
-use hwl_language::util::NON_ZERO_USIZE_ONE;
+use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use hwl_language::{
     front::{
         context::CompileTimeExpressionContext,
@@ -30,8 +30,8 @@ use hwl_language::{
             SourceSetOrIoError,
         },
     },
-    util::{io::IoErrorWithPath, ResultExt},
 };
+use hwl_util::io::IoErrorWithPath;
 use itertools::{enumerate, Either, Itertools};
 use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
 use pyo3::types::PyIterator;

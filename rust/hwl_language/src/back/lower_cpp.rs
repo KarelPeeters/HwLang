@@ -13,7 +13,7 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
 use crate::util::{separator_non_trailing, Indent};
-use crate::{swrite, swriteln};
+use hwl_util::{swrite, swriteln};
 use itertools::enumerate;
 use std::fmt::{Display, Formatter};
 use unwrap_match::unwrap_match;
