@@ -19,7 +19,7 @@ use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
-use hwl_language::syntax::source::FilePath;
+use hwl_language::syntax::source::{BuilderFileId, FilePath};
 use hwl_language::syntax::source::{
     SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
     SourceSetOrIoError,
@@ -42,6 +42,12 @@ mod check;
 mod convert;
 
 #[pyclass]
+struct SourceBuilder {
+    source_builder: RustSourceDatabaseBuilder,
+    dummy_file: BuilderFileId,
+}
+
+#[pyclass]
 struct Source {
     source: RustSourceDatabase,
     dummy_span: Span,
@@ -49,12 +55,14 @@ struct Source {
 
 #[pyclass]
 struct Parsed {
+    #[pyo3(get)]
     source: Py<Source>,
     parsed: RustParsedDatabase,
 }
 
 #[pyclass]
 struct Compile {
+    #[pyo3(get)]
     parsed: Py<Parsed>,
     state: CompileShared,
 }
@@ -135,6 +143,7 @@ create_exception!(hwl, VerilationException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<SourceBuilder>()?;
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
@@ -153,50 +162,61 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
     m.add("ResolveException", py.get_type::<ResolveException>())?;
+    m.add("GenerateVerilogException", py.get_type::<GenerateVerilogException>())?;
+    m.add("VerilationException", py.get_type::<VerilationException>())?;
     Ok(())
+}
+
+const DUMMY_SOURCE: &str = "// dummy file, representing the python caller";
+
+#[pymethods]
+impl SourceBuilder {
+    #[new]
+    fn new() -> Self {
+        let mut source_builder = RustSourceDatabaseBuilder::new();
+        let dummy_file = source_builder
+            .add_file(
+                FilePath(vec!["python".to_owned(), "dummy.py".to_owned()]),
+                "dummy.py".to_owned(),
+                DUMMY_SOURCE.to_owned(),
+            )
+            .unwrap();
+        Self {
+            source_builder,
+            dummy_file,
+        }
+    }
+
+    fn add_file(&mut self, path: Vec<String>, path_raw: String, source: String) -> PyResult<()> {
+        self.source_builder
+            .add_file(FilePath(path), path_raw, source)
+            .map_err(map_source_set_error)?;
+        Ok(())
+    }
+
+    fn add_tree(&mut self, prefix: Vec<String>, path: &str) -> PyResult<()> {
+        self.source_builder
+            .add_tree(prefix, Path::new(path))
+            .map_err(map_source_set_or_io_error)?;
+        Ok(())
+    }
+
+    fn finish(&self) -> Source {
+        let (source, _, mapping) = self.source_builder.finish_with_mapping();
+        let dummy_file = *mapping.get(&self.dummy_file).unwrap();
+        let dummy_span = Span::new(dummy_file, 0, DUMMY_SOURCE.len());
+        Source { source, dummy_span }
+    }
 }
 
 #[pymethods]
 impl Source {
-    #[new]
-    fn new(root_dir: &str) -> PyResult<Self> {
-        let mut source_builder = RustSourceDatabaseBuilder::new();
-
-        let dummy_source = "// dummy file, representing the python caller";
-        let dummy_file = source_builder
-            .add_file(
-                FilePath(vec!["python".to_owned(), root_dir.to_owned()]),
-                "python.py".to_owned(),
-                dummy_source.to_owned(),
-            )
-            .unwrap();
-
-        source_builder
-            .add_tree(vec![], Path::new(root_dir))
-            .map_err(|e| match e {
-                SourceSetOrIoError::SourceSet(source_set_error) => match source_set_error {
-                    SourceSetError::EmptyPath => SourceSetException::new_err("empty path"),
-                    SourceSetError::DuplicatePath(file_path) => {
-                        SourceSetException::new_err(format!("duplicate path `{file_path:?}`"))
-                    }
-                    SourceSetError::NonUtf8Path(path_buf) => {
-                        SourceSetException::new_err(format!("non-UTF-8 path `{path_buf:?}`"))
-                    }
-                    SourceSetError::MissingFileName(path_buf) => {
-                        SourceSetException::new_err(format!("missing file name `{path_buf:?}`"))
-                    }
-                },
-                SourceSetOrIoError::Io(IoErrorWithPath { error, path }) => {
-                    SourceSetException::new_err(format!("io error `{error}` for path `{path:?}`"))
-                }
-            })?;
-
-        let (source, _, mapping) = source_builder.finish_with_mapping();
-
-        let dummy_file = *mapping.get(&dummy_file).unwrap();
-        let dummy_span = Span::new(dummy_file, 0, dummy_source.len());
-
-        Ok(Self { source, dummy_span })
+    #[staticmethod]
+    fn simple(path: &str) -> PyResult<Self> {
+        // TODO include std?
+        let mut builder = SourceBuilder::new();
+        builder.add_tree(vec![], &path)?;
+        Ok(builder.finish())
     }
 
     #[getter]
@@ -214,6 +234,13 @@ impl Source {
         drop(source);
 
         Ok(Parsed { source: slf, parsed })
+    }
+
+    /// Shortcut for `self.parse().compile()`.
+    fn compile(slf: Py<Self>, py: Python) -> PyResult<Compile> {
+        let parsed = Self::parse(slf, py)?;
+        let py_parsed = Py::new(py, parsed)?;
+        Parsed::compile(py_parsed, py)
     }
 }
 
@@ -753,4 +780,26 @@ impl VerilatedPort {
 
 fn map_verilator_error(e: VerilatorError) -> PyErr {
     VerilationException::new_err(e.to_string())
+}
+
+fn map_source_set_or_io_error(e: SourceSetOrIoError) -> PyErr {
+    match e {
+        SourceSetOrIoError::SourceSet(e) => map_source_set_error(e),
+        SourceSetOrIoError::Io(IoErrorWithPath { error, path }) => {
+            SourceSetException::new_err(format!("io error `{error}` for path `{path:?}`"))
+        }
+    }
+}
+
+fn map_source_set_error(e: SourceSetError) -> PyErr {
+    match e {
+        SourceSetError::EmptyPath => SourceSetException::new_err("empty path"),
+        SourceSetError::DuplicatePath(file_path) => {
+            SourceSetException::new_err(format!("duplicate path `{file_path:?}`"))
+        }
+        SourceSetError::NonUtf8Path(path_buf) => SourceSetException::new_err(format!("non-UTF-8 path `{path_buf:?}`")),
+        SourceSetError::MissingFileName(path_buf) => {
+            SourceSetException::new_err(format!("missing file name `{path_buf:?}`"))
+        }
+    }
 }

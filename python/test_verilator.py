@@ -4,9 +4,11 @@ from pathlib import Path
 
 import hwl
 
-source = hwl.Source(str(Path(__file__).parent / "../design/project"))
-parsed = source.parse()
-compiled = parsed.compile()
+print("Loading, parsing, compiling")
+compiled = hwl.Source.simple(str(Path(__file__).parent / "../design/project")).compile()
+print("  parsed files:")
+for file in compiled.parsed.source.files:
+    print(f"    {file}")
 
 print("Resolving")
 input_width = 7

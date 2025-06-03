@@ -118,13 +118,13 @@ impl SourceDatabaseBuilder {
         }
     }
 
-    pub fn finish(self) -> SourceDatabase {
+    pub fn finish(&self) -> SourceDatabase {
         let (source, _, _) = self.finish_with_mapping();
         source
     }
 
     pub fn finish_with_mapping(
-        self,
+        &self,
     ) -> (
         SourceDatabase,
         IndexMap<BuilderDirectory, Directory>,
