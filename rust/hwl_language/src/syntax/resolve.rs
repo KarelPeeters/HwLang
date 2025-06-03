@@ -16,7 +16,8 @@ use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::arena::Arena;
 use indexmap::IndexMap;
-use regex::Regex;
+use regex_automata::dfa::Automaton;
+use std::collections::HashSet;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum FindDefinition<S = Vec<Span>> {
@@ -31,6 +32,7 @@ type FindDefinitionResult = Result<(), FindDefinition>;
 // TODO follow imports instead of jumping to them
 // TODO we can do better: in `if(_) { a } else { a }` a is not really conditional any more
 // TODO generalize this "visitor", we also want to collect all usages, find the next selection span, find folding ranges, ...
+// TODO maybe this should be moved to the LSP, the compiler itself really doesn't need this
 pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> FindDefinition {
     let FileContent {
         span: _,
@@ -74,7 +76,7 @@ struct DeclScope<'p> {
 #[derive(Debug)]
 struct DeclScopeContent {
     simple: IndexMap<String, Vec<(Span, Conditional)>>,
-    pattern: Vec<(Regex, Span, Conditional)>,
+    pattern: Vec<(RegexDfa, Span, Conditional)>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -83,10 +85,15 @@ enum Conditional {
     No,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum EvaluatedId<S> {
     Simple(S),
-    Pattern(Regex),
+    Pattern(RegexDfa),
+}
+
+#[derive(Debug)]
+struct RegexDfa {
+    dfa: regex_automata::dfa::sparse::DFA<Vec<u8>>,
 }
 
 impl EvaluatedId<&str> {
@@ -161,7 +168,7 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn find(&self, id: EvaluatedId<&str>) -> FindDefinition {
+    fn find(&self, id: &EvaluatedId<&str>) -> FindDefinition {
         let mut curr = self;
         let mut result = vec![];
 
@@ -174,7 +181,7 @@ impl<'p> DeclScope<'p> {
             } = &curr.content;
 
             // check simple
-            match &id {
+            match id {
                 &EvaluatedId::Simple(id) => {
                     if let Some(entries) = fixed.get(id) {
                         for &(span, cond) in entries {
@@ -188,10 +195,10 @@ impl<'p> DeclScope<'p> {
                 }
                 EvaluatedId::Pattern(id) => {
                     for (key, entries) in fixed {
-                        if id.is_match(key) {
+                        if id.could_match_str(key) {
                             for &(span, cond) in entries {
                                 result.push(span);
-                                // pattern matches matches are never certain
+                                // pattern matches are never certain
                                 let _ = cond;
                             }
                         }
@@ -200,15 +207,14 @@ impl<'p> DeclScope<'p> {
             }
 
             // check patterns
-            for &(ref regex, span, c) in patterns {
-                let matches = match id {
-                    EvaluatedId::Simple(id) => regex.is_match(id),
-                    // regex/regex intersection is tricky, pessimistically assume match for now
-                    EvaluatedId::Pattern(_) => true,
+            for &(ref pattern, span, c) in patterns {
+                let could_match = match id {
+                    EvaluatedId::Simple(id) => pattern.could_match_str(id),
+                    EvaluatedId::Pattern(id) => pattern.could_match_pattern(id),
                 };
-                if matches {
+                if could_match {
                     result.push(span);
-                    // pattern matches matches are never certain
+                    // pattern matches are never certain
                     let _ = c;
                 }
             }
@@ -228,6 +234,67 @@ impl<'p> DeclScope<'p> {
         } else {
             FindDefinition::Found(result)
         }
+    }
+}
+
+impl RegexDfa {
+    pub fn new(pattern: &str) -> Result<Self, regex_automata::dfa::dense::BuildError> {
+        let dfa = regex_automata::dfa::sparse::DFA::new(pattern)?;
+        Ok(Self { dfa })
+    }
+
+    pub fn could_match_str(&self, input: &str) -> bool {
+        self.dfa
+            .try_search_fwd(&regex_automata::Input::new(input))
+            .unwrap()
+            .is_some()
+    }
+
+    pub fn could_match_pattern(&self, other: &RegexDfa) -> bool {
+        // regex intersection, based on https://users.rust-lang.org/t/detect-regex-conflict/57184/13
+        let dfa_0 = &self.dfa;
+        let dfa_1 = &other.dfa;
+
+        let start_config = regex_automata::util::start::Config::new().anchored(regex_automata::Anchored::Yes);
+        let start_0 = dfa_0.start_state(&start_config).unwrap();
+        let start_1 = dfa_1.start_state(&start_config).unwrap();
+
+        if dfa_0.is_match_state(start_0) && dfa_1.is_match_state(start_1) {
+            return true;
+        }
+
+        let mut visited_states = HashSet::new();
+        let mut to_process = vec![(start_0, start_1)];
+        visited_states.insert((start_0, start_1));
+
+        while let Some((curr_0, curr_1)) = to_process.pop() {
+            let mut handle_next = |next_0, next_1| {
+                if dfa_0.is_match_state(next_0) && dfa_1.is_match_state(next_1) {
+                    return true;
+                }
+                if visited_states.insert((next_0, next_1)) {
+                    to_process.push((next_0, next_1));
+                }
+                false
+            };
+
+            // TODO is there a good way to only iterate over the bytes that appear in either pattern?
+            for input in 0..u8::MAX {
+                let next_0 = dfa_0.next_state(curr_0, input);
+                let next_1 = dfa_1.next_state(curr_1, input);
+                if handle_next(next_0, next_1) {
+                    return true;
+                }
+            }
+
+            let next_0 = dfa_0.next_eoi_state(curr_0);
+            let next_1 = dfa_1.next_eoi_state(curr_1);
+            if handle_next(next_0, next_1) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -1188,7 +1255,7 @@ impl ResolveContext<'_> {
 
     fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
         check_skip!(self, id.span);
-        Err(scope.find(EvaluatedId::Simple(id.str(self.source))))
+        Err(scope.find(&EvaluatedId::Simple(id.str(self.source))))
     }
 
     fn visit_general_id_usage(&self, scope: &DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
@@ -1202,7 +1269,7 @@ impl ResolveContext<'_> {
 
         // find the id itself
         check_skip!(self, id.span());
-        Err(scope.find(self.eval_general(id).inner))
+        Err(scope.find(&self.eval_general(id).inner))
     }
 
     fn eval_general(&self, id: GeneralIdentifier) -> Spanned<EvaluatedId<&str>> {
@@ -1229,17 +1296,115 @@ impl ResolveContext<'_> {
                         }
 
                         pattern.push('$');
-                        EvaluatedId::Pattern(Regex::new(&pattern).unwrap())
+                        EvaluatedId::Pattern(RegexDfa::new(&pattern).unwrap())
                     }
                     _ => {
                         // default to a regex that matches everything
                         // TODO maybe it's even faster to have a separate enum branch for this case
-                        EvaluatedId::Pattern(Regex::new("").unwrap())
+                        EvaluatedId::Pattern(RegexDfa::new(".*").unwrap())
                     }
                 }
             }
         };
 
         Spanned::new(id.span(), eval)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::syntax::resolve::RegexDfa;
+    use itertools::Itertools;
+
+    // tests based on https://users.rust-lang.org/t/detect-regex-conflict/57184/13
+    fn regex_overlap(a: &str, b: &str) -> bool {
+        let a = RegexDfa::new(a).unwrap();
+        let b = RegexDfa::new(b).unwrap();
+        a.could_match_pattern(&b)
+    }
+
+    #[test]
+    fn overlapping_regexes() {
+        let pattern1 = r"[a-zA-Z]+";
+        let pattern2 = r"[a-z]+";
+        assert!(regex_overlap(pattern1, pattern2));
+        let pattern1 = r"a*";
+        let pattern2 = r"b*";
+        assert!(regex_overlap(pattern1, pattern2));
+        let pattern1 = r"a*bba+";
+        let pattern2 = r"b*aaab+a";
+        assert!(regex_overlap(pattern1, pattern2));
+        let pattern1 = r" ";
+        let pattern2 = r"\s";
+        assert!(regex_overlap(pattern1, pattern2));
+        let pattern1 = r"[A-Z]+";
+        let pattern2 = r"[a-z]+";
+        assert!(!regex_overlap(pattern1, pattern2));
+        let pattern1 = r"a";
+        let pattern2 = r"b";
+        assert!(!regex_overlap(pattern1, pattern2));
+        let pattern1 = r"a*bba+";
+        let pattern2 = r"b*aaabbb+a";
+        assert!(!regex_overlap(pattern1, pattern2));
+        let pattern1 = r"\s+";
+        let pattern2 = r"a+";
+        assert!(!regex_overlap(pattern1, pattern2));
+    }
+
+    #[test]
+    fn all_overlapping_regexes() {
+        let patterns = [
+            r"[a-zA-Z]+",
+            r"[a-z]+",
+            r"a*",
+            r"b*",
+            r"a*bba+",
+            r"b*aaab+a",
+            r" ",
+            r"\s",
+            r"[A-Z]+",
+            r"[a-z]+",
+            r"a",
+            r"b",
+            r"a*bba+",
+            r"b*aaabbb+a",
+            r"\s+",
+            r"a+",
+        ];
+
+        let patterns = patterns.iter().map(|&s| RegexDfa::new(s).unwrap()).collect_vec();
+
+        let mut match_count = 0;
+        for a in &patterns {
+            for b in &patterns {
+                if a.could_match_pattern(b) {
+                    match_count += 1;
+                }
+            }
+        }
+        assert_eq!(match_count, 102);
+    }
+
+    #[test]
+    fn test_basic() {
+        let a = RegexDfa::new("^a$").unwrap();
+        assert!(a.could_match_str("a"));
+        assert!(!a.could_match_str("ab"));
+
+        let empty = RegexDfa::new("").unwrap();
+        assert!(empty.could_match_str(""));
+        assert!(empty.could_match_str("abc"));
+
+        let start = RegexDfa::new("^a.*b$").unwrap();
+        assert!(start.could_match_str("ab"));
+        assert!(!start.could_match_str("abc"));
+        assert!(start.could_match_str("acb"));
+        assert!(!start.could_match_str("acbd"));
+    }
+
+    #[test]
+    fn test_self() {
+        let a = RegexDfa::new("^a$").unwrap();
+        assert!(a.could_match_pattern(&a));
     }
 }

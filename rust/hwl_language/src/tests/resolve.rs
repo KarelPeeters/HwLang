@@ -117,3 +117,21 @@ fn resolve_pub_wire_if_after() {
     let src = "module foo ports() { wire y = x; if (true) { pub wire x = false; } }";
     test_resolve(src, 30, FindDefinition::Found(&[54..55]));
 }
+
+#[test]
+fn resolve_general_simple() {
+    let src = "module foo ports() { wire id_from_str(\"x\") = false; comb { x; } }";
+    test_resolve(src, 59, FindDefinition::Found(&[26..42]));
+}
+
+#[test]
+fn resolve_simple_general() {
+    let src = "module foo ports() { wire x = false; comb { id_from_str(\"x\"); } }";
+    test_resolve(src, 44, FindDefinition::Found(&[26..27]));
+}
+
+#[test]
+fn resolve_general_general() {
+    let src = "module foo ports() { wire id_from_str(\"x\") = false; comb { id_from_str(\"x\"); } }";
+    test_resolve(src, 59, FindDefinition::Found(&[26..42]));
+}

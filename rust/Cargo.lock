@@ -492,6 +492,7 @@ dependencies = [
  "parking_lot 0.12.3",
  "rand",
  "regex",
+ "regex-automata",
  "strum",
  "unwrap-match",
 ]
