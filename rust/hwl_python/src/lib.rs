@@ -487,6 +487,7 @@ impl Module {
                 .arg("-Wno-widthexpand")
                 .arg("-Wno-cmpconst")
                 .arg("-Wno-widthtrunc")
+                .arg("+1364-2001ext+v")
                 .arg("--trace")
                 .arg("--top-module")
                 .arg(&top_module_name)
