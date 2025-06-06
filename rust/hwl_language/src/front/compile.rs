@@ -629,7 +629,7 @@ impl CompileShared {
         }
         let external_modules = external_modules.into_keys().collect();
 
-        let item_values = ComputeOnceArena::new(items.iter().copied());
+        let item_values = ComputeOnceArena::new(thread_count);
 
         // populate work queue
         // TODO shuffle or not?
