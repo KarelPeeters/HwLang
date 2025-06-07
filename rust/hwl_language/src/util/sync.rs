@@ -39,7 +39,6 @@ struct Dependency<K, S> {
     path: Vec<S>,
 }
 
-// TODO check whether the fast paths actually help
 impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K, V, S> {
     pub fn new(thread_count: NonZeroUsize) -> Self {
         // matches the default shard count of DashMap
