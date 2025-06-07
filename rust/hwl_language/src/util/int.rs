@@ -91,8 +91,9 @@ impl IntRepresentation {
 
                 let width = usize::try_from(width).unwrap();
                 for i in 0..width {
+                    let i_u64 = u64::try_from(i).unwrap();
                     if bits[i] {
-                        result += BigUint::pow_2_to(&BigUint::from(i));
+                        result = result.set_bit(i_u64, true);
                     }
                 }
 
@@ -101,15 +102,17 @@ impl IntRepresentation {
                 Ok(result)
             }
             IntRepresentation::Signed { width_1 } => {
-                let mut result = BigInt::ZERO;
+                let mut result = BigUint::ZERO;
 
                 let width_1 = usize::try_from(width_1).unwrap();
                 for i in 0..width_1 {
+                    let i_u64 = u64::try_from(i).unwrap();
                     if bits[i] {
-                        result += BigUint::pow_2_to(&BigUint::from(i));
+                        result = result.set_bit(i_u64, true);
                     }
                 }
 
+                let mut result = BigInt::from(result);
                 if bits[width_1] {
                     result -= BigUint::pow_2_to(&BigUint::from(width_1));
                 }

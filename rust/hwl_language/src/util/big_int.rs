@@ -109,22 +109,26 @@ impl BigUint {
         Ok(BigUint::new(Storage::from_maybe_big(big.into())))
     }
 
-    pub fn pow_2_to(exp: &BigUint) -> BigUint {
-        if let &Storage::Small(index) = exp.storage() {
-            if let Ok(exp) = u32::try_from(index) {
-                let one: IStorage = 1;
-                if let Some(result) = one.checked_shl(exp) {
-                    if result > 0 {
-                        return BigUint::new(Storage::Small(result));
-                    }
+    pub fn set_bit(self, index: u64, value: bool) -> BigUint {
+        if let Storage::Small(slf) = self.0 {
+            if index < IStorage::BITS.into() {
+                let mask = 1 << index;
+                let result = if value { slf | mask } else { slf & !mask };
+
+                if result >= 0 {
+                    return BigUint::new(Storage::Small(result));
                 }
             }
+        }
 
-            if let Ok(exp) = u64::try_from(index) {
-                let mut result = num_bigint::BigUint::ZERO;
-                result.set_bit(exp, true);
-                return BigUint::new(Storage::from_maybe_big(result.into()));
-            }
+        let mut result = self.into_num_biguint();
+        result.set_bit(index, value);
+        BigUint::new(Storage::from_maybe_big(result.into()))
+    }
+
+    pub fn pow_2_to(exp: &BigUint) -> BigUint {
+        if let Ok(exp) = u64::try_from(exp) {
+            return BigUint::ZERO.set_bit(exp, true);
         }
 
         BigUint::TWO.pow(exp)
