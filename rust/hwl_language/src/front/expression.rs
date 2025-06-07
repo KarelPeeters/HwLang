@@ -453,15 +453,20 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let iter_eval = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter)?;
 
-                if !iter_eval.is_finite() {
-                    return Err(diags.report_simple(
-                        "array comprehension over infinite iterator would never finish",
-                        iter.span,
-                        "this iterator is infinite",
-                    ));
-                }
+                // this is only a lower bound,
+                //   there might be spread elements in the literal which expand to multiple values
+                let len_lower_bound = match iter_eval.len_if_finite() {
+                    None => {
+                        return Err(diags.report_simple(
+                            "array comprehension over infinite iterator would never finish",
+                            iter.span,
+                            "this iterator is infinite",
+                        ));
+                    }
+                    Some(len) => usize::try_from(len).unwrap_or(0),
+                };
 
-                let mut values = vec![];
+                let mut values = Vec::with_capacity(len_lower_bound);
                 for index_value in iter_eval {
                     self.refs.check_should_stop(expr.span)?;
 
@@ -2005,11 +2010,16 @@ pub enum ForIterator {
 }
 
 impl ForIterator {
-    pub fn is_finite(&self) -> bool {
+    pub fn len_if_finite(&self) -> Option<BigUint> {
         match self {
-            ForIterator::Int { next: _, end_inc } => end_inc.is_some(),
-            ForIterator::CompileArray { .. } => true,
-            ForIterator::HardwareArray { .. } => true,
+            ForIterator::Int { next, end_inc } => end_inc
+                .as_ref()
+                .map(|end_inc| BigUint::try_from(end_inc - next + 1u32).unwrap()),
+            ForIterator::CompileArray { next, array } => Some(BigUint::from(array.len() - *next)),
+            ForIterator::HardwareArray { next, base } => {
+                let (_, len) = &base.ty;
+                Some(BigUint::try_from(len - next).unwrap())
+            }
         }
     }
 }
