@@ -119,6 +119,12 @@ impl BigUint {
                     }
                 }
             }
+
+            if let Ok(exp) = u64::try_from(index) {
+                let mut result = num_bigint::BigUint::ZERO;
+                result.set_bit(exp, true);
+                return BigUint::new(Storage::from_maybe_big(result.into()));
+            }
         }
 
         BigUint::TWO.pow(exp)
