@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
@@ -22,7 +22,7 @@ use unwrap_match::unwrap_match;
 //   only one for each signal, maybe also a separate one for each array element?
 //   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
 //   skip operations on undefined values, we don't want to cause undefined C++ behavior!
-pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModule) -> Result<String, ErrorGuaranteed> {
+pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModule) -> DiagResult<String> {
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
@@ -46,7 +46,7 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModu
     Ok(f)
 }
 
-fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) -> Result<String, ErrorGuaranteed> {
+fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) -> DiagResult<String> {
     let module_info = &modules[module];
     let IrModuleInfo {
         ports,
@@ -377,7 +377,7 @@ impl CodegenBlockContext<'_> {
         span: Span,
         expr: &IrExpression,
         stage_read: Stage,
-    ) -> Result<Temporary, ErrorGuaranteed> {
+    ) -> DiagResult<Temporary> {
         match self.eval(indent, span, expr, stage_read)? {
             Evaluated::Temporary(v) => Ok(v),
             Evaluated::Inline(v) => {
@@ -389,13 +389,7 @@ impl CodegenBlockContext<'_> {
         }
     }
 
-    fn eval(
-        &mut self,
-        indent: Indent,
-        span: Span,
-        expr: &IrExpression,
-        stage_read: Stage,
-    ) -> Result<Evaluated, ErrorGuaranteed> {
+    fn eval(&mut self, indent: Indent, span: Span, expr: &IrExpression, stage_read: Stage) -> DiagResult<Evaluated> {
         let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
 
         let result = match expr {
@@ -577,7 +571,7 @@ impl CodegenBlockContext<'_> {
         result: Temporary,
         result_offset: &str,
         value: &str,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         // TODO maybe it's better to switch to just storing bits for everything in C++ too?
         match ty {
             IrType::Bool => {
@@ -639,7 +633,7 @@ impl CodegenBlockContext<'_> {
         result: &str,
         value: Temporary,
         value_offset: &str,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         match ty {
             IrType::Bool => {
                 swriteln!(self.f, "{indent}{result} = {value}[{value_offset}];",);
@@ -695,19 +689,14 @@ impl CodegenBlockContext<'_> {
         Ok(())
     }
 
-    fn generate_nested_block(
-        &mut self,
-        indent: Indent,
-        block: &IrBlock,
-        stage_read: Stage,
-    ) -> Result<(), ErrorGuaranteed> {
+    fn generate_nested_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult<()> {
         swriteln!(self.f, "{{");
         self.generate_block(indent.nest(), block, stage_read)?;
         swrite!(self.f, "{indent}}}");
         Ok(())
     }
 
-    fn generate_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> Result<(), ErrorGuaranteed> {
+    fn generate_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult<()> {
         let IrBlock { statements } = block;
 
         for stmt in statements {
@@ -781,7 +770,7 @@ impl CodegenBlockContext<'_> {
         span: Span,
         target: &IrAssignmentTarget,
         stage_read: Stage,
-    ) -> Result<Target, ErrorGuaranteed> {
+    ) -> DiagResult<Target> {
         let next = Stage::Next;
         let IrAssignmentTarget { base, steps } = target;
 
@@ -837,7 +826,7 @@ struct Target {
     inner: String,
 }
 
-fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<String, ErrorGuaranteed> {
+fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<String> {
     let result = match ty {
         IrType::Bool => "bool".to_owned(),
         IrType::Int(range) => {

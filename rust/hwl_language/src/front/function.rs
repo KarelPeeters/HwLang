@@ -2,7 +2,7 @@ use crate::front::block::{BlockEnd, BlockEndReturn};
 use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
 use crate::front::compile::{ArenaVariables, CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::ExpressionContext;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, HardwareChecked, NonHardwareEnum,
@@ -100,7 +100,7 @@ impl FunctionBody {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct CapturedScope {
     parent_file: FileId,
-    child_values: BTreeMap<String, Result<Spanned<CapturedValue>, ErrorGuaranteed>>,
+    child_values: BTreeMap<String, DiagResult<Spanned<CapturedValue>>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -131,7 +131,7 @@ pub struct ParamArgMacher<'a> {
     arg_used: Vec<bool>,
     param_names: IndexMap<&'a str, Span>,
 
-    any_err: Result<(), ErrorGuaranteed>,
+    any_err: DiagResult<()>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -150,7 +150,7 @@ impl<'a> ParamArgMacher<'a> {
         args: &'a Args<Option<Spanned<&'a str>>, Spanned<Value>>,
         args_must_be_compile: bool,
         args_must_be_named: NamedRule,
-    ) -> Result<Self, ErrorGuaranteed> {
+    ) -> DiagResult<Self> {
         // check for duplicate arg names and check that positional args are before named args
         let mut arg_name_to_index: IndexMap<&str, usize> = IndexMap::new();
         let mut first_named_span = None;
@@ -240,7 +240,7 @@ impl<'a> ParamArgMacher<'a> {
         id: Identifier,
         ty: Spanned<&Type>,
         default: Option<Spanned<Value>>,
-    ) -> Result<Spanned<Value>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<Value>> {
         let diags = self.diags;
         let id_str = id.str(self.source);
 
@@ -320,7 +320,7 @@ impl<'a> ParamArgMacher<'a> {
         value
     }
 
-    pub fn finish(self) -> Result<(), ErrorGuaranteed> {
+    pub fn finish(self) -> DiagResult<()> {
         let diags = self.diags;
         self.any_err?;
 
@@ -350,7 +350,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         function: &FunctionValue,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-    ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
+    ) -> DiagResult<(Option<C::Block>, Value)> {
         let diags = self.refs.diags;
 
         let err_infer_any = |kind: &str| {
@@ -427,7 +427,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         elab: ElaboratedStruct,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let &ElaboratedStructInfo {
             span_body,
@@ -520,7 +520,7 @@ impl CompileItemContext<'_, '_> {
         elab: ElaboratedEnum,
         variant_index: usize,
         args: &Args<Option<Spanned<&str>>, Spanned<Value>>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
@@ -589,7 +589,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         function: &UserFunctionValue,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-    ) -> Result<(Option<C::Block>, Value), ErrorGuaranteed> {
+    ) -> DiagResult<(Option<C::Block>, Value)> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
@@ -698,7 +698,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         function: &FunctionBits,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         // check arg is single non-named value
@@ -802,7 +802,7 @@ fn check_function_return_value(
     body_span: Span,
     ret_ty: &Option<Spanned<Type>>,
     end: BlockEnd,
-) -> Result<Value, ErrorGuaranteed> {
+) -> DiagResult<Value> {
     match end.unwrap_normal_or_return_in_function(diags)? {
         BlockEnd::Normal => {
             // no return, only allowed for unit-returning functions
@@ -1010,7 +1010,7 @@ impl CapturedScope {
     }
 }
 
-fn maybe_assigned_to_captured(maybe: &MaybeAssignedValue) -> Result<CapturedValue, ErrorGuaranteed> {
+fn maybe_assigned_to_captured(maybe: &MaybeAssignedValue) -> DiagResult<CapturedValue> {
     match maybe {
         MaybeAssignedValue::Assigned(assigned) => match &assigned.value_and_version {
             Value::Compile(value) => Ok(CapturedValue::Value(value.clone())),

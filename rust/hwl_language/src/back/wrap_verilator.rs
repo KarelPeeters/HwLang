@@ -1,6 +1,6 @@
 use crate::front::bits::WrongType;
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
 use crate::syntax::ast::{PortDirection, Spanned};
@@ -188,7 +188,7 @@ impl VerilatedInstance {
         diags: &Diagnostics,
         port: IrPort,
         value: Spanned<&CompileValue>,
-    ) -> Result<(), Either<VerilatorError, ErrorGuaranteed>> {
+    ) -> Result<(), Either<VerilatorError, DiagError>> {
         let port_info = &self.lib.ports()[port];
         match port_info.direction {
             PortDirection::Input => {}

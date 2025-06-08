@@ -4,7 +4,7 @@ use crate::front::check::{
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{ForIterator, ValueWithImplications};
 use crate::front::scope::ScopedEntry;
@@ -49,11 +49,7 @@ pub struct BlockEndReturn {
 }
 
 impl BlockEnd<BlockEndStopping> {
-    pub fn unwrap_normal_todo_in_conditional(
-        self,
-        diags: &Diagnostics,
-        span_cond: Span,
-    ) -> Result<(), ErrorGuaranteed> {
+    pub fn unwrap_normal_todo_in_conditional(self, diags: &Diagnostics, span_cond: Span) -> DiagResult<()> {
         match self {
             BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => {
@@ -72,10 +68,7 @@ impl BlockEnd<BlockEndStopping> {
         }
     }
 
-    pub fn unwrap_normal_or_return_in_function(
-        self,
-        diags: &Diagnostics,
-    ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
+    pub fn unwrap_normal_or_return_in_function(self, diags: &Diagnostics) -> DiagResult<BlockEnd<BlockEndReturn>> {
         match self {
             BlockEnd::Normal => Ok(BlockEnd::Normal),
             BlockEnd::Stopping(end) => match end {
@@ -93,7 +86,7 @@ impl BlockEnd<BlockEndStopping> {
         }
     }
 
-    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> Result<(), ErrorGuaranteed> {
+    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> DiagResult<()> {
         match self {
             BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => match end {
@@ -140,7 +133,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         block: &ConstBlock,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         // TODO assignments in this block should be not allowed to leak outside
         //   we can fix this generally on the next scope/vars refactor,
         //   if we provide a "child with immutable view on parent" child mode
@@ -168,7 +161,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_return_ty: Option<&Type>,
         block: &Block<BlockStatement>,
-    ) -> Result<BlockEnd, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd> {
         let (ctx_block_inner, block_end) =
             self.elaborate_block_raw(ctx, scope_parent, vars, expected_return_ty, block)?;
 
@@ -189,7 +182,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_return_ty: Option<&Type>,
         block: &Block<BlockStatement>,
-    ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
+    ) -> DiagResult<(C::Block, BlockEnd)> {
         let &Block { span, ref statements } = block;
 
         let mut scope = Scope::new_child(span, scope_parent);
@@ -203,7 +196,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_return_ty: Option<&Type>,
         statements: &[BlockStatement],
-    ) -> Result<(C::Block, BlockEnd), ErrorGuaranteed> {
+    ) -> DiagResult<(C::Block, BlockEnd)> {
         let diags = self.refs.diags;
         let mut ctx_block = ctx.new_ir_block();
 
@@ -403,7 +396,7 @@ impl CompileItemContext<'_, '_> {
             &[IfCondBlockPair<Block<BlockStatement>>],
         )>,
         final_else: &Option<Block<BlockStatement>>,
-    ) -> Result<BlockEnd, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
 
         let (initial_if, remaining_ifs) = match ifs {
@@ -567,7 +560,7 @@ impl CompileItemContext<'_, '_> {
         expected_return_ty: Option<&Type>,
         stmt_span: Span,
         stmt: &MatchStatement<Block<BlockStatement>>,
-    ) -> Result<BlockEnd, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
         let &MatchStatement {
             target,
@@ -602,7 +595,7 @@ impl CompileItemContext<'_, '_> {
         let reason = "match pattern";
         let branch_patterns = branches
             .iter()
-            .map(|branch| -> Result<CheckedMatchPattern, ErrorGuaranteed> {
+            .map(|branch| -> DiagResult<CheckedMatchPattern> {
                 if cover_all {
                     // TODO turn into warning
                     let diag = Diagnostic::new("redundant match branch")
@@ -829,7 +822,7 @@ impl CompileItemContext<'_, '_> {
         cond: CompileValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
         branch_patterns: Vec<CheckedMatchPattern>,
-    ) -> Result<BlockEnd, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
 
         for (branch, pattern) in zip_eq(branches, branch_patterns) {
@@ -917,7 +910,7 @@ impl CompileItemContext<'_, '_> {
         target: HardwareValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
         branch_patterns: Vec<CheckedMatchPattern>,
-    ) -> Result<BlockEnd, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
 
         let mut if_stack_cond_block = vec![];
@@ -1133,7 +1126,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         expected_return_ty: Option<&Type>,
         stmt: Spanned<&ForStatement<BlockStatement>>,
-    ) -> Result<(C::Block, BlockEnd<BlockEndReturn>), ErrorGuaranteed> {
+    ) -> DiagResult<(C::Block, BlockEnd<BlockEndReturn>)> {
         let ctx_block = &mut result_block;
 
         let &ForStatement {
@@ -1167,7 +1160,7 @@ impl CompileItemContext<'_, '_> {
         stmt: Spanned<&ForStatement<BlockStatement>>,
         index_ty: Option<Spanned<Type>>,
         iter: ForIterator,
-    ) -> Result<BlockEnd<BlockEndReturn>, ErrorGuaranteed> {
+    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
         let diags = self.refs.diags;
         let &ForStatement {
             span_keyword,
@@ -1226,8 +1219,8 @@ impl CompileItemContext<'_, '_> {
         scope: &mut Scope,
         vars: &mut VariableValues,
         list: &'a ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut Scope, &mut VariableValues, &'a I) -> Result<(), ErrorGuaranteed>,
-    ) -> Result<(), ErrorGuaranteed> {
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut VariableValues, &'a I) -> DiagResult<()>,
+    ) -> DiagResult<()> {
         let ExtraList { span: _, items } = list;
         for item in items {
             match item {
@@ -1250,7 +1243,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &VariableValues,
         if_stmt: &'a IfStatement<B>,
-    ) -> Result<Option<&'a B>, ErrorGuaranteed> {
+    ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
         let IfStatement {
             initial_if,

@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::function::CapturedScope;
 use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
@@ -25,7 +25,7 @@ impl ElaboratedInterfaceInfo {
         diags: &Diagnostics,
         source: &SourceDatabase,
         index: Identifier,
-    ) -> Result<(usize, &ElaboratedInterfacePortInfo), ErrorGuaranteed> {
+    ) -> DiagResult<(usize, &ElaboratedInterfacePortInfo)> {
         match self.ports.get_index_of(index.str(source)) {
             None => {
                 let diag = Diagnostic::new("dot index does not match any interface port")
@@ -43,7 +43,7 @@ impl ElaboratedInterfaceInfo {
         diags: &Diagnostics,
         source: &SourceDatabase,
         index: Identifier,
-    ) -> Result<(usize, &ElaboratedInterfaceViewInfo), ErrorGuaranteed> {
+    ) -> DiagResult<(usize, &ElaboratedInterfaceViewInfo)> {
         match self.views.get_index_of(index.str(source)) {
             None => {
                 let diag = Diagnostic::new("dot index does not match any interface view")
@@ -60,13 +60,13 @@ impl ElaboratedInterfaceInfo {
 #[derive(Debug)]
 pub struct ElaboratedInterfacePortInfo {
     pub id: Identifier,
-    pub ty: Result<Spanned<HardwareType>, ErrorGuaranteed>,
+    pub ty: DiagResult<Spanned<HardwareType>>,
 }
 
 #[derive(Debug)]
 pub struct ElaboratedInterfaceViewInfo {
     pub id: MaybeIdentifier,
-    pub port_dirs: Result<Vec<(Identifier, Spanned<PortDirection>)>, ErrorGuaranteed>,
+    pub port_dirs: DiagResult<Vec<(Identifier, Spanned<PortDirection>)>>,
 }
 
 impl CompileRefs<'_, '_> {
@@ -74,7 +74,7 @@ impl CompileRefs<'_, '_> {
         self,
         ast_ref: AstRefInterface,
         scope_params: CapturedScope,
-    ) -> Result<ElaboratedInterfaceInfo, ErrorGuaranteed> {
+    ) -> DiagResult<ElaboratedInterfaceInfo> {
         let diags = self.diags;
         let source = self.fixed.source;
         let &ItemDefInterface {
@@ -141,7 +141,7 @@ impl CompileRefs<'_, '_> {
                 ref port_dirs,
             } = view;
 
-            let mut port_dir_vec: Vec<Option<Result<(Identifier, Spanned<PortDirection>), ErrorGuaranteed>>> =
+            let mut port_dir_vec: Vec<Option<DiagResult<(Identifier, Spanned<PortDirection>)>>> =
                 vec![None; port_map.len()];
             let mut any_view_err = Ok(());
 

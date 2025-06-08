@@ -1,6 +1,6 @@
 use crate::front::compile::{ArenaVariables, CompileRefs};
 use crate::front::context::ExpressionContext;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Type, Typed};
@@ -49,7 +49,7 @@ pub enum MaybeAssignedValue<A = AssignedValue> {
     Assigned(A),
     NotYetAssigned,
     PartiallyAssigned,
-    Error(ErrorGuaranteed),
+    Error(DiagError),
 }
 
 #[derive(Debug, Clone)]
@@ -196,7 +196,7 @@ impl<'p> VariableValues<'p> {
         variables: &mut ArenaVariables,
         id: MaybeIdentifier,
         assign_span: Span,
-        value: Result<Value, ErrorGuaranteed>,
+        value: DiagResult<Value>,
     ) -> Variable {
         let info = VariableInfo {
             id,
@@ -229,7 +229,7 @@ impl<'p> VariableValues<'p> {
         var: Variable,
         assignment_span: Span,
         value: Value,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         assert_eq!(self.check, var.inner().check());
         let known_var = self.iter_up().any(|curr| curr.var_values.contains_key(&var));
         if !known_var {
@@ -250,12 +250,7 @@ impl<'p> VariableValues<'p> {
     }
 
     // TODO create a variant of this that immediately applies the implications
-    pub fn var_get(
-        &self,
-        diags: &Diagnostics,
-        span_use: Span,
-        var: Variable,
-    ) -> Result<&AssignedValue, ErrorGuaranteed> {
+    pub fn var_get(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> DiagResult<&AssignedValue> {
         match self.var_get_maybe(diags, span_use, var)? {
             MaybeAssignedValue::Assigned(value) => Ok(value),
             MaybeAssignedValue::NotYetAssigned => Err(diags.report_simple(
@@ -273,12 +268,7 @@ impl<'p> VariableValues<'p> {
         }
     }
 
-    pub fn var_get_maybe(
-        &self,
-        diags: &Diagnostics,
-        span_use: Span,
-        var: Variable,
-    ) -> Result<&MaybeAssignedValue, ErrorGuaranteed> {
+    pub fn var_get_maybe(&self, diags: &Diagnostics, span_use: Span, var: Variable) -> DiagResult<&MaybeAssignedValue> {
         self.var_find(var)
             .ok_or_else(|| diags.report_internal_error(span_use, "get unknown variable"))
     }
@@ -288,7 +278,7 @@ impl<'p> VariableValues<'p> {
         self.iter_up().find_map(|curr| curr.var_values.get(&var))
     }
 
-    pub fn signal_new(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
+    pub fn signal_new(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> DiagResult<()> {
         let known_signal = self
             .iter_up()
             .any(|curr| curr.signal_versions.contains_key(&signal.inner));
@@ -301,7 +291,7 @@ impl<'p> VariableValues<'p> {
         Ok(())
     }
 
-    pub fn signal_report_write(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> Result<(), ErrorGuaranteed> {
+    pub fn signal_report_write(&mut self, diags: &Diagnostics, signal: Spanned<Signal>) -> DiagResult<()> {
         // TODO checking only the root is enough, signals will always be declared there
         let known_signal = self
             .iter_up()
@@ -380,7 +370,7 @@ pub fn merge_variable_branches<C: ExpressionContext>(
     parent: &mut VariableValues,
     span_merge: Span,
     mut children: Vec<(&mut C::Block, VariableValuesContent)>,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     // TODO do we need to handle the empty children case separately?
 
     // collect the interesting vars and signals:
@@ -550,7 +540,7 @@ fn merge_hardware_values<'a, C: ExpressionContext>(
     span_merge: Span,
     debug_info_id: MaybeIdentifier,
     children: Vec<(&mut C::Block, Spanned<Value>)>,
-) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed>
+) -> DiagResult<HardwareValue<HardwareType, IrVariable>>
 where
     C::Block: 'a,
 {

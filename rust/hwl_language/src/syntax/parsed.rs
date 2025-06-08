@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
@@ -11,7 +11,7 @@ use unwrap_match::unwrap_match;
 // TODO represent the set of existing items here already, so direct lookups become possible
 // TODO merge with SourceDatabase?
 pub struct ParsedDatabase {
-    file_ast: IndexMap<FileId, Result<FileContent, ErrorGuaranteed>>,
+    file_ast: IndexMap<FileId, DiagResult<FileContent>>,
 }
 
 impl ParsedDatabase {
@@ -131,7 +131,7 @@ impl FileContent {
 }
 
 impl std::ops::Index<FileId> for ParsedDatabase {
-    type Output = Result<FileContent, ErrorGuaranteed>;
+    type Output = DiagResult<FileContent>;
     fn index(&self, file: FileId) -> &Self::Output {
         self.file_ast.get(&file).unwrap()
     }

@@ -6,7 +6,7 @@ use crate::front::check::{
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
 use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
 use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
@@ -104,7 +104,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         id: GeneralIdentifier,
-    ) -> Result<Spanned<ArcOrRef<'a, str>>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ArcOrRef<'a, str>>> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
@@ -124,7 +124,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         id: MaybeIdentifier<GeneralIdentifier>,
-    ) -> Result<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>, ErrorGuaranteed> {
+    ) -> DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>> {
         match id {
             MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
             MaybeIdentifier::Identifier(id) => {
@@ -134,11 +134,7 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    pub fn eval_named_or_value(
-        &mut self,
-        scope: &Scope,
-        id: Spanned<&str>,
-    ) -> Result<Spanned<NamedOrValue>, ErrorGuaranteed> {
+    pub fn eval_named_or_value(&mut self, scope: &Scope, id: Spanned<&str>) -> DiagResult<Spanned<NamedOrValue>> {
         let diags = self.refs.diags;
 
         let found = scope.find(diags, id)?;
@@ -168,7 +164,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: Expression,
-    ) -> Result<Spanned<Value>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<Value>> {
         assert_eq!(self.variables.check(), vars.check());
         Ok(self
             .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, expr)?
@@ -186,7 +182,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: Expression,
-    ) -> Result<Spanned<ValueWithImplications>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ValueWithImplications>> {
         let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
         match value {
             ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
@@ -211,7 +207,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         expr: Expression,
-    ) -> Result<ValueInner, ErrorGuaranteed> {
+    ) -> DiagResult<ValueInner> {
         let refs = self.refs;
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
@@ -830,7 +826,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expr_span: Span,
         base: Expression,
         index: Identifier,
-    ) -> Result<ValueInner, ErrorGuaranteed> {
+    ) -> DiagResult<ValueInner> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
         let refs = self.refs;
         let diags = self.refs.diags;
@@ -1076,7 +1072,7 @@ impl<'a> CompileItemContext<'a, '_> {
         ctx: &mut C,
         vars: &VariableValues,
         port: Spanned<Port>,
-    ) -> Result<ValueInner, ErrorGuaranteed> {
+    ) -> DiagResult<ValueInner> {
         let diags = self.refs.diags;
         let port_info = &self.ports[port.inner];
 
@@ -1091,7 +1087,7 @@ impl<'a> CompileItemContext<'a, '_> {
         ctx: &mut C,
         vars: &VariableValues,
         wire: Spanned<Wire>,
-    ) -> Result<ValueInner, ErrorGuaranteed> {
+    ) -> DiagResult<ValueInner> {
         let diags = self.refs.diags;
 
         ctx.check_ir_context(diags, wire.span, "wire")?;
@@ -1119,7 +1115,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         expr_span: Span,
         values: &[ArrayLiteralElement<Expression>],
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         // intentionally ignore the length, the caller can pass "0" when they have no opinion on it
         // TODO if we stop ignoring the length at some point, then we can infer lengths in eg. `[false] * _`
         let expected_ty_inner = match expected_ty {
@@ -1157,7 +1153,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expected_ty: &Type,
         values: &Vec<Expression>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         let expected_tys_inner = match expected_ty {
@@ -1246,7 +1242,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         base: Expression,
         indices: &Spanned<Vec<Expression>>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
         let steps = indices
             .inner
@@ -1267,7 +1263,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         index: Expression,
-    ) -> Result<Spanned<ArrayStep>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ArrayStep>> {
         let diags = self.refs.diags;
 
         // special case range with length, it can have a hardware start index
@@ -1350,7 +1346,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         // evaluate args
@@ -1455,7 +1451,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         expr: Expression,
         reason: &str,
-    ) -> Result<Spanned<CompileValue>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<CompileValue>> {
         let diags = self.refs.diags;
 
         let mut ctx = CompileTimeExpressionContext {
@@ -1485,7 +1481,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expr: Expression,
-    ) -> Result<Spanned<Type>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<Type>> {
         let diags = self.refs.diags;
 
         // TODO unify this message with the one when a normal type-check fails
@@ -1511,7 +1507,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expr: Expression,
         reason: &str,
-    ) -> Result<Spanned<HardwareType>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<HardwareType>> {
         let diags = self.refs.diags;
 
         let ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
@@ -1536,7 +1532,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expr: Expression,
-    ) -> Result<Spanned<AssignmentTarget>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<AssignmentTarget>> {
         let diags = self.refs.diags;
 
         // TODO include definition site (at least for named values)
@@ -1673,7 +1669,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         expr: Expression,
-    ) -> Result<Spanned<DomainSignal>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
             |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual));
@@ -1687,7 +1683,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         expr: Expression,
         build_err: impl Fn(&str) -> E,
-    ) -> Result<Spanned<DomainSignal>, Either<E, ErrorGuaranteed>> {
+    ) -> Result<Spanned<DomainSignal>, Either<E, DiagError>> {
         // TODO expand to allow general expressions again (which then probably create implicit signals)?
         let result = match *self.refs.get_expr(expr) {
             ExpressionKind::UnaryOp(
@@ -1735,7 +1731,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         domain: SyncDomain<Expression>,
-    ) -> Result<SyncDomain<DomainSignal>, ErrorGuaranteed> {
+    ) -> DiagResult<SyncDomain<DomainSignal>> {
         let SyncDomain { clock, reset } = domain;
         let clock = self.eval_expression_as_domain_signal(scope, vars, clock);
         let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, vars, reset));
@@ -1750,7 +1746,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         domain: Spanned<DomainKind<Expression>>,
-    ) -> Result<Spanned<DomainKind<DomainSignal>>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<DomainKind<DomainSignal>>> {
         let result = match domain.inner {
             DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
@@ -1768,7 +1764,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         domain: Spanned<DomainKind<Expression>>,
-    ) -> Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<DomainKind<Polarized<Port>>>> {
         let diags = self.refs.diags;
         let result = self.eval_domain(scope, vars, domain)?;
 
@@ -1797,7 +1793,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         iter: Expression,
-    ) -> Result<ForIterator, ErrorGuaranteed> {
+    ) -> DiagResult<ForIterator> {
         let diags = self.refs.diags;
 
         let iter = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, iter)?;
@@ -1862,7 +1858,7 @@ impl<'a> CompileItemContext<'a, '_> {
         vars: &mut VariableValues,
         span_keyword: Span,
         expr: Expression,
-    ) -> Result<ElaboratedModule, ErrorGuaranteed> {
+    ) -> DiagResult<ElaboratedModule> {
         let diags = self.refs.diags;
 
         let eval = self.eval_expression_as_compile(scope, vars, &Type::Module, expr, "module")?;
@@ -1882,7 +1878,7 @@ fn eval_int_ty_call(
     span_call: Span,
     target_range: Spanned<IncRange<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-) -> Result<IncRange<BigInt>, ErrorGuaranteed> {
+) -> DiagResult<IncRange<BigInt>> {
     // ensure single unnamed compile-time arg
     let arg = args.inner.single().ok_or_else(|| {
         diags.report_simple(
@@ -2153,7 +2149,7 @@ pub fn eval_binary_expression(
     op: Spanned<BinaryOp>,
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
-) -> Result<ValueWithImplications, ErrorGuaranteed> {
+) -> DiagResult<ValueWithImplications> {
     let diags = refs.diags;
     let op_reason = TypeContainsReason::Operator(op.span);
 
@@ -2500,7 +2496,7 @@ fn eval_binary_bool(
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
     op: IrBoolBinaryOp,
-) -> Result<ValueWithImplications, ErrorGuaranteed> {
+) -> DiagResult<ValueWithImplications> {
     fn build_bool_gate(
         f: impl Fn(bool) -> bool,
         large: &mut IrLargeArena,
@@ -2590,7 +2586,7 @@ fn eval_binary_int_compare(
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
     op: IrIntCompareOp,
-) -> Result<ValueWithImplications, ErrorGuaranteed> {
+) -> DiagResult<ValueWithImplications> {
     let left_int = check_type_is_int(
         diags,
         op_reason,
@@ -2793,7 +2789,7 @@ fn array_literal_combine_values(
     expr_span: Span,
     expected_ty_inner: &Type,
     values: Vec<ArrayLiteralElement<Spanned<Value>>>,
-) -> Result<Value, ErrorGuaranteed> {
+) -> DiagResult<Value> {
     let diags = refs.diags;
 
     let first_non_compile_span = values

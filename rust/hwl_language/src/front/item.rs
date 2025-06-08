@@ -1,6 +1,6 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, WorkItem};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
@@ -104,7 +104,7 @@ impl ElaborationArenas {
 pub struct ElaborateItemArena<E, F> {
     next_id: AtomicUsize,
     key_to_id: ComputeOnceMap<ElaboratedItemKey, E>,
-    id_to_info: ComputeOnceMap<E, Result<F, ErrorGuaranteed>>,
+    id_to_info: ComputeOnceMap<E, DiagResult<F>>,
 }
 
 impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
@@ -126,8 +126,8 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
         &self,
         params: ElaboratedItemParams,
         e: impl FnOnce(usize) -> E,
-        f: impl FnOnce(ElaboratedItemParams) -> Result<F, ErrorGuaranteed>,
-    ) -> Result<(E, &F), ErrorGuaranteed> {
+        f: impl FnOnce(ElaboratedItemParams) -> DiagResult<F>,
+    ) -> DiagResult<(E, &F)> {
         let key = params.cache_key();
 
         let &id = self.key_to_id.get_or_compute(key, |_| {
@@ -231,7 +231,7 @@ pub struct HardwareEnumInfo {
 }
 
 impl ElaboratedEnumInfo {
-    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> Result<usize, ErrorGuaranteed> {
+    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
         self.variants.get_index_of(variant.inner).ok_or_else(|| {
             let diag = Diagnostic::new(format!("variant `{}` not found on enum", variant.inner))
                 .add_error(variant.span, "attempt to access variant here")
@@ -243,7 +243,7 @@ impl ElaboratedEnumInfo {
 }
 
 impl CompileItemContext<'_, '_> {
-    pub fn eval_item_new(&mut self, item: AstRefItem) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn eval_item_new(&mut self, item: AstRefItem) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
         let file_scope = self.refs.shared.file_scope(item.file())?;
 
@@ -326,7 +326,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         decl: &CommonDeclaration<V>,
-    ) -> Result<Option<CompileValue>, ErrorGuaranteed> {
+    ) -> DiagResult<Option<CompileValue>> {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
@@ -344,7 +344,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         decl: &CommonDeclarationNamedKind,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
 
         match decl {
@@ -468,7 +468,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         params: &Option<Parameters>,
         body: FunctionItemBody,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
 
         match params {
@@ -499,7 +499,7 @@ impl CompileItemContext<'_, '_> {
         vars: &mut VariableValues,
         params: Option<Vec<(Identifier, CompileValue)>>,
         body: Spanned<&FunctionItemBody>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
@@ -659,7 +659,7 @@ impl CompileItemContext<'_, '_> {
         unique: UniqueDeclaration,
         span_body: Span,
         fields: &ExtraList<StructField>,
-    ) -> Result<ElaboratedStructInfo, ErrorGuaranteed> {
+    ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
@@ -719,7 +719,7 @@ impl CompileItemContext<'_, '_> {
         unique: UniqueDeclaration,
         span_body: Span,
         variants: &ExtraList<EnumVariant>,
-    ) -> Result<ElaboratedEnumInfo, ErrorGuaranteed> {
+    ) -> DiagResult<ElaboratedEnumInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 

@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::item::ElaboratedInterface;
 use crate::front::types::HardwareType;
@@ -73,8 +73,8 @@ pub enum WireInfo {
 #[derive(Debug)]
 pub struct WireInfoSingle {
     pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
-    pub typed: Result<Option<WireInfoTyped<HardwareType>>, ErrorGuaranteed>,
+    pub domain: DiagResult<Option<Spanned<ValueDomain>>>,
+    pub typed: DiagResult<Option<WireInfoTyped<HardwareType>>>,
 }
 
 #[derive(Debug)]
@@ -89,7 +89,7 @@ pub struct WireInfoInInterface {
 #[derive(Debug)]
 pub struct WireInterfaceInfo {
     pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<ValueDomain>>, ErrorGuaranteed>,
+    pub domain: DiagResult<Option<Spanned<ValueDomain>>>,
     pub interface: Spanned<ElaboratedInterface>,
     pub wires: Vec<Wire>,
     // TODO rename
@@ -114,7 +114,7 @@ impl<T> WireInfoTyped<T> {
 #[derive(Debug)]
 pub struct RegisterInfo {
     pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: Result<Option<Spanned<SyncDomain<DomainSignal>>>, ErrorGuaranteed>,
+    pub domain: DiagResult<Option<Spanned<SyncDomain<DomainSignal>>>>,
     pub ty: Spanned<HardwareType>,
     pub ir: IrRegister,
 }
@@ -148,7 +148,7 @@ impl WireInfo {
         &mut self,
         wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
         suggest: Spanned<ValueDomain>,
-    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ValueDomain>> {
         match self {
             WireInfo::Single(slf) => Ok(*slf.domain.as_ref_mut_ok()?.get_or_insert(suggest)),
             WireInfo::Interface(slf) => wire_interfaces[slf.interface.inner].suggest_domain(suggest),
@@ -160,7 +160,7 @@ impl WireInfo {
         diags: &Diagnostics,
         wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
         use_span: Span,
-    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ValueDomain>> {
         let (decl_span, slot) = match self {
             WireInfo::Single(slf) => (slf.id.span(), &mut slf.domain),
             WireInfo::Interface(slf) => {
@@ -178,7 +178,7 @@ impl WireInfo {
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
         ir_wires: &mut Arena<IrWire, IrWireInfo>,
         suggest: Spanned<&HardwareType>,
-    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
+    ) -> DiagResult<WireInfoTyped<&'s HardwareType>> {
         match self {
             WireInfo::Single(slf) => {
                 // take the suggestion into account
@@ -222,7 +222,7 @@ impl WireInfo {
         refs: CompileRefs<'_, 's>,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
         use_span: Span,
-    ) -> Result<WireInfoTyped<&'s HardwareType>, ErrorGuaranteed> {
+    ) -> DiagResult<WireInfoTyped<&'s HardwareType>> {
         match self {
             WireInfo::Single(slf) => {
                 get_inferred(refs.diags, "wire", "type", &mut slf.typed, slf.id.span(), use_span).map(|ty| ty.as_ref())
@@ -246,7 +246,7 @@ impl WireInfo {
         &'s mut self,
         refs: CompileRefs<'_, 's>,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
-    ) -> Result<Option<WireInfoTyped<&'s HardwareType>>, ErrorGuaranteed> {
+    ) -> DiagResult<Option<WireInfoTyped<&'s HardwareType>>> {
         match self {
             WireInfo::Single(slf) => slf
                 .typed
@@ -272,7 +272,7 @@ impl WireInfo {
         refs: CompileRefs,
         wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
         use_span: Span,
-    ) -> Result<HardwareValue, ErrorGuaranteed> {
+    ) -> DiagResult<HardwareValue> {
         let domain = self.domain(refs.diags, wire_interfaces, use_span)?.inner;
         let typed = self.typed(refs, wire_interfaces, use_span)?;
 
@@ -285,7 +285,7 @@ impl WireInfo {
 }
 
 impl WireInterfaceInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+    pub fn suggest_domain(&mut self, suggest: Spanned<ValueDomain>) -> DiagResult<Spanned<ValueDomain>> {
         Ok(*self.domain.as_ref_mut_ok()?.get_or_insert(suggest))
     }
 }
@@ -301,15 +301,11 @@ impl RegisterInfo {
         }
     }
 
-    pub fn domain(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-    ) -> Result<Spanned<SyncDomain<DomainSignal>>, ErrorGuaranteed> {
+    pub fn domain(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<Spanned<SyncDomain<DomainSignal>>> {
         get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).copied()
     }
 
-    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
+    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<HardwareValue> {
         let domain = self.domain(diags, span)?;
         Ok(HardwareValue {
             ty: self.ty.inner.clone(),
@@ -323,10 +319,10 @@ fn get_inferred<'s, T>(
     diags: &Diagnostics,
     kind: &str,
     inferred: &str,
-    slot: &'s mut Result<Option<T>, ErrorGuaranteed>,
+    slot: &'s mut DiagResult<Option<T>>,
     decl_span: Span,
     use_span: Span,
-) -> Result<&'s T, ErrorGuaranteed> {
+) -> DiagResult<&'s T> {
     match *slot {
         Ok(Some(ref inferred)) => Ok(inferred),
         Err(e) => Err(e),
@@ -402,11 +398,7 @@ impl Signal {
         }
     }
 
-    pub fn ty<'s>(
-        self,
-        ctx: &'s mut CompileItemContext,
-        use_span: Span,
-    ) -> Result<Spanned<&'s HardwareType>, ErrorGuaranteed> {
+    pub fn ty<'s>(self, ctx: &'s mut CompileItemContext, use_span: Span) -> DiagResult<Spanned<&'s HardwareType>> {
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].ty.as_ref()),
             Signal::Wire(wire) => ctx.wires[wire]
@@ -420,7 +412,7 @@ impl Signal {
         self,
         ctx: &mut CompileItemContext,
         suggest_domain: Spanned<ValueDomain>,
-    ) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<ValueDomain>> {
         let diags = ctx.refs.diags;
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
@@ -439,7 +431,7 @@ impl Signal {
         }
     }
 
-    pub fn domain(self, ctx: &mut CompileItemContext, span: Span) -> Result<Spanned<ValueDomain>, ErrorGuaranteed> {
+    pub fn domain(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<Spanned<ValueDomain>> {
         let diags = ctx.refs.diags;
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
@@ -455,7 +447,7 @@ impl Signal {
         ctx: &'s mut CompileItemContext,
         ir_wires: &mut IrWires,
         suggest: Spanned<&HardwareType>,
-    ) -> Result<Spanned<&'s HardwareType>, ErrorGuaranteed> {
+    ) -> DiagResult<Spanned<&'s HardwareType>> {
         match self {
             Signal::Port(_) => self.ty(ctx, suggest.span),
             // TODO allow suggesting type for registers too?
@@ -466,11 +458,7 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_target_base(
-        self,
-        ctx: &mut CompileItemContext,
-        use_span: Span,
-    ) -> Result<IrAssignmentTargetBase, ErrorGuaranteed> {
+    pub fn as_ir_target_base(self, ctx: &mut CompileItemContext, use_span: Span) -> DiagResult<IrAssignmentTargetBase> {
         match self {
             Signal::Port(port) => Ok(IrAssignmentTargetBase::Port(ctx.ports[port].ir)),
             Signal::Wire(wire) => Ok(IrAssignmentTargetBase::Wire(
@@ -480,7 +468,7 @@ impl Signal {
         }
     }
 
-    pub fn as_hardware_value(self, ctx: &mut CompileItemContext, span: Span) -> Result<HardwareValue, ErrorGuaranteed> {
+    pub fn as_hardware_value(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<HardwareValue> {
         let diags = ctx.refs.diags;
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].as_hardware_value()),

@@ -1,7 +1,8 @@
 use crate::DiagnosticException;
+use hwl_language::front::diagnostic::DiagResult;
 use hwl_language::util::Never;
 use hwl_language::{
-    front::diagnostic::{DiagnosticStringSettings, Diagnostics, ErrorGuaranteed},
+    front::diagnostic::{DiagError, DiagnosticStringSettings, Diagnostics},
     syntax::source::SourceDatabase as RustSourceDatabase,
 };
 use itertools::Itertools;
@@ -18,20 +19,16 @@ pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(
     }
 }
 
-pub fn map_diag_error<T>(
-    source: &RustSourceDatabase,
-    diags: &Diagnostics,
-    value: Result<T, ErrorGuaranteed>,
-) -> Result<T, PyErr> {
+pub fn map_diag_error<T>(source: &RustSourceDatabase, diags: &Diagnostics, value: DiagResult<T>) -> Result<T, PyErr> {
     check_diags(source, diags)?;
     unwrap_diag_result(value)
 }
 
-pub fn unwrap_diag_result<T>(result: Result<T, ErrorGuaranteed>) -> Result<T, PyErr> {
+pub fn unwrap_diag_result<T>(result: DiagResult<T>) -> Result<T, PyErr> {
     result.map_err(|_| DiagnosticException::new_err("diagnostic already reported previously"))
 }
 
-pub fn convert_diag_error(source: &RustSourceDatabase, diags: &Diagnostics, err: ErrorGuaranteed) -> PyErr {
+pub fn convert_diag_error(source: &RustSourceDatabase, diags: &Diagnostics, err: DiagError) -> PyErr {
     match map_diag_error::<Never>(source, diags, Err(err)) {
         Ok(never) => never.unreachable(),
         Err(e) => e,

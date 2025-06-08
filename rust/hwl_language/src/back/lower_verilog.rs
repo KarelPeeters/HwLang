@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::types::HardwareType;
 use crate::mid::ir::{
     ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
@@ -41,7 +41,7 @@ pub fn lower_to_verilog(
     modules: &IrModules,
     external_modules: &IndexSet<String>,
     top_module: IrModule,
-) -> Result<LoweredVerilog, ErrorGuaranteed> {
+) -> DiagResult<LoweredVerilog> {
     let mut ctx = LowerContext {
         diags,
         modules,
@@ -89,12 +89,7 @@ struct LoweredNameScope {
 }
 
 impl LoweredNameScope {
-    pub fn exact_for_new_id(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-        id: &str,
-    ) -> Result<LoweredName, ErrorGuaranteed> {
+    pub fn exact_for_new_id(&mut self, diags: &Diagnostics, span: Span, id: &str) -> DiagResult<LoweredName> {
         check_identifier_valid(diags, Spanned { span, inner: id })?;
         if !self.used.insert(id.to_owned()) {
             throw!(diags.report_internal_error(span, format!("lowered identifier `{id}` already used its scope")))
@@ -102,25 +97,16 @@ impl LoweredNameScope {
         Ok(LoweredName(id.to_owned()))
     }
 
-    pub fn make_unique_maybe_id(
-        &mut self,
-        diags: &Diagnostics,
-        id: Spanned<Option<&str>>,
-    ) -> Result<LoweredName, ErrorGuaranteed> {
+    pub fn make_unique_maybe_id(&mut self, diags: &Diagnostics, id: Spanned<Option<&str>>) -> DiagResult<LoweredName> {
         self.make_unique_str(diags, id.span, id.inner.unwrap_or("_"))
     }
 
     #[allow(dead_code)]
-    pub fn make_unique_id(&mut self, diags: &Diagnostics, id: Spanned<&str>) -> Result<LoweredName, ErrorGuaranteed> {
+    pub fn make_unique_id(&mut self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<LoweredName> {
         self.make_unique_str(diags, id.span, id.inner)
     }
 
-    pub fn make_unique_str(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-        string: &str,
-    ) -> Result<LoweredName, ErrorGuaranteed> {
+    pub fn make_unique_str(&mut self, diags: &Diagnostics, span: Span, string: &str) -> DiagResult<LoweredName> {
         check_identifier_valid(diags, Spanned { span, inner: string })?;
 
         if self.used.insert(string.to_owned()) {
@@ -143,7 +129,7 @@ impl LoweredNameScope {
 }
 
 // TODO replace with name mangling that forces everything to be valid
-fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> Result<(), ErrorGuaranteed> {
+fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<()> {
     let s = id.inner;
 
     if s.is_empty() {
@@ -191,7 +177,7 @@ impl NameMap<'_> {
     }
 }
 
-fn lower_module(ctx: &mut LowerContext, module: IrModule) -> Result<LoweredModule, ErrorGuaranteed> {
+fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredModule> {
     let diags = ctx.diags;
     assert!(!ctx.module_map.contains_key(&module));
 
@@ -263,7 +249,7 @@ fn lower_module_ports(
     ports: &Arena<IrPort, IrPortInfo>,
     module_name_scope: &mut LoweredNameScope,
     f: &mut String,
-) -> Result<IndexMap<IrPort, LoweredName>, ErrorGuaranteed> {
+) -> DiagResult<IndexMap<IrPort, LoweredName>> {
     let mut port_lines = vec![];
     let mut port_name_map = IndexMap::new();
     let mut last_actual_port_index = None;
@@ -331,7 +317,7 @@ fn lower_module_signals(
     wires: &Arena<IrWire, IrWireInfo>,
     newline: &mut NewlineGenerator,
     f: &mut String,
-) -> Result<(IndexMap<IrRegister, LoweredName>, IndexMap<IrWire, LoweredName>), ErrorGuaranteed> {
+) -> DiagResult<(IndexMap<IrRegister, LoweredName>, IndexMap<IrWire, LoweredName>)> {
     let mut lower_signal = |signal_type,
                             ty,
                             debug_info_id: &Spanned<Option<String>>,
@@ -399,7 +385,7 @@ fn lower_module_statements(
     children: &[Spanned<IrModuleChild>],
     newline: &mut NewlineGenerator,
     f: &mut String,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     let diags = ctx.diags;
 
     for (child_index, child) in enumerate(children) {
@@ -615,7 +601,7 @@ fn lower_port_connections<S: AsRef<str>>(
     name_map: NameMap,
     port_name: impl Fn(usize) -> LoweredName<S>,
     port_connections: &Vec<Spanned<IrPortConnection>>,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     swrite!(f, "(");
 
     if port_connections.is_empty() {
@@ -667,7 +653,7 @@ fn declare_locals(
     locals: &IrVariables,
     f: &mut String,
     newline: &mut NewlineGenerator,
-) -> Result<IndexMap<IrVariable, LoweredName>, ErrorGuaranteed> {
+) -> DiagResult<IndexMap<IrVariable, LoweredName>> {
     newline.start_new_block();
 
     let mut result = IndexMap::new();
@@ -698,7 +684,7 @@ fn lower_shadow_registers(
     written_regs: &IndexSet<IrRegister>,
     f: &mut String,
     newline: &mut NewlineGenerator,
-) -> Result<IndexMap<IrRegister, LoweredName>, ErrorGuaranteed> {
+) -> DiagResult<IndexMap<IrRegister, LoweredName>> {
     let mut shadowing_reg_name_map = IndexMap::new();
 
     newline.start_new_block();
@@ -769,7 +755,7 @@ fn lower_block(
     f: &mut String,
     indent: Indent,
     newline: &mut NewlineGenerator,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     let IrBlock { statements } = block;
 
     for stmt in statements {
@@ -822,7 +808,7 @@ fn lower_assign_target(
     name_map: NameMap,
     target: &IrAssignmentTarget,
     f: &mut String,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     // TODO this is probably wrong, we might need intermediate variables for the base and after each step
     let IrAssignmentTarget { base, steps } = target;
 
@@ -856,12 +842,7 @@ fn lower_assign_target(
 }
 
 // TODO allow this to use intermediate variables and to generate multi-line expressions
-fn lower_expression(
-    large: &IrLargeArena,
-    name_map: NameMap,
-    expr: &IrExpression,
-    f: &mut String,
-) -> Result<(), ErrorGuaranteed> {
+fn lower_expression(large: &IrLargeArena, name_map: NameMap, expr: &IrExpression, f: &mut String) -> DiagResult<()> {
     match expr {
         &IrExpression::Bool(x) => swrite!(f, "1'b{}", x as u8),
         IrExpression::Int(x) => swrite!(f, "{}", lower_int_str(x)),
@@ -1045,11 +1026,7 @@ struct EdgeString {
     value: String,
 }
 
-fn lower_edge_to_str(
-    large: &IrLargeArena,
-    name_map: NameMap,
-    expr: Spanned<&IrExpression>,
-) -> Result<EdgeString, ErrorGuaranteed> {
+fn lower_edge_to_str(large: &IrLargeArena, name_map: NameMap, expr: Spanned<&IrExpression>) -> DiagResult<EdgeString> {
     // unwrap not layers, their parity will determine the edge
     let mut not_count: u32 = 0;
     let mut curr = expr.inner;
@@ -1102,7 +1079,7 @@ enum VerilogType {
 }
 
 impl VerilogType {
-    pub fn array(diags: &Diagnostics, span: Span, w: BigUint) -> Result<VerilogType, ErrorGuaranteed> {
+    pub fn array(diags: &Diagnostics, span: Span, w: BigUint) -> DiagResult<VerilogType> {
         let w = diag_big_int_to_u32(diags, span, &w.into(), "array width too large")?;
         match NonZeroU32::new(w) {
             None => Ok(VerilogType::ZeroWidth),
@@ -1111,7 +1088,7 @@ impl VerilogType {
     }
 
     // TODO split tuples and short arrays into multiple ports instead?
-    pub fn from_ir_ty(diags: &Diagnostics, span: Span, ty: &IrType) -> Result<VerilogType, ErrorGuaranteed> {
+    pub fn from_ir_ty(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<VerilogType> {
         match ty {
             IrType::Bool => Ok(VerilogType::Bit),
             IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::array(diags, span, ty.size_bits()),
@@ -1155,7 +1132,7 @@ impl NewlineGenerator {
     }
 }
 
-fn diag_big_int_to_u32(diags: &Diagnostics, span: Span, value: &BigInt, message: &str) -> Result<u32, ErrorGuaranteed> {
+fn diag_big_int_to_u32(diags: &Diagnostics, span: Span, value: &BigInt, message: &str) -> DiagResult<u32> {
     value.try_into().map_err(|_| {
         diags.report_simple(
             format!("{message}: overflow when converting {value} to u32"),

@@ -1,5 +1,5 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
 use crate::front::implication::Implication;
 use crate::front::module::ExtraRegisterInit;
@@ -29,18 +29,13 @@ pub trait ExpressionContext {
         diags: &Diagnostics,
         block: &mut Self::Block,
         stmt: Spanned<IrStatement>,
-    ) -> Result<(), ErrorGuaranteed>;
+    ) -> DiagResult<()>;
 
     fn push_ir_statement_block(&self, block_parent: &mut Self::Block, block_inner: Spanned<Self::Block>);
 
-    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> Result<IrBlock, ErrorGuaranteed>;
+    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> DiagResult<IrBlock>;
 
-    fn new_ir_variable(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-        info: IrVariableInfo,
-    ) -> Result<IrVariable, ErrorGuaranteed>;
+    fn new_ir_variable(&mut self, diags: &Diagnostics, span: Span, info: IrVariableInfo) -> DiagResult<IrVariable>;
 
     fn new_ir_register(
         &mut self,
@@ -48,14 +43,14 @@ pub trait ExpressionContext {
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
-    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed>;
+    ) -> DiagResult<(IrRegister, SyncDomain<DomainSignal>)>;
 
     fn report_assignment(
         &mut self,
         ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
-    ) -> Result<(), ErrorGuaranteed>;
+    ) -> DiagResult<()>;
 
     fn block_domain(&self) -> BlockDomain;
 
@@ -65,23 +60,23 @@ pub trait ExpressionContext {
         &mut self,
         diags: &Diagnostics,
         domain: Spanned<ValueDomain>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed>;
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T>;
 
     fn with_implications<T>(
         &mut self,
         diags: &Diagnostics,
         implications: Vec<Implication>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed>;
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T>;
 
     fn for_each_implication(&self, value: ValueVersioned, f: impl FnMut(&Implication));
 
     fn is_ir_context(&self) -> bool;
 
-    fn check_ir_context(&self, diags: &Diagnostics, span: Span, reason: &str) -> Result<(), ErrorGuaranteed>;
+    fn check_ir_context(&self, diags: &Diagnostics, span: Span, reason: &str) -> DiagResult<()>;
 
-    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed>;
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<&mut IrWires>;
 }
 
 pub struct CompileTimeExpressionContext {
@@ -100,7 +95,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         diags: &Diagnostics,
         statements: &mut Self::Block,
         ir_statement: Spanned<IrStatement>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let &mut () = statements;
         Err(diags.report_internal_error(ir_statement.span, "trying to push IR statement in compile-time context"))
     }
@@ -111,17 +106,12 @@ impl ExpressionContext for CompileTimeExpressionContext {
         // do nothing
     }
 
-    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> Result<IrBlock, ErrorGuaranteed> {
+    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> DiagResult<IrBlock> {
         let () = block;
         Err(diags.report_internal_error(span, "trying to unwrap IR block in compile-time context"))
     }
 
-    fn new_ir_variable(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-        info: IrVariableInfo,
-    ) -> Result<IrVariable, ErrorGuaranteed> {
+    fn new_ir_variable(&mut self, diags: &Diagnostics, span: Span, info: IrVariableInfo) -> DiagResult<IrVariable> {
         let _ = info;
         Err(diags.report_internal_error(span, "trying to create IR variable in compile-time context"))
     }
@@ -132,7 +122,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
-    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
+    ) -> DiagResult<(IrRegister, SyncDomain<DomainSignal>)> {
         let _ = (ty, init);
         Err(ctx
             .refs
@@ -145,7 +135,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let _ = vars;
         let diags = ctx.refs.diags;
 
@@ -167,8 +157,8 @@ impl ExpressionContext for CompileTimeExpressionContext {
         &mut self,
         diags: &Diagnostics,
         domain: Spanned<ValueDomain>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed> {
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T> {
         if domain.inner != ValueDomain::CompileTime {
             throw!(diags.report_internal_error(
                 domain.span,
@@ -183,8 +173,8 @@ impl ExpressionContext for CompileTimeExpressionContext {
         &mut self,
         diags: &Diagnostics,
         implications: Vec<Implication>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed> {
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T> {
         if !implications.is_empty() {
             throw!(diags.report_internal_error(self.span, "trying to push implications in compile-time context"))
         }
@@ -199,7 +189,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         false
     }
 
-    fn check_ir_context(&self, diags: &Diagnostics, span: Span, access: &str) -> Result<(), ErrorGuaranteed> {
+    fn check_ir_context(&self, diags: &Diagnostics, span: Span, access: &str) -> DiagResult<()> {
         let diag = Diagnostic::new("trying to use hardware construct in compile-time context")
             .add_error(span, format!("accessing {access} here"))
             .add_info(
@@ -210,7 +200,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
         Err(diags.report(diag))
     }
 
-    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed> {
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<&mut IrWires> {
         Err(diags.report_internal_error(span, "trying to get IR wires in compile-time context"))
     }
 }
@@ -220,7 +210,7 @@ impl ExpressionContext for CompileTimeExpressionContext {
 // TODO move report_assignment into BlockKind
 //   probably as part of the "coverage" tracking for combinatorial loops (=don't read before write)
 pub struct IrBuilderExpressionContext<'a> {
-    report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+    report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> DiagResult<()>,
     pub ir_wires: &'a mut IrWires,
     block_kind: BlockKind<'a>,
     ir_variables: IrVariables,
@@ -258,7 +248,7 @@ pub enum ExtraRegisters<'a> {
 impl<'a> IrBuilderExpressionContext<'a> {
     pub fn new(
         block_kind: BlockKind<'a>,
-        report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed>,
+        report_assignment: &'a mut dyn FnMut(&CompileItemContext, Spanned<Signal>) -> DiagResult<()>,
         ir_wires: &'a mut IrWires,
     ) -> Self {
         Self {
@@ -289,7 +279,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         diags: &Diagnostics,
         block: &mut Self::Block,
         stmt: Spanned<IrStatement>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let _ = diags;
         block.statements.push(stmt);
         Ok(())
@@ -304,17 +294,12 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         block_parent.statements.push(block_inner.map_inner(IrStatement::Block));
     }
 
-    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> Result<IrBlock, ErrorGuaranteed> {
+    fn unwrap_ir_block(&self, diags: &Diagnostics, span: Span, block: Self::Block) -> DiagResult<IrBlock> {
         let _ = (diags, span);
         Ok(block)
     }
 
-    fn new_ir_variable(
-        &mut self,
-        diags: &Diagnostics,
-        span: Span,
-        info: IrVariableInfo,
-    ) -> Result<IrVariable, ErrorGuaranteed> {
+    fn new_ir_variable(&mut self, diags: &Diagnostics, span: Span, info: IrVariableInfo) -> DiagResult<IrVariable> {
         let _ = (diags, span);
         Ok(self.ir_variables.push(info))
     }
@@ -325,7 +310,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         debug_info_id: Spanned<Option<String>>,
         ty: HardwareType,
         init: Spanned<MaybeUndefined<IrExpression>>,
-    ) -> Result<(IrRegister, SyncDomain<DomainSignal>), ErrorGuaranteed> {
+    ) -> DiagResult<(IrRegister, SyncDomain<DomainSignal>)> {
         let diags = ctx.refs.diags;
         let span = debug_info_id.span;
 
@@ -398,7 +383,7 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         ctx: &CompileItemContext,
         target: Spanned<Signal>,
         vars: &mut VariableValues,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         // TODO remove this callback indirection,
         //   there's only one user that cares about it (module) and they just want a recording
         let err1 = (self.report_assignment)(ctx, target);
@@ -426,8 +411,8 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         &mut self,
         diags: &Diagnostics,
         domain: Spanned<ValueDomain>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed> {
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T> {
         let _ = diags;
 
         let len_domains_before = self.condition_domains.len();
@@ -445,8 +430,8 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         &mut self,
         diags: &Diagnostics,
         implications: Vec<Implication>,
-        f: impl for<'s> FnOnce(&'s mut Self) -> Result<T, ErrorGuaranteed>,
-    ) -> Result<T, ErrorGuaranteed> {
+        f: impl for<'s> FnOnce(&'s mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T> {
         let _ = diags;
 
         let len_implications_before = self.implications.len();
@@ -476,11 +461,11 @@ impl ExpressionContext for IrBuilderExpressionContext<'_> {
         true
     }
 
-    fn check_ir_context(&self, _: &Diagnostics, _: Span, _: &str) -> Result<(), ErrorGuaranteed> {
+    fn check_ir_context(&self, _: &Diagnostics, _: Span, _: &str) -> DiagResult<()> {
         Ok(())
     }
 
-    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> Result<&mut IrWires, ErrorGuaranteed> {
+    fn get_ir_wires(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<&mut IrWires> {
         let _ = (diags, span);
         Ok(self.ir_wires)
     }

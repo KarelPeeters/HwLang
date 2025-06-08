@@ -5,7 +5,7 @@ use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, ArenaVariables, Com
 use crate::front::context::{
     BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
 };
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::{NamedOrValue, ValueInner};
 use crate::front::function::CapturedScope;
@@ -60,7 +60,7 @@ type ArenaConnectors = Arena<Connector, ConnectorInfo>;
 
 pub struct ConnectorInfo {
     id: Identifier,
-    kind: Result<ConnectorKind, ErrorGuaranteed>,
+    kind: DiagResult<ConnectorKind>,
 }
 
 enum ConnectorKind {
@@ -114,7 +114,7 @@ impl CompileRefs<'_, '_> {
         params: ElaboratedItemParams,
         captured_scope_params: CapturedScope,
         ports: &Spanned<ExtraList<ModulePortItem>>,
-    ) -> Result<(ArenaConnectors, ElaboratedModuleHeader<A>), ErrorGuaranteed> {
+    ) -> DiagResult<(ArenaConnectors, ElaboratedModuleHeader<A>)> {
         let ElaboratedItemParams {
             unique: _,
             params: debug_info_params,
@@ -152,7 +152,7 @@ impl CompileRefs<'_, '_> {
     pub fn elaborate_module_body_new(
         self,
         ports: ElaboratedModuleHeader<AstRefModuleInternal>,
-    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
+    ) -> DiagResult<IrModuleInfo> {
         let ElaboratedModuleHeader {
             ast_ref,
             debug_info_params,
@@ -193,7 +193,7 @@ impl CompileRefs<'_, '_> {
         vars: &mut VariableValues,
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
-    ) -> Result<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>), ErrorGuaranteed> {
+    ) -> DiagResult<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>)> {
         let diags = self.diags;
         let source = self.fixed.source;
 
@@ -377,7 +377,7 @@ impl CompileRefs<'_, '_> {
         debug_info_params: Option<Vec<(String, CompileValue)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         body: &'a Block<ModuleStatement>,
-    ) -> Result<IrModuleInfo, ErrorGuaranteed> {
+    ) -> DiagResult<IrModuleInfo> {
         let drivers = Drivers::new(&ctx_item.ports);
 
         let mut signals_in_scope = vec![];
@@ -481,9 +481,9 @@ fn push_connector_single(
     next_single: &mut impl FnMut() -> ConnectorSingle,
     id: Identifier,
     direction: Spanned<PortDirection>,
-    domain: Result<Spanned<PortDomain<Port>>, ErrorGuaranteed>,
-    ty: Result<Spanned<HardwareType>, ErrorGuaranteed>,
-) -> Result<ScopedEntry, ErrorGuaranteed> {
+    domain: DiagResult<Spanned<PortDomain<Port>>>,
+    ty: DiagResult<Spanned<HardwareType>>,
+) -> DiagResult<ScopedEntry> {
     let diags = ctx.refs.diags;
     let source = ctx.refs.fixed.source;
 
@@ -536,9 +536,9 @@ fn push_connector_interface(
     port_to_single: &mut IndexMap<Port, ConnectorSingle>,
     next_single: &mut impl FnMut() -> ConnectorSingle,
     id: Identifier,
-    domain: Result<Spanned<DomainKind<Polarized<Port>>>, ErrorGuaranteed>,
-    view: Result<Spanned<ElaboratedInterfaceView>, ErrorGuaranteed>,
-) -> Result<ScopedEntry, ErrorGuaranteed> {
+    domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
+    view: DiagResult<Spanned<ElaboratedInterfaceView>>,
+) -> DiagResult<ScopedEntry> {
     let diags = ctx.refs.diags;
     let source = ctx.refs.fixed.source;
 
@@ -615,7 +615,7 @@ fn claim_ir_name(
     used_ir_names: &mut IndexMap<String, Span>,
     name: &str,
     span: Span,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     match used_ir_names.entry(name.to_owned()) {
         Entry::Vacant(entry) => {
             entry.insert(span);
@@ -641,7 +641,7 @@ struct BodyElaborationContext<'c, 'a, 's> {
     ir_registers: Arena<IrRegister, IrRegisterInfo>,
     drivers: Drivers,
 
-    register_initial_values: IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
+    register_initial_values: IndexMap<Register, DiagResult<Spanned<CompileValue>>>,
     out_port_register_connections: IndexMap<Port, Register>,
 
     pass_0_next_statement_index: usize,
@@ -649,7 +649,7 @@ struct BodyElaborationContext<'c, 'a, 's> {
     children: Vec<Spanned<Child>>,
 
     // TODO rename and rethink this
-    delayed_error: Result<(), ErrorGuaranteed>,
+    delayed_error: DiagResult<()>,
 }
 
 enum Child {
@@ -665,7 +665,7 @@ struct ChildClockedProcess {
 }
 
 impl ChildClockedProcess {
-    pub fn finish(self, ctx: &mut CompileItemContext) -> Result<IrClockedProcess, ErrorGuaranteed> {
+    pub fn finish(self, ctx: &mut CompileItemContext) -> DiagResult<IrClockedProcess> {
         let ChildClockedProcess {
             locals,
             clock_signal,
@@ -772,8 +772,8 @@ pub enum ModuleChildTodo<'a> {
 }
 
 type PublicDeclarations<'a> = Vec<(
-    Result<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>, ErrorGuaranteed>,
-    Result<ScopedEntry, ErrorGuaranteed>,
+    DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>>,
+    DiagResult<ScopedEntry>,
 )>;
 
 impl<'a> BodyElaborationContext<'_, 'a, '_> {
@@ -1035,7 +1035,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         scope: &Scope,
         stmt_index: usize,
         block: &CombinatorialBlock,
-    ) -> Result<IrCombinatorialProcess, ErrorGuaranteed> {
+    ) -> DiagResult<IrCombinatorialProcess> {
         let &CombinatorialBlock {
             span_keyword,
             ref block,
@@ -1065,7 +1065,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         scope: &Scope,
         stmt_index: usize,
         block: &ClockedBlock,
-    ) -> Result<ChildClockedProcess, ErrorGuaranteed> {
+    ) -> DiagResult<ChildClockedProcess> {
         let &ClockedBlock {
             span_keyword,
             span_domain,
@@ -1194,7 +1194,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         scope_parent: &Scope,
         vars: &VariableValues,
         for_stmt: Spanned<&'a ForStatement<ModuleStatement>>,
-    ) -> Result<(ModuleTodo<'a>, PublicDeclarations<'a>), ErrorGuaranteed> {
+    ) -> DiagResult<(ModuleTodo<'a>, PublicDeclarations<'a>)> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
 
@@ -1293,7 +1293,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         vars: &VariableValues,
         stmt_index: usize,
         instance: &ModuleInstance,
-    ) -> Result<IrModuleChild, ErrorGuaranteed> {
+    ) -> DiagResult<IrModuleChild> {
         let refs = self.ctx.refs;
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
@@ -1439,7 +1439,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         prev_single_to_signal: &IndexMap<ConnectorSingle, ConnectionSignal>,
         connector: Connector,
         connection: &Spanned<PortConnection>,
-    ) -> Result<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>, ErrorGuaranteed> {
+    ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
 
@@ -1913,7 +1913,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         }
     }
 
-    fn pass_2_check_inferred(&mut self) -> Result<(), ErrorGuaranteed> {
+    fn pass_2_check_inferred(&mut self) -> DiagResult<()> {
         let ctx = &*self.ctx;
         let diags = ctx.refs.diags;
 
@@ -1993,7 +1993,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         any_err
     }
 
-    fn pass_2_check_drivers_and_populate_resets(&mut self) -> Result<(), ErrorGuaranteed> {
+    fn pass_2_check_drivers_and_populate_resets(&mut self) -> DiagResult<()> {
         // check exactly one valid driver for each signal
         // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
         let Drivers {
@@ -2047,8 +2047,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         kind: &str,
         name: &str,
         decl_span: Span,
-        drivers: &Result<IndexMap<Driver, Span>, ErrorGuaranteed>,
-    ) -> Result<(Driver, Span), ErrorGuaranteed> {
+        drivers: &DiagResult<IndexMap<Driver, Span>>,
+    ) -> DiagResult<(Driver, Span)> {
         let diags = self.ctx.refs.diags;
         let drivers = drivers.as_ref_ok()?;
 
@@ -2081,7 +2081,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
         decl_span: Span,
         decl: &WireDeclaration,
-    ) -> Result<(NamedValue, Option<Spanned<IrCombinatorialProcess>>), ErrorGuaranteed> {
+    ) -> DiagResult<(NamedValue, Option<Spanned<IrCombinatorialProcess>>)> {
         let ctx = &mut self.ctx;
         let refs = ctx.refs;
         let diags = ctx.refs.diags;
@@ -2349,7 +2349,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         vars_body: &VariableValues,
         id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
         decl: &RegDeclaration,
-    ) -> Result<RegisterInit, ErrorGuaranteed> {
+    ) -> DiagResult<RegisterInit> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
@@ -2420,7 +2420,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         decl_span: Span,
         decl: &RegOutPortMarker,
         is_root_block: bool,
-    ) -> Result<(Port, RegisterInit), ErrorGuaranteed> {
+    ) -> DiagResult<(Port, RegisterInit)> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
         let source = ctx.refs.fixed.source;
@@ -2550,7 +2550,7 @@ enum ConnectionSignal {
 #[derive(Debug)]
 struct RegisterInit {
     reg: Register,
-    init: Result<Spanned<CompileValue>, ErrorGuaranteed>,
+    init: DiagResult<Spanned<CompileValue>>,
 }
 
 /// The usize fields are here to keep different drivers of the same type separate for Eq and Hash,
@@ -2589,9 +2589,9 @@ impl Driver {
 struct Drivers {
     // For each signal, for each driver, the first span.
     // This span will be used in error messages in case there are multiple drivers for the same signal.
-    output_port_drivers: IndexMap<Port, Result<IndexMap<Driver, Span>, ErrorGuaranteed>>,
-    reg_drivers: IndexMap<Register, Result<IndexMap<Driver, Span>, ErrorGuaranteed>>,
-    wire_drivers: IndexMap<Wire, Result<IndexMap<Driver, Span>, ErrorGuaranteed>>,
+    output_port_drivers: IndexMap<Port, DiagResult<IndexMap<Driver, Span>>>,
+    reg_drivers: IndexMap<Register, DiagResult<IndexMap<Driver, Span>>>,
+    wire_drivers: IndexMap<Wire, DiagResult<IndexMap<Driver, Span>>>,
 }
 
 impl Drivers {
@@ -2620,7 +2620,7 @@ impl Drivers {
         ctx: &CompileItemContext,
         driver: Driver,
         target: Spanned<Signal>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let diags = ctx.refs.diags;
 
         // check valid combination
@@ -2671,11 +2671,11 @@ impl Drivers {
         // record driver
         fn record<T: Hash + Eq + Debug>(
             diags: &Diagnostics,
-            map: &mut IndexMap<T, Result<IndexMap<Driver, Span>, ErrorGuaranteed>>,
-            driver: Result<Driver, ErrorGuaranteed>,
+            map: &mut IndexMap<T, DiagResult<IndexMap<Driver, Span>>>,
+            driver: DiagResult<Driver>,
             target: T,
             target_span: Span,
-        ) -> Result<(), ErrorGuaranteed> {
+        ) -> DiagResult<()> {
             let inner = map.get_mut(&target).ok_or_else(|| {
                 diags.report_internal_error(target_span, "failed to record driver, target not yet mapped")
             })?;
@@ -2705,7 +2705,7 @@ impl Drivers {
 fn report_assignment_internal_error<'a>(
     diags: &'a Diagnostics,
     place: &'a str,
-) -> impl FnMut(&CompileItemContext, Spanned<Signal>) -> Result<(), ErrorGuaranteed> + 'a {
+) -> impl FnMut(&CompileItemContext, Spanned<Signal>) -> DiagResult<()> + 'a {
     move |_: &CompileItemContext, target: Spanned<Signal>| {
         Err(diags.report_internal_error(target.span, format!("driving signal within {place}")))
     }
@@ -2715,11 +2715,11 @@ fn pull_register_init_into_process(
     ctx: &mut CompileItemContext,
     clocked_block_statement_index_to_process_index: &IndexMap<usize, usize>,
     children: &mut Vec<Spanned<Child>>,
-    register_initial_values: &IndexMap<Register, Result<Spanned<CompileValue>, ErrorGuaranteed>>,
+    register_initial_values: &IndexMap<Register, DiagResult<Spanned<CompileValue>>>,
     reg: Register,
     driver: Driver,
     driver_first_span: Span,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     let diags = ctx.refs.diags;
     let reg_info = &ctx.registers[reg];
 

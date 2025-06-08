@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
@@ -60,7 +60,7 @@ impl ArraySteps<ArrayStep> {
         }
     }
 
-    pub fn apply_to_expected_type(&self, diags: &Diagnostics, ty: Spanned<Type>) -> Result<Type, ErrorGuaranteed> {
+    pub fn apply_to_expected_type(&self, diags: &Diagnostics, ty: Spanned<Type>) -> DiagResult<Type> {
         let (ty, _) = self.apply_to_type_impl(diags, ty, true)?;
         Ok(ty)
     }
@@ -69,7 +69,7 @@ impl ArraySteps<ArrayStep> {
         &self,
         refs: CompileRefs,
         ty: Spanned<&HardwareType>,
-    ) -> Result<(HardwareType, Vec<IrTargetStep>), ErrorGuaranteed> {
+    ) -> DiagResult<(HardwareType, Vec<IrTargetStep>)> {
         let diags = refs.diags;
 
         let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type), false)?;
@@ -103,7 +103,7 @@ impl ArraySteps<ArrayStep> {
         diags: &Diagnostics,
         ty: Spanned<Type>,
         pass_any: bool,
-    ) -> Result<(Type, Result<Vec<IrTargetStep>, EncounteredAny>), ErrorGuaranteed> {
+    ) -> DiagResult<(Type, Result<Vec<IrTargetStep>, EncounteredAny>)> {
         let ArraySteps { steps } = self;
 
         // forward
@@ -180,7 +180,7 @@ impl ArraySteps<ArrayStep> {
         refs: CompileRefs,
         large: &mut IrLargeArena,
         value: Spanned<Value>,
-    ) -> Result<Value, ErrorGuaranteed> {
+    ) -> DiagResult<Value> {
         let diags = refs.diags;
         let ArraySteps { steps } = self;
 
@@ -357,14 +357,14 @@ impl ArraySteps<&ArrayStepCompile> {
         old: Spanned<CompileValue>,
         op_span: Span,
         new: Spanned<CompileValue>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         fn set_compile_value_impl(
             diags: &Diagnostics,
             old_curr: Spanned<CompileValue>,
             steps: &[Spanned<&ArrayStepCompile>],
             op_span: Span,
             new_curr: Spanned<CompileValue>,
-        ) -> Result<CompileValue, ErrorGuaranteed> {
+        ) -> DiagResult<CompileValue> {
             let (step, rest) = match steps.split_first() {
                 None => return Ok(new_curr.inner),
                 Some(pair) => pair,
@@ -440,7 +440,7 @@ impl ArraySteps<&ArrayStepCompile> {
         refs: CompileRefs,
         large: &mut IrLargeArena,
         value: Spanned<CompileValue>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         let diags = refs.diags;
 
         // TODO avoid clones
@@ -465,7 +465,7 @@ pub fn check_range_index(
     diags: &Diagnostics,
     index: Spanned<ClosedIncRange<&BigInt>>,
     array_len: Spanned<&BigUint>,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     if index.inner.start_inc < &BigInt::ZERO || index.inner.end_inc >= &BigInt::from(array_len.inner.clone()) {
         let index_str = if let Some(index) = index.inner.as_single() {
             format!("`{index}`")
@@ -489,7 +489,7 @@ pub fn check_range_index_compile(
     diags: &Diagnostics,
     index: Spanned<&BigInt>,
     array_len: Spanned<usize>,
-) -> Result<usize, ErrorGuaranteed> {
+) -> DiagResult<usize> {
     check_range_index(
         diags,
         index.map_inner(ClosedIncRange::single),
@@ -503,7 +503,7 @@ pub fn check_range_slice(
     slice_start: Spanned<ClosedIncRange<&BigInt>>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<&BigUint>,
-) -> Result<BigUint, ErrorGuaranteed> {
+) -> DiagResult<BigUint> {
     if slice_start.inner.as_single().is_none() && slice_len.is_none() {
         return Err(diags.report_internal_error(
             slice_start.span,
@@ -575,7 +575,7 @@ pub fn check_range_slice_compile(
     slice_start: Spanned<&BigInt>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<usize>,
-) -> Result<SliceInfo, ErrorGuaranteed> {
+) -> DiagResult<SliceInfo> {
     check_range_slice(
         diags,
         slice_start.map_inner(ClosedIncRange::single),

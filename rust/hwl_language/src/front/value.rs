@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::item::{ElaboratedEnum, ElaboratedInterface, ElaboratedModule, ElaboratedStruct};
@@ -143,7 +143,7 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
-    ) -> Result<HardwareValueResult, ErrorGuaranteed> {
+    ) -> DiagResult<HardwareValueResult> {
         fn map_array<'t, E>(
             refs: CompileRefs,
             large: &mut IrLargeArena,
@@ -152,7 +152,7 @@ impl CompileValue {
             t: impl Fn(usize) -> &'t HardwareType,
             e: impl Fn(IrExpression) -> E,
             f: impl FnOnce(Vec<E>) -> IrExpressionLarge,
-        ) -> Result<HardwareValueResult, ErrorGuaranteed> {
+        ) -> DiagResult<HardwareValueResult> {
             let mut hardware_values = Vec::with_capacity(values.len());
             let mut all_undefined = true;
             let mut any_undefined = false;
@@ -293,7 +293,7 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<MaybeUndefined<IrExpression>, ErrorGuaranteed> {
+    ) -> DiagResult<MaybeUndefined<IrExpression>> {
         let diags = refs.diags;
         match self.try_as_hardware_value(refs, large, span, ty_hw)? {
             HardwareValueResult::Defined(v) => Ok(MaybeUndefined::Defined(v)),
@@ -308,7 +308,7 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<MaybeUndefined<HardwareValue>, ErrorGuaranteed> {
+    ) -> DiagResult<MaybeUndefined<HardwareValue>> {
         let hw_value = self.as_ir_expression_or_undefined(refs, large, span, ty_hw)?;
         let typed_expr = hw_value.map_inner(|expr| HardwareValue {
             ty: ty_hw.clone(),
@@ -324,7 +324,7 @@ impl CompileValue {
         large: &mut IrLargeArena,
         span: Span,
         ty_hw: &HardwareType,
-    ) -> Result<HardwareValue, ErrorGuaranteed> {
+    ) -> DiagResult<HardwareValue> {
         let diags = refs.diags;
         match self.as_hardware_value_or_undefined(refs, large, span, ty_hw)? {
             MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
@@ -488,7 +488,7 @@ impl Value {
         large: &mut IrLargeArena,
         span: Span,
         ty: &HardwareType,
-    ) -> Result<HardwareValue, ErrorGuaranteed> {
+    ) -> DiagResult<HardwareValue> {
         match self {
             Value::Compile(v) => v.as_hardware_value(refs, large, span, ty),
             Value::Hardware(v) => Ok(v.clone().soft_expand_to_type(large, ty)),

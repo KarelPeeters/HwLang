@@ -1,7 +1,7 @@
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::context::ExpressionContext;
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{BlockDomain, ValueDomain};
 use crate::front::expression::{apply_implications, eval_binary_expression, ValueWithImplications};
 use crate::front::scope::Scope;
@@ -49,7 +49,7 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         vars: &mut VariableValues,
         stmt: &Assignment,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let diags = self.refs.diags;
         let &Assignment {
             span: _,
@@ -254,7 +254,7 @@ impl CompileItemContext<'_, '_> {
         target_expected_ty: Type,
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<Value>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let diags = self.refs.diags;
         let AssignmentTarget {
             base: target_base,
@@ -473,7 +473,7 @@ impl CompileItemContext<'_, '_> {
         target_base_span: Span,
         var: Variable,
         target_base_eval: &Value,
-    ) -> Result<HardwareValue<Spanned<HardwareType>, IrVariable>, ErrorGuaranteed> {
+    ) -> DiagResult<HardwareValue<Spanned<HardwareType>, IrVariable>> {
         let refs = self.refs;
         let diags = refs.diags;
 
@@ -523,7 +523,7 @@ impl CompileItemContext<'_, '_> {
         target_base_domain: Spanned<ValueDomain>,
         steps: &ArraySteps,
         value_domain: Spanned<ValueDomain>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         match clocked_block_domain {
             None => {
                 let mut check = self.check_valid_domain_crossing(
@@ -585,7 +585,7 @@ pub fn store_ir_expression_in_new_variable<C: ExpressionContext>(
     ctx_block: &mut C::Block,
     debug_info_id: MaybeIdentifier,
     expr: HardwareValue,
-) -> Result<HardwareValue<HardwareType, IrVariable>, ErrorGuaranteed> {
+) -> DiagResult<HardwareValue<HardwareType, IrVariable>> {
     let diags = refs.diags;
 
     let span = debug_info_id.span();

@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::function::FailedCaptureReason;
 use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
 use crate::front::variables::Variable;
@@ -50,30 +50,24 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     values: IndexMap<String, DeclaredValue>,
-    any_id_err: Result<(), ErrorGuaranteed>,
+    any_id_err: DiagResult<()>,
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
 //   which means we can remove that branch entirely
 #[derive(Debug)]
 enum DeclaredValue {
-    Once {
-        value: Result<ScopedEntry, ErrorGuaranteed>,
-        span: Span,
-    },
-    Multiple {
-        spans: Vec<Span>,
-        err: ErrorGuaranteed,
-    },
+    Once { value: DiagResult<ScopedEntry>, span: Span },
+    Multiple { spans: Vec<Span>, err: DiagError },
     FailedCapture(Span, FailedCaptureReason),
-    Error(ErrorGuaranteed),
+    Error(DiagError),
 }
 
 #[derive(Debug)]
 pub enum DeclaredValueSingle<S = ScopedEntry> {
     Value { span: Span, value: S },
     FailedCapture(Span, FailedCaptureReason),
-    Error(ErrorGuaranteed),
+    Error(DiagError),
 }
 
 #[derive(Debug)]
@@ -85,7 +79,7 @@ pub struct ScopeFound<'s> {
 #[derive(Debug)]
 pub enum TryScopeFound<'s> {
     Found(ScopeFound<'s>),
-    NotFoundAnyIdErr(Result<(), ErrorGuaranteed>),
+    NotFoundAnyIdErr(DiagResult<()>),
 }
 
 impl<'p> Scope<'p> {
@@ -152,19 +146,14 @@ impl<'p> Scope<'p> {
     pub fn declare(
         &mut self,
         diags: &Diagnostics,
-        id: Result<Spanned<impl Borrow<str>>, ErrorGuaranteed>,
-        value: Result<ScopedEntry, ErrorGuaranteed>,
+        id: DiagResult<Spanned<impl Borrow<str>>>,
+        value: DiagResult<ScopedEntry>,
     ) {
         let id = id.as_ref_ok().map(|id| id.as_ref().map_inner(|s| s.borrow()));
         self.declare_impl(diags, id, value)
     }
 
-    pub fn declare_impl(
-        &mut self,
-        diags: &Diagnostics,
-        id: Result<Spanned<&str>, ErrorGuaranteed>,
-        value: Result<ScopedEntry, ErrorGuaranteed>,
-    ) {
+    pub fn declare_impl(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
         let id = match id {
             Ok(id) => id,
             Err(e) => {
@@ -228,8 +217,8 @@ impl<'p> Scope<'p> {
     pub fn maybe_declare(
         &mut self,
         diags: &Diagnostics,
-        id: Result<MaybeIdentifier<Spanned<impl Borrow<str>>>, ErrorGuaranteed>,
-        entry: Result<ScopedEntry, ErrorGuaranteed>,
+        id: DiagResult<MaybeIdentifier<Spanned<impl Borrow<str>>>>,
+        entry: DiagResult<ScopedEntry>,
     ) {
         let id = match id {
             Ok(MaybeIdentifier::Dummy(_)) => return,
@@ -242,11 +231,11 @@ impl<'p> Scope<'p> {
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+    pub fn find<'s>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound<'s>> {
         self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 
-    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> Result<ScopeFound, ErrorGuaranteed> {
+    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound> {
         self.find_impl(diags, id, None, self.span, false)
     }
 
@@ -257,7 +246,7 @@ impl<'p> Scope<'p> {
         id_span: Option<Span>,
         initial_scope_span: Span,
         check_parents: bool,
-    ) -> Result<ScopeFound<'s>, ErrorGuaranteed> {
+    ) -> DiagResult<ScopeFound<'s>> {
         match self.try_find_impl(diags, id, id_span, initial_scope_span, check_parents)? {
             TryScopeFound::Found(found) => Ok(found),
             TryScopeFound::NotFoundAnyIdErr(any_id_err) => {
@@ -295,7 +284,7 @@ impl<'p> Scope<'p> {
         id_span: Option<Span>,
         initial_scope_span: Span,
         check_parents: bool,
-    ) -> Result<TryScopeFound<'s>, ErrorGuaranteed> {
+    ) -> DiagResult<TryScopeFound<'s>> {
         let mut curr = self;
         let mut any_id_err = Ok(());
 

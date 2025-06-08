@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::diagnostic::DiagResult;
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked, HardwareEnumInfo};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
@@ -70,7 +70,7 @@ impl HardwareEnumInfo {
         large: &mut IrLargeArena,
         variant: usize,
         content_bits: Option<IrExpression>,
-    ) -> Result<IrExpression, ErrorGuaranteed> {
+    ) -> DiagResult<IrExpression> {
         assert_eq!(self.content_types[variant].is_some(), content_bits.is_some());
 
         // tag

@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
 use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
@@ -52,7 +52,7 @@ pub fn compile(
     print_handler: &mut (dyn PrintHandler + Sync),
     should_stop: &(dyn Fn() -> bool + Sync),
     thread_count: NonZeroUsize,
-) -> Result<IrDatabase, ErrorGuaranteed> {
+) -> DiagResult<IrDatabase> {
     let fixed = CompileFixed { source, parsed };
 
     let queue_all_items = match elaboration_set {
@@ -166,7 +166,7 @@ pub enum ElaborationSet {
 }
 
 impl<'a> CompileRefs<'a, '_> {
-    pub fn check_should_stop(&self, span: Span) -> Result<(), ErrorGuaranteed> {
+    pub fn check_should_stop(&self, span: Span) -> DiagResult<()> {
         // TODO report only one error, now all threads report the same error
         //   put an Option<ErrorGuaranteed> somewhere in a mutex?
         if (self.should_stop)() {
@@ -224,11 +224,11 @@ pub struct CompileShared {
 
     pub work_queue: SharedQueue<WorkItem>,
 
-    pub item_values: ComputeOnceArena<AstRefItem, Result<CompileValue, ErrorGuaranteed>, StackEntry>,
+    pub item_values: ComputeOnceArena<AstRefItem, DiagResult<CompileValue>, StackEntry>,
     pub elaboration_arenas: ElaborationArenas,
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
-    pub ir_database: Mutex<PartialIrDatabase<Option<Result<IrModuleInfo, ErrorGuaranteed>>>>,
+    pub ir_database: Mutex<PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -237,7 +237,7 @@ pub struct PartialIrDatabase<M> {
     pub ir_modules: Arena<IrModule, M>,
 }
 
-pub type FileScopes = IndexMap<FileId, Result<Scope<'static>, ErrorGuaranteed>>;
+pub type FileScopes = IndexMap<FileId, DiagResult<Scope<'static>>>;
 
 #[derive(Copy, Clone)]
 pub struct CompileRefs<'a, 's> {
@@ -315,7 +315,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         }
     }
 
-    pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> Result<R, ErrorGuaranteed> {
+    pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> DiagResult<R> {
         if self.stack.len() > MAX_STACK_ENTRIES {
             return Err(self.refs.diags.report(stack_overflow_diagnostic(&self.stack)));
         }
@@ -331,7 +331,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         Ok(result)
     }
 
-    pub fn eval_item(&mut self, item: AstRefItem) -> Result<&CompileValue, ErrorGuaranteed> {
+    pub fn eval_item(&mut self, item: AstRefItem) -> DiagResult<&CompileValue> {
         let item_span = self.refs.fixed.parsed[item].info().span_short;
         let stack_entry = StackEntry::ItemEvaluation(item_span);
 
@@ -436,7 +436,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
 
     // pass 1: collect import items from source scopes for each target file
-    let mut file_imported_items: Vec<Vec<(MaybeIdentifier, Result<ScopedEntry, ErrorGuaranteed>)>> = vec![];
+    let mut file_imported_items: Vec<Vec<(MaybeIdentifier, DiagResult<ScopedEntry>)>> = vec![];
     for target_file in source.files() {
         let mut curr_imported_items = vec![];
 
@@ -511,7 +511,7 @@ fn resolve_import_path(
     diags: &Diagnostics,
     source: &SourceDatabase,
     path: &Spanned<Vec<Identifier>>,
-) -> Result<FileId, ErrorGuaranteed> {
+) -> DiagResult<FileId> {
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
@@ -554,7 +554,7 @@ fn find_top_module(
     diags: &Diagnostics,
     fixed: CompileFixed,
     shared: &CompileShared,
-) -> Result<AstRefModuleInternal, ErrorGuaranteed> {
+) -> DiagResult<AstRefModuleInternal> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
     let top_file = fixed.source[fixed.source.root_directory()]
@@ -653,7 +653,7 @@ impl CompileShared {
         }
     }
 
-    pub fn file_scope(&self, file: FileId) -> Result<&Scope<'static>, ErrorGuaranteed> {
+    pub fn file_scope(&self, file: FileId) -> DiagResult<&Scope<'static>> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 
@@ -661,7 +661,7 @@ impl CompileShared {
         self,
         diags: &Diagnostics,
         dummy_span: Span,
-    ) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
+    ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
         finish_ir_database_impl(
             diags,
             dummy_span,
@@ -674,7 +674,7 @@ impl CompileShared {
         &self,
         diags: &Diagnostics,
         dummy_span: Span,
-    ) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
+    ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
         let ir_database = self.ir_database.lock().unwrap().clone();
         finish_ir_database_impl(diags, dummy_span, &self.work_queue, ir_database)
     }
@@ -684,8 +684,8 @@ fn finish_ir_database_impl(
     diags: &Diagnostics,
     dummy_span: Span,
     work_queue: &SharedQueue<WorkItem>,
-    ir_database: PartialIrDatabase<Option<Result<IrModuleInfo, ErrorGuaranteed>>>,
-) -> Result<PartialIrDatabase<IrModuleInfo>, ErrorGuaranteed> {
+    ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
+) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
     if let Some(item) = work_queue.pop() {
         println!("work queue is not empty, found item: {:?}", item);
         return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
@@ -709,7 +709,7 @@ fn finish_ir_database_impl(
 
 // TODO move somewhere else
 impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> Result<IrExpression, ErrorGuaranteed> {
+    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> DiagResult<IrExpression> {
         let signal_span = signal.span;
         let Polarized { inverted, signal } = signal.inner;
 

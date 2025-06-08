@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics, ErrorGuaranteed};
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
@@ -18,7 +18,7 @@ impl CompileItemContext<'_, '_> {
         target: Spanned<ValueDomain>,
         source: Spanned<ValueDomain>,
         required_reason: &str,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let diags = self.refs.diags;
 
         let valid = match (target.inner, source.inner) {
@@ -202,7 +202,7 @@ pub fn check_type_contains_value(
     value: Spanned<&Value>,
     accept_undefined: bool,
     allow_compound_subtype: bool,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     match value.inner {
         Value::Compile(value_inner) => {
             let value = Spanned {
@@ -227,7 +227,7 @@ pub fn check_type_contains_compile_value(
     target_ty: &Type,
     value: Spanned<&CompileValue>,
     accept_undefined: bool,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     let ty_contains_value = target_ty.contains_type(&value.inner.ty(), true);
 
     if ty_contains_value && (accept_undefined || !value.inner.contains_undefined()) {
@@ -254,7 +254,7 @@ pub fn check_type_contains_type(
     target_ty: &Type,
     value_ty: Spanned<&Type>,
     allow_compound_subtype: bool,
-) -> Result<(), ErrorGuaranteed> {
+) -> DiagResult<()> {
     if target_ty.contains_type(value_ty.inner, allow_compound_subtype) {
         Ok(())
     } else {
@@ -286,7 +286,7 @@ pub fn check_type_is_int(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<Value>,
-) -> Result<Spanned<Value<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>, ErrorGuaranteed> {
+) -> DiagResult<Spanned<Value<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>> {
     check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false, true)?;
 
     match value.inner {
@@ -315,7 +315,7 @@ pub fn check_type_is_int_compile(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
-) -> Result<BigInt, ErrorGuaranteed> {
+) -> DiagResult<BigInt> {
     check_type_contains_compile_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false)?;
 
     match value.inner {
@@ -328,7 +328,7 @@ pub fn check_type_is_int_hardware(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<HardwareValue>,
-) -> Result<Spanned<HardwareValue<ClosedIncRange<BigInt>>>, ErrorGuaranteed> {
+) -> DiagResult<Spanned<HardwareValue<ClosedIncRange<BigInt>>>> {
     let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
     check_type_contains_type(diags, reason, &Type::Int(IncRange::OPEN), value_ty.as_ref(), false)?;
 
@@ -349,7 +349,7 @@ pub fn check_type_is_uint_compile(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
-) -> Result<BigUint, ErrorGuaranteed> {
+) -> DiagResult<BigUint> {
     let range = IncRange {
         start_inc: Some(BigInt::ZERO),
         end_inc: None,
@@ -366,7 +366,7 @@ pub fn check_type_is_bool(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<Value>,
-) -> Result<Spanned<Value<bool, HardwareValue<()>>>, ErrorGuaranteed> {
+) -> DiagResult<Spanned<Value<bool, HardwareValue<()>>>> {
     check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false)?;
 
     match value.inner {
@@ -395,7 +395,7 @@ pub fn check_type_is_bool_compile(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
-) -> Result<bool, ErrorGuaranteed> {
+) -> DiagResult<bool> {
     check_type_contains_compile_value(diags, reason, &Type::Bool, value.as_ref(), false)?;
 
     match value.inner {
@@ -409,7 +409,7 @@ pub fn check_type_is_bool_array(
     reason: TypeContainsReason,
     value: Spanned<Value>,
     expected_len: Option<&BigUint>,
-) -> Result<Value<Vec<bool>, HardwareValue<BigUint>>, ErrorGuaranteed> {
+) -> DiagResult<Value<Vec<bool>, HardwareValue<BigUint>>> {
     if let Type::Array(ty_inner, ty_len) = value.inner.ty() {
         if expected_len.is_none_or(|expected_len| expected_len == &ty_len) {
             if let Type::Bool = *ty_inner {
@@ -452,7 +452,7 @@ pub fn check_type_is_string(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
-) -> Result<Arc<String>, ErrorGuaranteed> {
+) -> DiagResult<Arc<String>> {
     check_type_contains_compile_value(diags, reason, &Type::String, value.as_ref(), false)?;
 
     match value.inner {
@@ -461,10 +461,7 @@ pub fn check_type_is_string(
     }
 }
 
-pub fn check_hardware_type_for_bit_operation(
-    refs: CompileRefs,
-    ty: Spanned<&Type>,
-) -> Result<HardwareType, ErrorGuaranteed> {
+pub fn check_hardware_type_for_bit_operation(refs: CompileRefs, ty: Spanned<&Type>) -> DiagResult<HardwareType> {
     ty.inner.as_hardware_type(refs).map_err(|_| {
         let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
             .add_error(ty.span, format!("actual type `{}`", ty.inner.diagnostic_string()))

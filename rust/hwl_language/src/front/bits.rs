@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::ErrorGuaranteed;
+use crate::front::diagnostic::DiagResult;
 use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::front::value::CompileValue;
 use crate::mid::ir::IrType;
@@ -58,12 +58,7 @@ impl HardwareType {
         }
     }
 
-    pub fn value_to_bits(
-        &self,
-        refs: CompileRefs,
-        span: Span,
-        value: &CompileValue,
-    ) -> Result<Vec<bool>, ErrorGuaranteed> {
+    pub fn value_to_bits(&self, refs: CompileRefs, span: Span, value: &CompileValue) -> DiagResult<Vec<bool>> {
         let mut result = Vec::new();
         self.value_to_bits_impl(refs, span, value, &mut result)?;
         Ok(result)
@@ -75,7 +70,7 @@ impl HardwareType {
         span: Span,
         value: &CompileValue,
         result: &mut Vec<bool>,
-    ) -> Result<(), ErrorGuaranteed> {
+    ) -> DiagResult<()> {
         let diags = refs.diags;
         let err_internal = || {
             diags.report_internal_error(
@@ -164,12 +159,7 @@ impl HardwareType {
         }
     }
 
-    pub fn value_from_bits(
-        &self,
-        refs: CompileRefs,
-        span: Span,
-        bits: &[bool],
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    pub fn value_from_bits(&self, refs: CompileRefs, span: Span, bits: &[bool]) -> DiagResult<CompileValue> {
         let diags = refs.diags;
 
         let mut iter = bits.iter().copied();
@@ -185,7 +175,7 @@ impl HardwareType {
         refs: CompileRefs,
         span: Span,
         bits: &mut impl Iterator<Item = bool>,
-    ) -> Result<CompileValue, ErrorGuaranteed> {
+    ) -> DiagResult<CompileValue> {
         let diags = refs.diags;
         let err_internal = || {
             diags.report_internal_error(

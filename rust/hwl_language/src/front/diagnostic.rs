@@ -12,28 +12,33 @@ use std::cmp::{min, Ordering};
 // TODO give this a better name to clarify that this means that the compiler gave up on this
 //   and that the error has already been reported as a diagnostic.
 //   The current name is copied from the rust compiler:
-//     https://rustc-dev-guide.rust-lang.org/diagnostics/error-guaranteed.html
-// TODO create DResult<T> = Result<T, ErrorGuaranteed> alias
+//
 
-/// Indicates that an error was already reported.
+/// Indicates that an error was reported as a diagnostic.
 ///
 /// Anything encountering this value should do one of, in order of preference:
 /// * Continue on a best-effort basis,
 ///   allowing future errors that are definitely independent of the previous one to also be reported.
-///   The compiler should make optimistic assumptions about whatever value is instead [ErrorGuaranteed].
+///   The compiler should make optimistic assumptions about whatever value is instead [DiagError].
 /// * Propagate this value,
 ///   blocking any downstream errors that are potentially just caused by the previous error
 ///   and which would just be noise.
 ///
 /// This value is not publicly constructible, use [Diagnostics::report].
+///
+/// This concept is the same as
+/// [ErrorGuaranteed](https://rustc-dev-guide.rust-lang.org/diagnostics/error-guaranteed.html)
+/// from the rust compiler.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ErrorGuaranteed(());
+pub struct DiagError(());
+
+pub type DiagResult<T> = Result<T, DiagError>;
 
 #[macro_export]
 macro_rules! impl_from_error_guaranteed {
     ($ty:ident) => {
-        impl From<ErrorGuaranteed> for $ty {
-            fn from(e: ErrorGuaranteed) -> Self {
+        impl From<DiagError> for $ty {
+            fn from(e: DiagError) -> Self {
                 $ty::Error(e)
             }
         }
@@ -55,23 +60,23 @@ impl Diagnostics {
 
     // TODO go through and try to avoid early-exits as much as possible
     // TODO limit the number of diagnostics reported, eg. stop after 1k
-    pub fn report(&self, diag: Diagnostic) -> ErrorGuaranteed {
+    pub fn report(&self, diag: Diagnostic) -> DiagError {
         self.diagnostics.borrow_mut().push(diag);
-        ErrorGuaranteed(())
+        DiagError(())
     }
 
     // TODO only single string parameter, used for both title and label?
-    pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> ErrorGuaranteed {
+    pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagError {
         self.report(Diagnostic::new_simple(title, span, label))
     }
 
     #[track_caller]
-    pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> ErrorGuaranteed {
+    pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> DiagError {
         self.report(Diagnostic::new_todo(feature).add_error(span, "used here").finish())
     }
 
     // TODO rename to "report_bug"
-    pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> ErrorGuaranteed {
+    pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> DiagError {
         self.report(Diagnostic::new_internal_error(span, reason))
     }
 
