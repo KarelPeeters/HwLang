@@ -2831,7 +2831,7 @@ fn array_literal_combine_values(
         })?;
 
         let mut result_domain = ValueDomain::CompileTime;
-        let mut result_exprs = vec![];
+        let mut result_exprs = Vec::with_capacity(values.len());
         let mut result_len = BigUint::ZERO;
 
         for elem in values {
@@ -2900,7 +2900,7 @@ fn array_literal_combine_values(
         }))
     } else {
         // all compile, create compile value
-        let mut result = vec![];
+        let mut result = Vec::with_capacity(values.len());
         for elem in values {
             match elem {
                 ArrayLiteralElement::Single(elem_inner) => {
