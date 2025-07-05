@@ -348,6 +348,23 @@ impl ArraySteps<ArrayStep> {
 
         Ok(curr.inner)
     }
+
+    pub fn apply_to_hardware_value(
+        &self,
+        refs: CompileRefs,
+        large: &mut IrLargeArena,
+        value: Spanned<HardwareValue>,
+    ) -> DiagResult<HardwareValue> {
+        let value_span = value.span;
+        self.apply_to_value(refs, large, value.map_inner(Value::Hardware))
+            .and_then(|value| match value {
+                Value::Hardware(value) => Ok(value),
+                Value::Compile(_) => Err(refs.diags.report_internal_error(
+                    value_span,
+                    "applying hardware steps to hardware value should result in hardware value again, got compile-time",
+                )),
+            })
+    }
 }
 
 impl ArraySteps<&ArrayStepCompile> {

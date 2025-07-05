@@ -456,6 +456,7 @@ pub struct RegDeclaration {
 #[derive(Debug, Clone)]
 pub struct WireDeclaration {
     pub vis: Visibility,
+    pub span_keyword: Span,
     pub id: MaybeGeneralIdentifier,
     pub kind: WireDeclarationKind,
 }

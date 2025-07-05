@@ -3,4 +3,5 @@ set -ue
 cd "$(dirname "$0")"/..
 
 (cd rust && cargo test)
+(cd rust/hwl_python && maturin develop)
 (cd python/tests && pytest)

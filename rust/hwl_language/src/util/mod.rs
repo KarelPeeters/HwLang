@@ -1,7 +1,5 @@
-use std::{
-    fmt::{Display, Formatter},
-    num::NonZeroUsize,
-};
+use std::fmt::{Display, Formatter};
+use std::num::NonZeroUsize;
 
 pub mod arena;
 pub mod big_int;
@@ -12,6 +10,7 @@ pub mod store;
 pub mod sync;
 
 pub const NON_ZERO_USIZE_ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
+pub const NON_ZERO_USIZE_TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
 // TODO maybe "!" is stable enough by now
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]

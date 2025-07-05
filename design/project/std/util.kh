@@ -1,6 +1,6 @@
 import std.types.[any, bool, str, uint];
 
-// TODO this should be a builtin that does not evaluate the target (for named values)
+// TODO this should be a keyword that does not evaluate the target and only works for named values
 pub fn typeof(value: any) -> type {
     return __builtin("fn", "typeof", value);
 }
@@ -9,10 +9,17 @@ pub fn print(value: any) {
     __builtin("fn", "print", value);
 }
 
+const DEFAULT_ASSERT_MSG = "assertion failed";
+
 // TODO report the call location, not the body of this function
 // TODO include elaboration stack trace in all errors
-pub fn assert(cond: bool, msg: str = "assertion failed") {
+pub fn assert(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
     __builtin("fn", "assert", cond, msg);
+}
+
+// TODO think of a better name, maybe `assert_and_assume`?
+pub fn assume(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
+    __builtin("fn", "assert_assume", cond, msg);
 }
 
 // TODO parse "clock" as type here?
@@ -21,6 +28,7 @@ pub fn unsafe_bool_to_clock(value: bool) -> any {
 }
 
 // TODO make this `b.to_int()` instead of `bool_to_int(b)`?
+// TODO dedicated intrinsic so this is faster? ideally we can just make function calls fast enough ofc :)
 pub fn bool_to_int(b: bool) -> int(0..=1) {
     return int(0..=1).from_bits([b]);
 }

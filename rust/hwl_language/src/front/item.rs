@@ -1,6 +1,7 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::flow::{Flow, FlowCompile, FlowRoot};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
@@ -8,7 +9,6 @@ use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, Value};
-use crate::front::variables::VariableValues;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
     EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModuleExternal,
@@ -256,8 +256,9 @@ impl CompileItemContext<'_, '_> {
                 Err(diags.report_internal_error(item_inner.span, reason))
             }
             Item::CommonDeclaration(decl) => {
-                let mut vars = VariableValues::new_root(&self.variables);
-                let value = self.eval_declaration(file_scope, &mut vars, &decl.inner)?;
+                let flow_root = FlowRoot::new(diags);
+                let mut flow = FlowCompile::new_root(&flow_root, decl.span, "item declaration");
+                let value = self.eval_declaration(file_scope, &mut flow, &decl.inner)?;
                 Ok(value.unwrap_or_else(CompileValue::unit))
             }
             Item::ModuleInternal(module) => {
@@ -276,8 +277,9 @@ impl CompileItemContext<'_, '_> {
                 let body = FunctionItemBody::ModuleInternal(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
-                let mut vars = VariableValues::new_root(&self.variables);
-                self.eval_maybe_generic_item(id.span(), body_span, scope, &mut vars, params, body)
+                let flow_root = FlowRoot::new(diags);
+                let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
+                self.eval_maybe_generic_item(id.span(), body_span, scope, &mut flow, params, body)
             }
             Item::ModuleExternal(module) => {
                 let ItemDefModuleExternal {
@@ -295,8 +297,9 @@ impl CompileItemContext<'_, '_> {
                 let body = FunctionItemBody::ModuleExternal(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
-                let mut vars = VariableValues::new_root(&self.variables);
-                self.eval_maybe_generic_item(id.span, body_span, scope, &mut vars, params, body)
+                let flow_root = FlowRoot::new(diags);
+                let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
+                self.eval_maybe_generic_item(id.span, body_span, scope, &mut flow, params, body)
             }
 
             Item::Interface(interface) => {
@@ -315,25 +318,26 @@ impl CompileItemContext<'_, '_> {
                 let body = FunctionItemBody::Interface(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
-                let mut vars = VariableValues::new_root(&self.variables);
-                self.eval_maybe_generic_item(id.span(), *span_body, scope, &mut vars, params, body)
+                let flow_root = FlowRoot::new(diags);
+                let mut flow = FlowCompile::new_root(&flow_root, interface.span, "item declaration");
+                self.eval_maybe_generic_item(id.span(), *span_body, scope, &mut flow, params, body)
             }
         }
     }
 
-    pub fn eval_declaration<V>(
+    pub fn eval_declaration<'f, V>(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut FlowCompile,
         decl: &CommonDeclaration<V>,
     ) -> DiagResult<Option<CompileValue>> {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
-                self.eval_declaration_named(scope, vars, kind).map(Some)
+                self.eval_declaration_named(scope, flow, kind).map(Some)
             }
             CommonDeclaration::ConstBlock(decl) => {
-                self.elaborate_const_block(scope, vars, decl)?;
+                self.elaborate_const_block(scope, flow, decl)?;
                 Ok(None)
             }
         }
@@ -342,7 +346,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_declaration_named(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         decl: &CommonDeclarationNamedKind,
     ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
@@ -358,15 +362,15 @@ impl CompileItemContext<'_, '_> {
                 let body_span = body.span;
 
                 let body = FunctionItemBody::TypeAliasExpr(body);
-                self.eval_maybe_generic_item(id.span(), body_span, scope, vars, params, body)
+                self.eval_maybe_generic_item(id.span(), body_span, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Const(decl) => {
                 let &ConstDeclaration { span: _, id, ty, value } = decl;
 
-                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose()?;
+                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
                 let expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                let value = self.eval_expression_as_compile(scope, vars, expected_ty, value, "const value")?;
+                let value = self.eval_expression_as_compile(scope, flow, expected_ty, value, "const value")?;
 
                 // check type
                 if let Some(ty) = ty {
@@ -390,7 +394,7 @@ impl CompileItemContext<'_, '_> {
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
                 let body = FunctionItemBody::Struct(unique, fields.clone());
-                self.eval_maybe_generic_item(id.span(), *span_body, scope, vars, params, body)
+                self.eval_maybe_generic_item(id.span(), *span_body, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Enum(decl) => {
                 let EnumDeclaration {
@@ -402,7 +406,7 @@ impl CompileItemContext<'_, '_> {
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
                 let body = FunctionItemBody::Enum(unique, variants.clone());
-                self.eval_maybe_generic_item(id.span(), *span, scope, vars, params, body)
+                self.eval_maybe_generic_item(id.span(), *span, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Function(decl) => {
                 let &FunctionDeclaration {
@@ -419,7 +423,7 @@ impl CompileItemContext<'_, '_> {
                 };
                 let function = UserFunctionValue {
                     decl_span: id.span(),
-                    scope_captured: CapturedScope::from_scope(diags, scope, vars),
+                    scope_captured: CapturedScope::from_scope(scope, flow),
                     params: params.clone(),
                     body: Spanned {
                         span: body.span,
@@ -434,7 +438,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_and_declare_declaration(
         &mut self,
         scope: &mut Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         decl: &CommonDeclaration<()>,
     ) {
         let diags = self.refs.diags;
@@ -446,16 +450,15 @@ impl CompileItemContext<'_, '_> {
                 let decl_id = kind.id();
                 let decl_span = kind.span();
 
-                let entry = self.eval_declaration_named(scope, vars, kind).map(|v| {
-                    let var =
-                        vars.var_new_immutable_init(&mut self.variables, decl_id, decl_span, Ok(Value::Compile(v)));
+                let entry = self.eval_declaration_named(scope, flow, kind).map(|v| {
+                    let var = flow.var_new_immutable_init(decl_id, decl_span, Ok(Value::Compile(v)));
                     ScopedEntry::Named(NamedValue::Variable(var))
                 });
                 scope.maybe_declare(diags, Ok(decl_id.spanned_str(self.refs.fixed.source)), entry);
             }
             CommonDeclaration::ConstBlock(decl) => {
                 // elaborate, don't declare anything
-                let _ = self.elaborate_const_block(scope, vars, decl);
+                let _ = self.elaborate_const_block(scope, flow, decl);
             }
         }
     }
@@ -465,7 +468,7 @@ impl CompileItemContext<'_, '_> {
         span_decl: Span,
         span_body: Span,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         params: &Option<Parameters>,
         body: FunctionItemBody,
     ) -> DiagResult<CompileValue> {
@@ -475,13 +478,14 @@ impl CompileItemContext<'_, '_> {
             None => {
                 // eval immediately
                 let body = Spanned::new(span_body, &body);
-                self.eval_item_function_body(scope, vars, None, body)
+                let mut flow = flow.new_child_compile(span_decl, "item body");
+                self.eval_item_function_body(scope, &mut flow, None, body)
             }
             Some(params) => {
                 // build function
                 let func = UserFunctionValue {
                     decl_span: span_decl,
-                    scope_captured: CapturedScope::from_scope(diags, scope, vars),
+                    scope_captured: CapturedScope::from_scope(scope, flow),
                     params: params.clone(),
                     body: Spanned {
                         span: span_body,
@@ -496,7 +500,7 @@ impl CompileItemContext<'_, '_> {
     pub fn eval_item_function_body(
         &mut self,
         scope_params: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut FlowCompile,
         params: Option<Vec<(Identifier, CompileValue)>>,
         body: Spanned<&FunctionItemBody>,
     ) -> DiagResult<CompileValue> {
@@ -505,7 +509,7 @@ impl CompileItemContext<'_, '_> {
 
         match *body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
-                let result_ty = self.eval_expression_as_ty(scope_params, vars, expr)?.inner;
+                let result_ty = self.eval_expression_as_ty(scope_params, flow, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
             FunctionItemBody::ModuleInternal(unique, ast_ref) => {
@@ -517,7 +521,7 @@ impl CompileItemContext<'_, '_> {
                     ElaboratedModuleInternal,
                     |item_params| {
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
+                        let scope_captured = CapturedScope::from_scope(scope_params, flow);
 
                         let ast = &refs.fixed.parsed[ast_ref];
 
@@ -589,7 +593,7 @@ impl CompileItemContext<'_, '_> {
                             .transpose()?;
 
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
+                        let scope_captured = CapturedScope::from_scope(scope_params, flow);
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
@@ -617,7 +621,7 @@ impl CompileItemContext<'_, '_> {
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
-                let scope_captured = CapturedScope::from_scope(diags, scope_params, vars);
+                let scope_captured = CapturedScope::from_scope(scope_params, flow);
 
                 let refs = self.refs;
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
@@ -634,7 +638,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
-                    |_| self.elaborate_struct_new(scope_params, vars, unique, body.span, fields),
+                    |_| self.elaborate_struct_new(scope_params, flow, unique, body.span, fields),
                 )?;
                 Ok(CompileValue::Type(Type::Struct(result_id)))
             }
@@ -644,7 +648,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
                     item_params,
                     ElaboratedEnum,
-                    |_| self.elaborate_enum_new(scope_params, vars, unique, body.span, variants),
+                    |_| self.elaborate_enum_new(scope_params, flow, unique, body.span, variants),
                 )?;
 
                 Ok(CompileValue::Type(Type::Enum(result_id)))
@@ -655,7 +659,7 @@ impl CompileItemContext<'_, '_> {
     fn elaborate_struct_new(
         &mut self,
         scope_params: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut FlowCompile,
         unique: UniqueDeclaration,
         span_body: Span,
         fields: &ExtraList<StructField>,
@@ -667,10 +671,10 @@ impl CompileItemContext<'_, '_> {
         let mut fields_eval = IndexMap::new();
 
         let mut any_field_err = Ok(());
-        let mut visit_field = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, field: &StructField| {
+        let mut visit_field = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, field: &StructField| {
             let &StructField { span: _, id, ty } = field;
 
-            let ty = s.eval_expression_as_ty(scope, vars, ty)?;
+            let ty = s.eval_expression_as_ty(scope, flow, ty)?;
 
             match fields_eval.entry(id.str(source).to_owned()) {
                 Entry::Vacant(entry) => {
@@ -689,7 +693,7 @@ impl CompileItemContext<'_, '_> {
         };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        self.compile_elaborate_extra_list(&mut scope, vars, fields, &mut visit_field)?;
+        self.compile_elaborate_extra_list(&mut scope, flow, fields, &mut visit_field)?;
         any_field_err?;
 
         // check if this struct can be represented in hardware
@@ -715,7 +719,7 @@ impl CompileItemContext<'_, '_> {
     fn elaborate_enum_new(
         &mut self,
         scope_params: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut FlowCompile,
         unique: UniqueDeclaration,
         span_body: Span,
         variants: &ExtraList<EnumVariant>,
@@ -726,11 +730,11 @@ impl CompileItemContext<'_, '_> {
         let mut variants_eval = IndexMap::new();
         let mut any_variant_err = Ok(());
 
-        let mut visit_variant = |s: &mut Self, scope: &mut Scope, vars: &mut VariableValues, variant: &EnumVariant| {
+        let mut visit_variant = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, variant: &EnumVariant| {
             let &EnumVariant { span: _, id, content } = variant;
 
             let content = content
-                .map(|content| s.eval_expression_as_ty(scope, vars, content))
+                .map(|content| s.eval_expression_as_ty(scope, flow, content))
                 .transpose()?;
 
             match variants_eval.entry(id.str(source).to_owned()) {
@@ -750,7 +754,7 @@ impl CompileItemContext<'_, '_> {
         };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        self.compile_elaborate_extra_list(&mut scope, vars, variants, &mut visit_variant)?;
+        self.compile_elaborate_extra_list(&mut scope, flow, variants, &mut visit_variant)?;
         any_variant_err?;
 
         // check if this enum can be represented in hardware

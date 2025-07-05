@@ -1,7 +1,6 @@
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::function::FailedCaptureReason;
+use crate::front::flow::{FailedCaptureReason, Variable};
 use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
-use crate::front::variables::Variable;
 use crate::syntax::ast::{MaybeIdentifier, Spanned};
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::Span;
@@ -296,7 +295,7 @@ impl<'p> Scope<'p> {
                     DeclaredValue::Error(err) => return Err(err),
                     DeclaredValue::FailedCapture(span, reason) => {
                         let reason_str = match reason {
-                            FailedCaptureReason::NotCompile => "contains a non-compile-time value",
+                            FailedCaptureReason::Hardware => "contains a non-compile-time value",
                             FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
                         };
 

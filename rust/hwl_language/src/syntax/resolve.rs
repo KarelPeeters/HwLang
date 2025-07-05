@@ -902,7 +902,12 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, kind: _ } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        span_keyword: _,
+                        id,
+                        kind: _,
+                    } = decl;
                     match vis {
                         Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
@@ -956,7 +961,12 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, kind } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        span_keyword: _,
+                        id,
+                        kind,
+                    } = decl;
 
                     match kind {
                         WireDeclarationKind::Normal {

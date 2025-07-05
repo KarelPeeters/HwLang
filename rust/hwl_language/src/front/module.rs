@@ -1,13 +1,14 @@
 use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
 };
-use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, ArenaVariables, CompileItemContext, CompileRefs};
-use crate::front::context::{
-    BlockKind, CompileTimeExpressionContext, ExpressionContext, ExtraRegisters, IrBuilderExpressionContext,
-};
+use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::expression::{NamedOrValue, ValueInner};
+use crate::front::flow::{
+    ExtraRegisters, Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent,
+    HardwareProcessKind,
+};
 use crate::front::function::CapturedScope;
 use crate::front::interface::ElaboratedInterfacePortInfo;
 use crate::front::item::{ElaboratedInterface, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
@@ -18,7 +19,6 @@ use crate::front::signal::{
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined};
-use crate::front::variables::{VariableValues, VariableValuesContent};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
@@ -79,15 +79,16 @@ enum ConnectorKind {
 
 #[derive(Debug)]
 pub struct ElaboratedModuleHeader<A> {
-    ast_ref: A,
+    pub ast_ref: A,
     debug_info_params: Option<Vec<(String, CompileValue)>>,
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
+
     captured_scope_params: CapturedScope,
     scope_ports: ScopeContent,
-    variables: ArenaVariables,
-    vars: VariableValuesContent,
+    flow_root: FlowRootContent,
+    flow: FlowCompileContent,
 }
 
 pub struct ElaboratedModuleInternalInfo {
@@ -122,29 +123,32 @@ impl CompileRefs<'_, '_> {
 
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None);
-        let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span);
+        let flow_root = FlowRoot::new(self.diags);
+        let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
+        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span);
 
         // elaborate ports
-        // TODO we actually need a full context here?
+        // TODO we actually need a full context/flow here?
         let (connectors, scope_ports, ports_ir) =
-            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut vars, ports, def_span)?;
+            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut flow, ports, def_span)?;
         let scope_ports = scope_ports.into_content();
 
         let source = self.fixed.source;
         let debug_info_params =
             debug_info_params.map(|p| p.into_iter().map(|(k, v)| (k.str(source).to_owned(), v)).collect_vec());
 
+        let flow = flow.into_content();
         let header = ElaboratedModuleHeader {
             ast_ref,
             debug_info_params,
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
             ports_ir,
+
             captured_scope_params,
             scope_ports,
-            variables: ctx.variables,
-            vars: vars.into_content(),
+            flow_root: flow_root.into_content(),
+            flow,
         };
         Ok((connectors, header))
     }
@@ -161,8 +165,8 @@ impl CompileRefs<'_, '_> {
             ports_ir,
             captured_scope_params,
             scope_ports,
-            variables,
-            vars,
+            flow_root,
+            flow,
         } = ports;
         let &ast::ItemDefModuleInternal {
             span: def_span,
@@ -176,21 +180,22 @@ impl CompileRefs<'_, '_> {
         self.check_should_stop(id.span())?;
 
         // rebuild scopes
-        let mut ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces, variables);
-        let mut vars = VariableValues::restore_root_from_content(&ctx.variables, vars);
+        let ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces);
+        let flow_root = FlowRoot::restore(&self.diags, flow_root);
+        let mut flow = FlowCompile::restore_root(&flow_root, flow);
 
-        let scope_params = captured_scope_params.to_scope(&mut ctx.variables, &mut vars, self, def_span);
+        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span);
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
-        self.elaborate_module_body_impl(ctx, &vars, &scope_ports, id, debug_info_params, ports_ir, body)
+        self.elaborate_module_body_impl(ctx, &flow, &scope_ports, id, debug_info_params, ports_ir, body)
     }
 
-    fn elaborate_module_ports_impl<'p>(
+    fn elaborate_module_ports_impl<'p, F: Flow>(
         &self,
         ctx: &mut CompileItemContext,
         scope_params: &'p Scope<'p>,
-        vars: &mut VariableValues,
+        flow: &mut F,
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
     ) -> DiagResult<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>)> {
@@ -213,7 +218,7 @@ impl CompileRefs<'_, '_> {
 
         let mut visit_port_item = |ctx: &mut CompileItemContext,
                                    scope_ports: &mut Scope,
-                                   vars: &mut VariableValues,
+                                   flow: &mut F,
                                    port_item: &ModulePortItem| {
             match port_item {
                 ModulePortItem::Single(port_item) => {
@@ -226,9 +231,9 @@ impl CompileRefs<'_, '_> {
                                     Ok(Spanned::new(span_clock, HardwareType::Bool)),
                                 ),
                                 PortSingleKindInner::Normal { domain, ty } => (
-                                    ctx.eval_port_domain(scope_ports, vars, domain)
+                                    ctx.eval_port_domain(scope_ports, flow, domain)
                                         .map(|d| d.map_inner(PortDomain::Kind)),
-                                    ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port"),
+                                    ctx.eval_expression_as_ty_hardware(scope_ports, flow, ty, "port"),
                                 ),
                             };
 
@@ -251,11 +256,11 @@ impl CompileRefs<'_, '_> {
                             domain,
                             interface,
                         } => {
-                            let domain = ctx.eval_port_domain(scope_ports, vars, domain);
+                            let domain = ctx.eval_port_domain(scope_ports, flow, domain);
                             let interface_view = ctx
                                 .eval_expression_as_compile(
                                     scope_ports,
-                                    vars,
+                                    flow,
                                     &Type::InterfaceView,
                                     interface,
                                     "interface view",
@@ -291,19 +296,19 @@ impl CompileRefs<'_, '_> {
                         ref ports,
                     } = port_item;
 
-                    let domain = ctx.eval_port_domain(scope_ports, vars, domain);
+                    let domain = ctx.eval_port_domain(scope_ports, flow, domain);
 
                     let mut visit_port_item_in_block =
                         |ctx: &mut CompileItemContext,
                          scope_ports: &mut Scope,
-                         vars: &mut VariableValues,
+                         flow: &mut F,
                          port_item_in_block: &ModulePortInBlock| {
                             let &ModulePortInBlock { span: _, id, ref kind } = port_item_in_block;
 
                             match *kind {
                                 ModulePortInBlockKind::Port { direction, ty } => {
                                     let domain = domain.map(|d| d.map_inner(PortDomain::Kind));
-                                    let ty = ctx.eval_expression_as_ty_hardware(scope_ports, vars, ty, "port");
+                                    let ty = ctx.eval_expression_as_ty_hardware(scope_ports, flow, ty, "port");
 
                                     let entry = push_connector_single(
                                         ctx,
@@ -326,7 +331,7 @@ impl CompileRefs<'_, '_> {
                                     let interface_view = ctx
                                         .eval_expression_as_compile(
                                             scope_ports,
-                                            vars,
+                                            flow,
                                             &Type::InterfaceView,
                                             interface,
                                             "interface",
@@ -357,13 +362,13 @@ impl CompileRefs<'_, '_> {
                             Ok(())
                         };
 
-                    ctx.compile_elaborate_extra_list(scope_ports, vars, ports, &mut visit_port_item_in_block)?;
+                    ctx.compile_elaborate_extra_list(scope_ports, flow, ports, &mut visit_port_item_in_block)?;
                 }
             }
             Ok(())
         };
 
-        ctx.compile_elaborate_extra_list(&mut scope_ports, vars, &ports.inner, &mut visit_port_item)?;
+        ctx.compile_elaborate_extra_list(&mut scope_ports, flow, &ports.inner, &mut visit_port_item)?;
 
         Ok((connectors, scope_ports, ports_ir))
     }
@@ -371,7 +376,7 @@ impl CompileRefs<'_, '_> {
     fn elaborate_module_body_impl<'a>(
         &self,
         mut ctx_item: CompileItemContext<'a, '_>,
-        vars: &VariableValues,
+        flow: &FlowCompile,
         scope_header: &Scope,
         def_id: MaybeIdentifier,
         debug_info_params: Option<Vec<(String, CompileValue)>>,
@@ -402,15 +407,16 @@ impl CompileRefs<'_, '_> {
         };
 
         // process declarations and collect processes and instantiations
-        let (todo, _) = ctx.pass_0_declarations_collect(scope_header, vars, body, true);
+        let (todo, _) = ctx.pass_0_declarations_collect(scope_header, flow, body, true);
 
         // process the collected processes and instantiations
-        ctx.pass_1_elaborate_children(vars, scope_header, todo);
+        ctx.pass_1_elaborate_children(scope_header, flow, todo);
 
         // stop if any errors have happened so far, we don't want spurious errors about drivers
         ctx.delayed_error?;
 
         // check that types and domains were inferred for everything
+        // TODO maybe this should be ordered after driving checking, now we get "failed to infer" before "no driver"
         ctx.pass_2_check_inferred()?;
 
         // check driver validness
@@ -758,8 +764,8 @@ pub struct ExtraRegisterInit {
 
 pub struct ModuleTodo<'a> {
     span: Span,
-    scope: Option<ScopeContent>,
-    vars: VariableValuesContent,
+    scope: ScopeContent,
+    flow: FlowCompileContent,
     children: Vec<ModuleChildTodo<'a>>,
 }
 
@@ -781,7 +787,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn pass_0_declarations_collect(
         &mut self,
         scope_outer: &Scope,
-        vars_outer: &VariableValues,
+        flow_outer: &FlowCompile,
         block_outer: &'a Block<ModuleStatement>,
         is_root_block: bool,
     ) -> (ModuleTodo<'a>, PublicDeclarations<'a>) {
@@ -791,7 +797,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let Block { span: _, statements } = block_outer;
 
         let mut scope = Scope::new_child(block_outer.span, scope_outer);
-        let mut vars = VariableValues::new_child(vars_outer);
+        let mut flow = flow_outer.new_child_isolated();
 
         let mut todo_children = vec![];
         let mut pub_declarations = vec![];
@@ -803,7 +809,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             match &stmt.inner {
                 // control flow: evaluate now and visit the children immediately
                 ModuleStatementKind::Block(block) => {
-                    let (todo, decls) = self.pass_0_declarations_collect(&scope, &vars, block, false);
+                    let (todo, decls) = self.pass_0_declarations_collect(&scope, &flow, block, false);
                     process_todo_and_decls(
                         diags,
                         &mut scope,
@@ -814,10 +820,10 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     );
                 }
                 ModuleStatementKind::If(if_stmt) => {
-                    match self.ctx.compile_if_statement_choose_block(&scope, &vars, if_stmt) {
+                    match self.ctx.compile_if_statement_choose_block(&scope, &mut flow, if_stmt) {
                         Ok(block) => {
                             if let Some(block) = block {
-                                let (todo, decls) = self.pass_0_declarations_collect(&scope, &vars, block, false);
+                                let (todo, decls) = self.pass_0_declarations_collect(&scope, &flow, block, false);
                                 process_todo_and_decls(
                                     diags,
                                     &mut scope,
@@ -835,7 +841,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 }
                 ModuleStatementKind::For(for_stmt) => {
                     let for_stmt = Spanned::new(stmt.span, for_stmt);
-                    match self.elaborate_for(&scope, &vars, for_stmt) {
+                    match self.elaborate_for(&scope, &flow, for_stmt) {
                         Ok((todo, decls)) => {
                             process_todo_and_decls(
                                 diags,
@@ -852,13 +858,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                 // declarations: evaluate and declare now
                 ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.ctx.eval_and_declare_declaration(&mut scope, &mut vars, decl);
+                    self.ctx.eval_and_declare_declaration(&mut scope, &mut flow, decl);
                 }
                 ModuleStatementKind::RegDeclaration(decl) => {
-                    let id = self.ctx.eval_maybe_general_id(&scope, &mut vars, decl.id);
+                    let id = self.ctx.eval_maybe_general_id(&scope, &mut flow, decl.id);
 
                     let entry = id.as_ref_ok().and_then(|id| {
-                        let reg_init = self.elaborate_module_declaration_reg(&scope, &vars, id, decl)?;
+                        let decl = Spanned::new(stmt.span, decl);
+                        let reg_init = self.elaborate_module_declaration_reg(&scope, &flow, id, decl)?;
 
                         let RegisterInit { reg, init } = reg_init;
                         self.register_initial_values.insert_first(reg, init);
@@ -881,11 +888,11 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     scope.maybe_declare(diags, id, entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let id = self.ctx.eval_maybe_general_id(&scope, &mut vars, decl.id);
+                    let id = self.ctx.eval_maybe_general_id(&scope, &mut flow, decl.id);
 
                     let entry = id.as_ref_ok().and_then(|id| {
                         let (named_value, process) =
-                            self.elaborate_module_declaration_wire(&scope, &vars, id, stmt.span, decl)?;
+                            self.elaborate_module_declaration_wire(&scope, &mut flow, id, stmt.span, decl)?;
 
                         if let Some(process) = process {
                             self.children
@@ -912,8 +919,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     // TODO check if this still works in nested blocks, maybe we should only allow this at the top level
                     //   no, we can't really ban this, we need conditional makers for eg. conditional ports
                     // declare register that shadows the outer port, which is exactly what we want
-                    match self.elaborate_module_declaration_reg_out_port(&scope, &vars, stmt.span, decl, is_root_block)
-                    {
+                    match self.elaborate_module_declaration_reg_out_port(
+                        &scope,
+                        &mut flow,
+                        stmt.span,
+                        decl,
+                        is_root_block,
+                    ) {
                         Ok((port, reg_init)) => {
                             let port_drivers = self.drivers.output_port_drivers.get_mut(&port).unwrap();
                             if let Ok(port_drivers) = port_drivers.as_ref_mut_ok() {
@@ -956,41 +968,31 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         let todo = ModuleTodo {
             span: block_outer.span,
-            scope: Some(scope.into_content()),
-            vars: vars.into_content(),
+            scope: scope.into_content(),
+            flow: flow.into_content(),
             children: todo_children,
         };
         (todo, pub_declarations)
     }
 
-    fn pass_1_elaborate_children(&mut self, vars_parent: &VariableValues, scope_parent: &Scope, todo: ModuleTodo) {
+    fn pass_1_elaborate_children(&mut self, scope_parent: &Scope, flow_parent: &FlowCompile, todo: ModuleTodo) {
         let ModuleTodo {
             span: span_block,
             scope,
-            vars,
+            flow,
             children,
         } = todo;
 
-        let vars = VariableValues::restore_child_from_content(&self.ctx.variables, vars_parent, vars);
-
-        let scope_slot;
-        let scope = if let Some(scope) = scope {
-            scope_slot = Scope::restore_child_from_content(span_block, scope_parent, scope);
-            &scope_slot
-        } else {
-            scope_parent
-        };
+        let scope = Scope::restore_child_from_content(span_block, scope_parent, scope);
+        let mut flow = FlowCompile::restore_child_isolated(flow_parent, flow);
 
         for child in children {
             match child {
                 ModuleChildTodo::Nested(inner) => {
-                    self.pass_1_elaborate_children(&vars, scope, inner);
+                    self.pass_1_elaborate_children(&scope, &flow, inner);
                 }
                 ModuleChildTodo::CombinatorialBlock(stmt_index, block) => {
-                    let mut vars_inner = self.new_vars_for_process(&vars);
-
-                    let ir_process =
-                        self.elaborate_combinatorial_block(&mut vars_inner, scope, stmt_index, block.inner);
+                    let ir_process = self.elaborate_combinatorial_block(&scope, &flow, stmt_index, block.inner);
                     match ir_process {
                         Ok(ir_process) => {
                             let child = Child::Finished(IrModuleChild::CombinatorialProcess(ir_process));
@@ -1000,8 +1002,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
                 }
                 ModuleChildTodo::ClockedBlock(stmt_index, block) => {
-                    let mut vars_inner = self.new_vars_for_process(&vars);
-                    let ir_process = self.elaborate_clocked_block(&mut vars_inner, scope, stmt_index, block.inner);
+                    let ir_process = self.elaborate_clocked_block(&scope, &mut flow, stmt_index, block.inner);
 
                     match ir_process {
                         Ok(ir_process) => {
@@ -1015,7 +1016,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
                 }
                 ModuleChildTodo::Instance(stmt_index, child) => {
-                    let child_ir = self.elaborate_instance(scope, &vars, stmt_index, child.inner);
+                    let child_ir = self.elaborate_instance(&scope, &mut flow, stmt_index, child.inner);
                     match child_ir {
                         Ok(child_ir) => {
                             self.children.push(Spanned::new(child.span, Child::Finished(child_ir)));
@@ -1031,8 +1032,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
     fn elaborate_combinatorial_block(
         &mut self,
-        vars: &mut VariableValues,
         scope: &Scope,
+        flow_parent: &FlowCompile,
         stmt_index: usize,
         block: &CombinatorialBlock,
     ) -> DiagResult<IrCombinatorialProcess> {
@@ -1042,27 +1043,31 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         } = block;
         let diags = self.ctx.refs.diags;
 
-        let block_kind = BlockKind::Combinatorial { span_keyword };
-        let mut report_assignment = |ctx: &CompileItemContext, target: Spanned<Signal>| {
-            self.drivers
-                .report_assignment(ctx, Driver::CombinatorialBlock(stmt_index), target)
-        };
-        let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment, &mut self.ir_wires);
-
-        let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
-        let ir_variables = ctx.finish();
+        // elaborate block
+        let flow_kind = HardwareProcessKind::CombinatorialBlock { span_keyword };
+        let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+        let end = self.ctx.elaborate_block(scope, &mut flow.as_flow(), None, block)?;
         end.unwrap_outside_function_and_loop(diags)?;
+        let (ir_vars, ir_block, signals_driven) = flow.finish();
+
+        // report drivers
+        let driver = Driver::CombinatorialBlock(stmt_index);
+        for (signal, span) in signals_driven {
+            let _ = self
+                .drivers
+                .report_assignment(self.ctx, driver, Spanned::new(span, signal));
+        }
 
         Ok(IrCombinatorialProcess {
-            locals: ir_variables,
+            locals: ir_vars,
             block: ir_block,
         })
     }
 
     fn elaborate_clocked_block(
         &mut self,
-        vars: &mut VariableValues,
         scope: &Scope,
+        flow_parent: &mut FlowCompile,
         stmt_index: usize,
         block: &ClockedBlock,
     ) -> DiagResult<ChildClockedProcess> {
@@ -1075,8 +1080,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         } = block;
         let diags = self.ctx.refs.diags;
 
-        // eval signals
-        let clock = self.ctx.eval_expression_as_domain_signal(scope, vars, clock);
+        // eval domain
+        let clock = self.ctx.eval_expression_as_domain_signal(scope, flow_parent, clock);
         let reset = reset
             .as_ref()
             .map(|reset| {
@@ -1084,7 +1089,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     .as_ref()
                     .map_inner(|reset| {
                         let &ClockedBlockReset { kind, signal } = reset;
-                        let signal = self.ctx.eval_expression_as_domain_signal(scope, vars, signal)?;
+                        let signal = self.ctx.eval_expression_as_domain_signal(scope, flow_parent, signal)?;
                         Ok(ClockedBlockReset { kind, signal })
                     })
                     .transpose()
@@ -1121,26 +1126,30 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         };
         let domain = Spanned::new(span_domain, domain);
 
-        let mut elaborate_block = |extra_regs| {
-            let block_kind = BlockKind::Clocked {
+        let mut elaborate_block = |extra_registers| {
+            // elaborate block
+            let flow_kind = HardwareProcessKind::ClockedBlockBody {
                 span_keyword,
                 domain,
-                ir_registers: &mut self.ir_registers,
-                extra_registers: extra_regs,
+                extra_registers,
             };
-            let mut report_assignment = |ctx: &CompileItemContext, target: Spanned<Signal>| {
-                self.drivers
-                    .report_assignment(ctx, Driver::ClockedBlock(stmt_index), target)
-            };
-            let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment, &mut self.ir_wires);
-
-            let (ir_block, end) = self.ctx.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
-            let ir_variables = ctx.finish();
+            let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+            let end = self.ctx.elaborate_block(scope, &mut flow.as_flow(), None, block)?;
             end.unwrap_outside_function_and_loop(diags)?;
-            Ok((ir_block, ir_variables))
+            let (ir_vars, ir_block, signals_driven) = flow.finish();
+
+            // report drivers
+            for (signal, span) in signals_driven {
+                let driver = Driver::ClockedBlock(stmt_index);
+                let _ = self
+                    .drivers
+                    .report_assignment(self.ctx, driver, Spanned::new(span, signal));
+            }
+
+            Ok((ir_vars, ir_block))
         };
 
-        let ((clock_block, locals), reset) = match reset {
+        let ((ir_vars, ir_block), reset) = match reset {
             None => (elaborate_block(ExtraRegisters::NoReset)?, None),
             Some(reset) => {
                 let mut reg_inits = vec![];
@@ -1157,42 +1166,17 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         };
 
         Ok(ChildClockedProcess {
-            locals,
+            locals: ir_vars,
             clock_signal: clock,
-            clock_block,
+            clock_block: ir_block,
             reset,
         })
-    }
-
-    /// We create a separate [VariableValues] for each process for a couple of reasons:
-    /// * This helps ensure that there are no accidental writes to variables outside of the block scope.
-    /// * This allows us to immediately discard local variables after the process is done.
-    /// * This is a convenient place to initialize signal versions.
-    fn new_vars_for_process<'p>(&self, vars_parent: &'p VariableValues<'p>) -> VariableValues<'p> {
-        let diags = self.ctx.refs.diags;
-
-        let mut vars = VariableValues::new_child(vars_parent);
-
-        let mut add_signal = |signal, span| {
-            let _ = vars.signal_new(diags, Spanned::new(span, signal));
-        };
-        for (port, port_info) in &self.ctx.ports {
-            add_signal(Signal::Port(port), port_info.span);
-        }
-        for (wire, wire_info) in &self.ctx.wires {
-            add_signal(Signal::Wire(wire), wire_info.decl_span());
-        }
-        for (register, register_info) in &self.ctx.registers {
-            add_signal(Signal::Register(register), register_info.id.span());
-        }
-
-        vars
     }
 
     fn elaborate_for(
         &mut self,
         scope_parent: &Scope,
-        vars: &VariableValues,
+        flow_parent: &FlowCompile,
         for_stmt: Spanned<&'a ForStatement<ModuleStatement>>,
     ) -> DiagResult<(ModuleTodo<'a>, PublicDeclarations<'a>)> {
         let diags = self.ctx.refs.diags;
@@ -1208,16 +1192,12 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let iter_span = iter.span;
 
         let mut scope_for = Scope::new_child(for_stmt.span, scope_parent);
-        let mut vars_for = VariableValues::new_child(vars);
-        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut vars_for, index_ty));
+        let mut flow_for = flow_parent.new_child_isolated();
+        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut flow_for, index_ty));
 
-        let mut ctx = CompileTimeExpressionContext {
-            span: for_stmt.span,
-            reason: "module-level for statement".to_string(),
-        };
         let iter = self
             .ctx
-            .eval_expression_as_for_iterator(&mut ctx, &mut (), &scope_for, &mut vars_for, iter);
+            .eval_expression_as_for_iterator(&scope_for, &mut flow_for, iter);
 
         let index_ty = index_ty.transpose()?;
         let iter = iter?;
@@ -1242,20 +1222,22 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 )?;
             }
 
-            let mut scope_inner = Scope::new_child(index.span().join(body.span), &scope_for);
-            let mut vars_inner = VariableValues::new_child(&vars_for);
-            let var = vars_inner.var_new_immutable_init(&mut self.ctx.variables, index, span_keyword, Ok(index_value));
+            // elaborate the body
+            let mut scope_body = Scope::new_child(index.span().join(body.span), &scope_for);
+            let mut flow_body = flow_for.new_child_isolated();
 
-            scope_inner.maybe_declare(
+            let index_var = flow_body.var_new_immutable_init(index, span_keyword, Ok(index_value));
+            scope_body.maybe_declare(
                 diags,
                 Ok(index.spanned_str(source)),
-                Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+                Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
             );
 
-            let (todo, decls) = self.pass_0_declarations_collect(&scope_inner, &vars_inner, body, false);
+            let (todo, decls) = self.pass_0_declarations_collect(&scope_body, &flow_body, body, false);
 
-            // wrap the children in an additional layer to jeep track of the inner scope
-            let scope_inner = scope_inner.into_content();
+            // wrap the children in an additional layer to keep track of the inner scope
+            let scope_body = scope_body.into_content();
+            let flow_body = flow_body.into_content();
 
             let mut todo_children_inner = vec![];
             process_todo_and_decls(
@@ -1270,8 +1252,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             if !todo_children_inner.is_empty() {
                 todo_children.push(ModuleChildTodo::Nested(ModuleTodo {
                     span: body.span,
-                    scope: Some(scope_inner),
-                    vars: vars_inner.into_content(),
+                    scope: scope_body,
+                    flow: flow_body,
                     children: todo_children_inner,
                 }))
             }
@@ -1279,8 +1261,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         let todo = ModuleTodo {
             span: for_stmt.span,
-            scope: Some(scope_for.into_content()),
-            vars: vars_for.into_content(),
+            scope: scope_for.into_content(),
+            flow: flow_for.into_content(),
             children: todo_children,
         };
 
@@ -1290,7 +1272,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn elaborate_instance(
         &mut self,
         scope: &Scope,
-        vars: &VariableValues,
+        flow_parent: &mut FlowCompile,
         stmt_index: usize,
         instance: &ModuleInstance,
     ) -> DiagResult<IrModuleChild> {
@@ -1306,8 +1288,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             ref port_connections,
         } = instance;
 
-        let mut vars = VariableValues::new_child(vars);
-        let elaborated_module = ctx.eval_expression_as_module(scope, &mut vars, span_keyword, module)?;
+        let elaborated_module = ctx.eval_expression_as_module(scope, flow_parent, span_keyword, module)?;
 
         let (instance_info, connectors, def_ports_span) = match elaborated_module {
             ElaboratedModule::Internal(module) => {
@@ -1363,7 +1344,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let mut single_to_signal = IndexMap::new();
         let mut ir_connections = vec![];
 
-        for (connector, connector_info) in connectors {
+        for (connector_index, (connector, connector_info)) in enumerate(connectors) {
             let connector_id_str = connector_info.id.str(source);
             match id_to_connection_and_used.get_mut(connector_id_str) {
                 Some((connection, connection_used)) => {
@@ -1375,8 +1356,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                     let connections = self.elaborate_instance_port_connection(
                         scope,
-                        &mut vars,
+                        flow_parent,
                         stmt_index,
+                        connector_index,
                         connectors,
                         &single_to_signal,
                         connector,
@@ -1433,8 +1415,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn elaborate_instance_port_connection(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow_parent: &mut FlowCompile,
         stmt_index: usize,
+        connection_index: usize,
         connectors: &ArenaConnectors,
         prev_single_to_signal: &IndexMap<ConnectorSingle, ConnectionSignal>,
         connector: Connector,
@@ -1495,14 +1478,17 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         // always try to evaluate as signal for domain replacing purposes
         let signal = match &self.ctx.refs.get_expr(value_expr) {
             ExpressionKind::Dummy => ConnectionSignal::Dummy(value_expr.span),
-            _ => match self
-                .ctx
-                .try_eval_expression_as_domain_signal(scope, vars, value_expr, |_| ())
-            {
-                Ok(signal) => ConnectionSignal::Signal(signal.inner),
-                Err(Either::Left(())) => ConnectionSignal::Expression(value_expr.span),
-                Err(Either::Right(e)) => throw!(e),
-            },
+            _ => {
+                let mut flow_domain = flow_parent.new_child_isolated();
+                match self
+                    .ctx
+                    .try_eval_expression_as_domain_signal(scope, &mut flow_domain, value_expr, |_| ())
+                {
+                    Ok(signal) => ConnectionSignal::Signal(signal.inner),
+                    Err(Either::Left(())) => ConnectionSignal::Expression(value_expr.span),
+                    Err(Either::Right(e)) => throw!(e),
+                }
+            }
         };
 
         // evaluate the connection differently depending on the port direction
@@ -1534,27 +1520,20 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         }
 
                         // eval expr
-                        // TODO this should not be an internal, this is actually possible now with block expressions
-                        let mut report_assignment =
-                            report_assignment_internal_error(diags, "module instance port connection");
-                        let block_kind = BlockKind::InstancePortConnection {
+                        let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection.span,
                         };
-                        let mut ctx =
-                            IrBuilderExpressionContext::new(block_kind, &mut report_assignment, &mut self.ir_wires);
-                        let mut ctx_block = ctx.new_ir_block();
+                        let mut flow =
+                            FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+                        let connection_value =
+                            self.ctx
+                                .eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value_expr)?;
+                        let (ir_vars, mut ir_block, signals_driven) = flow.finish();
 
-                        let mut vars_inner = VariableValues::new_child(vars);
-                        let connection_value = self.ctx.eval_expression(
-                            &mut ctx,
-                            &mut ctx_block,
-                            scope,
-                            &mut vars_inner,
-                            &ty.inner.as_type(),
-                            value_expr,
-                        )?;
-
-                        let locals = ctx.finish();
+                        // check that nothing is driven here
+                        for (signal, first_drive_span) in signals_driven {
+                            todo!("error")
+                        }
 
                         // check type
                         let reason = TypeContainsReason::InstancePortInput {
@@ -1602,7 +1581,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 .transpose()?;
 
                         // build extra wire and process if necessary
-                        let connection_value_ir = if !ctx_block.statements.is_empty()
+                        let connection_value_ir = if !ir_block.statements.is_empty()
                             || connection_value_ir_raw.inner.contains_variable(&self.ctx.large)
                         {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
@@ -1612,7 +1591,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(self.ctx),
                             });
 
-                            ctx_block.statements.push(Spanned {
+                            ir_block.statements.push(Spanned {
                                 span: connection.span,
                                 inner: IrStatement::Assign(
                                     IrAssignmentTarget::wire(extra_ir_wire),
@@ -1620,8 +1599,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 ),
                             });
                             let process = IrCombinatorialProcess {
-                                locals,
-                                block: ctx_block,
+                                locals: ir_vars,
+                                block: ir_block,
                             };
                             let child = Child::Finished(IrModuleChild::CombinatorialProcess(process));
                             self.children.push(Spanned::new(connection.span, child));
@@ -1649,7 +1628,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         match self.ctx.refs.get_expr(value_expr) {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
                             &ExpressionKind::Id(id) => {
-                                let id = self.ctx.eval_general_id(scope, vars, id)?;
+                                let id = self.ctx.eval_general_id(scope, flow_parent, id)?;
                                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
                                 let named = self.ctx.eval_named_or_value(scope, id)?;
 
@@ -1714,7 +1693,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 ));
 
                                 // report driver
-                                let driver = Driver::InstancePortConnection(stmt_index);
+                                let driver = Driver::InstancePortConnection(stmt_index, connection_index, 0);
                                 let target = Spanned::new(named.span, signal_target);
                                 self.drivers.report_assignment(self.ctx, driver, target)?;
 
@@ -1749,22 +1728,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                 // eval expr
                 // TODO this should not be an internal, this is actually possible now with block expressions
-                let mut report_assignment = report_assignment_internal_error(diags, "module instance port connection");
-                let block_kind = BlockKind::InstancePortConnection {
+                let flow_kind = HardwareProcessKind::InstancePortConnection {
                     span_connection: connection.span,
                 };
-                let mut ctx = IrBuilderExpressionContext::new(block_kind, &mut report_assignment, &mut self.ir_wires);
-                let mut ctx_block = ctx.new_ir_block();
 
-                let mut vars_inner = VariableValues::new_child(vars);
-                let value = self.ctx.eval_expression_inner(
-                    &mut ctx,
-                    &mut ctx_block,
-                    scope,
-                    &mut vars_inner,
-                    &Type::Any,
-                    value_expr,
-                )?;
+                let mut flow_connection = flow_parent.new_child_isolated();
+                let value = self
+                    .ctx
+                    .eval_expression_inner(scope, &mut flow_connection, &Type::Any, value_expr)?;
 
                 // unwrap interface
                 // TODO avoid cloning signals vec here
@@ -1819,26 +1790,26 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                 let mut result_connections = vec![];
 
-                for i in 0..interface_info.ports.len() {
-                    let (_, connector_dir) = &view_info.port_dirs.as_ref_ok()?[i];
+                for port_index in 0..interface_info.ports.len() {
+                    let (_, connector_dir) = &view_info.port_dirs.as_ref_ok()?[port_index];
 
                     // check direction
                     let (value_dir, value_signal, value_ir) = match value_signals {
                         WireOrPort::Port(ports) => {
-                            let port = ports[i];
+                            let port = ports[port_index];
                             let info = &self.ctx.ports[port];
                             (Some(info.direction), Signal::Port(port), IrWireOrPort::Port(info.ir))
                         }
                         WireOrPort::Wire((wires, ir_wires)) => {
-                            let wire = wires[i];
-                            (None, Signal::Wire(wire), IrWireOrPort::Wire(ir_wires[i]))
+                            let wire = wires[port_index];
+                            (None, Signal::Wire(wire), IrWireOrPort::Wire(ir_wires[port_index]))
                         }
                     };
                     if let Some(value_dir) = value_dir {
                         if connector_dir.inner != value_dir.inner {
                             let diag = Diagnostic::new(format!(
                                 "direction mismatch for interface port `{}`",
-                                interface_info.ports[i].id.str(source)
+                                interface_info.ports[port_index].id.str(source)
                             ))
                             .add_info(
                                 connection_id.span,
@@ -1866,7 +1837,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             any_output = true;
 
                             // report driver
-                            let driver = Driver::InstancePortConnection(stmt_index);
+                            let driver = Driver::InstancePortConnection(stmt_index, connection_index, port_index);
                             let target = Spanned::new(value_expr.span, value_signal);
                             self.drivers.report_assignment(self.ctx, driver, target)?;
 
@@ -1880,7 +1851,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         signal: value_signal,
                     });
                     result_connections.push((
-                        connector_singles[i],
+                        connector_singles[port_index],
                         signal,
                         Spanned::new(connection.span, ir_connection),
                     ))
@@ -2077,7 +2048,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn elaborate_module_declaration_wire(
         &mut self,
         scope: &Scope,
-        vars_outer: &VariableValues,
+        flow_parent: &mut FlowCompile,
         id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
         decl_span: Span,
         decl: &WireDeclaration,
@@ -2087,13 +2058,15 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let diags = ctx.refs.diags;
 
         // declaration and visibility are handled in the caller
-        let &WireDeclaration { vis: _, id: _, kind } = decl;
+        let &WireDeclaration {
+            vis: _,
+            span_keyword,
+            id: _,
+            kind,
+        } = decl;
         let id_owned = id
             .as_ref()
             .map_id(|id| id.as_ref().map_inner(|s| s.as_ref().to_owned()));
-
-        let mut report_assignment = report_assignment_internal_error(diags, "wire declaration value");
-        let mut vars_inner = VariableValues::new_child(vars_outer);
 
         // eval domain and value
         match kind {
@@ -2116,12 +2089,12 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     WireDeclarationDomainTyKind::Normal { domain, ty } => {
                         let domain = domain
                             .map(|domain| {
-                                let domain = ctx.eval_domain(scope, &mut vars_inner, domain)?;
+                                let domain = ctx.eval_domain(scope, flow_parent, domain)?;
                                 Ok(domain.map_inner(ValueDomain::from_domain_kind))
                             })
                             .transpose();
                         let ty = ty
-                            .map(|ty| ctx.eval_expression_as_ty_hardware(scope, &mut vars_inner, ty, "wire"))
+                            .map(|ty| ctx.eval_expression_as_ty_hardware(scope, flow_parent, ty, "wire"))
                             .transpose();
 
                         let domain = domain?;
@@ -2136,37 +2109,29 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     None => {
                         // just set the domain and type
                         if let Some(domain) = domain {
-                            self.ctx.wires[wire].suggest_domain(&mut self.ctx.wire_interfaces, domain)?;
+                            ctx.wires[wire].suggest_domain(&mut ctx.wire_interfaces, domain)?;
                         }
                         if let Some(ty) = ty.as_ref() {
-                            self.ctx.wires[wire].suggest_ty(
-                                refs,
-                                &self.ctx.wire_interfaces,
-                                &mut self.ir_wires,
-                                ty.as_ref(),
-                            )?;
+                            ctx.wires[wire].suggest_ty(refs, &ctx.wire_interfaces, &mut self.ir_wires, ty.as_ref())?;
                         }
 
                         None
                     }
                     Some((assign_span, value)) => {
                         // eval value
-                        let block_kind = BlockKind::WireValue { span_value: value.span };
-                        let mut ctx_expr =
-                            IrBuilderExpressionContext::new(block_kind, &mut report_assignment, &mut self.ir_wires);
-                        let mut process_block = ctx_expr.new_ir_block();
-
                         let expected_ty = ty.as_ref().map_or(Type::Any, |ty| ty.inner.as_type());
-                        let value = ctx.eval_expression(
-                            &mut ctx_expr,
-                            &mut process_block,
-                            scope,
-                            &mut vars_inner,
-                            &expected_ty,
-                            value,
-                        )?;
 
-                        let locals = ctx_expr.finish();
+                        let flow_kind = HardwareProcessKind::CombinatorialBlock { span_keyword };
+                        let mut flow =
+                            FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+                        let value = ctx.eval_expression(scope, &mut flow.as_flow(), &expected_ty, value)?;
+                        let (ir_vars, mut ir_block, signals_driven) = flow.finish();
+
+                        for (signal, span) in signals_driven {
+                            // TODO create a wrapper function around finish_hardware_process(), similar to how we create one?
+                            // TODO share code with other case of this
+                            todo!("report error, driving things from within a wire declaration is too weird to allow")
+                        }
 
                         // infer or check domain
                         let value_domain = value.as_ref().map_inner(|v| v.domain());
@@ -2237,11 +2202,11 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         let target = IrAssignmentTarget::wire(wire_info_typed.ir);
 
                         let stmt = IrStatement::Assign(target, value_hw.expr);
-                        process_block.statements.push(Spanned::new(decl_span, stmt));
+                        ir_block.statements.push(Spanned::new(decl_span, stmt));
 
                         let process = IrCombinatorialProcess {
-                            locals,
-                            block: process_block,
+                            locals: ir_vars,
+                            block: ir_block,
                         };
                         let process = Spanned::new(decl_span, process);
 
@@ -2265,13 +2230,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 // eval domain and interface
                 let domain = domain
                     .map(|domain| {
-                        let domain = ctx.eval_domain(scope, &mut vars_inner, domain)?;
+                        let domain = ctx.eval_domain(scope, flow_parent, domain)?;
                         Ok(domain.map_inner(ValueDomain::from_domain_kind))
                     })
                     .transpose();
 
                 let interface = ctx
-                    .eval_expression_as_compile(scope, &mut vars_inner, &Type::Interface, interface, "wire interface")
+                    .eval_expression_as_compile(scope, flow_parent, &Type::Interface, interface, "wire interface")
                     .and_then(|interface| match interface.inner {
                         CompileValue::Interface(interface_inner) => Ok(Spanned::new(interface.span, interface_inner)),
                         _ => {
@@ -2290,7 +2255,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 let interface = interface?;
 
                 // create interface wire
-                let wire_interface = self.ctx.wire_interfaces.push(WireInterfaceInfo {
+                let wire_interface = ctx.wire_interfaces.push(WireInterfaceInfo {
                     id: id_owned.clone(),
                     domain: Ok(domain),
                     interface,
@@ -2300,7 +2265,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 });
 
                 // create inner wires
-                let interface_info = self.ctx.refs.shared.elaboration_arenas.interface_info(interface.inner);
+                let interface_info = ctx.refs.shared.elaboration_arenas.interface_info(interface.inner);
                 let mut wires = vec![];
                 let mut ir_wires = vec![];
                 for (port_index, (port_name, port_info)) in enumerate(&interface_info.ports) {
@@ -2326,7 +2291,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         diagnostic_string: diagnostic_str,
                         ir: wire_ir,
                     };
-                    let wire = self.ctx.wires.push(WireInfo::Interface(wire_info));
+                    let wire = ctx.wires.push(WireInfo::Interface(wire_info));
 
                     self.drivers.wire_drivers.insert_first(wire, Ok(IndexMap::new()));
 
@@ -2334,7 +2299,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     ir_wires.push(wire_ir);
                 }
 
-                let wire_interface_info = &mut self.ctx.wire_interfaces[wire_interface];
+                let wire_interface_info = &mut ctx.wire_interfaces[wire_interface];
                 wire_interface_info.wires = wires;
                 wire_interface_info.ir_wires = ir_wires;
 
@@ -2346,14 +2311,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn elaborate_module_declaration_reg(
         &mut self,
         scope_body: &Scope,
-        vars_body: &VariableValues,
+        flow_body: &FlowCompile,
         id: &MaybeIdentifier<Spanned<ArcOrRef<str>>>,
-        decl: &RegDeclaration,
+        decl: Spanned<&RegDeclaration>,
     ) -> DiagResult<RegisterInit> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
 
-        let mut vars_inner = VariableValues::new_child(vars_body);
+        let mut flow_inner = flow_body.new_child_isolated();
 
         // declaration and visibility are handled in the caller
         let &RegDeclaration {
@@ -2362,20 +2327,20 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             sync,
             ty,
             init,
-        } = decl;
+        } = decl.inner;
 
         // evaluate
         let sync = sync
             .map(|sync| {
-                sync.map_inner(|sync| ctx.eval_domain_sync(scope_body, &mut vars_inner, sync))
+                sync.map_inner(|sync| ctx.eval_domain_sync(scope_body, &mut flow_inner, sync))
                     .transpose()
             })
             .transpose();
 
-        let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut vars_inner, ty, "register")?;
+        let ty = ctx.eval_expression_as_ty_hardware(scope_body, &mut flow_inner, ty, "register")?;
         let init_raw = ctx.eval_expression_as_compile(
             scope_body,
-            &mut vars_inner,
+            &mut flow_inner,
             &ty.inner.as_type(),
             init,
             "register reset value",
@@ -2416,7 +2381,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     fn elaborate_module_declaration_reg_out_port(
         &mut self,
         scope_body: &Scope,
-        vars_body: &VariableValues,
+        flow_body: &mut FlowCompile,
         decl_span: Span,
         decl: &RegOutPortMarker,
         is_root_block: bool,
@@ -2452,9 +2417,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let port_ty = port_info.ty.inner.as_type();
 
         // evaluate init
-        let mut vars_inner = VariableValues::new_child(vars_body);
-        let init_raw =
-            ctx.eval_expression_as_compile(scope_body, &mut vars_inner, &port_ty, init, "register reset value");
+        let init_raw = ctx.eval_expression_as_compile(scope_body, flow_body, &port_ty, init, "register reset value");
 
         // check port is output
         let port_info = &ctx.ports[port];
@@ -2560,7 +2523,7 @@ pub enum Driver {
     // wire-like
     WireDeclaration,
     OutputPortConnectionToReg,
-    InstancePortConnection(usize),
+    InstancePortConnection(usize, usize, usize),
     CombinatorialBlock(usize),
 
     // register-like
@@ -2578,7 +2541,7 @@ impl Driver {
         match self {
             Driver::WireDeclaration
             | Driver::CombinatorialBlock(_)
-            | Driver::InstancePortConnection(_)
+            | Driver::InstancePortConnection(_, _, _)
             | Driver::OutputPortConnectionToReg => DriverKind::WiredConnection,
             Driver::ClockedBlock(_) => DriverKind::ClockedBlock,
         }
@@ -2677,7 +2640,7 @@ impl Drivers {
             target_span: Span,
         ) -> DiagResult<()> {
             let inner = map.get_mut(&target).ok_or_else(|| {
-                diags.report_internal_error(target_span, "failed to record driver, target not yet mapped")
+                diags.report_internal_error(target_span, "failed to record driver, target was not registered")
             })?;
 
             match driver {
@@ -2694,20 +2657,12 @@ impl Drivers {
             }
         }
 
+        let diags = ctx.refs.diags;
         match target.inner {
             Signal::Port(port) => record(diags, &mut self.output_port_drivers, driver, port, target.span),
             Signal::Wire(wire) => record(diags, &mut self.wire_drivers, driver, wire, target.span),
             Signal::Register(reg) => record(diags, &mut self.reg_drivers, driver, reg, target.span),
         }
-    }
-}
-
-fn report_assignment_internal_error<'a>(
-    diags: &'a Diagnostics,
-    place: &'a str,
-) -> impl FnMut(&CompileItemContext, Spanned<Signal>) -> DiagResult<()> + 'a {
-    move |_: &CompileItemContext, target: Spanned<Signal>| {
-        Err(diags.report_internal_error(target.span, format!("driving signal within {place}")))
     }
 }
 

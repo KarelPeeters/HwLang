@@ -3,16 +3,17 @@ use crate::front::check::{
     check_type_contains_compile_value, check_type_contains_value, check_type_is_bool_compile, TypeContainsReason,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::domain::{BlockDomain, ValueDomain};
-use crate::front::expression::{ForIterator, ValueWithImplications};
+use crate::front::flow::{Flow, FlowHardware};
+use crate::front::flow::{FlowKind, VariableInfo};
+use crate::front::implication::ValueWithImplications;
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::front::variables::{merge_variable_branches, VariableInfo, VariableValues};
-use crate::mid::ir::{IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement};
+use crate::mid::ir::{
+    IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement,
+};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ExtraItem, ExtraList, ForStatement,
     Identifier, IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
@@ -30,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug)]
+#[must_use]
 pub enum BlockEnd<S = BlockEndStopping> {
     Normal,
     Stopping(S),
@@ -46,6 +48,15 @@ pub enum BlockEndStopping {
 pub struct BlockEndReturn {
     pub span_keyword: Span,
     pub value: Option<Spanned<Value>>,
+}
+
+impl<S> BlockEnd<S> {
+    pub fn map_stopping<T>(self, f: impl FnOnce(S) -> T) -> BlockEnd<T> {
+        match self {
+            BlockEnd::Normal => BlockEnd::Normal,
+            BlockEnd::Stopping(end) => BlockEnd::Stopping(f(end)),
+        }
+    }
 }
 
 impl BlockEnd<BlockEndStopping> {
@@ -128,82 +139,60 @@ enum PatternEqual {
 type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;
 
 impl CompileItemContext<'_, '_> {
-    pub fn elaborate_const_block(
-        &mut self,
-        scope: &Scope,
-        vars: &mut VariableValues,
-        block: &ConstBlock,
-    ) -> DiagResult<()> {
-        // TODO assignments in this block should be not allowed to leak outside
-        //   we can fix this generally on the next scope/vars refactor,
-        //   if we provide a "child with immutable view on parent" child mode
+    pub fn elaborate_const_block(&mut self, scope: &Scope, flow: &mut impl Flow, block: &ConstBlock) -> DiagResult<()> {
         let diags = self.refs.diags;
         let &ConstBlock {
             span_keyword,
             ref block,
         } = block;
 
-        let mut ctx = CompileTimeExpressionContext {
-            span: span_keyword.join(block.span),
-            reason: "const block".to_owned(),
-        };
-        let ((), block_end) = self.elaborate_block_raw(&mut ctx, scope, vars, None, block)?;
+        let span = span_keyword.join(block.span);
+        let mut flow_inner = flow.new_child_compile(span, "const block");
+
+        let block_end = self.elaborate_block(scope, &mut flow_inner, None, block)?;
         block_end.unwrap_outside_function_and_loop(diags)?;
 
         Ok(())
     }
 
-    pub fn elaborate_and_push_block<C: ExpressionContext>(
+    pub fn elaborate_block(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope_parent: &Scope,
-        vars: &mut VariableValues,
+        flow_parent: &mut impl Flow,
         expected_return_ty: Option<&Type>,
         block: &Block<BlockStatement>,
     ) -> DiagResult<BlockEnd> {
-        let (ctx_block_inner, block_end) =
-            self.elaborate_block_raw(ctx, scope_parent, vars, expected_return_ty, block)?;
-
-        let block_ir_spanned = Spanned {
-            span: block.span,
-            inner: ctx_block_inner,
-        };
-        ctx.push_ir_statement_block(ctx_block, block_ir_spanned);
-
-        Ok(block_end)
-    }
-
-    // TODO rename back to elaborate_block
-    pub fn elaborate_block_raw<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        scope_parent: &Scope,
-        vars: &mut VariableValues,
-        expected_return_ty: Option<&Type>,
-        block: &Block<BlockStatement>,
-    ) -> DiagResult<(C::Block, BlockEnd)> {
         let &Block { span, ref statements } = block;
 
         let mut scope = Scope::new_child(span, scope_parent);
-        self.elaborate_block_statements(ctx, &mut scope, vars, expected_return_ty, statements)
+
+        // this is actually static dispatch, but we can't easily express that
+        match flow_parent.kind_mut() {
+            FlowKind::Compile(flow_parent) => {
+                let mut flow = flow_parent.new_child_scoped();
+                self.elaborate_block_statements(&mut scope, &mut flow, expected_return_ty, statements)
+            }
+            FlowKind::Hardware(flow_parent) => {
+                let mut flow = flow_parent.new_child_scoped();
+                self.elaborate_block_statements(&mut scope, &mut flow, expected_return_ty, statements)
+            }
+        }
     }
 
-    pub fn elaborate_block_statements<C: ExpressionContext>(
+    pub fn elaborate_block_statements(
         &mut self,
-        ctx: &mut C,
         scope: &mut Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_return_ty: Option<&Type>,
         statements: &[BlockStatement],
-    ) -> DiagResult<(C::Block, BlockEnd)> {
+    ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
-        let mut ctx_block = ctx.new_ir_block();
 
         for stmt in statements {
+            let stmt_span = stmt.span;
             let stmt_end = match &stmt.inner {
                 BlockStatementKind::CommonDeclaration(decl) => {
-                    self.eval_and_declare_declaration(scope, vars, decl);
+                    self.eval_and_declare_declaration(scope, flow, decl);
                     BlockEnd::Normal
                 }
                 BlockStatementKind::VariableDeclaration(decl) => {
@@ -216,17 +205,17 @@ impl CompileItemContext<'_, '_> {
                     } = decl;
 
                     // eval ty
-                    let ty = ty.map(|ty| self.eval_expression_as_ty(scope, vars, ty)).transpose();
+                    let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                        init.map(|init| self.eval_expression(ctx, &mut ctx_block, scope, vars, init_expected_ty, init))
+                        init.map(|init| self.eval_expression(scope, flow, init_expected_ty, init))
                             .transpose()
                     });
 
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
-                        // check init fits in type
+                        // check that init fits in type
                         if let Some(ty) = &ty {
                             if let Some(init) = &init {
                                 let reason = TypeContainsReason::Assignment {
@@ -239,15 +228,18 @@ impl CompileItemContext<'_, '_> {
 
                         // build variable
                         let info = VariableInfo { id, mutable, ty };
-                        let var = vars.var_new(&mut self.variables, info);
+                        let var = flow.var_new(info);
 
                         // store initial value if there is one
+                        //   for hardware values, also store them in an IR variable to avoid duplicate expressions
+                        //   and to keep the generated RTL somewhat similar to the source
                         if let Some(init) = init {
-                            let init = init.inner.try_map_other(|init| {
-                                store_ir_expression_in_new_variable(self.refs, ctx, &mut ctx_block, id, init)
+                            let init = init.inner.try_map_hardware(|init_inner| {
+                                let flow = flow.check_hardware(init.span, "hardware value")?;
+                                store_ir_expression_in_new_variable(self.refs, flow, id, init_inner)
                                     .map(HardwareValue::to_general_expression)
                             })?;
-                            vars.var_set(diags, var, decl.span, init)?;
+                            flow.var_set(var, decl.span, Ok(init));
                         }
 
                         Ok(ScopedEntry::Named(NamedValue::Variable(var)))
@@ -258,99 +250,44 @@ impl CompileItemContext<'_, '_> {
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    self.elaborate_assignment(ctx, &mut ctx_block, scope, vars, stmt)?;
+                    self.elaborate_assignment(scope, flow, stmt)?;
                     BlockEnd::Normal
                 }
                 &BlockStatementKind::Expression(expr) => {
-                    let _: Spanned<Value> = self.eval_expression(ctx, &mut ctx_block, scope, vars, &Type::Any, expr)?;
+                    let _: Spanned<Value> = self.eval_expression(scope, flow, &Type::Any, expr)?;
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Block(inner_block) => {
-                    self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, expected_return_ty, inner_block)?
+                    self.elaborate_block(scope, flow, expected_return_ty, inner_block)?
                 }
-                BlockStatementKind::If(stmt_if) => {
+                BlockStatementKind::If(stmt) => {
                     let IfStatement {
                         initial_if,
                         else_ifs,
                         final_else,
-                    } = stmt_if;
+                    } = stmt;
 
                     self.elaborate_if_statement(
-                        ctx,
-                        &mut ctx_block,
                         scope,
-                        vars,
+                        flow,
                         expected_return_ty,
                         Some((initial_if, else_ifs)),
                         final_else,
                     )?
                 }
-                BlockStatementKind::Match(stmt_match) => self.elaborate_match_statement(
-                    ctx,
-                    &mut ctx_block,
-                    scope,
-                    vars,
-                    expected_return_ty,
-                    stmt.span,
-                    stmt_match,
-                )?,
-                BlockStatementKind::While(stmt_while) => {
-                    let &WhileStatement {
-                        span_keyword,
-                        cond,
-                        ref body,
-                    } = stmt_while;
-
-                    loop {
-                        self.refs.check_should_stop(span_keyword)?;
-
-                        // eval cond
-                        let cond =
-                            self.eval_expression_as_compile(scope, vars, &Type::Bool, cond, "while loop condition")?;
-
-                        let reason = TypeContainsReason::WhileCondition(span_keyword);
-                        check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
-                        let cond = match &cond.inner {
-                            &CompileValue::Bool(b) => b,
-                            _ => throw!(diags
-                                .report_internal_error(cond.span, "expected bool, should have been checked already")),
-                        };
-
-                        // check cond
-                        if !cond {
-                            break BlockEnd::Normal;
-                        }
-
-                        // visit body
-                        let end =
-                            self.elaborate_and_push_block(ctx, &mut ctx_block, scope, vars, expected_return_ty, body)?;
-
-                        // handle end
-                        match end {
-                            BlockEnd::Normal => {}
-                            BlockEnd::Stopping(end) => match end {
-                                BlockEndStopping::FunctionReturn(ret) => {
-                                    break BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret));
-                                }
-                                BlockEndStopping::LoopBreak(_span) => break BlockEnd::Normal,
-                                BlockEndStopping::LoopContinue(_span) => continue,
-                            },
-                        }
-                    }
+                BlockStatementKind::Match(stmt) => {
+                    let stmt = Spanned::new(stmt_span, stmt);
+                    self.elaborate_match_statement(scope, flow, expected_return_ty, stmt)?
                 }
-                BlockStatementKind::For(stmt_for) => {
-                    let stmt_for = Spanned {
-                        span: stmt.span,
-                        inner: stmt_for,
-                    };
-                    let (block, end) =
-                        self.elaborate_for_statement(ctx, ctx_block, scope, vars, expected_return_ty, stmt_for)?;
-                    ctx_block = block;
-
-                    match end {
-                        BlockEnd::Normal => BlockEnd::Normal,
-                        BlockEnd::Stopping(ret) => BlockEnd::Stopping(BlockEndStopping::FunctionReturn(ret)),
-                    }
+                BlockStatementKind::While(stmt) => {
+                    let stmt = Spanned::new(stmt_span, stmt);
+                    self.elaborate_while_statement(scope, flow, expected_return_ty, stmt)?
+                        .map_stopping(BlockEndStopping::FunctionReturn)
+                }
+                BlockStatementKind::For(stmt) => {
+                    let stmt = Spanned::new(stmt_span, stmt);
+                    self.elaborate_for_statement(scope, flow, expected_return_ty, stmt)?
+                        .map_stopping(BlockEndStopping::FunctionReturn)
                 }
                 BlockStatementKind::Return(stmt) => {
                     let &ReturnStatement {
@@ -366,7 +303,7 @@ impl CompileItemContext<'_, '_> {
                         )
                     })?;
                     let value = value
-                        .map(|value| self.eval_expression(ctx, &mut ctx_block, scope, vars, expected_return_ty, value))
+                        .map(|value| self.eval_expression(scope, flow, expected_return_ty, value))
                         .transpose()?;
 
                     BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
@@ -377,19 +314,17 @@ impl CompileItemContext<'_, '_> {
 
             match stmt_end {
                 BlockEnd::Normal => {}
-                BlockEnd::Stopping(end) => return Ok((ctx_block, BlockEnd::Stopping(end))),
+                BlockEnd::Stopping(end) => return Ok(BlockEnd::Stopping(end)),
             }
         }
 
-        Ok((ctx_block, BlockEnd::Normal))
+        Ok(BlockEnd::Normal)
     }
 
-    fn elaborate_if_statement<C: ExpressionContext>(
+    fn elaborate_if_statement(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_return_ty: Option<&Type>,
         ifs: Option<(
             &IfCondBlockPair<Block<BlockStatement>>,
@@ -405,14 +340,7 @@ impl CompileItemContext<'_, '_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        let (final_else_ir, final_else_end) =
-                            self.elaborate_block_raw(ctx, scope, vars, expected_return_ty, final_else)?;
-                        let final_else_spanned = Spanned {
-                            span: final_else.span,
-                            inner: final_else_ir,
-                        };
-                        ctx.push_ir_statement_block(ctx_block, final_else_spanned);
-                        Ok(final_else_end)
+                        return self.elaborate_block(scope, flow, expected_return_ty, final_else);
                     }
                 };
             }
@@ -424,16 +352,17 @@ impl CompileItemContext<'_, '_> {
             cond,
             ref block,
         } = initial_if;
-        let cond = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Bool, cond)?;
+
+        let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
         check_type_contains_value(
             diags,
             reason,
             &Type::Bool,
-            cond.as_ref().map_inner(ValueWithImplications::value_cloned).as_ref(),
+            cond.clone().map_inner(ValueWithImplications::into_value).as_ref(),
             false,
-            true,
+            false,
         )?;
 
         match cond.inner {
@@ -446,130 +375,84 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    self.elaborate_and_push_block(ctx, ctx_block, scope, vars, expected_return_ty, block)
+                    self.elaborate_block(scope, flow, expected_return_ty, block)
                 } else {
                     self.elaborate_if_statement(
-                        ctx,
-                        ctx_block,
                         scope,
-                        vars,
+                        flow,
                         expected_return_ty,
                         remaining_ifs.split_first(),
                         final_else,
                     )
                 }
             }
-            // evaluate the if at runtime, generating IR
+            // evaluate the if in hardware, generating IR
             Value::Hardware(cond_value) => {
-                // check condition domain
-                let cond_domain = Spanned {
-                    span: cond.span,
-                    inner: cond_value.value.domain,
-                };
-                // TODO extract this to a common function?
-                match ctx.block_domain() {
-                    BlockDomain::CompileTime => {
-                        throw!(diags
-                            .report_internal_error(cond.span, "non-compile-time condition in compile-time context"))
-                    }
-                    BlockDomain::Combinatorial => {}
-                    BlockDomain::Clocked(block_domain) => {
-                        let block_domain = block_domain.map_inner(ValueDomain::Sync);
-                        self.check_valid_domain_crossing(
-                            cond.span,
-                            block_domain,
-                            cond_domain,
-                            "condition used in clocked block",
-                        )?;
-                    }
+                let flow = flow.check_hardware(cond.span, "hardware value")?;
+                let cond_domain = Spanned::new(cond.span, cond_value.value.domain);
+
+                // lower then
+                let then_flow = {
+                    let mut then_flow_branch = flow.new_child_branch(cond_domain, cond_value.implications.if_true);
+                    let end =
+                        { self.elaborate_block(scope, &mut then_flow_branch.as_flow(), expected_return_ty, block)? };
+                    end.unwrap_normal_todo_in_conditional(diags, cond.span)?;
+                    Ok(then_flow_branch.finish())
                 };
 
-                // record condition domain
-                let (mut then_ir, then_vars, then_end, mut else_ir, else_vars, else_end) =
-                    ctx.with_condition_domain(diags, cond_domain, |ctx| {
-                        // lower then
-                        let mut then_vars = VariableValues::new_child(vars);
-                        let (then_ir, then_end) =
-                            ctx.with_implications(diags, cond_value.implications.if_true, |ctx_inner| {
-                                self.elaborate_block_raw(ctx_inner, scope, &mut then_vars, expected_return_ty, block)
-                            })?;
+                // lower else
+                let else_flow = {
+                    let mut else_flow_branch = flow.new_child_branch(cond_domain, cond_value.implications.if_false);
+                    self.elaborate_if_statement(
+                        scope,
+                        &mut else_flow_branch.as_flow(),
+                        expected_return_ty,
+                        remaining_ifs.split_first(),
+                        final_else,
+                    )
+                    .and_then(|end| end.unwrap_normal_todo_in_conditional(diags, cond.span))
+                    .map(|()| else_flow_branch.finish())
+                };
 
-                        // lower else
-                        let mut else_ir = ctx.new_ir_block();
-                        let mut else_vars = VariableValues::new_child(vars);
-                        let else_end = ctx.with_implications(diags, cond_value.implications.if_false, |ctx_inner| {
-                            self.elaborate_if_statement(
-                                ctx_inner,
-                                &mut else_ir,
-                                scope,
-                                &mut else_vars,
-                                expected_return_ty,
-                                remaining_ifs.split_first(),
-                                final_else,
-                            )
-                        })?;
+                let then_flow = then_flow?;
+                let else_flow = else_flow?;
 
-                        Ok((then_ir, then_vars, then_end, else_ir, else_vars, else_end))
-                    })?;
+                // join flows
+                let blocks =
+                    flow.join_child_branches(self.refs, &mut self.large, span_if, vec![then_flow, else_flow])?;
+                assert_eq!(blocks.len(), 2);
+                let (then_block, else_block) = blocks.into_iter().collect_tuple().unwrap();
 
-                let then_end_err = then_end.unwrap_normal_todo_in_conditional(diags, cond.span);
-                let else_end_err = else_end.unwrap_normal_todo_in_conditional(diags, cond.span);
-                then_end_err?;
-                else_end_err?;
-
-                merge_variable_branches(
-                    self.refs,
-                    ctx,
-                    &mut self.large,
-                    &self.variables,
-                    vars,
-                    span_if,
-                    vec![
-                        (&mut then_ir, then_vars.into_content()),
-                        (&mut else_ir, else_vars.into_content()),
-                    ],
-                )?;
-
-                // actually record the if statement
+                // build the if statement
                 let ir_if = IrStatement::If(IrIfStatement {
                     condition: cond_value.value.expr,
-                    then_block: ctx.unwrap_ir_block(diags, span_if, then_ir)?,
-                    else_block: Some(ctx.unwrap_ir_block(diags, span_if, else_ir)?),
+                    then_block,
+                    else_block: Some(else_block),
                 });
                 // TODO is this span correct?
-                ctx.push_ir_statement(
-                    diags,
-                    ctx_block,
-                    Spanned {
-                        span: span_if,
-                        inner: ir_if,
-                    },
-                )?;
+                flow.push_ir_statement(Spanned::new(span_if, ir_if));
 
                 Ok(BlockEnd::Normal)
             }
         }
     }
 
-    fn elaborate_match_statement<C: ExpressionContext>(
+    fn elaborate_match_statement(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_return_ty: Option<&Type>,
-        stmt_span: Span,
-        stmt: &MatchStatement<Block<BlockStatement>>,
+        stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
         let &MatchStatement {
             target,
             span_branches,
             ref branches,
-        } = stmt;
+        } = stmt.inner;
 
         // eval target
-        let target = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, target)?;
+        let target = self.eval_expression(scope, flow, &Type::Any, target)?;
         let target_ty = target.inner.ty();
 
         // track pattern coverage
@@ -619,7 +502,7 @@ impl CompileItemContext<'_, '_> {
                             cover_all = true;
                             Ok(MatchPattern::Dummy)
                         } else {
-                            let value = self.eval_expression_as_compile(scope, vars, &target_ty, value, reason)?;
+                            let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
 
                             check_type_contains_compile_value(
                                 diags,
@@ -662,7 +545,7 @@ impl CompileItemContext<'_, '_> {
                             ));
                         }
 
-                        let value = self.eval_expression_as_compile(scope, vars, &target_ty, value, reason)?;
+                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
                         let value = match value.inner {
                             CompileValue::IntRange(range) => range,
                             _ => {
@@ -782,44 +665,36 @@ impl CompileItemContext<'_, '_> {
         // evaluate match itself
         match target.inner {
             Value::Compile(target_inner) => self.elaborate_match_statement_compile(
-                ctx,
-                ctx_block,
                 scope,
-                vars,
+                flow,
                 expected_return_ty,
-                stmt_span,
+                stmt.span,
                 target_inner,
                 branches,
                 branch_patterns,
             ),
             Value::Hardware(target_inner) => {
-                let domain = Spanned::new(target.span, target_inner.domain);
-                ctx.with_condition_domain(diags, domain, |ctx| {
-                    self.elaborate_match_statement_hardware(
-                        ctx,
-                        ctx_block,
-                        scope,
-                        vars,
-                        expected_return_ty,
-                        stmt_span,
-                        target_inner,
-                        branches,
-                        branch_patterns,
-                    )
-                })
+                let flow = flow.check_hardware(target.span, "hardware value")?;
+                self.elaborate_match_statement_hardware(
+                    scope,
+                    flow,
+                    expected_return_ty,
+                    stmt.span,
+                    Spanned::new(target.span, target_inner),
+                    branches,
+                    branch_patterns,
+                )
             }
         }
     }
 
-    fn elaborate_match_statement_compile<C: ExpressionContext>(
+    fn elaborate_match_statement_compile(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_return_ty: Option<&Type>,
         stmt_span: Span,
-        cond: CompileValue,
+        target: CompileValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
         branch_patterns: Vec<CheckedMatchPattern>,
     ) -> DiagResult<BlockEnd> {
@@ -834,9 +709,9 @@ impl CompileItemContext<'_, '_> {
 
             let matched: BranchMatched = match pattern {
                 MatchPattern::Dummy => BranchMatched::Yes(None),
-                MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), cond.clone()))),
+                MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), target.clone()))),
                 MatchPattern::Equal(pattern) => {
-                    let c = match (&pattern, &cond) {
+                    let c = match (&pattern, &target) {
                         (PatternEqual::Bool(p), CompileValue::Bool(v)) => p == v,
                         (PatternEqual::Int(p), CompileValue::Int(v)) => p == v,
                         (PatternEqual::String(p), CompileValue::String(v)) => p == v,
@@ -845,11 +720,11 @@ impl CompileItemContext<'_, '_> {
 
                     BranchMatched::from_bool(c)
                 }
-                MatchPattern::In(pattern) => match &cond {
+                MatchPattern::In(pattern) => match &target {
                     CompileValue::Int(value) => BranchMatched::from_bool(pattern.contains(value)),
                     _ => return Err(diags.report_internal_error(pattern_span, "unexpected range/value")),
                 },
-                MatchPattern::EnumVariant(pattern_index, id_content) => match &cond {
+                MatchPattern::EnumVariant(pattern_index, id_content) => match &target {
                     CompileValue::Enum(_, (value_index, value_content)) => {
                         if pattern_index == *value_index {
                             let declare_content = match (id_content, value_content) {
@@ -874,12 +749,8 @@ impl CompileItemContext<'_, '_> {
                     let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope);
 
                     let scoped_used = if let Some((declare_id, declare_value)) = declare {
-                        let var = vars.var_new_immutable_init(
-                            &mut self.variables,
-                            declare_id,
-                            pattern_span,
-                            Ok(Value::Compile(declare_value)),
-                        );
+                        let var =
+                            flow.var_new_immutable_init(declare_id, pattern_span, Ok(Value::Compile(declare_value)));
                         scope_inner.maybe_declare(
                             diags,
                             Ok(declare_id.spanned_str(self.refs.fixed.source)),
@@ -890,7 +761,7 @@ impl CompileItemContext<'_, '_> {
                         scope
                     };
 
-                    return self.elaborate_and_push_block(ctx, ctx_block, scoped_used, vars, expected_return_ty, block);
+                    return self.elaborate_block(scoped_used, flow, expected_return_ty, block);
                 }
             }
         }
@@ -899,22 +770,20 @@ impl CompileItemContext<'_, '_> {
         Err(diags.report_internal_error(stmt_span, "reached end of match statement"))
     }
 
-    fn elaborate_match_statement_hardware<C: ExpressionContext>(
+    fn elaborate_match_statement_hardware(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
-        scope_outer: &Scope,
-        vars_outer: &mut VariableValues,
+        scope_parent: &Scope,
+        flow: &mut FlowHardware,
         expected_return_ty: Option<&Type>,
         stmt_span: Span,
-        target: HardwareValue,
+        target: Spanned<HardwareValue>,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
         branch_patterns: Vec<CheckedMatchPattern>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
 
-        let mut if_stack_cond_block = vec![];
-        let mut if_stack_vars = vec![];
+        let mut if_branch_conditions = vec![];
+        let mut if_branch_flows = vec![];
 
         for (branch, pattern) in zip_eq(branches, branch_patterns) {
             let MatchBranch {
@@ -924,13 +793,14 @@ impl CompileItemContext<'_, '_> {
             let pattern_span = pattern_raw.span;
             let large = &mut self.large;
 
+            // evaluate the pattern as a boolean condition and collect the variable to declare if any
             let (cond, declare): (Option<IrExpression>, Option<(MaybeIdentifier, HardwareValue)>) = match pattern {
                 MatchPattern::Dummy => (None, None),
-                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id), target.clone()))),
+                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id), target.inner.clone()))),
                 MatchPattern::Equal(pattern) => {
-                    let cond = match (&target.ty, pattern) {
+                    let cond = match (&target.inner.ty, pattern) {
                         (HardwareType::Bool, PatternEqual::Bool(pattern)) => {
-                            let cond_expr = target.expr.clone();
+                            let cond_expr = target.inner.expr.clone();
                             if pattern {
                                 cond_expr
                             } else {
@@ -941,7 +811,7 @@ impl CompileItemContext<'_, '_> {
                             // TODO expand int range?
                             large.push_expr(IrExpressionLarge::IntCompare(
                                 IrIntCompareOp::Eq,
-                                target.expr.clone(),
+                                target.inner.expr.clone(),
                                 IrExpression::Int(pattern),
                             ))
                         }
@@ -957,13 +827,13 @@ impl CompileItemContext<'_, '_> {
                         large.push_expr(IrExpressionLarge::IntCompare(
                             IrIntCompareOp::Lte,
                             IrExpression::Int(start_inc),
-                            target.expr.clone(),
+                            target.inner.expr.clone(),
                         ))
                     });
                     let end_inc = end_inc.map(|end_inc| {
                         large.push_expr(IrExpressionLarge::IntCompare(
                             IrIntCompareOp::Lte,
-                            target.expr.clone(),
+                            target.inner.expr.clone(),
                             IrExpression::Int(end_inc),
                         ))
                     });
@@ -981,7 +851,7 @@ impl CompileItemContext<'_, '_> {
                     (cond, None)
                 }
                 MatchPattern::EnumVariant(pattern_index, id_content) => {
-                    let target_ty = match &target.ty {
+                    let target_ty = match &target.inner.ty {
                         HardwareType::Enum(cond_ty) => cond_ty,
                         _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw enum/value")),
                     };
@@ -992,7 +862,7 @@ impl CompileItemContext<'_, '_> {
                     let ty_content = &info_hw.content_types[pattern_index];
 
                     let target_tag = large.push_expr(IrExpressionLarge::TupleIndex {
-                        base: target.expr.clone(),
+                        base: target.inner.expr.clone(),
                         index: BigUint::ZERO,
                     });
 
@@ -1004,7 +874,7 @@ impl CompileItemContext<'_, '_> {
                     let declare = match (ty_content, id_content) {
                         (Some(ty_content), Some(id_content)) => {
                             let target_content_all_bits = large.push_expr(IrExpressionLarge::TupleIndex {
-                                base: target.expr.clone(),
+                                base: target.inner.expr.clone(),
                                 index: BigUint::ONE,
                             });
                             let target_content_bits = large.push_expr(IrExpressionLarge::ArraySlice {
@@ -1019,7 +889,7 @@ impl CompileItemContext<'_, '_> {
 
                             let declare_value = HardwareValue {
                                 ty: ty_content.clone(),
-                                domain: target.domain,
+                                domain: target.inner.domain,
                                 expr: target_content,
                             };
                             Some((id_content, declare_value))
@@ -1032,12 +902,15 @@ impl CompileItemContext<'_, '_> {
                 }
             };
 
-            let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope_outer);
-            let mut vars_inner = VariableValues::new_child(vars_outer);
+            // create child flow and scope
+            // TODO push implications for integer ranges
+            let target_domain = Spanned::new(target.span, target.inner.domain);
+            let mut flow_branch = flow.new_child_branch(target_domain, vec![]);
+            let mut flow_branch_flow = flow_branch.as_flow();
 
-            let scoped_used = if let Some((declare_id, declare_value)) = declare {
-                let var = vars_inner.var_new_immutable_init(
-                    &mut self.variables,
+            let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope_parent);
+            if let Some((declare_id, declare_value)) = declare {
+                let var = flow_branch_flow.var_new_immutable_init(
                     declare_id,
                     pattern_span,
                     Ok(Value::Hardware(declare_value)),
@@ -1047,130 +920,140 @@ impl CompileItemContext<'_, '_> {
                     Ok(declare_id.spanned_str(self.refs.fixed.source)),
                     Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                 );
-                &scope_inner
-            } else {
-                scope_outer
             };
 
-            let (ctx_block_inner, end) =
-                self.elaborate_block_raw(ctx, scoped_used, &mut vars_inner, expected_return_ty, block)?;
+            // evaluate the child block
+            let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, expected_return_ty, block)?;
             end.unwrap_normal_todo_in_conditional(diags, stmt_span)?;
 
-            match cond {
-                Some(cond) => {
-                    if_stack_cond_block.push((cond, ctx_block_inner));
-                    if_stack_vars.push(vars_inner);
-                }
-                None => {
-                    if_stack_cond_block.push((IrExpression::Bool(true), ctx_block_inner));
-                    if_stack_vars.push(vars_inner);
-                    break;
-                }
+            // build the if stack
+            let (cond, fully_covered) = match cond {
+                Some(cond) => (cond, false),
+                None => (IrExpression::Bool(true), true),
+            };
+            if_branch_conditions.push(cond);
+            if_branch_flows.push(flow_branch.finish());
+            if fully_covered {
+                break;
             }
         }
 
-        // merge vars
-        let merge_children = zip_eq(&mut if_stack_cond_block, if_stack_vars)
-            .map(|((_, b), vars)| (b, vars.into_content()))
-            .collect_vec();
-        merge_variable_branches(
-            self.refs,
-            ctx,
-            &mut self.large,
-            &self.variables,
-            vars_outer,
-            stmt_span,
-            merge_children,
-        )?;
+        // merge flows
+        assert_eq!(if_branch_conditions.len(), if_branch_flows.len());
+        let if_branch_blocks = flow.join_child_branches(self.refs, &mut self.large, stmt_span, if_branch_flows)?;
 
         // build complete if chain
-        let mut else_inner = None;
-        for (curr_cond, curr_block) in if_stack_cond_block.into_iter().rev() {
-            let else_next = match else_inner {
-                Some(else_inner) => {
-                    let curr_block_ir = ctx.unwrap_ir_block(diags, stmt_span, curr_block)?;
-                    let else_block_ir = ctx.unwrap_ir_block(diags, stmt_span, else_inner)?;
-
+        let mut else_ir_block = None;
+        for (curr_cond, curr_ir_block) in zip_eq(if_branch_conditions, if_branch_blocks) {
+            let else_next = match else_ir_block {
+                Some(else_ir_block) => {
                     // build if statement
                     let if_stmt = IrIfStatement {
                         condition: curr_cond,
-                        then_block: curr_block_ir,
-                        else_block: Some(else_block_ir),
+                        then_block: curr_ir_block,
+                        else_block: Some(else_ir_block),
                     };
-                    let mut if_block = ctx.new_ir_block();
-                    ctx.push_ir_statement(diags, &mut if_block, Spanned::new(stmt_span, IrStatement::If(if_stmt)))?;
-                    if_block
+                    let if_stmt = Spanned::new(stmt_span, IrStatement::If(if_stmt));
+                    IrBlock {
+                        statements: vec![if_stmt],
+                    }
                 }
                 None => {
                     // this is the final branch, which means that the condition can be ignored
                     //   (this is easier to reason about for var merging and synthesis tools)
                     let _ = curr_cond;
-                    curr_block
+                    curr_ir_block
                 }
             };
-            else_inner = Some(else_next);
+            else_ir_block = Some(else_next);
         }
 
-        if let Some(else_inner) = else_inner {
-            ctx.push_ir_statement_block(ctx_block, Spanned::new(stmt_span, else_inner));
+        // push the complete if statement
+        if let Some(else_ir_block) = else_ir_block {
+            flow.push_ir_statement(Spanned::new(stmt_span, IrStatement::Block(else_ir_block)));
         }
 
         Ok(BlockEnd::Normal)
     }
 
-    fn elaborate_for_statement<C: ExpressionContext>(
+    fn elaborate_while_statement(
         &mut self,
-        ctx: &mut C,
-        mut result_block: C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
+        expected_return_ty: Option<&Type>,
+        stmt: Spanned<&WhileStatement>,
+    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
+        let &WhileStatement {
+            span_keyword,
+            cond,
+            ref body,
+        } = stmt.inner;
+        let diags = self.refs.diags;
+
+        loop {
+            self.refs.check_should_stop(span_keyword)?;
+
+            // eval cond
+            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
+
+            let reason = TypeContainsReason::WhileCondition(span_keyword);
+            check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
+            let cond = match &cond.inner {
+                &CompileValue::Bool(b) => b,
+                _ => throw!(diags.report_internal_error(cond.span, "expected bool, should have been checked already")),
+            };
+
+            // check cond
+            if !cond {
+                break;
+            }
+
+            // visit body
+            let end = self.elaborate_block(scope, flow, expected_return_ty, body)?;
+
+            // handle end
+            match end {
+                BlockEnd::Normal => {}
+                BlockEnd::Stopping(end) => match end {
+                    BlockEndStopping::FunctionReturn(ret) => {
+                        return Ok(BlockEnd::Stopping(ret));
+                    }
+                    BlockEndStopping::LoopBreak(_span) => break,
+                    BlockEndStopping::LoopContinue(_span) => continue,
+                },
+            }
+        }
+
+        Ok(BlockEnd::Normal)
+    }
+
+    // TODO code reuse between this and module
+    fn elaborate_for_statement(
+        &mut self,
+        scope_parent: &Scope,
+        flow: &mut impl Flow,
         expected_return_ty: Option<&Type>,
         stmt: Spanned<&ForStatement<BlockStatement>>,
-    ) -> DiagResult<(C::Block, BlockEnd<BlockEndReturn>)> {
-        let ctx_block = &mut result_block;
-
+    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
         let &ForStatement {
-            span_keyword: _,
-            index: _,
+            span_keyword,
+            index: index_id,
             index_ty,
             iter,
-            body: _,
+            ref body,
         } = stmt.inner;
+        let diags = self.refs.diags;
 
+        // header
         let index_ty = index_ty
-            .map(|index_ty| self.eval_expression_as_ty(scope, vars, index_ty))
+            .map(|index_ty| self.eval_expression_as_ty(scope_parent, flow, index_ty))
             .transpose();
-        let iter = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter);
+        let iter = self.eval_expression_as_for_iterator(scope_parent, flow, iter);
 
         let index_ty = index_ty?;
         let iter = iter?;
 
-        let end = self.run_for_statement(ctx, ctx_block, scope, vars, expected_return_ty, stmt, index_ty, iter)?;
-        Ok((result_block, end))
-    }
-
-    // TODO code reuse between this and module?
-    fn run_for_statement<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
-        scope_parent: &Scope,
-        vars: &mut VariableValues,
-        expected_return_ty: Option<&Type>,
-        stmt: Spanned<&ForStatement<BlockStatement>>,
-        index_ty: Option<Spanned<Type>>,
-        iter: ForIterator,
-    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
-        let diags = self.refs.diags;
-        let &ForStatement {
-            span_keyword,
-            index: index_id,
-            index_ty: _,
-            iter: _,
-            ref body,
-        } = stmt.inner;
-
-        // run the actual loop
+        // loop
         for index_value in iter {
             self.refs.check_should_stop(span_keyword)?;
             let index_value = index_value.to_maybe_compile(&mut self.large);
@@ -1187,9 +1070,9 @@ impl CompileItemContext<'_, '_> {
             }
 
             // create scope and set index
-            let index_var = vars.var_new_immutable_init(&mut self.variables, index_id, span_keyword, Ok(index_value));
-
             let mut scope_index = Scope::new_child(stmt.span, scope_parent);
+
+            let index_var = flow.var_new_immutable_init(index_id, span_keyword, Ok(index_value));
             scope_index.maybe_declare(
                 diags,
                 Ok(index_id.spanned_str(self.refs.fixed.source)),
@@ -1197,8 +1080,7 @@ impl CompileItemContext<'_, '_> {
             );
 
             // run body
-            let body_end =
-                self.elaborate_and_push_block(ctx, ctx_block, &scope_index, vars, expected_return_ty, body)?;
+            let body_end = self.elaborate_block(&scope_index, flow, expected_return_ty, body)?;
 
             // handle possible loop termination
             match body_end {
@@ -1214,23 +1096,24 @@ impl CompileItemContext<'_, '_> {
         Ok(BlockEnd::Normal)
     }
 
-    pub fn compile_elaborate_extra_list<'a, I>(
+    pub fn compile_elaborate_extra_list<'a, F: Flow, I>(
         &mut self,
         scope: &mut Scope,
-        vars: &mut VariableValues,
+        flow: &mut F,
         list: &'a ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut Scope, &mut VariableValues, &'a I) -> DiagResult<()>,
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a I) -> DiagResult<()>,
     ) -> DiagResult<()> {
         let ExtraList { span: _, items } = list;
         for item in items {
             match item {
-                ExtraItem::Inner(inner) => f(self, scope, vars, inner)?,
+                ExtraItem::Inner(inner) => f(self, scope, flow, inner)?,
                 ExtraItem::Declaration(decl) => {
-                    self.eval_and_declare_declaration(scope, vars, decl);
+                    self.eval_and_declare_declaration(scope, flow, decl);
                 }
                 ExtraItem::If(if_stmt) => {
-                    if let Some(list_inner) = self.compile_if_statement_choose_block(scope, vars, if_stmt)? {
-                        self.compile_elaborate_extra_list(scope, vars, list_inner, f)?;
+                    let list_inner = self.compile_if_statement_choose_block(scope, flow, if_stmt)?;
+                    if let Some(list_inner) = list_inner {
+                        self.compile_elaborate_extra_list(scope, flow, list_inner, f)?;
                     }
                 }
             }
@@ -1238,10 +1121,11 @@ impl CompileItemContext<'_, '_> {
         Ok(())
     }
 
+    // TODO share code with normal if statement?
     pub fn compile_if_statement_choose_block<'a, B>(
         &mut self,
         scope: &Scope,
-        vars: &VariableValues,
+        flow: &mut impl Flow,
         if_stmt: &'a IfStatement<B>,
     ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
@@ -1259,14 +1143,7 @@ impl CompileItemContext<'_, '_> {
                 ref block,
             } = pair;
 
-            let mut vars_inner = VariableValues::new_child(vars);
-            let cond = self.eval_expression_as_compile(
-                scope,
-                &mut vars_inner,
-                &Type::Bool,
-                cond,
-                "compile-time if condition",
-            )?;
+            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "compile-time if condition")?;
 
             let reason = TypeContainsReason::IfCondition(span_if);
             let cond = check_type_is_bool_compile(diags, reason, cond)?;

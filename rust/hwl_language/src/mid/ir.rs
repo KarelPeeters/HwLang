@@ -206,6 +206,7 @@ pub struct IrBlock {
 #[derive(Debug, Clone)]
 pub enum IrStatement {
     Assign(IrAssignmentTarget, IrExpression),
+    // TODO maybe we can remove this
     Block(IrBlock),
     If(IrIfStatement),
     PrintLn(String),

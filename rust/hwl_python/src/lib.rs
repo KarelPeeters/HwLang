@@ -5,15 +5,14 @@ use hwl_language::back::lower_verilator::{lower_verilator, LoweredVerilator};
 use hwl_language::back::lower_verilog::{lower_to_verilog, LoweredVerilog};
 use hwl_language::back::wrap_verilator::{VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError};
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
-use hwl_language::front::context::CompileTimeExpressionContext;
 use hwl_language::front::diagnostic::Diagnostics;
+use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
 use hwl_language::front::value::Value;
-use hwl_language::front::variables::VariableValues;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
@@ -215,7 +214,7 @@ impl Source {
     fn simple(path: &str) -> PyResult<Self> {
         // TODO include std?
         let mut builder = SourceBuilder::new();
-        builder.add_tree(vec![], &path)?;
+        builder.add_tree(vec![], path)?;
         Ok(builder.finish())
     }
 
@@ -409,23 +408,18 @@ impl Function {
             };
 
             let mut item_ctx = CompileItemContext::new_empty(refs, None);
-            let mut vars = VariableValues::new_root(&item_ctx.variables);
-
-            let mut ctx = CompileTimeExpressionContext {
-                span: dummy_span,
-                reason: "external call".to_owned(),
-            };
+            let flow_root = FlowRoot::new(&diags);
+            let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
 
             let returned = item_ctx.call_function(
-                &mut ctx,
-                &mut vars,
+                &mut flow,
                 &RustType::Any,
                 dummy_span,
                 dummy_span,
                 &self.function_value,
                 args,
             );
-            let (_block, returned) = map_diag_error(source, &diags, returned)?;
+            let returned = map_diag_error(source, &diags, returned)?;
 
             // run any downstream elaboration
             refs.run_elaboration_loop();

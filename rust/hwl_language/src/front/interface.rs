@@ -1,9 +1,9 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::flow::{FlowCompile, FlowRoot};
 use crate::front::function::CapturedScope;
 use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
-use crate::front::variables::VariableValues;
 use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection, Spanned};
 use crate::syntax::parsed::AstRefInterface;
 use crate::syntax::source::SourceDatabase;
@@ -89,8 +89,9 @@ impl CompileRefs<'_, '_> {
 
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None);
-        let mut vars = VariableValues::new_root(&ctx.variables);
-        let scope_params = scope_params.to_scope(&mut ctx.variables, &mut vars, self, span);
+        let flow_root = FlowRoot::new(diags);
+        let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
+        let scope_params = scope_params.to_scope(self, &mut flow, span);
 
         // elaborate port types
         let mut scope_ports = Scope::new_child(span_body, &scope_params);
@@ -98,10 +99,10 @@ impl CompileRefs<'_, '_> {
 
         ctx.compile_elaborate_extra_list(
             &mut scope_ports,
-            &mut vars,
+            &mut flow,
             port_types,
-            &mut |ctx, scope_params, vars, &(port_id, ty)| {
-                let ty_eval = ctx.eval_expression_as_ty(scope_params, vars, ty).and_then(|ty| {
+            &mut |ctx, scope_params, flow, &(port_id, ty)| {
+                let ty_eval = ctx.eval_expression_as_ty(scope_params, flow, ty).and_then(|ty| {
                     match ty.inner.as_hardware_type(self) {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                         Err(_) => Err(diags.report_simple(
@@ -147,7 +148,7 @@ impl CompileRefs<'_, '_> {
 
             ctx.compile_elaborate_extra_list(
                 &mut scope_ports,
-                &mut vars,
+                &mut flow,
                 port_dirs,
                 &mut (|_, _, _, (port_id, dir)| {
                     if let Some(port_index) = port_map.get_index_of(port_id.str(source)) {

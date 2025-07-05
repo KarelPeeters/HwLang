@@ -1,10 +1,10 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
+use crate::front::flow::Variable;
 use crate::front::item::ElaboratedInterface;
 use crate::front::types::HardwareType;
 use crate::front::value::{ElaboratedInterfaceView, HardwareValue};
-use crate::front::variables::Variable;
 use crate::mid::ir::{IrAssignmentTargetBase, IrExpression, IrPort, IrRegister, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
@@ -315,6 +315,8 @@ impl RegisterInfo {
     }
 }
 
+// TODO prevent cascading errors if a previous block has failed for some reason,
+//   which caused certain things to not be inferred
 fn get_inferred<'s, T>(
     diags: &Diagnostics,
     kind: &str,
