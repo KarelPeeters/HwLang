@@ -357,7 +357,7 @@ impl CompileItemContext<'_, '_> {
         if !flow.var_info(var).mutable {
             let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(var)?;
             if !is_simple_first_assignment {
-                let diag = Diagnostic::new("assignment to immutable variable")
+                let diag = Diagnostic::new("assignment to immutable variable that has already been initialized")
                     .add_error(target_base.span, "variable assigned to here")
                     .add_info(flow.var_info(var).id.span(), "variable declared as immutable here")
                     .finish();
@@ -367,12 +367,13 @@ impl CompileItemContext<'_, '_> {
 
         // If no steps, we can just do the full assignment immediately.
         // This is separate because in this case the current target value should not be evaluated.
+        // TODO we still eval if there is an op, can we merge that?
         if target_steps.is_empty() {
             // evaluate value
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let var_eval = flow.var_eval(self, var)?;
+                    let var_eval = flow.var_eval(self, Spanned::new(target_base.span, var))?;
                     let target_eval = Spanned::new(target.span, ValueWithImplications::simple_version(var_eval));
                     let value_eval = eval_binary_expression(
                         self.refs,
@@ -413,7 +414,10 @@ impl CompileItemContext<'_, '_> {
         }
 
         // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(target_base.span, flow.var_eval(self, var)?);
+        let target_base_eval = Spanned::new(
+            target_base.span,
+            flow.var_eval(self, Spanned::new(target_base.span, var))?,
+        );
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;

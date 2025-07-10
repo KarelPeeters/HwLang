@@ -176,18 +176,34 @@ pub trait Flow: FlowPrivate {
 
     fn var_info(&self, var: Variable) -> &VariableInfo;
 
-    fn var_eval(&self, ctx: &mut CompileItemContext, var: Variable) -> DiagResult<ValueWithVersion> {
-        match self.var_get_maybe(var) {
+    fn var_eval(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
+        let diags = ctx.refs.diags;
+
+        match self.var_get_maybe(var.inner) {
             MaybeAssignedValue::Assigned(value) => Ok(value.value_with_version.clone().map_hardware(|v| {
                 let v = v.map_version(|index| ValueVersion {
-                    signal: SignalOrVariable::Variable(var),
+                    signal: SignalOrVariable::Variable(var.inner),
                     index,
                 });
                 self.apply_implications(&mut ctx.large, v)
             })),
-            MaybeAssignedValue::NotYetAssigned => todo!("error"),
-            MaybeAssignedValue::PartiallyAssigned => todo!("error"),
-            MaybeAssignedValue::Error(_) => todo!("error"),
+            MaybeAssignedValue::NotYetAssigned => {
+                let var_info = self.var_info(var.inner);
+                let diag = Diagnostic::new("variable has not yet been assigned a value")
+                    .add_error(var.span, "variable used here")
+                    .add_info(var_info.id.span(), "variable declared here")
+                    .finish();
+                Err(diags.report(diag))
+            }
+            MaybeAssignedValue::PartiallyAssigned => {
+                let var_info = self.var_info(var.inner);
+                let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
+                    .add_error(var.span, "variable used here")
+                    .add_info(var_info.id.span(), "variable declared here")
+                    .finish();
+                Err(diags.report(diag))
+            }
+            MaybeAssignedValue::Error(e) => Err(e),
         }
     }
 

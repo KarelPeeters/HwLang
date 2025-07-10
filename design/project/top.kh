@@ -16,6 +16,14 @@ pub module top ports(
 ) {
     reg out y = false;
     clocked(clk, async rst) {
-        y = reg(x, false);
+        val a;
+        if (x) {
+            a = false;
+        } else {
+            a = false;
+            a = true;
+        }
+
+        y = a;
     }
 }

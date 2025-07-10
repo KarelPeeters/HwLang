@@ -203,7 +203,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
                     }
                     NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => flow.var_eval(self, var)?,
+                        NamedValue::Variable(var) => flow.var_eval(self, Spanned::new(expr.span, var))?,
                         NamedValue::Port(port) => {
                             // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "port access")?;
