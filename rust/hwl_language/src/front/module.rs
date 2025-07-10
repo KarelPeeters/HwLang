@@ -1044,18 +1044,31 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let diags = self.ctx.refs.diags;
 
         // elaborate block
-        let flow_kind = HardwareProcessKind::CombinatorialBlock { span_keyword };
+        // TODO maybe unify wires and ports?
+        let mut wires_driven = IndexMap::new();
+        let mut ports_driven = IndexMap::new();
+        let flow_kind = HardwareProcessKind::CombinatorialBlockBody {
+            span_keyword,
+            wires_driven: &mut wires_driven,
+            ports_driven: &mut ports_driven,
+        };
         let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+
         let end = self.ctx.elaborate_block(scope, &mut flow.as_flow(), None, block)?;
         end.unwrap_outside_function_and_loop(diags)?;
-        let (ir_vars, ir_block, signals_driven) = flow.finish();
+        let (ir_vars, ir_block) = flow.finish();
 
         // report drivers
         let driver = Driver::CombinatorialBlock(stmt_index);
-        for (signal, span) in signals_driven {
+        for (wire, span) in wires_driven {
             let _ = self
                 .drivers
-                .report_assignment(self.ctx, driver, Spanned::new(span, signal));
+                .report_assignment(self.ctx, driver, Spanned::new(span, Signal::Wire(wire)));
+        }
+        for (port, span) in ports_driven {
+            let _ = self
+                .drivers
+                .report_assignment(self.ctx, driver, Spanned::new(span, Signal::Port(port)));
         }
 
         Ok(IrCombinatorialProcess {
@@ -1128,22 +1141,24 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         let mut elaborate_block = |extra_registers| {
             // elaborate block
+            let mut registers_driven = IndexMap::new();
             let flow_kind = HardwareProcessKind::ClockedBlockBody {
                 span_keyword,
                 domain,
+                registers_driven: &mut registers_driven,
                 extra_registers,
             };
             let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
             let end = self.ctx.elaborate_block(scope, &mut flow.as_flow(), None, block)?;
             end.unwrap_outside_function_and_loop(diags)?;
-            let (ir_vars, ir_block, signals_driven) = flow.finish();
+            let (ir_vars, ir_block) = flow.finish();
 
             // report drivers
-            for (signal, span) in signals_driven {
+            for (reg, span) in registers_driven {
                 let driver = Driver::ClockedBlock(stmt_index);
                 let _ = self
                     .drivers
-                    .report_assignment(self.ctx, driver, Spanned::new(span, signal));
+                    .report_assignment(self.ctx, driver, Spanned::new(span, Signal::Register(reg)));
             }
 
             Ok((ir_vars, ir_block))
@@ -1528,12 +1543,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         let connection_value =
                             self.ctx
                                 .eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value_expr)?;
-                        let (ir_vars, mut ir_block, signals_driven) = flow.finish();
-
-                        // check that nothing is driven here
-                        for (signal, first_drive_span) in signals_driven {
-                            todo!("error")
-                        }
+                        let (ir_vars, mut ir_block) = flow.finish();
 
                         // check type
                         let reason = TypeContainsReason::InstancePortInput {
@@ -2121,17 +2131,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         // eval value
                         let expected_ty = ty.as_ref().map_or(Type::Any, |ty| ty.inner.as_type());
 
-                        let flow_kind = HardwareProcessKind::CombinatorialBlock { span_keyword };
+                        let flow_kind = HardwareProcessKind::WireExpression {
+                            span_keyword,
+                            span_init: value.span,
+                        };
                         let mut flow =
                             FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
                         let value = ctx.eval_expression(scope, &mut flow.as_flow(), &expected_ty, value)?;
-                        let (ir_vars, mut ir_block, signals_driven) = flow.finish();
-
-                        for (signal, span) in signals_driven {
-                            // TODO create a wrapper function around finish_hardware_process(), similar to how we create one?
-                            // TODO share code with other case of this
-                            todo!("report error, driving things from within a wire declaration is too weird to allow")
-                        }
+                        let (ir_vars, mut ir_block) = flow.finish();
 
                         // infer or check domain
                         let value_domain = value.as_ref().map_inner(|v| v.domain());
@@ -2536,6 +2543,7 @@ pub enum DriverKind {
     WiredConnection,
 }
 
+// TODO this can all be simplified
 impl Driver {
     fn kind(&self) -> DriverKind {
         match self {
@@ -2548,6 +2556,8 @@ impl Driver {
     }
 }
 
+// TODO this can be simplified now that we check driver kind validness at assignment time
+// TODO allow multiple non-overlapping drivers for wires, mostly useful for generated instances
 #[derive(Debug, Eq, PartialEq)]
 struct Drivers {
     // For each signal, for each driver, the first span.
@@ -2592,42 +2602,15 @@ impl Drivers {
             (Signal::Port(_) | Signal::Wire(_), DriverKind::WiredConnection) => Ok(driver),
             (Signal::Register(_), DriverKind::ClockedBlock) => Ok(driver),
 
-            // wrong
-            (Signal::Port(port), DriverKind::ClockedBlock) => {
-                let port_info = &ctx.ports[port];
-                let diag = Diagnostic::new("ports cannot be driven by a clocked block")
-                    .add_error(target.span, "driven incorrectly here")
-                    .add_info(port_info.span, "port declared here")
-                    .footer(
-                        Level::Help,
-                        "mark the port as a register or drive it from a combinatorial block or connection",
-                    )
-                    .finish();
-                Err(diags.report(diag))
+            // wrong (this should have been checked during block elaboration already)
+            (Signal::Port(_), DriverKind::ClockedBlock) => {
+                Err(diags.report_internal_error(target.span, "clocked block driving port"))
             }
-            (Signal::Wire(wire), DriverKind::ClockedBlock) => {
-                let wire_info = &ctx.wires[wire];
-                let diag = Diagnostic::new("wires cannot be driven by a clocked block")
-                    .add_error(target.span, "driven incorrectly here")
-                    .add_info(wire_info.decl_span(), "wire declared here")
-                    .footer(
-                        Level::Help,
-                        "change the wire to a register or drive it from a combinatorial block or connection",
-                    )
-                    .finish();
-                Err(diags.report(diag))
+            (Signal::Wire(_), DriverKind::ClockedBlock) => {
+                Err(diags.report_internal_error(target.span, "clocked block driving wire"))
             }
-            (Signal::Register(reg), DriverKind::WiredConnection) => {
-                let reg_info = &ctx.registers[reg];
-                let diag = Diagnostic::new("registers must be driven by a clocked block")
-                    .add_error(target.span, "driven incorrectly here")
-                    .add_info(reg_info.id.span(), "register declared here")
-                    .footer(
-                        Level::Help,
-                        "drive the register from a clocked block or turn it into a wire",
-                    )
-                    .finish();
-                Err(diags.report(diag))
+            (Signal::Register(_), DriverKind::WiredConnection) => {
+                Err(diags.report_internal_error(target.span, "wired connection driving register"))
             }
         };
 

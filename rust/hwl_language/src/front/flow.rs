@@ -5,7 +5,7 @@ use crate::front::implication::{
     join_implications, ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ValueWithVersion,
 };
 use crate::front::module::ExtraRegisterInit;
-use crate::front::signal::{Signal, SignalOrVariable};
+use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{
@@ -102,7 +102,7 @@ trait FlowPrivate: Sized {
     fn apply_implications(
         &self,
         large: &mut IrLargeArena,
-        mut value: HardwareValueWithVersion,
+        value: HardwareValueWithVersion,
     ) -> HardwareValueWithVersion {
         if let HardwareType::Int(ty) = &value.value.ty {
             let mut range = ClosedIncRangeMulti::from_range(ty.clone());
@@ -555,8 +555,6 @@ pub struct FlowHardwareRoot<'p> {
 
     ir_wires: &'p mut IrWires,
     ir_registers: &'p mut IrRegisters,
-
-    signals_driven: IndexMap<Signal, Span>,
     ir_variables: IrVariables,
 
     common: FlowHardwareCommon,
@@ -763,7 +761,6 @@ impl<'p> FlowHardwareRoot<'p> {
             process_kind: kind,
             ir_wires,
             ir_registers,
-            signals_driven: IndexMap::new(),
             ir_variables: IrVariables::new(),
             common: FlowHardwareCommon::new(vec![]),
         }
@@ -777,14 +774,14 @@ impl<'p> FlowHardwareRoot<'p> {
         }
     }
 
-    pub fn finish(self) -> (IrVariables, IrBlock, IndexMap<Signal, Span>) {
+    pub fn finish(self) -> (IrVariables, IrBlock) {
+        // TODO for combinatorial blocks, check that signals are _fully_ driven
         let FlowHardwareRoot {
             root: _,
             parent: _,
             process_kind: _,
             ir_wires: _,
             ir_registers: _,
-            signals_driven,
             ir_variables,
             common,
         } = self;
@@ -798,7 +795,7 @@ impl<'p> FlowHardwareRoot<'p> {
         let block = IrBlock {
             statements: ir_statements,
         };
-        (ir_variables, block, signals_driven)
+        (ir_variables, block)
     }
 }
 
@@ -994,18 +991,21 @@ impl<'p> FlowHardware<'p> {
     )> {
         let root_hw = self.root_hw_mut();
         match &mut root_hw.process_kind {
-            HardwareProcessKind::CombinatorialBlock { .. } => todo!("err"),
-            HardwareProcessKind::InstancePortConnection { .. } => todo!("err"),
             HardwareProcessKind::ClockedBlockBody {
                 span_keyword: _,
                 domain,
+                registers_driven: _,
                 extra_registers,
             } => Ok((*domain, extra_registers, root_hw.ir_registers)),
+
+            HardwareProcessKind::CombinatorialBlockBody { .. } => todo!("err"),
+            HardwareProcessKind::WireExpression { .. } => todo!("err"),
+            HardwareProcessKind::InstancePortConnection { .. } => todo!("err"),
         }
     }
 
-    pub fn block_kind(&self) -> &HardwareProcessKind {
-        &self.root_hw().process_kind
+    pub fn block_kind(&mut self) -> &mut HardwareProcessKind<'p> {
+        &mut self.root_hw_mut().process_kind
     }
 
     pub fn condition_domains(&self) -> impl Iterator<Item = Spanned<ValueDomain>> + use<'_, 'p> {
@@ -1049,13 +1049,12 @@ impl<'p> FlowHardware<'p> {
     pub fn signal_eval(
         &self,
         ctx: &mut CompileItemContext,
-        span: Span,
-        signal: Signal,
+        signal: Spanned<Signal>,
     ) -> DiagResult<HardwareValueWithVersion> {
-        let value_raw = signal.as_hardware_value(ctx, span)?;
+        let value_raw = signal.inner.as_hardware_value(ctx, signal.span)?;
         let version = ValueVersion {
-            signal: SignalOrVariable::Signal(signal),
-            index: self.signal_get_version(signal),
+            signal: SignalOrVariable::Signal(signal.inner),
+            index: self.signal_get_version(signal.inner),
         };
         let value = HardwareValueWithVersion {
             value: value_raw,
@@ -1070,11 +1069,11 @@ impl<'p> FlowHardware<'p> {
     }
 
     pub fn signal_assign(&mut self, signal: Spanned<Signal>, full: bool) {
-        // report driver
-        self.root_hw_mut()
-            .signals_driven
-            .entry(signal.inner)
-            .or_insert(signal.span);
+        // TODO use this to check for accidental latches
+        // TODO record full/partial write for combinatorial block driver checking
+        // TODO for combinatorial block codegen, can we rely on the verilog tools to be smart enough
+        //   or should we initialize fully driven signals anyway?
+        let _ = full;
 
         // bump version
         let version = self.root.next_version();
@@ -1124,14 +1123,22 @@ pub struct FlowCompileContent {
     variable_slots: IndexMap<VariableIndex, VariableSlot>,
 }
 
+// TODO rename to BlockKind? at least make sure everything is consistent
 pub enum HardwareProcessKind<'e> {
-    CombinatorialBlock {
+    CombinatorialBlockBody {
         span_keyword: Span,
+        wires_driven: &'e mut IndexMap<Wire, Span>,
+        ports_driven: &'e mut IndexMap<Port, Span>,
     },
     ClockedBlockBody {
         span_keyword: Span,
         domain: Spanned<SyncDomain<DomainSignal>>,
+        registers_driven: &'e mut IndexMap<Register, Span>,
         extra_registers: ExtraRegisters<'e>,
+    },
+    WireExpression {
+        span_keyword: Span,
+        span_init: Span,
     },
     InstancePortConnection {
         span_connection: Span,

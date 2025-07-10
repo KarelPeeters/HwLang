@@ -1,12 +1,12 @@
 use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
-use crate::front::domain::ValueDomain;
+use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, Variable};
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::Scope;
-use crate::front::signal::{Polarized, Port, Register, Signal, Wire};
+use crate::front::signal::{Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, Value};
@@ -15,6 +15,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
+use annotate_snippets::Level;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget<B = AssignmentTargetBase> {
@@ -39,6 +40,11 @@ impl AssignmentTarget {
             array_steps: ArraySteps::new(vec![]),
         }
     }
+}
+
+enum BlockKind {
+    Combinatorial,
+    Clocked(Spanned<SyncDomain<DomainSignal>>),
 }
 
 impl CompileItemContext<'_, '_> {
@@ -96,9 +102,16 @@ impl CompileItemContext<'_, '_> {
                 return Ok(());
             }
         };
+        let target_base_signal = Spanned::new(target_base.span, target_base_signal);
 
         // variable assignments have been handled, now we know the target is a signal
+        //   check this this is a hardware flow and that we're allowed to write to signals in this context
+        // TODO still count as driver or suggested type to supress future errors?
+        // TODO maybe type inference for wires based on processes is not actually a good idea,
+        //   module instances should be enough
+        // TODO maybe elaborate child instances first, before any blocks, since we can infer more info based on them
         let flow = flow.check_hardware(stmt.span, "assignment to hardware signal")?;
+        let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base_signal)?;
 
         // suggest target type
         if target_steps.is_empty() && op.inner.is_none() {
@@ -119,18 +132,23 @@ impl CompileItemContext<'_, '_> {
                 })?;
 
             let ir_wires = flow.get_ir_wires();
-            target_base_signal.suggest_ty(self, ir_wires, Spanned::new(target_base.span, &right_ty))?;
+            target_base_signal
+                .inner
+                .suggest_ty(self, ir_wires, Spanned::new(target_base.span, &right_ty))?;
         }
 
         // get inner type and steps
-        let target_base_ty = target_base_signal.ty(self, target_base.span)?.map_inner(Clone::clone);
+        let target_base_ty = target_base_signal
+            .inner
+            .ty(self, target_base.span)?
+            .map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
         // evaluate the full value
         let value = match op.inner {
             None => right_eval,
             Some(op_inner) => {
-                let target_base_eval = flow.signal_eval(self, target_base.span, target_base_signal)?;
+                let target_base_eval = flow.signal_eval(self, target_base_signal)?;
 
                 let target_eval = if target_steps.is_empty() {
                     HardwareValueWithImplications {
@@ -176,10 +194,7 @@ impl CompileItemContext<'_, '_> {
         // report assignment after everything has been evaluated
         // TODO report exact range/sub-access that is being assigned
         // TODO report assigned value type and even the full compile value, so we have more information later on
-        flow.signal_assign(
-            Spanned::new(target_base.span, target_base_signal),
-            target_steps.is_empty(),
-        );
+        flow.signal_assign(target_base_signal, target_steps.is_empty());
 
         // check type
         let reason = TypeContainsReason::Assignment {
@@ -194,23 +209,18 @@ impl CompileItemContext<'_, '_> {
             .as_hardware_value(self.refs, &mut self.large, value.span, &target_ty)?;
 
         // suggest and check domains
-        let clocked_block_domain = match flow.block_kind() {
-            &HardwareProcessKind::ClockedBlockBody { domain, .. } => Some(domain),
-            HardwareProcessKind::CombinatorialBlock { .. } | HardwareProcessKind::InstancePortConnection { .. } => None,
-        };
         let value_domain = Spanned {
             span: value.span,
             inner: value_hw.domain,
         };
-
-        let suggested_domain = match clocked_block_domain {
-            Some(domain) => domain.map_inner(ValueDomain::Sync),
-            None => value_domain,
+        let suggested_domain = match flow_block_kind {
+            BlockKind::Clocked(domain) => domain.map_inner(ValueDomain::Sync),
+            BlockKind::Combinatorial => value_domain,
         };
-        let target_domain = target_base_signal.suggest_domain(self, suggested_domain)?;
+        let target_domain = target_base_signal.inner.suggest_domain(self, suggested_domain)?;
 
         self.check_assignment_domains(
-            clocked_block_domain,
+            flow_block_kind,
             flow.condition_domains(),
             op.span,
             target_domain,
@@ -220,7 +230,7 @@ impl CompileItemContext<'_, '_> {
 
         // get ir target
         let target_ir = IrAssignmentTarget {
-            base: target_base_signal.as_ir_target_base(self, target_base.span)?,
+            base: target_base_signal.inner.as_ir_target_base(self, target_base.span)?,
             steps: target_steps_ir,
         };
 
@@ -229,6 +239,101 @@ impl CompileItemContext<'_, '_> {
         flow.push_ir_statement(Spanned::new(stmt.span, stmt_ir));
 
         Ok(())
+    }
+
+    fn check_block_kind_and_driver_type(
+        &self,
+        flow: &mut FlowHardware,
+        target_base_signal: Spanned<Signal>,
+    ) -> DiagResult<BlockKind> {
+        let diags = self.refs.diags;
+
+        let block_kind = match flow.block_kind() {
+            HardwareProcessKind::CombinatorialBlockBody {
+                span_keyword: _,
+                wires_driven,
+                ports_driven,
+            } => {
+                match target_base_signal.inner {
+                    Signal::Port(port) => {
+                        ports_driven.entry(port).or_insert(target_base_signal.span);
+                    }
+                    Signal::Wire(wire) => {
+                        wires_driven.entry(wire).or_insert(target_base_signal.span);
+                    }
+                    Signal::Register(reg) => {
+                        let reg_info = &self.registers[reg];
+                        let diag = Diagnostic::new("registers must be driven by a clocked block")
+                            .add_error(target_base_signal.span, "driven incorrectly here")
+                            .add_info(reg_info.id.span(), "register declared here")
+                            .footer(
+                                Level::Help,
+                                "drive the register from a clocked block or turn it into a wire",
+                            )
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                }
+
+                BlockKind::Combinatorial
+            }
+            HardwareProcessKind::ClockedBlockBody {
+                span_keyword: _,
+                domain,
+                registers_driven,
+                extra_registers: _,
+            } => {
+                match target_base_signal.inner {
+                    Signal::Register(reg) => {
+                        registers_driven.entry(reg).or_insert(target_base_signal.span);
+                    }
+                    Signal::Port(port) => {
+                        let port_info = &self.ports[port];
+                        let diag = Diagnostic::new("ports cannot be driven by a clocked block")
+                            .add_error(target_base_signal.span, "driven incorrectly here")
+                            .add_info(port_info.span, "port declared here")
+                            .footer(
+                                Level::Help,
+                                "mark the port as a register or drive it from a combinatorial block or connection",
+                            )
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                    Signal::Wire(wire) => {
+                        let wire_info = &self.wires[wire];
+                        let diag = Diagnostic::new("wires cannot be driven by a clocked block")
+                            .add_error(target_base_signal.span, "driven incorrectly here")
+                            .add_info(wire_info.decl_span(), "wire declared here")
+                            .footer(
+                                Level::Help,
+                                "change the wire to a register or drive it from a combinatorial block or connection",
+                            )
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                }
+
+                BlockKind::Clocked(*domain)
+            }
+            HardwareProcessKind::WireExpression {
+                span_keyword: _,
+                span_init,
+            } => {
+                let diag = Diagnostic::new("assigning to signals is only allowed in processes")
+                    .add_error(target_base_signal.span, "assigning to signal here")
+                    .add_info(*span_init, "the current context is a wire expression")
+                    .finish();
+                return Err(diags.report(diag));
+            }
+            HardwareProcessKind::InstancePortConnection { span_connection } => {
+                let diag = Diagnostic::new("assigning to signals is only allowed in processes")
+                    .add_error(target_base_signal.span, "assigning to signal here")
+                    .add_info(*span_connection, "the current context is an instance connection")
+                    .finish();
+                return Err(diags.report(diag));
+            }
+        };
+        Ok(block_kind)
     }
 
     fn elaborate_variable_assignment(
@@ -493,15 +598,15 @@ impl CompileItemContext<'_, '_> {
 
     fn check_assignment_domains(
         &self,
-        clocked_block_domain: Option<Spanned<SyncDomain<Polarized<Signal>>>>,
+        block_kind: BlockKind,
         condition_domains: impl Iterator<Item = Spanned<ValueDomain>>,
         op_span: Span,
         target_base_domain: Spanned<ValueDomain>,
         steps: &ArraySteps,
         value_domain: Spanned<ValueDomain>,
     ) -> DiagResult<()> {
-        match clocked_block_domain {
-            None => {
+        match block_kind {
+            BlockKind::Combinatorial => {
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
                     target_base_domain,
@@ -531,7 +636,7 @@ impl CompileItemContext<'_, '_> {
 
                 check
             }
-            Some(block_domain) => {
+            BlockKind::Clocked(block_domain) => {
                 let block_domain = block_domain.map_inner(ValueDomain::Sync);
                 let mut check = self.check_valid_domain_crossing(
                     op_span,

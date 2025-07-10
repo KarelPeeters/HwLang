@@ -207,12 +207,12 @@ impl<'a> CompileItemContext<'a, '_> {
                         NamedValue::Port(port) => {
                             // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "port access")?;
-                            Value::Hardware(flow.signal_eval(self, expr.span, Signal::Port(port))?)
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
                         }
                         NamedValue::Wire(wire) => {
                             // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "wire access")?;
-                            Value::Hardware(flow.signal_eval(self, expr.span, Signal::Wire(wire))?)
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?)
                         }
                         NamedValue::Register(reg) => {
                             // TODO check domain, are we allowed to read this in the current context?
@@ -223,7 +223,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
                             }
 
-                            Value::Hardware(flow.signal_eval(self, expr.span, Signal::Register(reg))?)
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?)
                         }
                         NamedValue::PortInterface(interface) => {
                             // we don't need a hardware context yet, only when we actually access an actual port
@@ -825,7 +825,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // TODO check domain, are we allowed to read this in the current context?
                 let flow = flow.check_hardware(expr_span, "port access")?;
-                let port_eval = flow.signal_eval(self, expr_span, Signal::Port(port))?;
+                let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
                 return Ok(ValueInner::Value(Value::Hardware(
                     HardwareValueWithImplications::simple_version(port_eval),
                 )));
@@ -850,7 +850,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // TODO check domain, are we allowed to read this in the current context?
                 let flow = flow.check_hardware(expr_span, "wire access")?;
-                let wire_eval = flow.signal_eval(self, expr_span, Signal::Wire(wire))?;
+                let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
                 return Ok(ValueInner::Value(Value::Hardware(
                     HardwareValueWithImplications::simple_version(wire_eval),
                 )));
