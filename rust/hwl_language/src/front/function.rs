@@ -893,7 +893,7 @@ impl CapturedScope {
                                 let captured = match value {
                                     &ScopedEntry::Item(value) => Ok(CapturedValue::Item(value)),
                                     ScopedEntry::Named(named) => match named {
-                                        &NamedValue::Variable(var) => flow.var_capture(var),
+                                        &NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)),
                                         NamedValue::Port(_)
                                         | NamedValue::Wire(_)
                                         | NamedValue::Register(_)

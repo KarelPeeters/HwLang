@@ -140,7 +140,7 @@ trait FlowPrivate: Sized {
 
     fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue);
 
-    fn var_get_maybe(&self, var: Variable) -> VariableValueRef;
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef>;
 }
 
 #[allow(private_bounds)]
@@ -174,12 +174,12 @@ pub trait Flow: FlowPrivate {
         self.var_set_maybe(var, assignment_span, assigned);
     }
 
-    fn var_info(&self, var: Variable) -> &VariableInfo;
+    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
 
     fn var_eval(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
         let diags = ctx.refs.diags;
 
-        match self.var_get_maybe(var.inner) {
+        match self.var_get_maybe(var)? {
             MaybeAssignedValue::Assigned(value) => Ok(value.value_with_version.clone().map_hardware(|v| {
                 let v = v.map_version(|index| ValueVersion {
                     signal: SignalOrVariable::Variable(var.inner),
@@ -188,7 +188,7 @@ pub trait Flow: FlowPrivate {
                 self.apply_implications(&mut ctx.large, v)
             })),
             MaybeAssignedValue::NotYetAssigned => {
-                let var_info = self.var_info(var.inner);
+                let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value")
                     .add_error(var.span, "variable used here")
                     .add_info(var_info.id.span(), "variable declared here")
@@ -196,7 +196,7 @@ pub trait Flow: FlowPrivate {
                 Err(diags.report(diag))
             }
             MaybeAssignedValue::PartiallyAssigned => {
-                let var_info = self.var_info(var.inner);
+                let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
                     .add_error(var.span, "variable used here")
                     .add_info(var_info.id.span(), "variable declared here")
@@ -218,8 +218,8 @@ pub trait Flow: FlowPrivate {
         var
     }
 
-    fn var_capture(&self, var: Variable) -> DiagResult<CapturedValue> {
-        match self.var_get_maybe(var) {
+    fn var_capture(&self, var: Spanned<Variable>) -> DiagResult<CapturedValue> {
+        match self.var_get_maybe(var)? {
             MaybeAssignedValue::Assigned(value) => match &value.value_with_version {
                 Value::Compile(v) => Ok(CapturedValue::Value(v.clone())),
                 Value::Hardware(_) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::Hardware)),
@@ -234,8 +234,8 @@ pub trait Flow: FlowPrivate {
         }
     }
 
-    fn var_is_not_yet_assigned(&self, var: Variable) -> DiagResult<bool> {
-        match self.var_get_maybe(var) {
+    fn var_is_not_yet_assigned(&self, var: Spanned<Variable>) -> DiagResult<bool> {
+        match self.var_get_maybe(var)? {
             MaybeAssignedValue::NotYetAssigned => Ok(true),
             MaybeAssignedValue::Assigned(_) | MaybeAssignedValue::PartiallyAssigned => Ok(false),
             MaybeAssignedValue::Error(e) => Err(e),
@@ -396,17 +396,20 @@ impl FlowPrivate for FlowCompile<'_> {
         slot.value = value;
     }
 
-    fn var_get_maybe(&self, var: Variable) -> VariableValueRef {
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
         // TODO block evaluation of hardware values in compile context?
-        assert_eq!(self.root.check, var.check);
+        assert_eq!(self.root.check, var.inner.check);
 
         let mut curr = self;
         loop {
-            if let Some(entry) = curr.variable_slots.get(&var.index) {
-                return entry.value.as_ref();
+            if let Some(entry) = curr.variable_slots.get(&var.inner.index) {
+                return Ok(entry.value.as_ref());
             }
             curr = match &curr.kind {
-                FlowCompileKind::Root => todo!("err"),
+                FlowCompileKind::Root => {
+                    let diags = self.root.diags;
+                    return Err(diags.report_internal_error(var.span, "failed to find variable slot"));
+                }
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
                 FlowCompileKind::ScopedHardware(parent) => {
@@ -457,11 +460,11 @@ impl Flow for FlowCompile<'_> {
         var
     }
 
-    fn var_info(&self, var: Variable) -> &VariableInfo {
+    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
         let mut curr = self;
         loop {
-            if let Some(slot) = curr.variable_slots.get(&var.index) {
-                return &slot.info;
+            if let Some(slot) = curr.variable_slots.get(&var.inner.index) {
+                return Ok(&slot.info);
             }
             curr = match &curr.kind {
                 FlowCompileKind::Root => todo!("internal error"),
@@ -685,8 +688,8 @@ impl FlowPrivate for FlowHardware<'_> {
         variables.insert(var.index, value);
     }
 
-    fn var_get_maybe(&self, var: Variable) -> VariableValueRef {
-        assert_eq!(self.root.check, var.check);
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
+        assert_eq!(self.root.check, var.inner.check);
 
         let mut curr = self;
         loop {
@@ -695,8 +698,8 @@ impl FlowPrivate for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(value) = variables.values.get(&var.index) {
-                return value.as_ref();
+            if let Some(value) = variables.values.get(&var.inner.index) {
+                return Ok(value.as_ref());
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_get_maybe(var),
@@ -743,7 +746,7 @@ impl Flow for FlowHardware<'_> {
         var
     }
 
-    fn var_info(&self, var: Variable) -> &VariableInfo {
+    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
         // TODO fix code duplication
         let mut curr = self;
         loop {
@@ -752,8 +755,8 @@ impl Flow for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(info) = variables.infos.get(&var.index) {
-                return info;
+            if let Some(info) = variables.infos.get(&var.inner.index) {
+                return Ok(info);
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_info(var),
@@ -902,7 +905,7 @@ impl<'p> FlowHardware<'p> {
                 check: self.root.check,
                 index: var,
             };
-            let var_id_span = self.var_info(var).id.span();
+            let var_id_span = self.var_info(Spanned::new(span_merge, var))?.id.span();
 
             let value_merged = merge_branch_values(refs, large, self, span_merge, var, &mut branches)
                 .unwrap_or_else(VariableValue::Error);
@@ -1250,8 +1253,9 @@ fn merge_branch_values<'f>(
 ) -> DiagResult<VariableValue> {
     let diags = refs.diags;
 
-    let var_info = parent_flow.var_info(var);
-    let parent_value = parent_flow.var_get_maybe(var);
+    let var_spanned = Spanned::new(span_merge, var);
+    let var_info = parent_flow.var_info(var_spanned)?;
+    let parent_value = parent_flow.var_get_maybe(var_spanned)?;
 
     // visit all branch values to check if we can skip the merge
     let mut merged: Option<MaybeAssignedValue<Result<AssignedValue<_>, NeedsHardwareMerge>>> = None;
@@ -1457,7 +1461,7 @@ fn merge_branch_values<'f>(
     }
     if used_value_parent {
         // re-borrow parent_value
-        let parent_value = parent_flow.var_get_maybe(var);
+        let parent_value = parent_flow.var_get_maybe(var_spanned)?;
         parent_flow.push_ir_statement(build_store(parent_value)?);
     }
     domain = domain.join(domain_cond);

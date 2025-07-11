@@ -21,7 +21,7 @@ pub module top ports(
             a = false;
         } else {
             a = false;
-            a = true;
+//            a = true;
         }
 
         y = a;

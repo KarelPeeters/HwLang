@@ -75,7 +75,7 @@ impl CompileItemContext<'_, '_> {
             AssignmentTargetBase::Register(reg) => {
                 Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
             }
-            AssignmentTargetBase::Variable(var) => flow.var_info(var).ty.clone(),
+            AssignmentTargetBase::Variable(var) => flow.var_info(Spanned::new(target_base.span, var))?.ty.clone(),
         };
         let target_expected_ty = match target_base_ty {
             None => Type::Any,
@@ -98,7 +98,16 @@ impl CompileItemContext<'_, '_> {
             AssignmentTargetBase::Wire(wire) => Signal::Wire(wire),
             AssignmentTargetBase::Register(reg) => Signal::Register(reg),
             AssignmentTargetBase::Variable(var) => {
-                self.elaborate_variable_assignment(flow, stmt.span, target, var, target_expected_ty, op, right_eval)?;
+                self.elaborate_variable_assignment(
+                    flow,
+                    stmt.span,
+                    target.span,
+                    Spanned::new(target_base.span, var),
+                    target_steps,
+                    target_expected_ty,
+                    op,
+                    right_eval,
+                )?;
                 return Ok(());
             }
         };
@@ -340,26 +349,24 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         flow: &mut impl Flow,
         stmt_span: Span,
-        target: Spanned<AssignmentTarget>,
-        var: Variable,
+        target_span: Span,
+        target_base: Spanned<Variable>,
+        target_steps: &ArraySteps,
         target_expected_ty: Type,
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<ValueWithImplications>,
     ) -> DiagResult<()> {
         let diags = self.refs.diags;
-        let AssignmentTarget {
-            base: target_base,
-            array_steps: target_steps,
-        } = target.inner;
 
         // TODO move all of this into a function
         // check mutable
-        if !flow.var_info(var).mutable {
-            let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(var)?;
+        let target_base_var_info = flow.var_info(target_base)?;
+        if !target_base_var_info.mutable {
+            let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?;
             if !is_simple_first_assignment {
                 let diag = Diagnostic::new("assignment to immutable variable that has already been initialized")
                     .add_error(target_base.span, "variable assigned to here")
-                    .add_info(flow.var_info(var).id.span(), "variable declared as immutable here")
+                    .add_info(target_base_var_info.id.span(), "variable declared as immutable here")
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -373,8 +380,8 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let var_eval = flow.var_eval(self, Spanned::new(target_base.span, var))?;
-                    let target_eval = Spanned::new(target.span, ValueWithImplications::simple_version(var_eval));
+                    let var_eval = flow.var_eval(self, target_base)?;
+                    let target_eval = Spanned::new(target_span, ValueWithImplications::simple_version(var_eval));
                     let value_eval = eval_binary_expression(
                         self.refs,
                         &mut self.large,
@@ -389,9 +396,10 @@ impl CompileItemContext<'_, '_> {
             let value = value.map_inner(ValueWithImplications::into_value);
 
             // check type
-            if let Some(ty) = &flow.var_info(var).ty {
+            let target_base_info = flow.var_info(target_base)?;
+            if let Some(ty) = &target_base_info.ty {
                 let reason = TypeContainsReason::Assignment {
-                    span_target: target.span,
+                    span_target: target_span,
                     span_target_ty: ty.span,
                 };
                 check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true, false)?;
@@ -401,7 +409,7 @@ impl CompileItemContext<'_, '_> {
             let value_stored = match value.inner {
                 Value::Compile(value_inner) => Value::Compile(value_inner),
                 Value::Hardware(value_inner) => {
-                    let id = flow.var_info(var).id;
+                    let id = target_base_info.id;
                     let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
                     let ir_var = store_ir_expression_in_new_variable(self.refs, flow, id, value_inner)?;
                     Value::Hardware(ir_var.to_general_expression())
@@ -409,15 +417,12 @@ impl CompileItemContext<'_, '_> {
             };
 
             // set variable
-            flow.var_set(var, stmt_span, Ok(value_stored));
+            flow.var_set(target_base.inner, stmt_span, Ok(value_stored));
             return Ok(());
         }
 
         // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(
-            target_base.span,
-            flow.var_eval(self, Spanned::new(target_base.span, var))?,
-        );
+        let target_base_eval = Spanned::new(target_base.span, flow.var_eval(self, target_base)?);
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;
@@ -444,7 +449,7 @@ impl CompileItemContext<'_, '_> {
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, ValueWithImplications::simple(target_eval)),
+                        Spanned::new(target_span, ValueWithImplications::simple(target_eval)),
                         right_eval,
                     )?;
                     Spanned::new(stmt_span, value_eval)
@@ -459,9 +464,8 @@ impl CompileItemContext<'_, '_> {
                 expr: target_base_ir_var,
             } = self.convert_variable_to_new_ir_variable(
                 flow,
-                target.span,
-                target_base.span,
-                var,
+                target_span,
+                target_base,
                 &target_base_eval.inner.into_value(),
             )?;
 
@@ -469,7 +473,7 @@ impl CompileItemContext<'_, '_> {
             let (target_inner_ty, target_steps_ir) =
                 target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
             let reason = TypeContainsReason::Assignment {
-                span_target: target.span,
+                span_target: target_span,
                 span_target_ty: target_base_ty.span,
             };
             check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref(), true, false)?;
@@ -512,7 +516,7 @@ impl CompileItemContext<'_, '_> {
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner),
-                        Spanned::new(target.span, ValueWithImplications::simple(Value::Compile(target_eval))),
+                        Spanned::new(target_span, ValueWithImplications::simple(Value::Compile(target_eval))),
                         right_eval.map_inner(ValueWithImplications::Compile),
                     )?
                     .into_value();
@@ -531,9 +535,9 @@ impl CompileItemContext<'_, '_> {
             };
 
             // check type
-            if let Some(var_ty) = &flow.var_info(var).ty {
+            if let Some(var_ty) = &target_base_var_info.ty {
                 let reason = TypeContainsReason::Assignment {
-                    span_target: target.span,
+                    span_target: target_span,
                     span_target_ty: var_ty.span,
                 };
                 check_type_contains_compile_value(diags, reason, &target_expected_ty, value_eval.as_ref(), true)?;
@@ -544,7 +548,7 @@ impl CompileItemContext<'_, '_> {
             Value::Compile(result_value)
         };
 
-        flow.var_set(var, stmt_span, Ok(result));
+        flow.var_set(target_base.inner, stmt_span, Ok(result));
         Ok(())
     }
 
@@ -552,8 +556,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         flow: &mut FlowHardware,
         target_span: Span,
-        target_base_span: Span,
-        var: Variable,
+        target_base: Spanned<Variable>,
         target_base_eval: &Value,
     ) -> DiagResult<HardwareValue<Spanned<HardwareType>, IrVariable>> {
         let refs = self.refs;
@@ -561,7 +564,7 @@ impl CompileItemContext<'_, '_> {
 
         // pick a type and convert the current base value to hardware
         // TODO allow just inferring types, the user can specify one if they really want to
-        let target_var_info = flow.var_info(var);
+        let target_var_info = flow.var_info(target_base)?;
         let target_base_ty = target_var_info.ty.as_ref().ok_or_else(|| {
             let diag = Diagnostic::new("variable needs type annotation")
                 .add_error(
@@ -589,7 +592,7 @@ impl CompileItemContext<'_, '_> {
         })?;
 
         let target_base_ir_expr =
-            target_base_eval.as_hardware_value(refs, &mut self.large, target_base_span, &target_base_ty_hw)?;
+            target_base_eval.as_hardware_value(refs, &mut self.large, target_base.span, &target_base_ty_hw)?;
         let id = target_var_info.id;
         let result = store_ir_expression_in_new_variable(refs, flow, id, target_base_ir_expr)?;
 
