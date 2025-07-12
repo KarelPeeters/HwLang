@@ -456,6 +456,8 @@ impl CompileItemContext<'_, '_> {
         let target_ty = target.inner.ty();
 
         // track pattern coverage
+        // TODO handle coverage checking of empty enums properly
+        // TODO don't check coverage for compile-time cases, it's weird and not that useful
         let mut cover_all = false;
         let mut cover_bool_false = false;
         let mut cover_bool_true = false;
@@ -653,10 +655,10 @@ impl CompileItemContext<'_, '_> {
                     target.span,
                     format!("value has type `{}`", target_ty.diagnostic_string()),
                 )
-                .footer(Level::Help, "add missing cases")
+                .footer(Level::Help, "add missing cases, or")
                 .footer(
                     Level::Help,
-                    "add a default case using `_` or `val _` to cover all remaining values",
+                    "add a default case using `_` to cover all remaining values",
                 )
                 .finish();
             return Err(diags.report(diag));

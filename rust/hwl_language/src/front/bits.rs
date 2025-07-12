@@ -177,6 +177,9 @@ impl HardwareType {
         bits: &mut impl Iterator<Item = bool>,
     ) -> DiagResult<CompileValue> {
         let diags = refs.diags;
+
+        // TODO this is not always an internal error, eg. if the bits don't form a valid value this should just be
+        //   a normal error
         let err_internal = || {
             diags.report_internal_error(
                 span,

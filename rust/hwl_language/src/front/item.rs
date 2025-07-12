@@ -759,6 +759,7 @@ impl CompileItemContext<'_, '_> {
 
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this
+        // TODO enums with no variants should not be hardware representable
         let mut size_err = Ok(());
         let hw = variants_eval
             .iter()

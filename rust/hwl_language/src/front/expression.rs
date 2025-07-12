@@ -903,7 +903,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 )
                                 .footer(
                                     Level::Help,
-                                    "consider using use target type where every bit pattern is valid",
+                                    "consider using a target type where every bit pattern is valid",
                                 )
                                 .footer(
                                     Level::Help,

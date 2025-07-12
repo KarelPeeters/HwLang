@@ -399,6 +399,7 @@ impl FlowPrivate for FlowCompile<'_> {
     fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
         // TODO block evaluation of hardware values in compile context?
         assert_eq!(self.root.check, var.inner.check);
+        let diags = self.root.diags;
 
         let mut curr = self;
         loop {
@@ -407,8 +408,7 @@ impl FlowPrivate for FlowCompile<'_> {
             }
             curr = match &curr.kind {
                 FlowCompileKind::Root => {
-                    let diags = self.root.diags;
-                    return Err(diags.report_internal_error(var.span, "failed to find variable slot"));
+                    return Err(diags.report_internal_error(var.span, "hit root before finding variable slot"));
                 }
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
@@ -467,7 +467,10 @@ impl Flow for FlowCompile<'_> {
                 return Ok(&slot.info);
             }
             curr = match &curr.kind {
-                FlowCompileKind::Root => todo!("internal error"),
+                FlowCompileKind::Root => {
+                    let diags = self.root.diags;
+                    return Err(diags.report_internal_error(var.span, "failed to find variable info"));
+                }
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
                 FlowCompileKind::ScopedHardware(parent) => return parent.var_info(var),
