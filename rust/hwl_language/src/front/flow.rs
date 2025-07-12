@@ -25,74 +25,20 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
 
-// TODO this is a combination of
-// * `ExpressionContext`
-// * `VariableValues`
-// which is hopefully faster, easier to use and more correct
-
-// TODO add "write mask", top be used for checking in combinatorial blocks
-// * initially just keep this as a boolean for the entire signal
-// * only allow reaching after the signal has been fully written
-
-// compile blocks:
-// TODO assignments in this block should be not allowed to leak outside
-//   we can fix this generally on the next scope/vars refactor,
-//   if we provide a "child with immutable view on parent" child mode
-
-// TODO variables arena should also be local instead of ever-growing global
-// TODO move ArenaVariables into flow too, so they can be dropped instead of growing forever
-// TODO add non-conditional flow nesting that roughly matches scope nesting so variables can be dropped
-
-// TODO make asserts actually affect the type system
-
-// TODO rename expected_return_ty to be shorter
-//   (don't move it into flow, it would be too easy to accidentally propagate and wrongly count a block inside of a function)
+// TODO figure out what causes performance regression
+// TODO find all points where scopes are nested, and also create flow children to save memory
+// TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
 // TODO check domain for reads and writes to all signals
 //   eg. currently we can still read async signals in clocked blocks
 
-// TODO use immutable refs for parents? do we ever actually need to mutate?
-//   yes, for compile-time flows we need write-through, right?
-//   properly define all the possible flow/parent relationships:
-//   * immutable compile-time parent of compile-time child
-
-// TODO const blocks should not be allowed to write to their parent flow variables/signals/...
-// TODO similarly, hardware flows should also never write to compile-level variables
-// TODO there is even a case for hardware flows nested inside a hardware flow that should not write to parent flows:
-//   the domain inside the reg construct
-
-// TODO delete this if it turns out to be unnecessary?
-// TODO remove the indirections
-
-// TODO find all points where scopes are nested, and also create flow children to save memory
-
-// TODO implement some auto deref-like traits to avoid .as_ref in a bunch of places
-
-// TODO go back to traits yet again, let expected_hardware return a reference to some _inner_ flow instead of the type itself?
-//   then for the parent flow use an enum again
-
-// TODO move some of these functions into the impl block
-// TODO ideally 'p would be an associated lifetime instead of one on the trait
-// TODO document everything properly
-
-// TODO add some approximate lifetimes
-// TODO go over all flow usages and check that their types and mutability are correct
-
-// TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
-
 // TODO signals should behave more like variables, where the compiler remembers which things it has assigned,
 //   eg. if smaller range then it knows that for future reads, if constant they behave like constants
 
-// TODO go over all unsafe usages and check that they're all correct
-//   (and run everything through Miri to make sure)
-
-// TODO add assert_eq!(self.root.check, var.check); everywhere
+// TODO cleanup
+// TODO order struct, impls, and impl functions
 // TODO instead of looping everywhere, can we just recurse?
 //   try both and benchmark, create some deeply stacked flow chains
-
-// TODO add some proper tests and ensure everything is actually covered
-// TODO remove unused params
-// TODO order struct, impls, and impl functions
 
 trait FlowPrivate: Sized {
     fn root(&self) -> &FlowRoot;

@@ -18,8 +18,9 @@ pub fn assert(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
 }
 
 // TODO think of a better name, maybe `assert_and_assume`?
+// TODO actually implement this
 pub fn assume(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
-    __builtin("fn", "assert_assume", cond, msg);
+    __builtin("fn", "assume", cond, msg);
 }
 
 // TODO parse "clock" as type here?
