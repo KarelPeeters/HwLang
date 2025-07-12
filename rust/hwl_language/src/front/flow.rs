@@ -1354,7 +1354,11 @@ fn merge_branch_values<'f>(
 
     // check if we're done
     let merged = match merged {
-        None => todo!("what to do here? keep parent value, return error, ... is no branches even possible?"),
+        None => {
+            // There were no branches, this implies that control flow diverges.
+            // It doesn't really matter what value we use, so we'll just use an unassigned one.
+            return Ok(MaybeAssignedValue::NotYetAssigned);
+        }
         Some(MaybeAssignedValue::Assigned(Ok(value))) => Ok(MaybeAssignedValue::Assigned(value)),
         Some(MaybeAssignedValue::NotYetAssigned) => Ok(MaybeAssignedValue::NotYetAssigned),
         Some(MaybeAssignedValue::PartiallyAssigned) => Ok(MaybeAssignedValue::PartiallyAssigned),
