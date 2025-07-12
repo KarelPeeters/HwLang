@@ -722,7 +722,8 @@ impl<'a> CompileItemContext<'a, '_> {
                 let ir_var = flow.new_ir_variable(var_info);
 
                 // create register to act as the delay storage
-                let (clocked_domain, clocked_registers, ir_registers) = flow.check_clocked_block()?;
+                let (clocked_domain, clocked_registers, ir_registers) =
+                    flow.check_clocked_block(span_keyword, "register expression")?;
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
                     debug_info_id: debug_info_id(),

@@ -1006,12 +1006,24 @@ impl<'p> FlowHardware<'p> {
 
     pub fn check_clocked_block(
         &mut self,
+        span: Span,
+        reason: &str,
     ) -> DiagResult<(
         Spanned<SyncDomain<DomainSignal>>,
         &mut ExtraRegisters<'p>,
         &mut IrRegisters,
     )> {
         let root_hw = self.root_hw_mut();
+        let diags = root_hw.root.diags;
+
+        let report_err = |span_curr: Span, kind_curr: &str| {
+            let diag = Diagnostic::new(format!("{reason} is only allowed in a clocked block"))
+                .add_error(span, format!("{reason} used here"))
+                .add_info(span_curr, format!("currently inside this {kind_curr}"))
+                .finish();
+            diags.report(diag)
+        };
+
         match &mut root_hw.process_kind {
             HardwareProcessKind::ClockedBlockBody {
                 span_keyword: _,
@@ -1020,9 +1032,15 @@ impl<'p> FlowHardware<'p> {
                 extra_registers,
             } => Ok((*domain, extra_registers, root_hw.ir_registers)),
 
-            HardwareProcessKind::CombinatorialBlockBody { .. } => todo!("err"),
-            HardwareProcessKind::WireExpression { .. } => todo!("err"),
-            HardwareProcessKind::InstancePortConnection { .. } => todo!("err"),
+            &mut HardwareProcessKind::CombinatorialBlockBody { span_keyword, .. } => {
+                Err(report_err(span_keyword, "combinatorial block"))
+            }
+            &mut HardwareProcessKind::WireExpression { span_keyword, .. } => {
+                Err(report_err(span_keyword, "wire expression"))
+            }
+            &mut HardwareProcessKind::InstancePortConnection { span_connection } => {
+                Err(report_err(span_connection, "instance port connection"))
+            }
         }
     }
 
