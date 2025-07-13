@@ -57,7 +57,7 @@ jobs:
       - name: venv
         run: python -m venv python/venv
       - name: pip install
-        run: source python/venv/bin/activate && pip install maturin pytest
+        run: source python/venv/bin/activate && pip install maturin pytest uv
       - name: maturin develop
         run: source python/venv/bin/activate && cd rust/hwl_python && maturin develop
       - name: pytest
