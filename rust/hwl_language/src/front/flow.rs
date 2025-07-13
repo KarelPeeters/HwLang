@@ -367,8 +367,16 @@ impl FlowPrivate for FlowCompile<'_> {
 }
 
 impl Flow for FlowCompile<'_> {
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
-        FlowKind::Compile(unsafe { lifetime_compile_mut(self) })
+    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
+        let root = self.root;
+        let slf = unsafe { lifetime_compile_mut(self) };
+        FlowCompile {
+            root,
+            compile_span: span,
+            compile_reason: reason,
+            kind: FlowCompileKind::ScopedCompile(slf),
+            variable_slots: IndexMap::new(),
+        }
     }
 
     fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware> {
@@ -382,16 +390,8 @@ impl Flow for FlowCompile<'_> {
         Err(self.root.diags.report(diag))
     }
 
-    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
-        let root = self.root;
-        let slf = unsafe { lifetime_compile_mut(self) };
-        FlowCompile {
-            root,
-            compile_span: span,
-            compile_reason: reason,
-            kind: FlowCompileKind::ScopedCompile(slf),
-            variable_slots: IndexMap::new(),
-        }
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
+        FlowKind::Compile(unsafe { lifetime_compile_mut(self) })
     }
 
     fn var_new(&mut self, info: VariableInfo) -> Variable {
@@ -659,10 +659,6 @@ impl FlowPrivate for FlowHardware<'_> {
 }
 
 impl Flow for FlowHardware<'_> {
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
-        FlowKind::Hardware(unsafe { lifetime_hardware_mut(self) })
-    }
-
     fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
         let root = self.root;
         let slf = unsafe { lifetime_hardware_mut(self) };
@@ -678,6 +674,10 @@ impl Flow for FlowHardware<'_> {
     fn check_hardware<'s>(&'s mut self, _: Span, _: &str) -> DiagResult<&'s mut FlowHardware<'s>> {
         let slf = unsafe { lifetime_hardware_mut(self) };
         Ok(slf)
+    }
+
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
+        FlowKind::Hardware(unsafe { lifetime_hardware_mut(self) })
     }
 
     fn var_new(&mut self, info: VariableInfo) -> Variable {
