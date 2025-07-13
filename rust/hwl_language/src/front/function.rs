@@ -284,7 +284,7 @@ impl<'a> ParamArgMacher<'a> {
                         Ok(default)
                     } else {
                         // nothing matched, report error
-                        let diag = Diagnostic::new(format!("missing argument for parameter `{}`", id_str))
+                        let diag = Diagnostic::new(format!("missing argument for parameter `{id_str}`"))
                             .add_info(id.span, "parameter defined without default value here")
                             .add_error(self.args.span, "missing argument here")
                             .finish();

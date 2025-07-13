@@ -70,7 +70,7 @@ impl ServerState {
 
     pub fn initial_registrations(&mut self) -> Result<(), SendError<Message>> {
         // subscribe to file changes
-        let pattern = format!("**/{{*.{}}}", LANGUAGE_FILE_EXTENSION);
+        let pattern = format!("**/{{*.{LANGUAGE_FILE_EXTENSION}}}");
         let params = RegistrationParams {
             registrations: vec![Registration {
                 id: self.sender.next_unique_id(),

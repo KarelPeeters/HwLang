@@ -157,11 +157,11 @@ fn main_inner(args: Args) -> ExitCode {
     let any_error = !diagnostics.is_empty();
     for diag in diagnostics {
         let s = diag.to_string(&source, DiagnosticStringSettings::default());
-        eprintln!("{}\n", s);
+        eprintln!("{s}\n");
     }
 
     if print_ir {
-        println!("{:#?}", compiled);
+        println!("{compiled:#?}");
     }
 
     // TODO don't hardcode paths here
@@ -197,21 +197,21 @@ fn main_inner(args: Args) -> ExitCode {
         println!("-----------------------------------------------");
         println!("input files:      {}", source.file_count());
         println!("input lines:      {}", source.total_lines_of_code());
-        println!("input tokens:     {}", total_tokens);
+        println!("input tokens:     {total_tokens}");
         println!("----------------------------------------");
-        println!("read source:      {:?}", time_source);
-        println!("tokenize:         {:?}", time_tokenize);
-        println!("parse + tokenize: {:?}", time_parse);
-        println!("compile:          {:?}", time_compile);
+        println!("read source:      {time_source:?}");
+        println!("tokenize:         {time_tokenize:?}");
+        println!("parse + tokenize: {time_parse:?}");
+        println!("compile:          {time_compile:?}");
         if let Some((time_lower, time_simulator, _, _)) = lower_results {
-            println!("lower verilog:    {:?}", time_lower);
-            println!("lower c++:        {:?}", time_simulator);
+            println!("lower verilog:    {time_lower:?}");
+            println!("lower c++:        {time_simulator:?}");
         } else {
             println!("lower verilog:    (skipped)");
             println!("lower c++:        (skipped)");
         }
         println!("-----------------------------------------------");
-        println!("total:            {:?}", time_all);
+        println!("total:            {time_all:?}");
         println!();
     }
 

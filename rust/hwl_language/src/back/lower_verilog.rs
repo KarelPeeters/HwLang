@@ -115,7 +115,7 @@ impl LoweredNameScope {
 
         // TODO speed this up?
         for i in 0u32.. {
-            let suffixed = format!("{}_{}", string, i);
+            let suffixed = format!("{string}_{i}");
             if self.used.insert(suffixed.clone()) {
                 return Ok(LoweredName(suffixed));
             }
@@ -123,7 +123,7 @@ impl LoweredNameScope {
 
         throw!(diags.report_internal_error(
             span,
-            format!("failed to generate unique lowered identifier for `{}`", string)
+            format!("failed to generate unique lowered identifier for `{string}`")
         ))
     }
 }
@@ -697,7 +697,7 @@ fn lower_shadow_registers(
 
         let register_name = debug_info_id.inner.unwrap_or("_");
         let shadow_name =
-            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{}", register_name))?;
+            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{register_name}"))?;
 
         match ty.to_prefix_str() {
             Ok(ty_prefix_str) => {
@@ -1148,7 +1148,7 @@ impl<S: AsRef<str>> Display for LoweredName<S> {
         if VERILOG_KEYWORDS.contains(s) {
             // emit escaped identifier,
             //   including extra trailing space just to be sure
-            f.write_str(&format!("\\{} ", s))
+            f.write_str(&format!("\\{s} "))
         } else {
             // TODO check for invalid chars and escape those, or at least throw an error
             f.write_str(s)

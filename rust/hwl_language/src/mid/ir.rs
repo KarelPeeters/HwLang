@@ -534,7 +534,7 @@ impl IrExpression {
                         .map(|x| x.diagnostic_string(module))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("({})", v_str)
+                    format!("({v_str})")
                 }
                 IrExpressionLarge::ArrayLiteral(ty, len, v) => {
                     let ty_str = ty.diagnostic_string();

@@ -112,7 +112,7 @@ impl IrModuleInfo {
                     } = instance;
 
                     if !db.external_modules.contains(module_name) {
-                        let msg = format!("external module `{}` not found in external modules", module_name);
+                        let msg = format!("external module `{module_name}` not found in external modules");
                         return Err(diags.report_internal_error(child.span, msg));
                     }
 
@@ -250,7 +250,7 @@ impl IrExpression {
                         }
                     }
                     if &actual_len != len {
-                        let msg = format!("array literal length mismatch: expected {} but got {}", len, actual_len);
+                        let msg = format!("array literal length mismatch: expected {len} but got {actual_len}");
                         return Err(diags.report_internal_error(span, msg));
                     }
                 }
@@ -282,7 +282,7 @@ impl IrExpression {
 
 fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: &IrType) -> DiagResult<()> {
     if expected != actual {
-        let msg = format!("ir type mismatch: expected {:?}, got {:?}", expected, actual);
+        let msg = format!("ir type mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));
     }
     Ok(())
@@ -290,7 +290,7 @@ fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: 
 
 fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult<()> {
     if expected != actual {
-        let msg = format!("ir port direction mismatch: expected {:?}, got {:?}", expected, actual);
+        let msg = format!("ir port direction mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));
     }
     Ok(())

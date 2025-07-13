@@ -70,7 +70,7 @@ impl BlockEnd<BlockEndStopping> {
                     BlockEndStopping::LoopContinue(span) => (span, "continue"),
                 };
 
-                let diag = Diagnostic::new_todo(format!("{} in conditional statement with runtime condition", kind))
+                let diag = Diagnostic::new_todo(format!("{kind} in conditional statement with runtime condition"))
                     .add_error(span, "used here")
                     .add_info(span_cond, "runtime condition here")
                     .finish();

@@ -61,7 +61,7 @@ impl VirtualFileSystem {
 
             vfs.map_rel.insert_first(path_rel.to_owned(), Content::Unknown(source));
 
-            eprintln!("read file {:?}", path_rel);
+            eprintln!("read file {path_rel:?}");
             Ok(())
         })?;
 

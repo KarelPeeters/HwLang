@@ -341,8 +341,8 @@ enum Stage {
 impl Display for Evaluated {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Evaluated::Temporary(t) => write!(f, "{}", t),
-            Evaluated::Inline(s) => write!(f, "{}", s),
+            Evaluated::Temporary(t) => write!(f, "{t}"),
+            Evaluated::Inline(s) => write!(f, "{s}"),
         }
     }
 }
@@ -599,7 +599,7 @@ impl CodegenBlockContext<'_> {
                         indent,
                         element,
                         result,
-                        &format!("{} + {}", result_offset, offset),
+                        &format!("{result_offset} + {offset}"),
                         &format!("std::get<{element_i}>({value})"),
                     )?;
                     offset += element.size_bits();
@@ -663,7 +663,7 @@ impl CodegenBlockContext<'_> {
                         element,
                         &format!("std::get<{element_i}>({result})"),
                         value,
-                        &format!("{} + {}", value_offset, offset),
+                        &format!("{value_offset} + {offset}"),
                     )?;
                     offset += element.size_bits();
                 }

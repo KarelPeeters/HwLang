@@ -257,7 +257,7 @@ impl<'p> Scope<'p> {
 
                 // TODO add fuzzy-matched suggestions as info
                 // TODO simplify once we we always have a span, eg. from a top config file, commandline or python callsite
-                let mut diag = Diagnostic::new(format!("undeclared identifier `{}`", id));
+                let mut diag = Diagnostic::new(format!("undeclared identifier `{id}`"));
                 if let Some(id_span) = id_span {
                     diag = diag.add_error(id_span, "identifier not declared");
                     diag = diag.add_info(

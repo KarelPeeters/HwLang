@@ -165,9 +165,9 @@ pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
 
     let path_str = path.to_str().unwrap();
     let uri_str = if cfg!(windows) {
-        format!("file:///{}", path_str).replace('\\', "/")
+        format!("file:///{path_str}").replace('\\', "/")
     } else {
-        format!("file://{}", path_str)
+        format!("file://{path_str}")
     };
 
     Uri::from_str(&uri_str).map_err(|e| VfsError::FailedToConvertPathToUri(path.to_owned(), uri_str, e))

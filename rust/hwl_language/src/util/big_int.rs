@@ -387,8 +387,8 @@ impl std::iter::Sum for BigInt {
 impl Display for BigUint {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.storage() {
-            Storage::Small(value) => write!(f, "{}", value),
-            Storage::Big(value) => write!(f, "{}", value),
+            Storage::Small(value) => write!(f, "{value}"),
+            Storage::Big(value) => write!(f, "{value}"),
         }
     }
 }
@@ -396,21 +396,21 @@ impl Display for BigUint {
 impl Display for BigInt {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.storage() {
-            Storage::Small(value) => write!(f, "{}", value),
-            Storage::Big(value) => write!(f, "{}", value),
+            Storage::Small(value) => write!(f, "{value}"),
+            Storage::Big(value) => write!(f, "{value}"),
         }
     }
 }
 
 impl Debug for BigUint {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
 impl Debug for BigInt {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 

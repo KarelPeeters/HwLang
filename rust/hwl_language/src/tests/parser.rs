@@ -10,10 +10,10 @@ fn test_parse(path: impl AsRef<Path>) {
 
     match result {
         Ok(package) => {
-            println!("{:#?}", package);
+            println!("{package:#?}");
         }
         Err(e) => {
-            println!("{:?}", e);
+            println!("{e:?}");
             panic!();
         }
     };

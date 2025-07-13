@@ -820,8 +820,8 @@ mod test {
             if result != expected {
                 any_error = true;
                 eprintln!("Failed to parse literal token {:?} {:?}:", info.name, info.literal);
-                eprintln!("  Expected: {:?}", expected);
-                eprintln!("  Got:      {:?}", result);
+                eprintln!("  Expected: {expected:?}");
+                eprintln!("  Got:      {result:?}");
             }
         }
 
@@ -844,7 +844,7 @@ mod test {
             f
         };
 
-        println!("{}", expected);
+        println!("{expected}");
 
         let grammar = include_str!("grammar.lalrpop");
         assert!(grammar.contains(&expected));

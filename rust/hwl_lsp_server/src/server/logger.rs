@@ -25,12 +25,12 @@ impl Logger {
         let msg = msg.into();
 
         if self.log_to_stderr {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
         }
 
         if let Some(log_file) = &mut self.log_file {
             // ignore errors, we don't want to add additional server crashes
-            let r0 = writeln!(log_file, "{}", msg);
+            let r0 = writeln!(log_file, "{msg}");
             let r1 = log_file.flush();
             if r0.is_err() || r1.is_err() {
                 eprintln!("error writing to log file: {r0:?} {r1:?}");

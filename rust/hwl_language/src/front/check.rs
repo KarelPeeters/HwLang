@@ -132,16 +132,16 @@ impl TypeContainsReason {
                 span_target,
                 span_target_ty,
             } => diag
-                .add_info(span_target, format!("target requires type `{}`", target_ty_str))
+                .add_info(span_target, format!("target requires type `{target_ty_str}`"))
                 .add_info(span_target_ty, "target type set here"),
             TypeContainsReason::Operator(span) => {
-                diag.add_info(span, format!("operator requires type `{}`", target_ty_str))
+                diag.add_info(span, format!("operator requires type `{target_ty_str}`"))
             }
             TypeContainsReason::InstanceModule(span) => {
-                diag.add_info(span, format!("module instance requires type `{}`", target_ty_str))
+                diag.add_info(span, format!("module instance requires type `{target_ty_str}`"))
             }
             TypeContainsReason::Interface(span) => {
-                diag.add_info(span, format!("interface requires type `{}`", target_ty_str))
+                diag.add_info(span, format!("interface requires type `{target_ty_str}`"))
             }
             TypeContainsReason::InstancePortInput {
                 span_connection_port_id,
@@ -149,7 +149,7 @@ impl TypeContainsReason {
             } => diag
                 .add_info(
                     span_connection_port_id,
-                    format!("input port has type `{}`", target_ty_str),
+                    format!("input port has type `{target_ty_str}`"),
                 )
                 .add_info(span_port_ty, "port type set here"),
             TypeContainsReason::InstancePortOutput {
@@ -158,37 +158,36 @@ impl TypeContainsReason {
             } => diag
                 .add_info(
                     span_connection_signal_id,
-                    format!("target signal has type `{}`", target_ty_str),
+                    format!("target signal has type `{target_ty_str}`"),
                 )
                 .add_info(span_signal_ty, "target signal type set here"),
             TypeContainsReason::Return {
                 span_keyword,
                 span_return_ty,
             } => diag
-                .add_info(span_keyword, format!("return requires type `{}`", target_ty_str))
-                .add_info(span_return_ty, format!("return type `{}` set here", target_ty_str)),
+                .add_info(span_keyword, format!("return requires type `{target_ty_str}`"))
+                .add_info(span_return_ty, format!("return type `{target_ty_str}` set here")),
             TypeContainsReason::ForIndexType(span_ty) => diag.add_info(
                 span_ty,
-                format!("for loop iteration variable type `{}` set here", target_ty_str),
+                format!("for loop iteration variable type `{target_ty_str}` set here"),
             ),
             TypeContainsReason::IfCondition(span) => {
-                diag.add_info(span, format!("if condition requires type `{}`", target_ty_str))
+                diag.add_info(span, format!("if condition requires type `{target_ty_str}`"))
             }
-            TypeContainsReason::MatchPattern(span) => diag.add_info(
-                span,
-                format!("match pattern against value with type `{}`", target_ty_str),
-            ),
+            TypeContainsReason::MatchPattern(span) => {
+                diag.add_info(span, format!("match pattern against value with type `{target_ty_str}`"))
+            }
             TypeContainsReason::WhileCondition(span) => {
-                diag.add_info(span, format!("while condition requires type `{}`", target_ty_str))
+                diag.add_info(span, format!("while condition requires type `{target_ty_str}`"))
             }
             TypeContainsReason::ArrayIndex { span_index } => {
-                diag.add_info(span_index, format!("array index requires type `{}`", target_ty_str))
+                diag.add_info(span_index, format!("array index requires type `{target_ty_str}`"))
             }
             TypeContainsReason::ArrayLen { span_len } => {
-                diag.add_info(span_len, format!("array length requires type `{}`", target_ty_str))
+                diag.add_info(span_len, format!("array length requires type `{target_ty_str}`"))
             }
             TypeContainsReason::Parameter { param_ty } => {
-                diag.add_info(param_ty, format!("parameter requires type `{}`", target_ty_str))
+                diag.add_info(param_ty, format!("parameter requires type `{target_ty_str}`"))
             }
         }
     }
@@ -441,7 +440,7 @@ pub fn check_type_is_bool_array(
     let value_ty_str = value.inner.ty().diagnostic_string();
     let mut diag = Diagnostic::new("value does not fit in type").add_error(
         value.span,
-        format!("expected `{}`, got type `{}`", expected_ty_str, value_ty_str),
+        format!("expected `{expected_ty_str}`, got type `{value_ty_str}`"),
     );
 
     diag = reason.add_diag_info(diag, &Type::Array(Arc::new(Type::Bool), BigUint::ZERO));

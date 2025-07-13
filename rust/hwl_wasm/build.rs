@@ -13,7 +13,7 @@ fn main() {
     // TODO add options to binary to choose builtin vs external std?
     // TODO make this configurable, so we don't have to re-built the compiler on every stdlib change
     let std_folder = "../../design/project/std";
-    println!("cargo:rerun-if-changed={}", std_folder);
+    println!("cargo:rerun-if-changed={std_folder}");
 
     let mut f = String::new();
     swriteln!(f, "pub const STD_SOURCES: &[(&[&str], &str, &str)] = &[");

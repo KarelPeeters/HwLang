@@ -427,7 +427,7 @@ impl ArraySteps<&ArrayStepCompile> {
                             .add_error(op_span, "length mismatch on this assignment")
                             .add_info(
                                 old_curr.span.join(step.span),
-                                format!("target slice has length {}", slice_len),
+                                format!("target slice has length {slice_len}"),
                             )
                             .add_info(
                                 new_curr.span,
@@ -530,13 +530,13 @@ pub fn check_range_slice(
 
     let slice_str = || {
         let start = if let Some(slice_start_single) = slice_start.inner.as_single() {
-            format!("{}", slice_start_single)
+            format!("{slice_start_single}")
         } else {
             format!("({})", slice_start.inner)
         };
 
         match slice_len {
-            None => format!("{}..", start),
+            None => format!("{start}.."),
             Some(slice_len) => format!("{}..+{}", start, slice_len.inner),
         }
     };

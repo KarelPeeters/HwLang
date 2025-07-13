@@ -343,14 +343,14 @@ impl CompileValue {
             CompileValue::Type(ty) => ty.diagnostic_string(),
             CompileValue::Bool(value) => value.to_string(),
             CompileValue::Int(value) => value.to_string(),
-            CompileValue::String(value) => format!("{:?}", value),
+            CompileValue::String(value) => format!("{value:?}"),
             CompileValue::Tuple(values) => {
                 let values = values
                     .iter()
                     .map(|value| value.diagnostic_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("({})", values)
+                format!("({values})")
             }
             CompileValue::Array(values) => {
                 let values = values
@@ -358,17 +358,17 @@ impl CompileValue {
                     .map(|value| value.diagnostic_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("[{}]", values)
+                format!("[{values}]")
             }
             CompileValue::Struct(_, values) => {
                 let values = values.iter().map(CompileValue::diagnostic_string).join(", ");
-                format!("struct({})", values)
+                format!("struct({values})")
             }
             CompileValue::Enum(_, (index, value)) => match value {
-                None => format!("enum({})", index),
+                None => format!("enum({index})"),
                 Some(value) => format!("enum({}, {})", index, value.diagnostic_string()),
             },
-            CompileValue::IntRange(range) => format!("({})", range),
+            CompileValue::IntRange(range) => format!("({range})"),
             // TODO include item name and generic args
             CompileValue::Function(_) => "function".to_string(),
             CompileValue::Module(_) => "module".to_string(),

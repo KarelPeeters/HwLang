@@ -181,7 +181,7 @@ impl CompileRefs<'_, '_> {
 
         // rebuild scopes
         let ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces);
-        let flow_root = FlowRoot::restore(&self.diags, flow_root);
+        let flow_root = FlowRoot::restore(self.diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
 
         let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span);
@@ -561,8 +561,8 @@ fn push_connector_interface(
         for (port_index, (_, port)) in enumerate(&interface.ports) {
             let id_str = id.str(source);
             let port_id_str = port.id.str(source);
-            let name = format!("{}.{}", id_str, port_id_str);
-            let ir_name = format!("{}_{}", id_str, port_id_str);
+            let name = format!("{id_str}.{port_id_str}");
+            let ir_name = format!("{id_str}_{port_id_str}");
             claim_ir_name(diags, used_ir_names, &ir_name, id.span)?;
 
             let direction = port_dirs[port_index].1;
@@ -1387,7 +1387,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
                 }
                 None => {
-                    let diag = Diagnostic::new(format!("missing connection for port {}", connector_id_str))
+                    let diag = Diagnostic::new(format!("missing connection for port {connector_id_str}"))
                         .add_error(Span::empty_at(port_connections.span.end()), "connections here")
                         .add_info(connector_info.id.span, "port declared here")
                         .finish();

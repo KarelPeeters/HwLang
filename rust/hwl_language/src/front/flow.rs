@@ -936,9 +936,7 @@ impl<'p> FlowHardware<'p> {
             .collect_vec();
 
         let merged_implications = join_implications(&branch_implications);
-        self.first_common_mut()
-            .implications
-            .extend(merged_implications.into_iter());
+        self.first_common_mut().implications.extend(merged_implications);
 
         // TODO merge condition domains too?
         Ok(branch_blocks)
@@ -1246,10 +1244,10 @@ pub enum FailedCaptureReason {
     NotFullyInitialized,
 }
 
-fn merge_branch_values<'f>(
+fn merge_branch_values(
     refs: CompileRefs,
     large: &mut IrLargeArena,
-    parent_flow: &'f mut FlowHardware,
+    parent_flow: &mut FlowHardware,
     span_merge: Span,
     var: Variable,
     branches: &mut [FlowHardwareBranchContent],
@@ -1387,8 +1385,7 @@ fn merge_branch_values<'f>(
                             .add_info(
                                 branch_value.last_assignment_span,
                                 format!(
-                                    "value assigned here has type `{}` which cannot be represented in hardware",
-                                    ty_str
+                                    "value assigned here has type `{ty_str}` which cannot be represented in hardware"
                                 ),
                             )
                             .add_error(span_merge, "merging happens here")
@@ -1414,10 +1411,7 @@ fn merge_branch_values<'f>(
             .add_info(var_info.id.span(), "for this variable")
             .add_error(
                 span_merge,
-                format!(
-                    "merging happens here, combined type `{}` cannot be represented in hardware",
-                    ty_str
-                ),
+                format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
             );
 
         for (branch, ty) in zip_eq(&*branches, branch_tys) {

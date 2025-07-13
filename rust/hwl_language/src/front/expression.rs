@@ -230,7 +230,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 };
                 return Ok(ValueInner::Value(
-                    result.map_hardware(|v| HardwareValueWithImplications::simple_version(v)),
+                    result.map_hardware(HardwareValueWithImplications::simple_version),
                 ));
             }
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
@@ -637,13 +637,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 // actually do the call
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
-                let value = self
-                    .recurse(entry, |s| {
-                        s.call_function(flow, expected_ty, target.span, expr.span, &target_inner, args)
-                    })
-                    .flatten_err()?;
-
-                value
+                self.recurse(entry, |s| {
+                    s.call_function(flow, expected_ty, target.span, expr.span, &target_inner, args)
+                })
+                .flatten_err()?
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
@@ -816,7 +813,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .interface_info(port_interface_info.view.inner.interface);
 
                 let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
-                    let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
+                    let diag = Diagnostic::new(format!("port `{index_str}` not found on interface"))
                         .add_error(index.span, "attempt to access port here")
                         .add_info(port_interface_info.view.span, "port interface set here")
                         .add_info(interface_info.id.span(), "interface declared here")
@@ -840,7 +837,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .interface_info(wire_interface_info.interface.inner);
 
                 let wire_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
-                    let diag = Diagnostic::new(format!("port `{}` not found on interface", index_str))
+                    let diag = Diagnostic::new(format!("port `{index_str}` not found on interface"))
                         .add_error(index.span, "attempt to access port here")
                         .add_info(wire_interface_info.interface.span, "wire interface set here")
                         .add_info(interface_info.id.span(), "interface declared here")
@@ -1337,7 +1334,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         Ok(Value::Compile(CompileValue::unit()))
                     } else {
                         Err(diags.report_simple(
-                            format!("assertion failed with message {:?}", msg),
+                            format!("assertion failed with message {msg:?}"),
                             expr_span,
                             "failed here",
                         ))
@@ -1437,7 +1434,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let ty = self.eval_expression_as_ty(scope, flow, expr)?.inner;
         let ty_hw = ty.as_hardware_type(self.refs).map_err(|_| {
             diags.report_simple(
-                format!("{} type must be representable in hardware", reason),
+                format!("{reason} type must be representable in hardware"),
                 expr.span,
                 format!("got type `{}`", ty.diagnostic_string()),
             )
@@ -1459,7 +1456,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // TODO include definition site (at least for named values)
         let build_err =
-            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {}", actual));
+            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {actual}"));
 
         let result = match self.refs.get_expr(expr) {
             &ExpressionKind::Id(id) => {
@@ -1594,7 +1591,7 @@ impl<'a> CompileItemContext<'a, '_> {
     ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
-            |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual));
+            |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{actual}`"));
         self.try_eval_expression_as_domain_signal(scope, flow, expr, build_err)
             .map_err(|e| e.into_inner())
     }
@@ -1889,7 +1886,7 @@ fn eval_int_ty_call(
                     false => "uint",
                 };
                 let diag = Diagnostic::new("int range must be a subrange of the base type")
-                    .add_error(arg.span, format!("new range `{}` is not a subrange", new_range))
+                    .add_error(arg.span, format!("new range `{new_range}` is not a subrange"))
                     .add_info(arg.span, format!("base type {base_ty_name}"))
                     .finish();
                 return Err(diags.report(diag));
@@ -2145,14 +2142,14 @@ pub fn eval_binary_expression(
                         diags.report_simple(
                             "array repetition right hand side cannot be negative",
                             right.span,
-                            format!("got value `{}`", right_inner),
+                            format!("got value `{right_inner}`"),
                         )
                     })?;
                     let right_inner = usize::try_from(right_inner).map_err(|right_inner| {
                         diags.report_simple(
                             "array repetition right hand side too large",
                             right.span,
-                            format!("got value `{}`", right_inner),
+                            format!("got value `{right_inner}`"),
                         )
                     })?;
 
@@ -2328,7 +2325,7 @@ pub fn eval_binary_expression(
             if exp_range.start_inc < &zero {
                 let diag = Diagnostic::new("invalid power operation")
                     .add_error(expr_span, "exponent must be non-negative")
-                    .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                    .add_info(exp.span, format!("exponent range is `{exp_range}`"))
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -2337,8 +2334,8 @@ pub fn eval_binary_expression(
             if base_range.contains(&&zero) && exp_range.contains(&&zero) {
                 let diag = Diagnostic::new("invalid power operation `0 ** 0`")
                     .add_error(expr_span, "base and exponent can both be zero")
-                    .add_info(base.span, format!("base range is `{}`", base_range))
-                    .add_info(exp.span, format!("exponent range is `{}`", exp_range))
+                    .add_info(base.span, format!("base range is `{base_range}`"))
+                    .add_info(exp.span, format!("exponent range is `{exp_range}`"))
                     .finish();
                 return Err(diags.report(diag));
             }

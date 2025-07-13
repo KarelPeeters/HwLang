@@ -519,7 +519,7 @@ impl Module {
         run_command(
             Command::new("make")
                 .arg("-f")
-                .arg(format!("{}.mk", top_class_name))
+                .arg(format!("{top_class_name}.mk"))
                 .arg("-j")
                 .arg(num_cpus::get().to_string()),
             &obj_dir,
@@ -528,7 +528,7 @@ impl Module {
 
         // link
         let objects = std::fs::read_dir(&obj_dir)
-            .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {}", e)))?
+            .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {e}")))?
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "o"))
             .map(|entry| entry.file_name())

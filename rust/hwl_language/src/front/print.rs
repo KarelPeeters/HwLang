@@ -15,7 +15,7 @@ pub struct StdoutPrintHandler;
 
 impl PrintHandler for StdoutPrintHandler {
     fn println(&self, s: &str) {
-        println!("{}", s);
+        println!("{s}");
     }
 }
 

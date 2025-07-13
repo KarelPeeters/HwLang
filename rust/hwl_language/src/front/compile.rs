@@ -534,7 +534,7 @@ fn resolve_import_path(
                     .snippet(path.span)
                     .add_error(step.span, "failed step")
                     .finish()
-                    .footer(Level::Info, format!("possible options: {:?}", options))
+                    .footer(Level::Info, format!("possible options: {options:?}"))
                     .finish();
                 throw!(diags.report(diag));
             }
@@ -683,7 +683,7 @@ fn finish_ir_database_impl(
     ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
     if let Some(item) = work_queue.pop() {
-        println!("work queue is not empty, found item: {:?}", item);
+        println!("work queue is not empty, found item: {item:?}");
         return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
     }
 

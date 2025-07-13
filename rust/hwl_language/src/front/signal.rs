@@ -386,7 +386,7 @@ impl Polarized<Signal> {
         let signal_str = signal.diagnostic_string(s);
         match inverted {
             false => signal_str.to_owned(),
-            true => format!("(!{})", signal_str),
+            true => format!("(!{signal_str})"),
         }
     }
 }

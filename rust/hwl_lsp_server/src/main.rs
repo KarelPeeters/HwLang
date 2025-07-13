@@ -16,7 +16,7 @@ fn main() -> Result<(), TopError> {
     std::panic::catch_unwind(main_inner).unwrap_or_else(|e| {
         let s = match e.downcast::<String>() {
             Err(e) => format!("{:?} with type {:?}", e, (*e).type_id()),
-            Ok(e_str) => format!("{:?}", e_str),
+            Ok(e_str) => format!("{e_str:?}"),
         };
 
         std::fs::write("panic.txt", s).unwrap();
@@ -84,7 +84,7 @@ fn main_inner() -> Result<(), TopError> {
         'inner: loop {
             match msg {
                 Ok(msg) => {
-                    state.log(format!("==> {:?}", msg));
+                    state.log(format!("==> {msg:?}"));
 
                     let outcome = state.handle_message(msg)?;
                     match outcome {

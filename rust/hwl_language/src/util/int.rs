@@ -171,7 +171,7 @@ mod test {
             end_inc: BigInt::from(range.end) - 1,
         };
         let result = IntRepresentation::for_range(&range);
-        println!("range {:?} => {:?}", range, result);
+        println!("range {range:?} => {result:?}");
         assert_eq!(expected, result, "mismatch for range {range:?}");
     }
 

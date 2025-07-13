@@ -309,10 +309,10 @@ impl Type {
 
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
-            Type::Int(range) => format!("int({})", range),
+            Type::Int(range) => format!("int({range})"),
             Type::Tuple(inner) => {
                 let inner_str = inner.iter().map(Type::diagnostic_string).join(", ");
-                format!("({})", inner_str)
+                format!("({inner_str})")
             }
             Type::Array(first_inner, first_len) => {
                 let mut dims = String::new();
@@ -540,9 +540,9 @@ impl<T: Display> Display for IncRange<T> {
         let IncRange { start_inc, end_inc } = self;
         match (start_inc, end_inc) {
             (None, None) => write!(f, ".."),
-            (Some(start_inc), None) => write!(f, "{}..", start_inc),
-            (None, Some(end_inc)) => write!(f, "..={}", end_inc),
-            (Some(start_inc), Some(end_inc)) => write!(f, "{}..={}", start_inc, end_inc),
+            (Some(start_inc), None) => write!(f, "{start_inc}.."),
+            (None, Some(end_inc)) => write!(f, "..={end_inc}"),
+            (Some(start_inc), Some(end_inc)) => write!(f, "{start_inc}..={end_inc}"),
         }
     }
 }
@@ -550,7 +550,7 @@ impl<T: Display> Display for IncRange<T> {
 impl<T: Display> Display for ClosedIncRange<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let ClosedIncRange { start_inc, end_inc } = self;
-        write!(f, "{}..={}", start_inc, end_inc)
+        write!(f, "{start_inc}..={end_inc}")
     }
 }
 

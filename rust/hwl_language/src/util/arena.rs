@@ -175,8 +175,7 @@ impl<K: IndexType, T> Index<K> for Arena<K, T> {
         assert_eq!(
             self.check,
             index.inner().check,
-            "Arena index {:?} used in arena which did not create it",
-            index
+            "Arena index {index:?} used in arena which did not create it"
         );
         &self.values[index.inner().index]
     }
@@ -187,8 +186,7 @@ impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
         assert_eq!(
             self.check,
             index.inner().check,
-            "Arena index {:?} used in arena which did not create it",
-            index
+            "Arena index {index:?} used in arena which did not create it"
         );
         &mut self.values[index.inner().index]
     }
