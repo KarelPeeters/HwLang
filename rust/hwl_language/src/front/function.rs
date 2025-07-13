@@ -944,7 +944,7 @@ impl CapturedScope {
         }
     }
 
-    pub fn to_scope<'s, 'f>(&self, refs: CompileRefs<'_, 's>, flow: &mut impl Flow, scope_span: Span) -> Scope<'s> {
+    pub fn to_scope<'s>(&self, refs: CompileRefs<'_, 's>, flow: &mut impl Flow, scope_span: Span) -> Scope<'s> {
         let CapturedScope {
             root_file,
             captured_values,

@@ -326,7 +326,7 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    pub fn eval_declaration<'f, V>(
+    pub fn eval_declaration<V>(
         &mut self,
         scope: &Scope,
         flow: &mut FlowCompile,
