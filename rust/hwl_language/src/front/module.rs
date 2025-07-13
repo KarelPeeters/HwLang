@@ -1208,8 +1208,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         let mut scope_for = Scope::new_child(for_stmt.span, scope_parent);
         let mut flow_for = flow_parent.new_child_isolated();
-        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut flow_for, index_ty));
 
+        // header
+        let index_ty = index_ty.map(|index_ty| self.ctx.eval_expression_as_ty(&scope_for, &mut flow_for, index_ty));
         let iter = self
             .ctx
             .eval_expression_as_for_iterator(&scope_for, &mut flow_for, iter);
@@ -1220,7 +1221,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let mut todo_children = vec![];
         let mut pub_declarations = vec![];
 
-        // TODO allow break?
+        // TODO allow break
         for index_value in iter {
             self.ctx.refs.check_should_stop(span_keyword)?;
             let index_value = index_value.to_maybe_compile(&mut self.ctx.large);

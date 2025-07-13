@@ -1055,13 +1055,25 @@ impl CompileItemContext<'_, '_> {
         let index_ty = index_ty?;
         let iter = iter?;
 
+        // create variable and scope for the index
+        let index_var = flow.var_new(VariableInfo {
+            id: index_id,
+            mutable: false,
+            ty: None,
+        });
+        let mut scope_index = Scope::new_child(stmt.span, scope_parent);
+        scope_index.maybe_declare(
+            diags,
+            Ok(index_id.spanned_str(self.refs.fixed.source)),
+            Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
+        );
+
         // loop
         for index_value in iter {
             self.refs.check_should_stop(span_keyword)?;
             let index_value = index_value.to_maybe_compile(&mut self.large);
 
             // typecheck index
-            // TODO we can also this this once at the start instead, but that's slightly less flexible
             if let Some(index_ty) = &index_ty {
                 let curr_spanned = Spanned {
                     span: stmt.inner.iter.span,
@@ -1071,17 +1083,8 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
             }
 
-            // create scope and set index
-            let mut scope_index = Scope::new_child(stmt.span, scope_parent);
-
-            let index_var = flow.var_new_immutable_init(index_id, span_keyword, Ok(index_value));
-            scope_index.maybe_declare(
-                diags,
-                Ok(index_id.spanned_str(self.refs.fixed.source)),
-                Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
-            );
-
-            // run body
+            // set index and run body
+            flow.var_set(index_var, span_keyword, Ok(index_value));
             let body_end = self.elaborate_block(&scope_index, flow, expected_return_ty, body)?;
 
             // handle possible loop termination
