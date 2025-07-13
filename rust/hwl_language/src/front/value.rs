@@ -247,7 +247,7 @@ impl CompileValue {
             &CompileValue::Enum(item_value, (variant_index, ref content_value)) => match ty {
                 &HardwareType::Enum(hw_enum) if hw_enum.inner() == item_value => {
                     let info = refs.shared.elaboration_arenas.enum_info(hw_enum.inner());
-                    let info_hw = info.hw.as_ref_ok().unwrap();
+                    let info_hw = info.hw.as_ref().unwrap();
 
                     // convert content to bits and then ir expression
                     let content_ir = content_value

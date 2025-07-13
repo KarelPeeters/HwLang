@@ -859,7 +859,7 @@ impl CompileItemContext<'_, '_> {
                     };
 
                     let info = self.refs.shared.elaboration_arenas.enum_info(target_ty.inner());
-                    let info_hw = info.hw.as_ref_ok().unwrap();
+                    let info_hw = info.hw.as_ref().unwrap();
 
                     let ty_content = &info_hw.content_types[pattern_index];
 

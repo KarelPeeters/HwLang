@@ -34,7 +34,7 @@ impl HardwareType {
             }
             &HardwareType::Enum(elab) => {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
-                let info_hw = info.hw.as_ref_ok().unwrap();
+                let info_hw = info.hw.as_ref().unwrap();
 
                 // The tag needs to be fully valid.
                 let tag_range = ClosedIncRange {
@@ -122,7 +122,7 @@ impl HardwareType {
                     return Err(err_internal());
                 }
                 let info = refs.shared.elaboration_arenas.enum_info(elab_ty.inner());
-                let info_hw = info.hw.as_ref_ok().unwrap();
+                let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
                 let tag_range = info_hw.tag_range();
@@ -230,7 +230,7 @@ impl HardwareType {
             }
             HardwareType::Enum(elab) => {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
-                let info_hw = info.hw.as_ref_ok().unwrap();
+                let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
                 let tag_ty = HardwareType::Int(info_hw.tag_range());

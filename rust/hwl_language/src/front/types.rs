@@ -364,7 +364,7 @@ impl HardwareType {
             }
             HardwareType::Enum(elab) => {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
-                let info_hw = info.hw.as_ref_ok().unwrap();
+                let info_hw = info.hw.as_ref().unwrap();
 
                 let tag_ty = IrType::Int(ClosedIncRange {
                     start_inc: BigInt::ZERO,

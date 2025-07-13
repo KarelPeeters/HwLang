@@ -1,5 +1,5 @@
 use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
-use crate::front::compile::{CompileItemContext, WorkItem};
+use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{Flow, FlowCompile, FlowRoot};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
@@ -218,9 +218,10 @@ pub struct ElaboratedEnumInfo {
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct NonHardwareEnum {
-    pub first_failing_variant: usize,
+#[derive(Debug, Clone)]
+pub enum NonHardwareEnum {
+    NoVariants,
+    NonHardwareField(usize),
 }
 
 #[derive(Debug)]
@@ -725,6 +726,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
 
+        // evaluate variants
         let mut variants_eval = IndexMap::new();
         let mut any_variant_err = Ok(());
 
@@ -756,41 +758,8 @@ impl CompileItemContext<'_, '_> {
         any_variant_err?;
 
         // check if this enum can be represented in hardware
-        //   we do this once now instead of each time we need to know this
-        // TODO enums with no variants should not be hardware representable
-        let mut size_err = Ok(());
-        let hw = variants_eval
-            .iter()
-            .enumerate()
-            .map(|(i, (_, (_, ty)))| {
-                ty.as_ref()
-                    .map(|ty| ty.inner.as_hardware_type(self.refs))
-                    .transpose()
-                    .map_err(|_| NonHardwareEnum {
-                        first_failing_variant: i,
-                    })
-            })
-            .try_collect_vec()
-            .and_then(|content_types| {
-                let max_content_size = content_types
-                    .iter()
-                    .filter_map(Option::as_ref)
-                    .map(|ty| ty.size_bits(self.refs))
-                    .max()
-                    .unwrap_or(BigUint::ZERO);
-                let max_content_size = usize::try_from(max_content_size).map_err(|size| {
-                    size_err = Err(diags.report_simple("enum size too large", span_body, format!("got size {size}")));
-                    NonHardwareEnum {
-                        first_failing_variant: 0,
-                    }
-                })?;
-                Ok(HardwareEnumInfo {
-                    content_types,
-                    max_content_size,
-                })
-            });
-
-        size_err?;
+        //   we do this once now instead of each time we need to know this for performance reasons
+        let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
         Ok(ElaboratedEnumInfo {
             unique,
@@ -799,4 +768,47 @@ impl CompileItemContext<'_, '_> {
             hw,
         })
     }
+}
+
+fn try_enum_as_hardware(
+    refs: CompileRefs,
+    variants_eval: &IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
+    span_body: Span,
+) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
+    let diags = refs.diags;
+
+    if variants_eval.is_empty() {
+        // no variants, cannot be represented in hardware
+        return Ok(Err(NonHardwareEnum::NoVariants));
+    }
+
+    // map fields to hardware
+    let mut content_types = vec![];
+    for (i, (_, (_, ty))) in variants_eval.iter().enumerate() {
+        let ty_hw = match ty {
+            None => None,
+            Some(ty) => match ty.inner.as_hardware_type(refs) {
+                Ok(ty_hw) => Some(ty_hw),
+                Err(_) => return Ok(Err(NonHardwareEnum::NonHardwareField(i))),
+            },
+        };
+        content_types.push(ty_hw);
+    }
+
+    // calculate total size
+    let max_content_size = content_types
+        .iter()
+        .filter_map(Option::as_ref)
+        .map(|ty| ty.size_bits(refs))
+        .max()
+        .unwrap_or(BigUint::ZERO);
+    let max_content_size = usize::try_from(max_content_size)
+        .map_err(|size| diags.report_simple("enum size too large", span_body, format!("got size {size}")))?;
+
+    // wrap
+    let info = HardwareEnumInfo {
+        content_types,
+        max_content_size,
+    };
+    Ok(Ok(info))
 }

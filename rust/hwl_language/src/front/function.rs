@@ -526,20 +526,30 @@ impl CompileItemContext<'_, '_> {
             Value::Hardware(content_inner) => {
                 let enum_info_hw = match &enum_info.hw {
                     Ok(hw_info) => hw_info,
-                    &Err(NonHardwareEnum { first_failing_variant }) => {
-                        let (variant_id, variant_content) = &enum_info.variants[first_failing_variant];
-                        let variant_content = variant_content.as_ref().unwrap();
-
-                        let diag = Diagnostic::new("cannot construct hardware value of struct")
-                            .add_error(span_call, "during construction of struct here")
-                            .add_info(content.span, "necessary because this content value is hardware")
-                            .add_info(variant_id.span, "variant declared here")
-                            .add_info(
-                                variant_content.span,
-                                format!("with non-hardware type `{}`", variant_content.inner.diagnostic_string()),
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                    Err(non_hw_reason) => {
+                        let e = match non_hw_reason {
+                            NonHardwareEnum::NoVariants => {
+                                diags.report_internal_error(span_call, "constructing enum without variants")
+                            }
+                            &NonHardwareEnum::NonHardwareField(variant_index) => {
+                                let (variant_id, variant_content) = &enum_info.variants[variant_index];
+                                let variant_content = variant_content.as_ref().unwrap();
+                                let diag = Diagnostic::new("cannot construct hardware value of enum")
+                                    .add_error(span_call, "during construction of enum here")
+                                    .add_info(content.span, "necessary because this content value is hardware")
+                                    .add_info(variant_id.span, "variant declared here")
+                                    .add_info(
+                                        variant_content.span,
+                                        format!(
+                                            "with non-hardware type `{}`",
+                                            variant_content.inner.diagnostic_string()
+                                        ),
+                                    )
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                        };
+                        return Err(e);
                     }
                 };
                 let ty_hw = HardwareChecked::new_unchecked(elab);
