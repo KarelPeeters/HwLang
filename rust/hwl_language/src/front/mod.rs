@@ -3,7 +3,6 @@ pub mod bits;
 pub mod block;
 pub mod check;
 pub mod compile;
-pub mod context;
 pub mod diagnostic;
 pub mod domain;
 pub mod expression;
