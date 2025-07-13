@@ -472,8 +472,6 @@ impl CompileItemContext<'_, '_> {
         params: &Option<Parameters>,
         body: FunctionItemBody,
     ) -> DiagResult<CompileValue> {
-        let diags = self.refs.diags;
-
         match params {
             None => {
                 // eval immediately

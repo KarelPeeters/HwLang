@@ -1737,11 +1737,6 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     .transpose()?;
 
                 // eval expr
-                // TODO this should not be an internal, this is actually possible now with block expressions
-                let flow_kind = HardwareProcessKind::InstancePortConnection {
-                    span_connection: connection.span,
-                };
-
                 let mut flow_connection = flow_parent.new_child_isolated();
                 let value = self
                     .ctx

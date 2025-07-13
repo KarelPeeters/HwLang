@@ -768,19 +768,7 @@ impl<'p> FlowHardwareRoot<'p> {
 }
 
 impl<'p> FlowHardware<'p> {
-    fn root_hw<'s>(&'s self) -> &'s FlowHardwareRoot<'p> {
-        let mut curr = self;
-        loop {
-            curr = match &curr.kind {
-                FlowHardwareKind::Root(root) => return root,
-                FlowHardwareKind::Branch(branch) => branch.parent,
-                FlowHardwareKind::Scoped(scoped) => scoped.parent,
-            }
-        }
-    }
-
     fn root_hw_mut<'s>(&'s mut self) -> &'s mut FlowHardwareRoot<'p> {
-        // TODO is there a way to avoid this loop?
         let mut curr = self;
         loop {
             curr = match &mut curr.kind {
