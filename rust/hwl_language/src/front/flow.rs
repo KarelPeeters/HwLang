@@ -25,7 +25,6 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
 
-// TODO figure out what causes performance regression
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -546,8 +545,14 @@ struct FlowHardwareCommon {
 }
 
 struct FlowHardwareVariables {
-    infos: VariableInfos,
-    values: VariableValues,
+    // We store both the info and the value as a signle combined entry, to avoid duplicate map lookups and insertions.
+    combined: IndexMap<VariableIndex, VariableInfoAndValue>,
+}
+
+#[derive(Default)]
+struct VariableInfoAndValue {
+    info: Option<VariableInfo>,
+    value: Option<VariableValue>,
 }
 
 // TODO track signals very similarly to variables, certainly once written to at least once
@@ -572,8 +577,7 @@ impl FlowHardwareCommon {
     fn new(implications: Vec<Implication>) -> FlowHardwareCommon {
         FlowHardwareCommon {
             variables: FlowHardwareVariables {
-                infos: IndexMap::new(),
-                values: IndexMap::new(),
+                combined: IndexMap::new(),
             },
             signal_versions: IndexMap::new(),
             statements: vec![],
@@ -621,20 +625,20 @@ impl FlowPrivate for FlowHardware<'_> {
         let mut curr = self;
         let variables = loop {
             curr = match &mut curr.kind {
-                FlowHardwareKind::Root(root) => break &mut root.common.variables.values,
-                FlowHardwareKind::Branch(branch) => break &mut branch.common.variables.values,
+                FlowHardwareKind::Root(root) => break &mut root.common.variables,
+                FlowHardwareKind::Branch(branch) => break &mut branch.common.variables,
                 FlowHardwareKind::Scoped(scoped) => {
                     // if the value was declared in this scope we can keep it here,
                     //   otherwise fallthrough to the parent
-                    if scoped.variables.infos.contains_key(&var.index) {
-                        break &mut scoped.variables.values;
+                    if scoped.variables.combined.contains_key(&var.index) {
+                        break &mut scoped.variables;
                     }
                     scoped.parent
                 }
             }
         };
 
-        variables.insert(var.index, value);
+        variables.combined.entry(var.index).or_default().value = Some(value);
     }
 
     fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
@@ -647,8 +651,10 @@ impl FlowPrivate for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(value) = variables.values.get(&var.inner.index) {
-                return Ok(value.as_ref());
+            if let Some(combined) = variables.combined.get(&var.inner.index) {
+                if let Some(value) = &combined.value {
+                    return Ok(value.as_ref());
+                }
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_get_maybe(var),
@@ -688,10 +694,13 @@ impl Flow for FlowHardware<'_> {
         };
 
         let var = self.root.next_variable();
-        variables.infos.insert_first(var.index, info);
-        variables
-            .values
-            .insert_first(var.index, MaybeAssignedValue::NotYetAssigned);
+
+        let combined = VariableInfoAndValue {
+            info: Some(info),
+            value: Some(MaybeAssignedValue::NotYetAssigned),
+        };
+        variables.combined.insert_first(var.index, combined);
+
         var
     }
 
@@ -704,8 +713,10 @@ impl Flow for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(info) = variables.infos.get(&var.inner.index) {
-                return Ok(info);
+            if let Some(info) = variables.combined.get(&var.inner.index) {
+                if let Some(info) = &info.info {
+                    return Ok(info);
+                }
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_info(var),
@@ -802,8 +813,7 @@ impl<'p> FlowHardware<'p> {
             kind: FlowHardwareKind::Scoped(FlowHardwareScoped {
                 parent: slf,
                 variables: FlowHardwareVariables {
-                    infos: IndexMap::new(),
-                    values: IndexMap::new(),
+                    combined: IndexMap::new(),
                 },
             }),
         }
@@ -820,14 +830,15 @@ impl<'p> FlowHardware<'p> {
         // TODO do something else if childen are empty, eg. push an instruction for `assert(false)`
 
         // collect the interesting vars and signals
-        //   * items that are not in any child didn't change and so don't need to be joined
-        //   * items that are declared in the child will not be alive after the join
+        // things we can skip:
+        //   * items that are not in any child, they didn't change
+        //   * items that don't exist in the parent, they won't be alive afterwards
         let mut merged_vars = IndexSet::new();
         let mut merged_signals = IndexSet::new();
         for branch in &branches {
             assert_eq!(self.root.check, branch.check);
-            for &var in branch.common.variables.values.keys() {
-                if !branch.common.variables.infos.contains_key(&var) {
+            for &var in branch.common.variables.combined.keys() {
+                if branch.common.variables.combined.contains_key(&var) {
                     merged_vars.insert(var);
                 }
             }
@@ -1145,9 +1156,6 @@ type VariableValue =
 type VariableValueRef<'a> =
     MaybeAssignedValue<&'a AssignedValue<Value<CompileValue, HardwareValueWithVersion<ValueVersionIndex>>>>;
 
-type VariableInfos = IndexMap<VariableIndex, VariableInfo>;
-type VariableValues = IndexMap<VariableIndex, VariableValue>;
-
 #[derive(Debug, Copy, Clone)]
 pub enum MaybeAssignedValue<A> {
     Assigned(A),
@@ -1218,8 +1226,11 @@ fn merge_branch_values<'f>(
 
     for branch in &mut *branches {
         // TODO apply implications here too
-        let branch_value = match branch.common.variables.values.get(&var.index) {
-            Some(branch_value) => branch_value.as_ref(),
+        let branch_value = match branch.common.variables.combined.get(&var.index) {
+            Some(branch_combined) => {
+                assert!(branch_combined.info.is_none());
+                branch_combined.value.as_ref().unwrap().as_ref()
+            }
             None => {
                 used_value_parent = true;
                 parent_value
@@ -1317,8 +1328,11 @@ fn merge_branch_values<'f>(
     let branch_tys = branches
         .iter()
         .map(|branch| {
-            let branch_value = match branch.common.variables.values.get(&var.index) {
-                Some(branch_value) => branch_value.as_ref(),
+            let branch_value = match branch.common.variables.combined.get(&var.index) {
+                Some(branch_combined) => {
+                    assert!(branch_combined.info.is_none());
+                    branch_combined.value.as_ref().unwrap().as_ref()
+                }
                 None => parent_value,
             };
             let branch_value = unwrap_branch_value(branch_value);
@@ -1367,8 +1381,11 @@ fn merge_branch_values<'f>(
             );
 
         for (branch, ty) in zip_eq(&*branches, branch_tys) {
-            if let Some(branch_value) = branch.common.variables.values.get(&var.index) {
-                let branch_value = unwrap_branch_value(branch_value.as_ref());
+            if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
+                assert!(branch_combined.info.is_none());
+                let branch_combined = branch_combined.value.as_ref().unwrap().as_ref();
+
+                let branch_value = unwrap_branch_value(branch_combined);
                 diag = diag.add_info(
                     branch_value.last_assignment_span,
                     format!("value in branch assigned here has type `{}`", ty.diagnostic_string()),
@@ -1413,7 +1430,9 @@ fn merge_branch_values<'f>(
     };
 
     for branch in &mut *branches {
-        if let Some(branch_value) = branch.common.variables.values.get(&var.index) {
+        if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
+            assert!(branch_combined.info.is_none());
+            let branch_value = branch_combined.value.as_ref().unwrap();
             branch.common.statements.push(build_store(branch_value.as_ref())?);
         }
         domain_cond = domain_cond.join(branch.cond_domain.inner);
