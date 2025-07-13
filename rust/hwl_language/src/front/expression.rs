@@ -125,10 +125,7 @@ impl<'a> CompileItemContext<'a, '_> {
     ) -> DiagResult<Spanned<Value>> {
         Ok(self
             .eval_expression_with_implications(scope, flow, expected_ty, expr)?
-            .map_inner(|r| match r {
-                Value::Compile(v) => Value::Compile(v),
-                Value::Hardware(v) => Value::Hardware(v.value),
-            }))
+            .map_inner(ValueWithImplications::into_value))
     }
 
     pub fn eval_expression_with_implications(
@@ -205,17 +202,14 @@ impl<'a> CompileItemContext<'a, '_> {
                     NamedOrValue::Named(value) => match value {
                         NamedValue::Variable(var) => flow.var_eval(self, Spanned::new(expr.span, var))?,
                         NamedValue::Port(port) => {
-                            // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "port access")?;
                             Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
                         }
                         NamedValue::Wire(wire) => {
-                            // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "wire access")?;
                             Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?)
                         }
                         NamedValue::Register(reg) => {
-                            // TODO check domain, are we allowed to read this in the current context?
                             let flow = flow.check_hardware(expr.span, "register access")?;
 
                             let reg_info = &mut self.registers[reg];
@@ -653,7 +647,14 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
-                let value = self.eval_expression(scope, flow, expected_ty, value);
+                let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
+
+                let value = {
+                    // evaluate the value with disabled domain checks
+                    // (the whole point of this operation is to bypass domain checking)
+                    let mut flow_hw_inner = flow_hw.new_child_scoped_without_domain_checks();
+                    self.eval_expression(scope, &mut flow_hw_inner, expected_ty, value)
+                };
 
                 let mut flow_domain = flow.new_child_compile(domain.span, "domain");
                 let domain = self.eval_domain(scope, &mut flow_domain, domain);
@@ -824,7 +825,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let port = port_interface_info.ports[port_index];
 
-                // TODO check domain, are we allowed to read this in the current context?
                 let flow = flow.check_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
                 return Ok(ValueInner::Value(Value::Hardware(
@@ -849,7 +849,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let wire = wire_interface_info.wires[wire_index];
 
-                // TODO check domain, are we allowed to read this in the current context?
                 let flow = flow.check_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
                 return Ok(ValueInner::Value(Value::Hardware(

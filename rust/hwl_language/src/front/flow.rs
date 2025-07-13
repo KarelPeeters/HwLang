@@ -559,6 +559,7 @@ struct VariableInfoAndValue {
 //   (then we can also stop shadowing signals in the verilog backend, and handle it in the frontend)
 pub struct FlowHardware<'p> {
     root: &'p FlowRoot<'p>,
+    enable_domain_checks: bool,
     kind: FlowHardwareKind<'p>,
 }
 
@@ -749,6 +750,7 @@ impl<'p> FlowHardwareRoot<'p> {
         let slf = unsafe { lifetime_hardware_root_mut(self) };
         FlowHardware {
             root: slf.root,
+            enable_domain_checks: true,
             kind: FlowHardwareKind::Root(slf),
         }
     }
@@ -779,6 +781,17 @@ impl<'p> FlowHardwareRoot<'p> {
 }
 
 impl<'p> FlowHardware<'p> {
+    fn root_hw<'s>(&'s self) -> &'s FlowHardwareRoot<'p> {
+        let mut curr = self;
+        loop {
+            curr = match &curr.kind {
+                FlowHardwareKind::Root(root) => return root,
+                FlowHardwareKind::Branch(branch) => branch.parent,
+                FlowHardwareKind::Scoped(scoped) => scoped.parent,
+            }
+        }
+    }
+
     fn root_hw_mut<'s>(&'s mut self) -> &'s mut FlowHardwareRoot<'p> {
         let mut curr = self;
         loop {
@@ -810,6 +823,7 @@ impl<'p> FlowHardware<'p> {
         let slf = unsafe { lifetime_hardware_mut(self) };
         FlowHardware {
             root,
+            enable_domain_checks: true,
             kind: FlowHardwareKind::Scoped(FlowHardwareScoped {
                 parent: slf,
                 variables: FlowHardwareVariables {
@@ -817,6 +831,12 @@ impl<'p> FlowHardware<'p> {
                 },
             }),
         }
+    }
+
+    pub fn new_child_scoped_without_domain_checks(&mut self) -> FlowHardware {
+        let mut result = self.new_child_scoped();
+        result.enable_domain_checks = false;
+        result
     }
 
     pub fn join_child_branches(
@@ -1030,13 +1050,33 @@ impl<'p> FlowHardware<'p> {
         }
     }
 
-    // TODO should we check read validness here or in the caller?
     pub fn signal_eval(
         &self,
         ctx: &mut CompileItemContext,
         signal: Spanned<Signal>,
     ) -> DiagResult<HardwareValueWithVersion> {
         let value_raw = signal.inner.as_hardware_value(ctx, signal.span)?;
+
+        // For clocked blocks, check read domain validness.
+        // This is technically not needed for correctness (assignments also check domain validness),
+        //   but it makes error messages a bit clearer.
+        if self.enable_domain_checks {
+            match &self.root_hw().process_kind {
+                &HardwareProcessKind::ClockedBlockBody { domain, .. } => {
+                    ctx.check_valid_domain_crossing(
+                        signal.span,
+                        domain.map_inner(ValueDomain::Sync),
+                        Spanned::new(signal.span, value_raw.domain),
+                        "signal read in clocked block",
+                    )?;
+                }
+                HardwareProcessKind::CombinatorialBlockBody { .. }
+                | HardwareProcessKind::WireExpression { .. }
+                | HardwareProcessKind::InstancePortConnection { .. } => {}
+            }
+        }
+
+        // wrap and apply implications
         let version = ValueVersion {
             signal: SignalOrVariable::Signal(signal.inner),
             index: self.signal_get_version(signal.inner),
@@ -1045,7 +1085,6 @@ impl<'p> FlowHardware<'p> {
             value: value_raw,
             version,
         };
-
         Ok(self.apply_implications(&mut ctx.large, value))
     }
 
@@ -1080,6 +1119,7 @@ impl FlowHardwareBranch<'_> {
         let slf = unsafe { lifetime_hardware_branch_mut(self) };
         FlowHardware {
             root,
+            enable_domain_checks: true,
             kind: FlowHardwareKind::Branch(slf),
         }
     }
