@@ -368,7 +368,7 @@ impl FlowPrivate for FlowCompile<'_> {
 impl Flow for FlowCompile<'_> {
     fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
         let root = self.root;
-        let slf = unsafe { lifetime_compile_mut(self) };
+        let slf = unsafe { lifetime_cast::compile_mut(self) };
         FlowCompile {
             root,
             compile_span: span,
@@ -390,7 +390,7 @@ impl Flow for FlowCompile<'_> {
     }
 
     fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
-        FlowKind::Compile(unsafe { lifetime_compile_mut(self) })
+        FlowKind::Compile(unsafe { lifetime_cast::compile_mut(self) })
     }
 
     fn var_new(&mut self, info: VariableInfo) -> Variable {
@@ -437,7 +437,7 @@ impl<'p> FlowCompile<'p> {
 
     // TODO think about a better name
     pub fn new_child_isolated(&self) -> FlowCompile {
-        let slf = unsafe { lifetime_compile_ref(self) };
+        let slf = unsafe { lifetime_cast::compile_ref(self) };
         FlowCompile {
             root: self.root,
             compile_span: self.compile_span,
@@ -451,7 +451,7 @@ impl<'p> FlowCompile<'p> {
         let root = self.root;
         let compile_span = self.compile_span;
         let compile_reason = self.compile_reason;
-        let slf = unsafe { lifetime_compile_mut(self) };
+        let slf = unsafe { lifetime_cast::compile_mut(self) };
         FlowCompile {
             root,
             compile_span,
@@ -504,7 +504,7 @@ impl<'p> FlowCompile<'p> {
         } = content;
         assert_eq!(parent.root.check, check);
 
-        let parent = unsafe { lifetime_compile_ref(parent) };
+        let parent = unsafe { lifetime_cast::compile_ref(parent) };
         FlowCompile {
             root: parent.root,
             compile_span,
@@ -668,7 +668,7 @@ impl FlowPrivate for FlowHardware<'_> {
 impl Flow for FlowHardware<'_> {
     fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
         let root = self.root;
-        let slf = unsafe { lifetime_hardware_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowCompile {
             root,
             compile_span: span,
@@ -679,12 +679,12 @@ impl Flow for FlowHardware<'_> {
     }
 
     fn check_hardware<'s>(&'s mut self, _: Span, _: &str) -> DiagResult<&'s mut FlowHardware<'s>> {
-        let slf = unsafe { lifetime_hardware_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
         Ok(slf)
     }
 
     fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
-        FlowKind::Hardware(unsafe { lifetime_hardware_mut(self) })
+        FlowKind::Hardware(unsafe { lifetime_cast::hardware_mut(self) })
     }
 
     fn var_new(&mut self, info: VariableInfo) -> Variable {
@@ -734,7 +734,7 @@ impl<'p> FlowHardwareRoot<'p> {
         ir_wires: &'p mut IrWires,
         ir_registers: &'p mut IrRegisters,
     ) -> FlowHardwareRoot<'p> {
-        let parent = unsafe { lifetime_compile_ref(parent) };
+        let parent = unsafe { lifetime_cast::compile_ref(parent) };
         FlowHardwareRoot {
             root: parent.root,
             parent,
@@ -747,7 +747,7 @@ impl<'p> FlowHardwareRoot<'p> {
     }
 
     pub fn as_flow(&mut self) -> FlowHardware {
-        let slf = unsafe { lifetime_hardware_root_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_root_mut(self) };
         FlowHardware {
             root: slf.root,
             enable_domain_checks: true,
@@ -809,7 +809,7 @@ impl<'p> FlowHardware<'p> {
         cond_implications: Vec<Implication>,
     ) -> FlowHardwareBranch {
         let root = self.root;
-        let slf = unsafe { lifetime_hardware_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowHardwareBranch {
             root,
             parent: slf,
@@ -820,7 +820,7 @@ impl<'p> FlowHardware<'p> {
 
     pub fn new_child_scoped(&mut self) -> FlowHardware {
         let root = self.root;
-        let slf = unsafe { lifetime_hardware_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowHardware {
             root,
             enable_domain_checks: true,
@@ -1114,7 +1114,7 @@ pub struct FlowHardwareBranchContent {
 impl FlowHardwareBranch<'_> {
     pub fn as_flow(&mut self) -> FlowHardware<'_> {
         let root = self.root;
-        let slf = unsafe { lifetime_hardware_branch_mut(self) };
+        let slf = unsafe { lifetime_cast::hardware_branch_mut(self) };
         FlowHardware {
             root,
             enable_domain_checks: true,
@@ -1495,23 +1495,26 @@ fn merge_branch_values(
     }))
 }
 
-// TODO document and double-check all of these
-unsafe fn lifetime_compile_ref<'s>(flow: &'s FlowCompile) -> &'s FlowCompile<'s> {
-    &*(flow as *const FlowCompile<'_> as *const FlowCompile<'s>)
-}
+/// The borrow checking has trouble with nested chains of parent references,
+/// but they're not actually unsafe in the way we want to use them.
+// Supress false positive https://github.com/rust-lang/rust-clippy/issues/12860.
+#[allow(clippy::unnecessary_cast)]
+mod lifetime_cast {
+    use crate::front::flow::{FlowCompile, FlowHardware, FlowHardwareBranch, FlowHardwareRoot};
 
-unsafe fn lifetime_compile_mut<'s>(flow: &'s mut FlowCompile) -> &'s mut FlowCompile<'s> {
-    &mut *(flow as *mut FlowCompile<'_> as *mut FlowCompile<'s>)
-}
-
-unsafe fn lifetime_hardware_mut<'s>(flow: &'s mut FlowHardware) -> &'s mut FlowHardware<'s> {
-    &mut *(flow as *mut FlowHardware<'_> as *mut FlowHardware<'s>)
-}
-
-unsafe fn lifetime_hardware_root_mut<'s>(flow: &'s mut FlowHardwareRoot) -> &'s mut FlowHardwareRoot<'s> {
-    &mut *(flow as *mut FlowHardwareRoot<'_> as *mut FlowHardwareRoot<'s>)
-}
-
-unsafe fn lifetime_hardware_branch_mut<'s>(flow: &'s mut FlowHardwareBranch) -> &'s mut FlowHardwareBranch<'s> {
-    &mut *(flow as *mut FlowHardwareBranch<'_> as *mut FlowHardwareBranch<'s>)
+    pub unsafe fn compile_ref<'s>(flow: &'s FlowCompile) -> &'s FlowCompile<'s> {
+        &*(flow as *const FlowCompile<'_> as *const FlowCompile<'s>)
+    }
+    pub unsafe fn compile_mut<'s>(flow: &'s mut FlowCompile) -> &'s mut FlowCompile<'s> {
+        &mut *(flow as *mut FlowCompile<'_> as *mut FlowCompile<'s>)
+    }
+    pub unsafe fn hardware_mut<'s>(flow: &'s mut FlowHardware) -> &'s mut FlowHardware<'s> {
+        &mut *(flow as *mut FlowHardware<'_> as *mut FlowHardware<'s>)
+    }
+    pub unsafe fn hardware_root_mut<'s>(flow: &'s mut FlowHardwareRoot) -> &'s mut FlowHardwareRoot<'s> {
+        &mut *(flow as *mut FlowHardwareRoot<'_> as *mut FlowHardwareRoot<'s>)
+    }
+    pub unsafe fn hardware_branch_mut<'s>(flow: &'s mut FlowHardwareBranch) -> &'s mut FlowHardwareBranch<'s> {
+        &mut *(flow as *mut FlowHardwareBranch<'_> as *mut FlowHardwareBranch<'s>)
+    }
 }
