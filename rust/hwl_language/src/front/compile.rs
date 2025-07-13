@@ -10,7 +10,6 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
-use crate::front::variables::{Variable, VariableInfo};
 use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
 use crate::syntax::ast::Spanned;
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
@@ -250,7 +249,6 @@ pub struct CompileRefs<'a, 's> {
     pub should_stop: &'a dyn Fn() -> bool,
 }
 
-pub type ArenaVariables = Arena<Variable, VariableInfo>;
 pub type ArenaPorts = Arena<Port, PortInfo>;
 pub type ArenaPortInterfaces = Arena<PortInterface, PortInterfaceInfo>;
 
@@ -258,7 +256,7 @@ pub struct CompileItemContext<'a, 's> {
     // TODO maybe inline this
     pub refs: CompileRefs<'a, 's>,
 
-    pub variables: ArenaVariables,
+    // TODO all of this should be part of some kind of ComputeModuleContext, instead of CompileItemContext
     pub ports: ArenaPorts,
     pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
@@ -291,7 +289,7 @@ impl StackEntry {
 
 impl<'a, 's> CompileItemContext<'a, 's> {
     pub fn new_empty(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
-        Self::new_restore(refs, origin, Arena::new(), Arena::new(), Arena::new())
+        Self::new_restore(refs, origin, Arena::new(), Arena::new())
     }
 
     pub fn new_restore(
@@ -299,11 +297,9 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         origin: Option<AstRefItem>,
         ports: ArenaPorts,
         port_interfaces: ArenaPortInterfaces,
-        variables: ArenaVariables,
     ) -> Self {
         CompileItemContext {
             refs,
-            variables,
             ports,
             port_interfaces,
             wires: Arena::new(),

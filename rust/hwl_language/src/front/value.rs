@@ -437,7 +437,7 @@ impl<C, T> Value<C, T> {
         }
     }
 
-    pub fn try_map_other<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<Value<C, U>, E> {
+    pub fn try_map_hardware<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<Value<C, U>, E> {
         match self {
             Value::Compile(v) => Ok(Value::Compile(v)),
             Value::Hardware(v) => Ok(Value::Hardware(f(v)?)),

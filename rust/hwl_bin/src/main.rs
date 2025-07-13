@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+// TODO automatically disable this when miri is used
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -44,6 +45,7 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    // TODO add a way to print all elaborated items and the instantiation tree
     let args = Args::parse();
 
     if args.keep_main_stack {

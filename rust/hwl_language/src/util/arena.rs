@@ -297,6 +297,7 @@ impl Hash for Idx {
 
 impl RandomCheck {
     pub fn new() -> Self {
+        // TODO check if this is anywhere close to a bottleneck
         Self(rand::random())
     }
 

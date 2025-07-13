@@ -33,6 +33,7 @@ type FindDefinitionResult = Result<(), FindDefinition>;
 // TODO we can do better: in `if(_) { a } else { a }` a is not really conditional any more
 // TODO generalize this "visitor", we also want to collect all usages, find the next selection span, find folding ranges, ...
 // TODO maybe this should be moved to the LSP, the compiler itself really doesn't need this
+// TODO use the real Scope for the file root, to reduce duplication and get a guaranteed match
 pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> FindDefinition {
     let FileContent {
         span: _,
@@ -902,7 +903,12 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, kind: _ } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        span_keyword: _,
+                        id,
+                        kind: _,
+                    } = decl;
                     match vis {
                         Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
@@ -956,7 +962,12 @@ impl ResolveContext<'_> {
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration { vis, id, kind } = decl;
+                    let &WireDeclaration {
+                        vis,
+                        span_keyword: _,
+                        id,
+                        kind,
+                    } = decl;
 
                     match kind {
                         WireDeclarationKind::Normal {

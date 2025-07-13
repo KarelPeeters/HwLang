@@ -1,15 +1,56 @@
-use crate::front::types::ClosedIncRange;
-use crate::front::variables::ValueVersioned;
+use crate::front::flow::ValueVersion;
+use crate::front::types::{ClosedIncRange, Type, Typed};
+use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
 
-#[derive(Debug, Default)]
-pub struct Implications {
+#[derive(Default, Debug, Clone)]
+pub struct BoolImplications {
     pub if_true: Vec<Implication>,
     pub if_false: Vec<Implication>,
 }
 
-impl Implications {
+#[derive(Debug, Clone)]
+pub struct Implication {
+    pub version: ValueVersion,
+    pub op: ImplicationOp,
+    pub right: BigInt,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ImplicationOp {
+    Neq,
+    Lt,
+    Gt,
+}
+
+pub type ValueWithVersion = Value<CompileValue, HardwareValueWithVersion>;
+pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
+pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
+
+#[derive(Debug, Clone)]
+pub struct HardwareValueWithVersion<V = ValueVersion> {
+    pub value: HardwareValue,
+    pub version: V,
+}
+
+#[derive(Debug, Clone)]
+pub struct HardwareValueWithImplications {
+    pub value: HardwareValue,
+    pub version: Option<ValueVersion>,
+    pub implications: BoolImplications,
+}
+
+impl<V> HardwareValueWithVersion<V> {
+    pub fn map_version<F: FnOnce(V) -> U, U>(self, f: F) -> HardwareValueWithVersion<U> {
+        HardwareValueWithVersion {
+            value: self.value,
+            version: f(self.version),
+        }
+    }
+}
+
+impl BoolImplications {
     pub fn invert(self) -> Self {
         Self {
             if_true: self.if_false,
@@ -18,24 +59,67 @@ impl Implications {
     }
 }
 
-#[derive(Debug)]
-pub struct Implication {
-    pub value: ValueVersioned,
-    pub op: ImplicationOp,
-    pub right: BigInt,
+pub fn join_implications(branch_implications: &[Vec<Implication>]) -> Vec<Implication> {
+    // TODO do something more interesting here, this placeholder implementation is correct but a missed opportunity
+    let _ = branch_implications;
+    vec![]
 }
 
 impl Implication {
-    pub fn new(value: ValueVersioned, op: ImplicationOp, right: BigInt) -> Self {
-        Self { value, op, right }
+    pub fn new(value: ValueVersion, op: ImplicationOp, right: BigInt) -> Self {
+        Self {
+            version: value,
+            op,
+            right,
+        }
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum ImplicationOp {
-    Neq,
-    Lt,
-    Gt,
+impl ValueWithVersion {
+    pub fn into_value(self) -> Value {
+        self.map_hardware(|v| v.value)
+    }
+}
+
+impl ValueWithImplications {
+    pub fn simple(value: Value) -> Self {
+        value.map_hardware(HardwareValueWithImplications::simple)
+    }
+
+    pub fn simple_version(value: ValueWithVersion) -> Self {
+        value.map_hardware(HardwareValueWithImplications::simple_version)
+    }
+
+    pub fn into_value(self) -> Value {
+        self.map_hardware(|v| v.value)
+    }
+}
+
+impl HardwareValueWithImplications {
+    pub fn simple(value: HardwareValue) -> Self {
+        Self {
+            value,
+            version: None,
+            implications: BoolImplications::default(),
+        }
+    }
+
+    pub fn simple_version(value: HardwareValueWithVersion) -> Self {
+        Self {
+            value: value.value,
+            version: Some(value.version),
+            implications: BoolImplications::default(),
+        }
+    }
+}
+
+impl Typed for ValueWithImplications {
+    fn ty(&self) -> Type {
+        match self {
+            Value::Compile(v) => v.ty(),
+            Value::Hardware(v) => v.value.ty(),
+        }
+    }
 }
 
 #[derive(Debug)]

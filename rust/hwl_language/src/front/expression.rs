@@ -5,21 +5,22 @@ use crate::front::check::{
     check_type_is_uint_compile, TypeContainsReason,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::context::{CompileTimeExpressionContext, ExpressionContext};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::domain::{BlockDomain, DomainSignal, ValueDomain};
+use crate::front::domain::{DomainSignal, ValueDomain};
+use crate::front::flow::{ExtraRegisters, ValueVersion};
 use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
-use crate::front::implication::{ClosedIncRangeMulti, Implication, ImplicationOp, Implications};
+use crate::front::implication::{
+    BoolImplications, HardwareValueWithImplications, Implication, ImplicationOp, ValueWithImplications,
+};
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
-use crate::front::signal::{Polarized, Port, PortInterface, Signal, SignalOrVariable, Wire, WireInterface};
+use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, Value};
-use crate::front::variables::{ValueVersioned, VariableValues};
+use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, MaybeUndefined, Value};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
-    IrIntCompareOp, IrLargeArena, IrStatement, IrVariableInfo,
+    IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
@@ -31,6 +32,8 @@ use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{vec_concat, VecExt};
 
+use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
+use crate::front::module::ExtraRegisterInit;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
@@ -50,48 +53,6 @@ pub enum ValueInner {
     WireInterface(WireInterface),
 }
 
-pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
-
-#[derive(Debug)]
-pub struct HardwareValueWithImplications {
-    pub value: HardwareValue,
-    pub value_versioned: Option<ValueVersioned>,
-    pub implications: Implications,
-}
-
-impl ValueWithImplications {
-    pub fn simple(value: Value) -> Self {
-        value.map_hardware(HardwareValueWithImplications::simple)
-    }
-
-    pub fn value(self) -> Value {
-        self.map_hardware(|v| v.value)
-    }
-
-    pub fn value_cloned(&self) -> Value {
-        self.as_ref().map_hardware(|v| &v.value).cloned()
-    }
-}
-
-impl Typed for ValueWithImplications {
-    fn ty(&self) -> Type {
-        match self {
-            Value::Compile(v) => v.ty(),
-            Value::Hardware(v) => v.value.ty(),
-        }
-    }
-}
-
-impl HardwareValueWithImplications {
-    pub fn simple(value: HardwareValue) -> Self {
-        Self {
-            value,
-            value_versioned: None,
-            implications: Implications::default(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum NamedOrValue {
     Named(NamedValue),
@@ -102,7 +63,7 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_general_id(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         id: GeneralIdentifier,
     ) -> DiagResult<Spanned<ArcOrRef<'a, str>>> {
         let diags = self.refs.diags;
@@ -111,7 +72,7 @@ impl<'a> CompileItemContext<'a, '_> {
         match id {
             GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(ArcOrRef::Ref)),
             GeneralIdentifier::FromString(span, expr) => {
-                let value = self.eval_expression_as_compile(scope, vars, &Type::String, expr, "id string")?;
+                let value = self.eval_expression_as_compile(scope, flow, &Type::String, expr, "id string")?;
                 let value = check_type_is_string(diags, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(span, ArcOrRef::Arc(value)))
@@ -122,13 +83,13 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_maybe_general_id(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         id: MaybeIdentifier<GeneralIdentifier>,
     ) -> DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>> {
         match id {
             MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
             MaybeIdentifier::Identifier(id) => {
-                let id = self.eval_general_id(scope, vars, id)?;
+                let id = self.eval_general_id(scope, flow, id)?;
                 Ok(MaybeIdentifier::Identifier(id))
             }
         }
@@ -155,35 +116,29 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    // TODO make all of these functions on ExpressionContext instead of dragging all these parameters around
-    pub fn eval_expression<C: ExpressionContext>(
+    pub fn eval_expression(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<Value>> {
-        assert_eq!(self.variables.check(), vars.check());
         Ok(self
-            .eval_expression_with_implications(ctx, ctx_block, scope, vars, expected_ty, expr)?
+            .eval_expression_with_implications(scope, flow, expected_ty, expr)?
             .map_inner(|r| match r {
                 Value::Compile(v) => Value::Compile(v),
                 Value::Hardware(v) => Value::Hardware(v.value),
             }))
     }
 
-    pub fn eval_expression_with_implications<C: ExpressionContext>(
+    pub fn eval_expression_with_implications(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
-        let value = self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, expr)?;
+        let value = self.eval_expression_inner(scope, flow, expected_ty, expr)?;
         match value {
             ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
             ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_simple(
@@ -199,12 +154,11 @@ impl<'a> CompileItemContext<'a, '_> {
     //   that can then be written (as target), read (as value), typeof-ed, gotten implications, ...
     //   that's awkward for expressions that create statements though, eg. calls
     //   maybe those should push their statements to virtual blocks, and only actually add them once read?
-    pub fn eval_expression_inner<C: ExpressionContext>(
+    // TODO rename the other one to `eval_expression_value`, and this one to `eval_expression`
+    pub fn eval_expression_inner(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<ValueInner> {
@@ -224,7 +178,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::Undefined => Value::Compile(CompileValue::Undefined),
             ExpressionKind::Type => Value::Compile(CompileValue::Type(Type::Type)),
             &ExpressionKind::Wrapped(inner) => {
-                return self.eval_expression_inner(ctx, ctx_block, scope, vars, expected_ty, inner);
+                return self.eval_expression_inner(scope, flow, expected_ty, inner);
             }
             ExpressionKind::Block(block_expr) => {
                 let &BlockExpression {
@@ -235,66 +189,55 @@ impl<'a> CompileItemContext<'a, '_> {
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
                 // TODO propagate return type?
-                let (mut ctx_block, end) =
-                    self.elaborate_block_statements(ctx, &mut scope_inner, vars, None, statements)?;
+                let end = self.elaborate_block_statements(&mut scope_inner, flow, None, statements)?;
                 end.unwrap_outside_function_and_loop(diags)?;
 
-                self.eval_expression(ctx, &mut ctx_block, &scope_inner, vars, expected_ty, expression)?
-                    .inner
+                self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
             }
             &ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, vars, id)?;
+                let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::Value(value) => ValueWithImplications::simple(value),
+                    NamedOrValue::Value(value) => {
+                        return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                    }
                     NamedOrValue::Named(value) => match value {
-                        // TODO report error when combinatorial block
-                        //   reads something it has not written yet but will later write to
-                        // TODO more generally, report combinatorial cycles
-                        NamedValue::Variable(var) => match &vars.var_get(diags, expr.span, var)?.value_and_version {
-                            Value::Compile(value) => Value::Compile(value.clone()),
-                            &Value::Hardware((ref value, version)) => {
-                                let versioned = ValueVersioned {
-                                    value: SignalOrVariable::Variable(var),
-                                    version,
-                                };
-                                let with_implications =
-                                    apply_implications(ctx, &mut self.large, Some(versioned), value.clone());
-                                Value::Hardware(with_implications)
-                            }
-                        },
+                        NamedValue::Variable(var) => flow.var_eval(self, Spanned::new(expr.span, var))?,
                         NamedValue::Port(port) => {
-                            return self.eval_port(ctx, vars, Spanned::new(expr.span, port));
-                        }
-                        NamedValue::PortInterface(interface) => {
-                            ctx.check_ir_context(diags, expr.span, "port")?;
-                            return Ok(ValueInner::PortInterface(interface));
+                            // TODO check domain, are we allowed to read this in the current context?
+                            let flow = flow.check_hardware(expr.span, "port access")?;
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
                         }
                         NamedValue::Wire(wire) => {
-                            return self.eval_wire(ctx, vars, Spanned::new(expr.span, wire));
-                        }
-                        NamedValue::WireInterface(interface) => {
-                            ctx.check_ir_context(diags, expr.span, "wire")?;
-                            return Ok(ValueInner::WireInterface(interface));
+                            // TODO check domain, are we allowed to read this in the current context?
+                            let flow = flow.check_hardware(expr.span, "wire access")?;
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?)
                         }
                         NamedValue::Register(reg) => {
-                            ctx.check_ir_context(diags, expr.span, "register")?;
+                            // TODO check domain, are we allowed to read this in the current context?
+                            let flow = flow.check_hardware(expr.span, "register access")?;
+
                             let reg_info = &mut self.registers[reg];
-
-                            if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
-                                reg_info.suggest_domain(Spanned::new(expr.span, block_domain.inner));
+                            if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
+                                reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
                             }
-                            let reg_value = reg_info.as_hardware_value(diags, expr.span)?;
 
-                            let versioned = vars.signal_versioned(Signal::Register(reg));
-                            let with_implications = apply_implications(ctx, &mut self.large, versioned, reg_value);
-                            Value::Hardware(with_implications)
+                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?)
+                        }
+                        NamedValue::PortInterface(interface) => {
+                            // we don't need a hardware context yet, only when we actually access an actual port
+                            return Ok(ValueInner::PortInterface(interface));
+                        }
+                        NamedValue::WireInterface(interface) => {
+                            // we don't need a hardware context yet, only when we actually access an actual port
+                            return Ok(ValueInner::WireInterface(interface));
                         }
                     },
                 };
-
-                return Ok(ValueInner::Value(result));
+                return Ok(ValueInner::Value(
+                    result.map_hardware(|v| HardwareValueWithImplications::simple_version(v)),
+                ));
             }
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::IntLiteral(ref pattern) => {
@@ -332,7 +275,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             s.push_str(escaped.as_ref());
                         }
                         StringPiece::Substitute(value) => {
-                            let value = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, value)?;
+                            let value = self.eval_expression(scope, flow, &Type::Any, value)?;
 
                             let value_inner = match value.inner {
                                 Value::Compile(v) => v,
@@ -374,20 +317,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Compile(CompileValue::String(Arc::new(s)))
             }
             ExpressionKind::ArrayLiteral(values) => {
-                self.eval_array_literal(ctx, ctx_block, scope, vars, expected_ty, expr.span, values)?
+                self.eval_array_literal(scope, flow, expected_ty, expr.span, values)?
             }
-            ExpressionKind::TupleLiteral(values) => {
-                self.eval_tuple_literal(ctx, ctx_block, scope, vars, expected_ty, values)?
-            }
+            ExpressionKind::TupleLiteral(values) => self.eval_tuple_literal(scope, flow, expected_ty, values)?,
             ExpressionKind::RangeLiteral(literal) => {
-                let mut eval_bound = |bound: Expression, name: &str, op_span: Span| {
-                    let bound = self.eval_expression_as_compile(
-                        scope,
-                        vars,
-                        &Type::Int(IncRange::OPEN),
-                        bound,
-                        &format!("range {name}"),
-                    )?;
+                let mut eval_bound = |bound: Expression, bound_name: &'static str, op_span: Span| {
+                    let bound =
+                        self.eval_expression_as_compile(scope, flow, &Type::Int(IncRange::OPEN), bound, bound_name)?;
                     let reason = TypeContainsReason::Operator(op_span);
                     check_type_is_int_compile(diags, reason, bound)
                 };
@@ -398,8 +334,8 @@ impl<'a> CompileItemContext<'a, '_> {
                         ref start,
                         ref end,
                     } => {
-                        let start = start.map(|start| eval_bound(start, "start", op_span)).transpose();
-                        let end = end.map(|end| eval_bound(end, "end", op_span)).transpose();
+                        let start = start.map(|start| eval_bound(start, "range start", op_span)).transpose();
+                        let end = end.map(|end| eval_bound(end, "range end", op_span)).transpose();
 
                         let range = IncRange {
                             start_inc: start?,
@@ -408,8 +344,8 @@ impl<'a> CompileItemContext<'a, '_> {
                         Value::Compile(CompileValue::IntRange(range))
                     }
                     RangeLiteral::InclusiveEnd { op_span, start, end } => {
-                        let start = start.map(|start| eval_bound(start, "start", op_span)).transpose();
-                        let end = eval_bound(end, "end", op_span);
+                        let start = start.map(|start| eval_bound(start, "range start", op_span)).transpose();
+                        let end = eval_bound(end, "range end", op_span);
 
                         let range = IncRange {
                             start_inc: start?,
@@ -422,8 +358,8 @@ impl<'a> CompileItemContext<'a, '_> {
                         //   for now those are special-cased in the array indexing evaluation.
                         //   Maybe we want real support for mixed compile/runtime compounds,
                         //     eg. arrays, tuples, ranges, ...
-                        let start = eval_bound(start, "start", op_span);
-                        let length = eval_bound(len, "length", op_span);
+                        let start = eval_bound(start, "range start", op_span);
+                        let length = eval_bound(len, "range length", op_span);
 
                         let start = start?;
                         let range = IncRange {
@@ -447,7 +383,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     _ => &Type::Any,
                 };
 
-                let iter_eval = self.eval_expression_as_for_iterator(ctx, ctx_block, scope, vars, iter)?;
+                let iter_eval = self.eval_expression_as_for_iterator(scope, flow, iter)?;
 
                 // this is only a lower bound,
                 //   there might be spread elements in the literal which expand to multiple values
@@ -467,8 +403,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.refs.check_should_stop(expr.span)?;
 
                     let index_value = index_value.to_maybe_compile(&mut self.large);
-                    let index_var =
-                        vars.var_new_immutable_init(&mut self.variables, index, span_keyword, Ok(index_value));
+                    let index_var = flow.var_new_immutable_init(index, span_keyword, Ok(index_value));
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
@@ -479,9 +414,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     );
 
                     let value = body
-                        .map_inner(|body_expr| {
-                            self.eval_expression(ctx, ctx_block, &scope_body, vars, expected_ty_inner, body_expr)
-                        })
+                        .map_inner(|body_expr| self.eval_expression(&scope_body, flow, expected_ty_inner, body_expr))
                         .transpose()?;
                     values.push(value);
                 }
@@ -491,17 +424,16 @@ impl<'a> CompileItemContext<'a, '_> {
 
             &ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Plus => {
-                    let operand =
-                        self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
+                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
                     let _ = check_type_is_int(
                         diags,
                         TypeContainsReason::Operator(op.span),
-                        operand.as_ref().map_inner(ValueWithImplications::value_cloned),
+                        operand.clone().map_inner(ValueWithImplications::into_value),
                     )?;
                     return Ok(ValueInner::Value(operand.inner));
                 }
                 UnaryOp::Neg => {
-                    let operand = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
+                    let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
                     let operand_int = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
 
                     match operand_int.inner {
@@ -528,14 +460,13 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 }
                 UnaryOp::Not => {
-                    let operand =
-                        self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, operand)?;
+                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
 
                     check_type_contains_value(
                         diags,
                         TypeContainsReason::Operator(op.span),
                         &Type::Bool,
-                        operand.as_ref().map_inner(ValueWithImplications::value_cloned).as_ref(),
+                        operand.clone().map_inner(ValueWithImplications::into_value).as_ref(),
                         false,
                         false,
                     )?;
@@ -554,7 +485,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             };
                             let result_with_implications = HardwareValueWithImplications {
                                 value: result,
-                                value_versioned: None,
+                                version: None,
                                 implications: v.implications.invert(),
                             };
                             return Ok(ValueInner::Value(Value::Hardware(result_with_implications)));
@@ -563,13 +494,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             },
             &ExpressionKind::BinaryOp(op, left, right) => {
-                let left = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, left);
-                let right = self.eval_expression_with_implications(ctx, ctx_block, scope, vars, &Type::Any, right);
+                let left = self.eval_expression_with_implications(scope, flow, &Type::Any, left);
+                let right = self.eval_expression_with_implications(scope, flow, &Type::Any, right);
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
             }
             &ExpressionKind::ArrayIndex(base, ref indices) => {
-                self.eval_array_index_expression(ctx, ctx_block, scope, vars, base, indices)?
+                self.eval_array_index_expression(scope, flow, base, indices)?
             }
             &ExpressionKind::ArrayType(ref lens, base) => {
                 let lens = lens
@@ -587,12 +518,12 @@ impl<'a> CompileItemContext<'a, '_> {
                             end_inc: None,
                         });
                         let len =
-                            self.eval_expression_as_compile(scope, vars, &len_expected_ty, len, "array type length")?;
+                            self.eval_expression_as_compile(scope, flow, &len_expected_ty, len, "array type length")?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, reason, len)
                     })
                     .try_collect_all_vec();
-                let base = self.eval_expression_as_ty(scope, vars, base);
+                let base = self.eval_expression_as_ty(scope, flow, base);
 
                 let lengths = lens?;
                 let base = base?;
@@ -605,10 +536,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Compile(CompileValue::Type(result))
             }
             &ExpressionKind::DotIdIndex(base, index) => {
-                return self.eval_dot_id_index(ctx, ctx_block, scope, vars, expected_ty, expr.span, base, index);
+                return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
             }
             &ExpressionKind::DotIntIndex(base, index_span) => {
-                let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+                let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
                 let index = source.span_str(index_span);
 
                 let index_int = BigUint::from_str_radix(index, 10)
@@ -670,7 +601,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
-                let target = self.eval_expression_as_compile(scope, vars, &Type::Any, target, "call target")?;
+                let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
 
                 // eval args
                 let args_eval = args
@@ -678,7 +609,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .iter()
                     .map(|arg| {
                         // TODO pass an actual expected type in cases where we know it (eg. struct/enum construction)
-                        let arg_value = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg.value)?;
+                        let arg_value = self.eval_expression(scope, flow, &Type::Any, arg.value)?;
 
                         Ok(Arg {
                             span: arg.span,
@@ -712,26 +643,20 @@ impl<'a> CompileItemContext<'a, '_> {
                 // actually do the call
                 // TODO should we do the recursion marker here or inside of the call function?
                 let entry = StackEntry::FunctionCall(expr.span);
-                let (result_block, result_value) = self
+                let value = self
                     .recurse(entry, |s| {
-                        s.call_function(ctx, vars, expected_ty, target.span, expr.span, &target_inner, args)
+                        s.call_function(flow, expected_ty, target.span, expr.span, &target_inner, args)
                     })
                     .flatten_err()?;
 
-                if let Some(result_block) = result_block {
-                    let result_block_spanned = Spanned {
-                        span: expr.span,
-                        inner: result_block,
-                    };
-                    ctx.push_ir_statement_block(ctx_block, result_block_spanned);
-                }
-
-                result_value
+                value
             }
-            ExpressionKind::Builtin(ref args) => self.eval_builtin(ctx, ctx_block, scope, vars, expr.span, args)?,
+            ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
-                let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
-                let domain = self.eval_domain(scope, vars, domain);
+                let value = self.eval_expression(scope, flow, expected_ty, value);
+
+                let mut flow_domain = flow.new_child_compile(domain.span, "domain");
+                let domain = self.eval_domain(scope, &mut flow_domain, domain);
 
                 let value = value?;
                 let domain = domain?;
@@ -756,11 +681,9 @@ impl<'a> CompileItemContext<'a, '_> {
                     init,
                 } = reg_delay;
 
-                ctx.check_ir_context(diags, expr.span, "delay register")?;
-
                 // eval
-                let value = self.eval_expression(ctx, ctx_block, scope, vars, expected_ty, value);
-                let init = self.eval_expression_as_compile(scope, vars, expected_ty, init, "register init");
+                let value = self.eval_expression(scope, flow, expected_ty, value);
+                let init = self.eval_expression_as_compile(scope, flow, expected_ty, init, "register init");
                 let (value, init) = result_pair(value, init)?;
 
                 // figure out type
@@ -779,6 +702,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     diags.report(diag)
                 })?;
 
+                let flow = flow.check_hardware(expr.span, "register expression")?;
+
                 // convert values to hardware
                 let value = value
                     .inner
@@ -788,27 +713,73 @@ impl<'a> CompileItemContext<'a, '_> {
                     .map_inner(|inner| inner.as_ir_expression_or_undefined(refs, &mut self.large, init.span, &ty_hw))
                     .transpose()?;
 
-                // create a register and variable
+                // create variable to hold the result
                 let debug_info_id = || Spanned::new(span_keyword, None);
                 let var_info = IrVariableInfo {
                     ty: ty_hw.as_ir(refs),
                     debug_info_id: debug_info_id(),
                 };
-                let var = ctx.new_ir_variable(diags, span_keyword, var_info)?;
-                let (reg, domain) = ctx.new_ir_register(self, debug_info_id(), ty_hw.clone(), init)?;
+                let ir_var = flow.new_ir_variable(var_info);
+
+                // create register to act as the delay storage
+                let (clocked_domain, clocked_registers, ir_registers) =
+                    flow.check_clocked_block(span_keyword, "register expression")?;
+                let reg_info = IrRegisterInfo {
+                    ty: ty_hw.as_ir(refs),
+                    debug_info_id: debug_info_id(),
+                    debug_info_ty: ty_hw.clone(),
+                    debug_info_domain: clocked_domain.inner.diagnostic_string(self),
+                };
+                let reg = ir_registers.push(reg_info);
+
+                // record the reset value if any
+                match clocked_registers {
+                    ExtraRegisters::NoReset => match init.inner {
+                        MaybeUndefined::Undefined => {
+                            // we can't reset, but luckily we don't need to
+                        }
+                        MaybeUndefined::Defined(_) => {
+                            let diag = Diagnostic::new("registers without reset cannot have an initial value")
+                                .add_error(init.span, "attempt to create a register with init here")
+                                .add_info(
+                                    clocked_domain.span,
+                                    "the current clocked block is defined without reset here",
+                                )
+                                .footer(
+                                    Level::Help,
+                                    "either add an reset to the block or use `undef` as the the initial value",
+                                )
+                                .finish();
+                            let _ = diags.report(diag);
+                        }
+                    },
+                    ExtraRegisters::WithReset(extra_registers) => {
+                        match init.inner {
+                            MaybeUndefined::Undefined => {
+                                // we can reset but we don't need to
+                            }
+                            MaybeUndefined::Defined(init_inner) => {
+                                extra_registers.push(ExtraRegisterInit {
+                                    span: init.span,
+                                    reg,
+                                    init: init_inner,
+                                });
+                            }
+                        }
+                    }
+                }
 
                 // do the right shuffle operations
-                let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(var), IrExpression::Register(reg));
-                ctx.push_ir_statement(diags, ctx_block, Spanned::new(span_keyword, stmt_load))?;
-
+                let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(ir_var), IrExpression::Register(reg));
+                flow.push_ir_statement(Spanned::new(span_keyword, stmt_load));
                 let stmt_store = IrStatement::Assign(IrAssignmentTarget::register(reg), value.expr);
-                ctx.push_ir_statement(diags, ctx_block, Spanned::new(span_keyword, stmt_store))?;
+                flow.push_ir_statement(Spanned::new(span_keyword, stmt_store));
 
                 // return the variable, now containing the previous value of the register
                 Value::Hardware(HardwareValue {
                     ty: ty_hw,
-                    domain: ValueDomain::Sync(domain),
-                    expr: IrExpression::Variable(var),
+                    domain: ValueDomain::Sync(clocked_domain.inner),
+                    expr: IrExpression::Variable(ir_var),
                 })
             }
         };
@@ -816,12 +787,10 @@ impl<'a> CompileItemContext<'a, '_> {
         Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
     }
 
-    fn eval_dot_id_index<C: ExpressionContext>(
+    fn eval_dot_id_index(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr_span: Span,
         base: Expression,
@@ -831,7 +800,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let refs = self.refs;
         let diags = self.refs.diags;
 
-        let base_eval = self.eval_expression_inner(ctx, ctx_block, scope, vars, &Type::Any, base)?;
+        let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
         let index_str = index.str(self.refs.fixed.source);
 
         // interface fields
@@ -855,7 +824,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let port = port_interface_info.ports[port_index];
 
-                return self.eval_port(ctx, vars, Spanned::new(expr_span, port));
+                // TODO check domain, are we allowed to read this in the current context?
+                let flow = flow.check_hardware(expr_span, "port access")?;
+                let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
+                return Ok(ValueInner::Value(Value::Hardware(
+                    HardwareValueWithImplications::simple_version(port_eval),
+                )));
             }
             ValueInner::WireInterface(wire_interface) => {
                 let wire_interface_info = &self.wire_interfaces[wire_interface];
@@ -875,7 +849,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let wire = wire_interface_info.wires[wire_index];
 
-                return self.eval_wire(ctx, vars, Spanned::new(expr_span, wire));
+                // TODO check domain, are we allowed to read this in the current context?
+                let flow = flow.check_hardware(expr_span, "wire access")?;
+                let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
+                return Ok(ValueInner::Value(Value::Hardware(
+                    HardwareValueWithImplications::simple_version(wire_eval),
+                )));
             }
             ValueInner::Value(base_eval) => base_eval,
         };
@@ -925,7 +904,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 )
                                 .footer(
                                     Level::Help,
-                                    "consider using use target type where every bit pattern is valid",
+                                    "consider using a target type where every bit pattern is valid",
                                 )
                                 .footer(
                                     Level::Help,
@@ -1067,51 +1046,10 @@ impl<'a> CompileItemContext<'a, '_> {
         Err(diags.report(diag))
     }
 
-    fn eval_port<C: ExpressionContext>(
+    fn eval_array_literal(
         &mut self,
-        ctx: &mut C,
-        vars: &VariableValues,
-        port: Spanned<Port>,
-    ) -> DiagResult<ValueInner> {
-        let diags = self.refs.diags;
-        let port_info = &self.ports[port.inner];
-
-        ctx.check_ir_context(diags, port.span, "port")?;
-        let versioned = vars.signal_versioned(Signal::Port(port.inner));
-        let with_implications = apply_implications(ctx, &mut self.large, versioned, port_info.as_hardware_value());
-        Ok(ValueInner::Value(Value::Hardware(with_implications)))
-    }
-
-    fn eval_wire<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        vars: &VariableValues,
-        wire: Spanned<Wire>,
-    ) -> DiagResult<ValueInner> {
-        let diags = self.refs.diags;
-
-        ctx.check_ir_context(diags, wire.span, "wire")?;
-        let wire_info = &mut self.wires[wire.inner];
-
-        if let BlockDomain::Clocked(block_domain) = ctx.block_domain() {
-            wire_info.suggest_domain(
-                &mut self.wire_interfaces,
-                Spanned::new(wire.span, ValueDomain::Sync(block_domain.inner)),
-            )?;
-        }
-        let wire_value = wire_info.as_hardware_value(self.refs, &mut self.wire_interfaces, wire.span)?;
-
-        let versioned = vars.signal_versioned(Signal::Wire(wire.inner));
-        let with_implications = apply_implications(ctx, &mut self.large, versioned, wire_value);
-        Ok(ValueInner::Value(Value::Hardware(with_implications)))
-    }
-
-    fn eval_array_literal<C: ExpressionContext>(
-        &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr_span: Span,
         values: &[ArrayLiteralElement<Expression>],
@@ -1134,10 +1072,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 };
 
-                v.map_inner(|value_inner| {
-                    self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_curr, value_inner)
-                })
-                .transpose()
+                v.map_inner(|value_inner| self.eval_expression(scope, flow, expected_ty_curr, value_inner))
+                    .transpose()
             })
             .try_collect_all_vec()?;
 
@@ -1145,12 +1081,10 @@ impl<'a> CompileItemContext<'a, '_> {
         array_literal_combine_values(self.refs, &mut self.large, expr_span, expected_ty_inner, values)
     }
 
-    fn eval_tuple_literal<C: ExpressionContext>(
+    fn eval_tuple_literal(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         values: &Vec<Expression>,
     ) -> DiagResult<Value> {
@@ -1167,7 +1101,7 @@ impl<'a> CompileItemContext<'a, '_> {
             .enumerate()
             .map(|(i, &v)| {
                 let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
-                self.eval_expression(ctx, ctx_block, scope, vars, expected_ty_i, v)
+                self.eval_expression(scope, flow, expected_ty_i, v)
             })
             .try_collect_all_vec()?;
 
@@ -1234,20 +1168,18 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    fn eval_array_index_expression<C: ExpressionContext>(
+    fn eval_array_index_expression(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         base: Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
-        let base = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, base);
+        let base = self.eval_expression(scope, flow, &Type::Any, base);
         let steps = indices
             .inner
             .iter()
-            .map(|&index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
+            .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
             .try_collect_all_vec();
 
         let base = base?;
@@ -1256,12 +1188,10 @@ impl<'a> CompileItemContext<'a, '_> {
         steps.apply_to_value(self.refs, &mut self.large, base)
     }
 
-    fn eval_expression_as_array_step<C: ExpressionContext>(
+    fn eval_expression_as_array_step(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         index: Expression,
     ) -> DiagResult<Spanned<ArrayStep>> {
         let diags = self.refs.diags;
@@ -1272,7 +1202,7 @@ impl<'a> CompileItemContext<'a, '_> {
         {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
-                .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, start)
+                .eval_expression(scope, flow, &Type::Any, start)
                 .and_then(|start| check_type_is_int(diags, reason, start));
 
             let len_expected_ty = Type::Int(IncRange {
@@ -1280,7 +1210,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 end_inc: None,
             });
             let len = self
-                .eval_expression_as_compile(scope, vars, &len_expected_ty, len, "range length")
+                .eval_expression_as_compile(scope, flow, &len_expected_ty, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, reason, len));
 
             let start = start?;
@@ -1291,7 +1221,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Hardware(start) => ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, len }),
             }
         } else {
-            let index_eval = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, index)?;
+            let index_eval = self.eval_expression(scope, flow, &Type::Any, index)?;
 
             match index_eval.transpose() {
                 Value::Compile(index_or_slice) => match index_or_slice.inner {
@@ -1338,12 +1268,10 @@ impl<'a> CompileItemContext<'a, '_> {
     }
 
     // TODO replace builtin+import+prelude with keywords?
-    fn eval_builtin<C: ExpressionContext>(
+    fn eval_builtin(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
@@ -1353,11 +1281,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let args_eval = args
             .inner
             .iter()
-            .map(|&arg| {
-                Ok(self
-                    .eval_expression(ctx, ctx_block, scope, vars, &Type::Any, arg)?
-                    .inner)
-            })
+            .map(|&arg| Ok(self.eval_expression(scope, flow, &Type::Any, arg)?.inner))
             .try_collect_all_vec()?;
 
         if let (Some(Value::Compile(CompileValue::String(a0))), Some(Value::Compile(CompileValue::String(a1)))) =
@@ -1389,16 +1313,20 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 ("fn", "typeof", [value]) => return Ok(Value::Compile(CompileValue::Type(value.ty()))),
                 ("fn", "print", [value]) => {
-                    if ctx.is_ir_context() {
-                        if let Value::Compile(CompileValue::String(value)) = value {
-                            let stmt = Spanned::new(expr_span, IrStatement::PrintLn((**value).clone()));
-                            ctx.push_ir_statement(diags, ctx_block, stmt)?;
+                    match flow.kind_mut() {
+                        FlowKind::Compile(_) => {
+                            // TODO record similarly to diagnostics, where they can be deterministically printed later
+                            print_compile(value);
                             return Ok(Value::Compile(CompileValue::unit()));
                         }
-                        // fallthough
-                    } else {
-                        print_compile(value);
-                        return Ok(Value::Compile(CompileValue::unit()));
+                        FlowKind::Hardware(flow) => {
+                            if let Value::Compile(CompileValue::String(value)) = value {
+                                let stmt = Spanned::new(expr_span, IrStatement::PrintLn((**value).clone()));
+                                flow.push_ir_statement(stmt);
+                                return Ok(Value::Compile(CompileValue::unit()));
+                            }
+                            // fallthough
+                        }
                     }
                 }
                 (
@@ -1447,27 +1375,24 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_expression_as_compile(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
-        reason: &str,
+        reason: &'static str,
     ) -> DiagResult<Spanned<CompileValue>> {
         let diags = self.refs.diags;
 
-        let mut ctx = CompileTimeExpressionContext {
-            span: expr.span,
-            reason: reason.to_owned(),
-        };
-        let mut ctx_block = ();
+        // TODO should we allow compile-time writes to the outside?
+        //   right now we intentionally don't because that might be confusing in eg. function params or types
+        let mut flow_inner = flow.new_child_compile(expr.span, reason);
+        let value_eval = self.eval_expression(scope, &mut flow_inner, expected_ty, expr)?.inner;
 
-        let value_eval = self
-            .eval_expression(&mut ctx, &mut ctx_block, scope, vars, expected_ty, expr)?
-            .inner;
         match value_eval {
             Value::Compile(c) => Ok(Spanned {
                 span: expr.span,
                 inner: c,
             }),
+            // TODO maybe this can be an internal error now, the flow already prevents hardware values
             Value::Hardware(ir_expr) => Err(diags.report_simple(
                 format!("{reason} must be a compile-time value"),
                 expr.span,
@@ -1479,14 +1404,14 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_expression_as_ty(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr: Expression,
     ) -> DiagResult<Spanned<Type>> {
         let diags = self.refs.diags;
 
         // TODO unify this message with the one when a normal type-check fails
         match self
-            .eval_expression_as_compile(scope, vars, &Type::Type, expr, "type")?
+            .eval_expression_as_compile(scope, flow, &Type::Type, expr, "type")?
             .inner
         {
             CompileValue::Type(ty) => Ok(Spanned {
@@ -1504,13 +1429,13 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_expression_as_ty_hardware(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr: Expression,
         reason: &str,
     ) -> DiagResult<Spanned<HardwareType>> {
         let diags = self.refs.diags;
 
-        let ty = self.eval_expression_as_ty(scope, vars, expr)?.inner;
+        let ty = self.eval_expression_as_ty(scope, flow, expr)?.inner;
         let ty_hw = ty.as_hardware_type(self.refs).map_err(|_| {
             diags.report_simple(
                 format!("{} type must be representable in hardware", reason),
@@ -1525,12 +1450,10 @@ impl<'a> CompileItemContext<'a, '_> {
     }
 
     // TODO move typechecks here, immediately returning expected type if any
-    pub fn eval_expression_as_assign_target<C: ExpressionContext>(
+    pub fn eval_expression_as_assign_target(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr: Expression,
     ) -> DiagResult<Spanned<AssignmentTarget>> {
         let diags = self.refs.diags;
@@ -1541,7 +1464,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let result = match self.refs.get_expr(expr) {
             &ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, vars, id)?;
+                let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 match self.eval_named_or_value(scope, id)?.inner {
@@ -1573,11 +1496,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             }
             &ExpressionKind::ArrayIndex(inner_target, ref indices) => {
-                let inner_target = self.eval_expression_as_assign_target(ctx, ctx_block, scope, vars, inner_target);
+                let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
                 let array_steps = indices
                     .inner
                     .iter()
-                    .map(|&index| self.eval_expression_as_array_step(ctx, ctx_block, scope, vars, index))
+                    .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
                     .try_collect_all_vec();
 
                 let inner_target = inner_target?;
@@ -1598,7 +1521,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
                 &ExpressionKind::Id(base) => {
-                    let base = self.eval_general_id(scope, vars, base)?;
+                    let base = self.eval_general_id(scope, flow, base)?;
                     let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
                     match self.eval_named_or_value(scope, base)?.inner {
@@ -1667,20 +1590,20 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_expression_as_domain_signal(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr: Expression,
     ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
             |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{}`", actual));
-        self.try_eval_expression_as_domain_signal(scope, vars, expr, build_err)
+        self.try_eval_expression_as_domain_signal(scope, flow, expr, build_err)
             .map_err(|e| e.into_inner())
     }
 
     pub fn try_eval_expression_as_domain_signal<E>(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         expr: Expression,
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, DiagError>> {
@@ -1694,12 +1617,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 inner,
             ) => {
                 let inner = self
-                    .try_eval_expression_as_domain_signal(scope, vars, inner, build_err)?
+                    .try_eval_expression_as_domain_signal(scope, flow, inner, build_err)?
                     .inner;
                 Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, vars, id).map_err(Either::Right)?;
+                let id = self.eval_general_id(scope, flow, id).map_err(Either::Right)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
@@ -1729,12 +1652,12 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_domain_sync(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         domain: SyncDomain<Expression>,
     ) -> DiagResult<SyncDomain<DomainSignal>> {
         let SyncDomain { clock, reset } = domain;
-        let clock = self.eval_expression_as_domain_signal(scope, vars, clock);
-        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, vars, reset));
+        let clock = self.eval_expression_as_domain_signal(scope, flow, clock);
+        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, flow, reset));
         Ok(SyncDomain {
             clock: clock?.inner,
             reset: reset.transpose()?.map(|r| r.inner),
@@ -1744,13 +1667,13 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_domain(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         domain: Spanned<DomainKind<Expression>>,
     ) -> DiagResult<Spanned<DomainKind<DomainSignal>>> {
         let result = match domain.inner {
             DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
-            DomainKind::Sync(domain) => self.eval_domain_sync(scope, vars, domain).map(DomainKind::Sync),
+            DomainKind::Sync(domain) => self.eval_domain_sync(scope, flow, domain).map(DomainKind::Sync),
         };
 
         Ok(Spanned {
@@ -1762,11 +1685,11 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_port_domain(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         domain: Spanned<DomainKind<Expression>>,
     ) -> DiagResult<Spanned<DomainKind<Polarized<Port>>>> {
         let diags = self.refs.diags;
-        let result = self.eval_domain(scope, vars, domain)?;
+        let result = self.eval_domain(scope, flow, domain)?;
 
         Ok(Spanned {
             span: result.span,
@@ -1786,17 +1709,15 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    pub fn eval_expression_as_for_iterator<C: ExpressionContext>(
+    pub fn eval_expression_as_for_iterator(
         &mut self,
-        ctx: &mut C,
-        ctx_block: &mut C::Block,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         iter: Expression,
     ) -> DiagResult<ForIterator> {
         let diags = self.refs.diags;
 
-        let iter = self.eval_expression(ctx, ctx_block, scope, vars, &Type::Any, iter)?;
+        let iter = self.eval_expression(scope, flow, &Type::Any, iter)?;
         let iter_span = iter.span;
 
         let result = match iter.inner {
@@ -1855,13 +1776,13 @@ impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_expression_as_module(
         &mut self,
         scope: &Scope,
-        vars: &mut VariableValues,
+        flow: &mut impl Flow,
         span_keyword: Span,
         expr: Expression,
     ) -> DiagResult<ElaboratedModule> {
         let diags = self.refs.diags;
 
-        let eval = self.eval_expression_as_compile(scope, vars, &Type::Module, expr, "module")?;
+        let eval = self.eval_expression_as_compile(scope, flow, &Type::Module, expr, "module")?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
         check_type_contains_compile_value(diags, reason, &Type::Module, eval.as_ref(), false)?;
@@ -2165,7 +2086,8 @@ pub fn eval_binary_expression(
     let result_simple: Value<_> = match op.inner {
         // (int, int)
         BinaryOp::Add => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
+            let (left, right) =
+                check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner + right.inner)),
                 Value::Hardware((left, right)) => {
@@ -2184,7 +2106,8 @@ pub fn eval_binary_expression(
             }
         }
         BinaryOp::Sub => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
+            let (left, right) =
+                check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner - right.inner)),
                 Value::Hardware((left, right)) => {
@@ -2205,7 +2128,7 @@ pub fn eval_binary_expression(
         BinaryOp::Mul => {
             // TODO do we want to keep using multiplication as the "array repeat" syntax?
             //   if so, maybe allow tuples on the right side for multidimensional repeating
-            let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.value()));
+            let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.into_value()));
             match left.inner.ty() {
                 Type::Array(left_ty_inner, left_len) => {
                     let right = right?;
@@ -2234,7 +2157,7 @@ pub fn eval_binary_expression(
                         )
                     })?;
 
-                    match left.inner.value() {
+                    match left.inner.into_value() {
                         Value::Compile(CompileValue::Array(left_inner)) => {
                             // do the repetition at compile-time
                             // TODO check for overflow (everywhere)
@@ -2271,7 +2194,7 @@ pub fn eval_binary_expression(
                     }
                 }
                 Type::Int(_) => {
-                    let left = check_type_is_int(diags, op_reason, left.map_inner(|e| e.value()))
+                    let left = check_type_is_int(diags, op_reason, left.map_inner(|e| e.into_value()))
                         .expect("int, already checked");
                     let right = right?;
                     match pair_compile_int(left, right) {
@@ -2305,7 +2228,8 @@ pub fn eval_binary_expression(
         }
         // (int, non-zero int)
         BinaryOp::Div => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
+            let (left, right) =
+                check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             // check nonzero
             if right.inner.range().contains(&&BigInt::ZERO) {
@@ -2351,7 +2275,8 @@ pub fn eval_binary_expression(
             }
         }
         BinaryOp::Mod => {
-            let (left, right) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
+            let (left, right) =
+                check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             // check nonzero
             if right.inner.range().contains(&&BigInt::ZERO) {
@@ -2394,7 +2319,7 @@ pub fn eval_binary_expression(
         }
         // (nonzero int, non-negative int) or (non-negative int, positive int)
         BinaryOp::Pow => {
-            let (base, exp) = check_both_int(left.map_inner(|e| e.value()), right.map_inner(|e| e.value()))?;
+            let (base, exp) = check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             let zero = BigInt::ZERO;
             let base_range = base.inner.range();
@@ -2516,14 +2441,22 @@ fn eval_binary_bool(
                     domain: inner_ir.domain,
                     expr: large.push_expr(IrExpressionLarge::BoolNot(inner_ir.expr)),
                 },
-                value_versioned: None,
+                version: None,
                 implications: inner_eval.implications.invert(),
             }),
         }
     }
 
-    let left_value = check_type_is_bool(diags, op_reason, left.as_ref().map_inner(|e| e.value_cloned()));
-    let right_value = check_type_is_bool(diags, op_reason, right.as_ref().map_inner(|e| e.value_cloned()));
+    let left_value = check_type_is_bool(
+        diags,
+        op_reason,
+        left.clone().map_inner(ValueWithImplications::into_value),
+    );
+    let right_value = check_type_is_bool(
+        diags,
+        op_reason,
+        right.clone().map_inner(ValueWithImplications::into_value),
+    );
 
     let left_value = left_value?;
     let right_value = right_value?;
@@ -2559,20 +2492,20 @@ fn eval_binary_bool(
             let right_inner = right.inner.unwrap_hardware();
 
             let implications = match op {
-                IrBoolBinaryOp::And => Implications {
+                IrBoolBinaryOp::And => BoolImplications {
                     if_true: vec_concat([left_inner.implications.if_true, right_inner.implications.if_true]),
                     if_false: vec![],
                 },
-                IrBoolBinaryOp::Or => Implications {
+                IrBoolBinaryOp::Or => BoolImplications {
                     if_true: vec![],
                     if_false: vec_concat([left_inner.implications.if_false, right_inner.implications.if_false]),
                 },
-                IrBoolBinaryOp::Xor => Implications::default(),
+                IrBoolBinaryOp::Xor => BoolImplications::default(),
             };
 
             Ok(ValueWithImplications::Hardware(HardwareValueWithImplications {
                 value: expr,
-                value_versioned: None,
+                version: None,
                 implications,
             }))
         }
@@ -2590,12 +2523,12 @@ fn eval_binary_int_compare(
     let left_int = check_type_is_int(
         diags,
         op_reason,
-        left.as_ref().map_inner(ValueWithImplications::value_cloned),
+        left.clone().map_inner(ValueWithImplications::into_value),
     );
     let right_int = check_type_is_int(
         diags,
         op_reason,
-        right.as_ref().map_inner(ValueWithImplications::value_cloned),
+        right.clone().map_inner(ValueWithImplications::into_value),
     );
     let left_int = left_int?;
     let right_int = right_int?;
@@ -2611,11 +2544,11 @@ fn eval_binary_int_compare(
         Value::Hardware((left_int, right_int)) => {
             let lv = match left.inner {
                 ValueWithImplications::Compile(_) => None,
-                ValueWithImplications::Hardware(v) => v.value_versioned,
+                ValueWithImplications::Hardware(v) => v.version,
             };
             let rv = match right.inner {
                 ValueWithImplications::Compile(_) => None,
-                ValueWithImplications::Hardware(v) => v.value_versioned,
+                ValueWithImplications::Hardware(v) => v.version,
             };
 
             // TODO warning if the result is always true/false (depending on the ranges)
@@ -2644,7 +2577,7 @@ fn eval_binary_int_compare(
             };
             Ok(Value::Hardware(HardwareValueWithImplications {
                 value: result,
-                value_versioned: None,
+                version: None,
                 implications,
             }))
         }
@@ -2667,11 +2600,11 @@ fn build_binary_int_arithmetic_op(
 }
 
 fn implications_lt(
-    left: Option<ValueVersioned>,
+    left: Option<ValueVersion>,
     left_range: ClosedIncRange<BigInt>,
-    right: Option<ValueVersioned>,
+    right: Option<ValueVersion>,
     right_range: ClosedIncRange<BigInt>,
-) -> Implications {
+) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
 
@@ -2684,15 +2617,15 @@ fn implications_lt(
         if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc + 1));
     }
 
-    Implications { if_true, if_false }
+    BoolImplications { if_true, if_false }
 }
 
 fn implications_lte(
-    left: Option<ValueVersioned>,
+    left: Option<ValueVersion>,
     left_range: ClosedIncRange<BigInt>,
-    right: Option<ValueVersioned>,
+    right: Option<ValueVersion>,
     right_range: ClosedIncRange<BigInt>,
-) -> Implications {
+) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
 
@@ -2705,15 +2638,15 @@ fn implications_lte(
         if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc));
     }
 
-    Implications { if_true, if_false }
+    BoolImplications { if_true, if_false }
 }
 
 fn implications_eq(
-    left: Option<ValueVersioned>,
+    left: Option<ValueVersion>,
     left_range: ClosedIncRange<BigInt>,
-    right: Option<ValueVersioned>,
+    right: Option<ValueVersion>,
     right_range: ClosedIncRange<BigInt>,
-) -> Implications {
+) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
 
@@ -2735,52 +2668,7 @@ fn implications_eq(
         }
     }
 
-    Implications { if_true, if_false }
-}
-
-pub fn apply_implications<C: ExpressionContext>(
-    ctx: &C,
-    large: &mut IrLargeArena,
-    versioned: Option<ValueVersioned>,
-    expr_raw: HardwareValue,
-) -> HardwareValueWithImplications {
-    let versioned = match versioned {
-        None => return HardwareValueWithImplications::simple(expr_raw),
-        Some(versioned) => versioned,
-    };
-
-    let value_expr = if let HardwareType::Int(ty) = &expr_raw.ty {
-        let mut range = ClosedIncRangeMulti::from_range(ty.clone());
-        ctx.for_each_implication(versioned, |implication| {
-            range.apply_implication(implication.op, &implication.right);
-        });
-
-        match range.to_range() {
-            // TODO support never type or maybe specifically empty ranges
-            // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
-            None => expr_raw,
-            Some(range) => {
-                if &range == ty {
-                    expr_raw
-                } else {
-                    let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), expr_raw.expr);
-                    HardwareValue {
-                        ty: HardwareType::Int(range),
-                        domain: expr_raw.domain,
-                        expr: large.push_expr(expr_constr),
-                    }
-                }
-            }
-        }
-    } else {
-        expr_raw
-    };
-
-    HardwareValueWithImplications {
-        value: value_expr,
-        value_versioned: Some(versioned),
-        implications: Implications::default(),
-    }
+    BoolImplications { if_true, if_false }
 }
 
 fn array_literal_combine_values(

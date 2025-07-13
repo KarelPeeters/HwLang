@@ -216,8 +216,8 @@ ModuleStatementKind: ModuleStatementKind = {
         let decl = RegDeclaration { vis, id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
-    <vis:Vis> "wire" <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
-        let decl = WireDeclaration { vis, id, kind };
+    <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
+        let decl = WireDeclaration { vis, span_keyword, id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
     // marker
