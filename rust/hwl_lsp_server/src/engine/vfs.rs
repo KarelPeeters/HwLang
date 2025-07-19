@@ -1,7 +1,7 @@
 use crate::server::document::uri_to_path;
 use hwl_language::throw;
 use hwl_language::util::data::IndexMapExt;
-use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
@@ -50,14 +50,13 @@ impl VirtualFileSystem {
         };
 
         // initialize files from disk
-        recurse_for_each_file(&root_path, |_, f| -> Result<(), IoErrorWithPath> {
-            let path = f.path();
-            if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
+        recurse_for_each_file(&root_path, |_, path| -> Result<(), IoErrorWithPath> {
+            if path.extension() != Some(OsStr::new(HWL_FILE_EXTENSION)) {
                 return Ok(());
             }
 
             let path_rel = path.strip_prefix(&root_path).unwrap();
-            let source = std::fs::read(&path).map_err(|e| e.with_path(path.clone()))?;
+            let source = std::fs::read(path).map_err(|e| e.with_path(path.to_owned()))?;
 
             vfs.map_rel.insert_first(path_rel.to_owned(), Content::Unknown(source));
 

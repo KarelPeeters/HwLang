@@ -37,7 +37,7 @@ fn parse_top() {
 #[test]
 fn parse_std_all() {
     recurse_for_each_file::<IoErrorWithPath>(Path::new("../../design/project/std"), |_, entry| {
-        test_parse(entry.path());
+        test_parse(entry);
         Ok(())
     })
     .unwrap();

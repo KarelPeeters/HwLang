@@ -2,7 +2,7 @@ use crate::syntax::pos::{LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::{Arena, IndexType};
 use crate::util::data::vec_concat;
 use crate::{new_index_type, throw};
-use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use itertools::{enumerate, Itertools};
@@ -229,37 +229,29 @@ impl SourceDatabaseBuilder {
                 .with_path(root_path.to_owned())
                 .into());
         }
-        if !root_path.is_dir() {
-            return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory)
-                .with_path(root_path.to_owned())
-                .into());
-        }
 
-        recurse_for_each_file(root_path, |stack, f| -> Result<(), SourceSetOrIoError> {
-            let path = f.path();
-            if path.extension() != Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
+        recurse_for_each_file(root_path, |stack, path| -> Result<(), SourceSetOrIoError> {
+            if path.extension() != Some(OsStr::new(HWL_FILE_EXTENSION)) {
                 return Ok(());
             }
 
             let mut stack: Vec<String> = stack
                 .iter()
-                .map(|s| to_str_or_err(&path, s).map(str::to_owned))
+                .map(|s| to_str_or_err(path, s).map(str::to_owned))
                 .try_collect()?;
 
             let file_stem = path
                 .file_stem()
-                .ok_or_else(|| SourceSetError::MissingFileName(path.clone()))?;
-            stack.push(to_str_or_err(&path, file_stem)?.to_owned());
+                .ok_or_else(|| SourceSetError::MissingFileName(path.to_owned()))?;
+            stack.push(to_str_or_err(path, file_stem)?.to_owned());
 
             let filepath = FilePath(vec_concat([prefix.clone(), stack]));
-            let source = std::fs::read_to_string(&path).map_err(|e| e.with_path(path.clone()))?;
+            let source = std::fs::read_to_string(path).map_err(|e| e.with_path(path.to_owned()))?;
             self.add_file(filepath, path.to_str().unwrap().to_owned(), source)
                 .unwrap();
 
             Ok(())
-        })?;
-
-        Ok(())
+        })
     }
 
     fn get_directory(&mut self, path: &FilePath) -> BuilderDirectory {
@@ -309,7 +301,7 @@ impl From<IoErrorWithPath> for SourceSetOrIoError {
     }
 }
 
-fn to_str_or_err<'s>(path: &Path, s: &'s OsStr) -> Result<&'s str, SourceSetError> {
+pub fn to_str_or_err<'s>(path: &Path, s: &'s OsStr) -> Result<&'s str, SourceSetError> {
     s.to_str().ok_or_else(|| SourceSetError::NonUtf8Path(path.to_owned()))
 }
 

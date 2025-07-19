@@ -3,7 +3,7 @@ use crate::engine::vfs::VirtualFileSystem;
 use crate::server::sender::ServerSender;
 use crate::server::settings::Settings;
 use crossbeam_channel::SendError;
-use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::constants::HWL_FILE_EXTENSION;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
@@ -70,7 +70,7 @@ impl ServerState {
 
     pub fn initial_registrations(&mut self) -> Result<(), SendError<Message>> {
         // subscribe to file changes
-        let pattern = format!("**/{{*.{LANGUAGE_FILE_EXTENSION}}}");
+        let pattern = format!("**/{{*.{HWL_FILE_EXTENSION}}}");
         let params = RegistrationParams {
             registrations: vec![Registration {
                 id: self.sender.next_unique_id(),

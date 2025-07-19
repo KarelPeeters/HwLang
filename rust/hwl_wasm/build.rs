@@ -1,4 +1,4 @@
-use hwl_util::constants::LANGUAGE_FILE_EXTENSION;
+use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{recurse_for_each_file, IoErrorWithPath};
 use hwl_util::swriteln;
 use itertools::Itertools;
@@ -20,9 +20,8 @@ fn main() {
 
     let mut found_any = false;
 
-    recurse_for_each_file(Path::new(&std_folder), |steps, entry| {
-        let entry_path = entry.path();
-        if entry_path.extension() == Some(OsStr::new(LANGUAGE_FILE_EXTENSION)) {
+    recurse_for_each_file(Path::new(&std_folder), |steps, entry_path| {
+        if entry_path.extension() == Some(OsStr::new(HWL_FILE_EXTENSION)) {
             let mut steps = steps.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
             steps.insert(0, "std".to_owned());
             steps.push(entry_path.file_stem().unwrap().to_str().unwrap().to_owned());

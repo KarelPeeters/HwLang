@@ -11,6 +11,7 @@ use itertools::enumerate;
 use pos::Pos;
 
 pub mod ast;
+pub mod manifest;
 pub mod parsed;
 pub mod pos;
 pub mod resolve;

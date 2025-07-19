@@ -4,11 +4,15 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::StdoutPrintHandler;
+use hwl_language::syntax::manifest::{manifest_collect_sources, Manifest};
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabaseBuilder;
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
+use hwl_util::io::IoErrorExt;
+use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,13 +27,15 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Parser, Debug)]
 struct Args {
     // input data
-    root: PathBuf,
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 
     // performance options
     #[arg(long, short = 'j')]
     thread_count: Option<NonZeroUsize>,
 
     // debug options
+    // TODO some of these have major effects and are not really debug options
     #[arg(long)]
     profile: bool,
     #[arg(long)]
@@ -63,8 +69,9 @@ fn main() -> ExitCode {
 }
 
 fn main_inner(args: Args) -> ExitCode {
+    // interpret args
     let Args {
-        root,
+        manifest,
         thread_count,
         profile,
         print_files,
@@ -82,14 +89,33 @@ fn main_inner(args: Args) -> ExitCode {
     };
 
     let start_all = Instant::now();
+    let start_source = Instant::now();
+
+    // find and parse manifest file
+    let (manifest_parent, manifest_source) = match find_and_read_manifest(manifest) {
+        Ok(s) => s,
+        Err(FindManifestError(msg)) => {
+            eprintln!("{msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest = match Manifest::from_toml(&manifest_source) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to parse manifest file: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Manifest {
+        source: manifest_source,
+    } = manifest;
 
     // collect source
-    let start_source = Instant::now();
     let mut source_builder = SourceDatabaseBuilder::new();
-    match source_builder.add_tree(vec![], &root) {
+    match manifest_collect_sources(&manifest_parent, &mut source_builder, &mut vec![], manifest_source) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("building source database failed: {e:?}");
+            eprintln!("Failed to collect sources: {e:?}");
             return ExitCode::FAILURE;
         }
     }
@@ -161,7 +187,7 @@ fn main_inner(args: Args) -> ExitCode {
     }
 
     if print_ir {
-        println!("{compiled:#?}");
+        eprintln!("{compiled:#?}");
     }
 
     // TODO don't hardcode paths here
@@ -183,6 +209,7 @@ fn main_inner(args: Args) -> ExitCode {
     }
 
     // print profiling info
+    // TODO expand to include separate profiling info for each elaborated item
     if profile {
         // profile tokenization separately
         let start_tokenize = Instant::now();
@@ -192,27 +219,27 @@ fn main_inner(args: Args) -> ExitCode {
         }
         let time_tokenize = start_tokenize.elapsed();
 
-        println!();
-        println!("profiling info:");
-        println!("-----------------------------------------------");
-        println!("input files:      {}", source.file_count());
-        println!("input lines:      {}", source.total_lines_of_code());
-        println!("input tokens:     {total_tokens}");
-        println!("----------------------------------------");
-        println!("read source:      {time_source:?}");
-        println!("tokenize:         {time_tokenize:?}");
-        println!("parse + tokenize: {time_parse:?}");
-        println!("compile:          {time_compile:?}");
+        eprintln!();
+        eprintln!("profiling info:");
+        eprintln!("-----------------------------------------------");
+        eprintln!("input files:      {}", source.file_count());
+        eprintln!("input lines:      {}", source.total_lines_of_code());
+        eprintln!("input tokens:     {total_tokens}");
+        eprintln!("----------------------------------------");
+        eprintln!("read source:      {time_source:?}");
+        eprintln!("tokenize:         {time_tokenize:?}");
+        eprintln!("parse + tokenize: {time_parse:?}");
+        eprintln!("compile:          {time_compile:?}");
         if let Some((time_lower, time_simulator, _, _)) = lower_results {
-            println!("lower verilog:    {time_lower:?}");
-            println!("lower c++:        {time_simulator:?}");
+            eprintln!("lower verilog:    {time_lower:?}");
+            eprintln!("lower c++:        {time_simulator:?}");
         } else {
-            println!("lower verilog:    (skipped)");
-            println!("lower c++:        (skipped)");
+            eprintln!("lower verilog:    (skipped)");
+            eprintln!("lower c++:        (skipped)");
         }
-        println!("-----------------------------------------------");
-        println!("total:            {time_all:?}");
-        println!();
+        eprintln!("-----------------------------------------------");
+        eprintln!("total:            {time_all:?}");
+        eprintln!();
     }
 
     // proper exit code
@@ -220,5 +247,61 @@ fn main_inner(args: Args) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+struct FindManifestError(String);
+
+fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, String), FindManifestError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| FindManifestError(format!("Failed to get current working directory: {e:?}")))?;
+    let cwd = std::path::absolute(&cwd).map_err(|e| {
+        FindManifestError(format!(
+            "Failed to convert working dir to absolute path: {:?}",
+            e.with_path(cwd)
+        ))
+    })?;
+
+    match manifest_path {
+        Some(manifest_path) => {
+            // directly read the manifest file
+            let manifest_path = cwd.join(manifest_path);
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(s) => {
+                    let manifest_parent = manifest_path.parent().ok_or_else(|| {
+                        FindManifestError(format!(
+                            "Manifest path {manifest_path:?} does not have a parent directory"
+                        ))
+                    })?;
+                    Ok((manifest_parent.to_owned(), s))
+                }
+                Err(e) => Err(FindManifestError(format!(
+                    "Failed to read manifest file: {:?}",
+                    e.with_path(manifest_path)
+                ))),
+            }
+        }
+        None => {
+            // walk up the path until we find a folder containing a manifest file
+            for ancestor in cwd.ancestors() {
+                let cand_manifest_path = ancestor.join(HWL_MANIFEST_FILE_NAME);
+                match std::fs::read_to_string(&cand_manifest_path) {
+                    Ok(s) => return Ok((ancestor.to_owned(), s)),
+                    Err(e) => match e.kind() {
+                        ErrorKind::NotFound => continue,
+                        _ => {
+                            return Err(FindManifestError(format!(
+                                "Failed to read manifest file: {:?}",
+                                e.with_path(cand_manifest_path)
+                            )));
+                        }
+                    },
+                }
+            }
+
+            Err(FindManifestError(format!(
+                "No manifest file {HWL_MANIFEST_FILE_NAME} found in any parent directory of the current working directory {cwd:?}"
+            )))
+        }
     }
 }

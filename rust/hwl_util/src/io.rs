@@ -1,11 +1,10 @@
 use std::ffi::OsString;
-use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 pub fn recurse_for_each_file<E: From<IoErrorWithPath>>(
     dir: &Path,
-    mut f: impl FnMut(&[OsString], &DirEntry) -> Result<(), E>,
+    mut f: impl FnMut(&[OsString], &Path) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut stack = vec![];
     recurse_for_each_file_impl(dir, &mut stack, &mut f)
@@ -14,9 +13,11 @@ pub fn recurse_for_each_file<E: From<IoErrorWithPath>>(
 fn recurse_for_each_file_impl<E: From<IoErrorWithPath>>(
     root: &Path,
     stack: &mut Vec<OsString>,
-    f: &mut impl FnMut(&[OsString], &DirEntry) -> Result<(), E>,
+    f: &mut impl FnMut(&[OsString], &Path) -> Result<(), E>,
 ) -> Result<(), E> {
-    if root.is_dir() {
+    if root.is_file() {
+        f(stack, root)
+    } else {
         let read_dir = fs::read_dir(root).map_err(|e| IoErrorWithPath {
             path: root.to_owned(),
             error: e,
@@ -32,11 +33,11 @@ fn recurse_for_each_file_impl<E: From<IoErrorWithPath>>(
                 recurse_for_each_file_impl(&next, stack, f)?;
                 stack.pop();
             } else {
-                f(stack, &entry)?;
+                f(stack, &entry.path())?;
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 #[derive(Debug)]

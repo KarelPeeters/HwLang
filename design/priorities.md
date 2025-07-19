@@ -1,3 +1,12 @@
+# Project config
+
+* add hwl.toml config file
+  * contains file search paths including which import paths that map to (std as a default)
+  * contains misc settings for formatter, lsp, codegen, ...
+  * _maybe_ contains default top?
+  * commandline tool and lsp look for this file and base their view of the project on it
+  * this also allows multiple projects in a single lsp instance
+
 # Frontend features
 
 * add "elaboration trace" to all error messages, to know where the error actually happened
@@ -12,10 +21,6 @@
   * static (without self param), used for constructors and to replicate generic packages
   * non-static (with self param)
   * with `inout`/`ref` self param, to mutate it in-place
-
-* some way to configure constants, used for ram models vs cells
-  * actually no: reject global pseudo-mutable state, just use generic params
-* better top module specification
 
 * for utilities, we need something more more convenient than a module and more powerful then an interface + functions
   * or is the "reg" trick inside functions enough?

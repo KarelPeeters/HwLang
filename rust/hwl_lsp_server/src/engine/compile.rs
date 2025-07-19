@@ -11,7 +11,7 @@ use hwl_language::front::print::NoPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{BuilderFileId, FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
 use hwl_language::util::NON_ZERO_USIZE_ONE;
-use hwl_util::constants::{LANGUAGE_FILE_EXTENSION, LSP_SERVER_NAME};
+use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME};
 use indexmap::IndexMap;
 use lsp_types::{
     notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
@@ -100,7 +100,7 @@ impl ServerState {
             // remove final extension
             let last = steps.last_mut().unwrap();
             *last = last
-                .strip_suffix(&format!(".{LANGUAGE_FILE_EXTENSION}"))
+                .strip_suffix(&format!(".{HWL_FILE_EXTENSION}"))
                 .expect("only language source files should be in the VFS")
                 .to_owned();
 
@@ -180,7 +180,7 @@ fn diagnostic_to_lsp(
         severity: Some(level_to_severity(top_annotation.level)),
         code: None,
         code_description: None,
-        source: Some(LSP_SERVER_NAME.to_owned()),
+        source: Some(HWL_LSP_NAME.to_owned()),
         message: top_message,
         related_information: Some(related_information),
         // TODO set tags once we support those
