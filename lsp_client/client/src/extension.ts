@@ -7,8 +7,9 @@ import * as path from "node:path";
 const binary_path = "/home/karel/Documents/hwlang/rust/target/debug/hwl_lsp_server";
 
 let client: LanguageClient;
-let watcher: fs.FSWatcher;
 
+// Restart the client when the server binary changes, to emulate hot-reloading.
+let watcher: fs.FSWatcher;
 function register_watcher(context: ExtensionContext) {
     // Watch the parent folder instead of the binary itself so delete+move is detected too.
     watcher = fs.watch(path.dirname(binary_path), (eventType, _filename) => {
@@ -41,15 +42,12 @@ export function activate(context: ExtensionContext) {
         synchronize: {}
     };
 
-    // Create the language client and start the client.
     client = new LanguageClient(
         'hwl-lsp',
         'HwLang LSP',
         serverOptions,
-        clientOptions           
+        clientOptions
     );
-
-    // Start the client. This will also launch the server
     client.start();
 }
 

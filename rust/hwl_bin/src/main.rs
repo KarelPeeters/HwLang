@@ -4,7 +4,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::StdoutPrintHandler;
-use hwl_language::syntax::manifest::{manifest_collect_sources, Manifest};
+use hwl_language::syntax::manifest::{Manifest, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabaseBuilder;
 use hwl_language::syntax::token::Tokenizer;
@@ -12,6 +12,8 @@ use hwl_language::util::arena::IndexType;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::IoErrorExt;
+use itertools::Itertools;
+use path_clean::PathClean;
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -111,22 +113,42 @@ fn main_inner(args: Args) -> ExitCode {
     } = manifest;
 
     // collect source
-    let mut source_builder = SourceDatabaseBuilder::new();
-    match manifest_collect_sources(&manifest_parent, &mut source_builder, &mut vec![], manifest_source) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("Failed to collect sources: {e:?}");
-            return ExitCode::FAILURE;
+    let source = {
+        let mut source_builder = SourceDatabaseBuilder::new();
+        for entry in manifest_source.entries() {
+            let SourceEntry {
+                steps: entry_steps,
+                path_relative: entry_path_relative,
+            } = entry;
+
+            let entry_path = manifest_parent.join(entry_path_relative).clean();
+            let source_result = source_builder.add_tree(entry_steps, &entry_path);
+
+            match source_result {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Failed to collect sources: {e:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
-    }
-    let source = source_builder.finish();
+
+        source_builder.finish()
+    };
     let time_source = start_source.elapsed();
 
     // print source info
     if print_files {
         eprintln!("Collected sources:");
         for file in source.files() {
-            eprintln!("  [{}]: {:?}", file.inner().index(), &source[file].path_raw);
+            let file_info = &source[file];
+            let dir_info = &source[file_info.directory];
+            eprintln!(
+                "  [{}]: {:?} as {}",
+                file.inner().index(),
+                &file_info.path_raw,
+                &dir_info.path.0.iter().join(".")
+            );
         }
     }
 
@@ -265,7 +287,7 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
     match manifest_path {
         Some(manifest_path) => {
             // directly read the manifest file
-            let manifest_path = cwd.join(manifest_path);
+            let manifest_path = cwd.join(manifest_path).clean();
             match std::fs::read_to_string(&manifest_path) {
                 Ok(s) => {
                     let manifest_parent = manifest_path.parent().ok_or_else(|| {

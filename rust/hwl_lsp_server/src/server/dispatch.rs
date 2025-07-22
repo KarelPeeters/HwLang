@@ -35,7 +35,7 @@ impl ServerState {
                 handle_request!(self, params, request::GotoDefinition)
             }
             request::Shutdown::METHOD => handle_request!(self, params, request::Shutdown),
-            _ => Err(RequestError::MethodNotImplemented),
+            _ => Err(RequestError::MethodNotImplemented(method.to_owned())),
         }
     }
 
@@ -63,7 +63,7 @@ impl ServerState {
                     Ok(())
                 } else {
                     // this could have been an important notification
-                    Err(RequestError::MethodNotImplemented)
+                    Err(RequestError::MethodNotImplemented(method.to_owned()))
                 }
             }
         }

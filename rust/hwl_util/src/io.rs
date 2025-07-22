@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
+// TODO make this only accept strings, nothing else will accept non-utf8 paths anyway
 pub fn recurse_for_each_file<E: From<IoErrorWithPath>>(
     dir: &Path,
     mut f: impl FnMut(&[OsString], &Path) -> Result<(), E>,

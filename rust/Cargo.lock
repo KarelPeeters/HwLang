@@ -470,8 +470,10 @@ dependencies = [
  "ctrlc",
  "hwl_language",
  "hwl_util",
+ "itertools 0.13.0",
  "mimalloc",
  "num_cpus",
+ "path-clean",
  "toml",
 ]
 

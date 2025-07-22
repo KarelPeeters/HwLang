@@ -1,6 +1,6 @@
 use crate::server::logger::Logger;
 use crate::server::state::RequestError;
-use crossbeam_channel::{SendError, Sender};
+use crossbeam_channel::Sender;
 use lsp_server::{Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
@@ -14,7 +14,19 @@ pub struct ServerSender {
     pub logger: Logger,
 }
 
-pub type SendResult<T = ()> = Result<T, SendError<Message>>;
+#[derive(Debug)]
+pub struct SendError;
+
+pub enum SendErrorOr<E> {
+    SendError(SendError),
+    Other(E),
+}
+
+impl<E> From<SendError> for SendErrorOr<E> {
+    fn from(e: SendError) -> Self {
+        SendErrorOr::SendError(e)
+    }
+}
 
 impl ServerSender {
     pub fn new(sender: Sender<Message>, logger: Logger) -> Self {
@@ -32,8 +44,13 @@ impl ServerSender {
         id
     }
 
+    fn send(&mut self, message: Message) -> Result<(), SendError> {
+        self.logger.log(format!("<== {message:?}"));
+        self.sender.send(message).map_err(|_| SendError)
+    }
+
     // TODO support non-void requests
-    pub fn send_request<R: Request<Result = ()>>(&mut self, args: R::Params) -> SendResult {
+    pub fn send_request<R: Request<Result = ()>>(&mut self, args: R::Params) -> Result<(), SendError> {
         let id = self.next_unique_id();
         let request = lsp_server::Request {
             id: RequestId::from(id.clone()),
@@ -41,31 +58,26 @@ impl ServerSender {
             params: serde_json::to_value(args).unwrap(),
         };
 
-        self.logger.log(format!("<== {request:?}"));
-        self.sender.send(Message::Request(request))?;
+        self.send(Message::Request(request))?;
 
         assert!(self.request_ids_expecting_null_response.insert(id));
         Ok(())
     }
 
-    pub fn send_response(&mut self, response: Response) -> SendResult {
-        self.logger.log(format!("<== {response:?}"));
-        self.sender.send(Message::Response(response))
+    pub fn send_response(&mut self, response: Response) -> Result<(), SendError> {
+        self.send(Message::Response(response))
     }
 
-    pub fn send_notification<N: Notification>(&mut self, args: N::Params) -> SendResult {
+    pub fn send_notification<N: Notification>(&mut self, args: N::Params) -> Result<(), SendError> {
         let notification = lsp_server::Notification {
             method: N::METHOD.to_owned(),
             params: serde_json::to_value(args).unwrap(),
         };
 
-        self.logger.log(format!("<== {notification:?}"));
-        self.sender.send(Message::Notification(notification))?;
-
-        Ok(())
+        self.send(Message::Notification(notification))
     }
 
-    pub fn send_notification_error(&mut self, error: RequestError, during: &str) -> SendResult {
+    pub fn send_notification_error(&mut self, error: RequestError, during: &str) -> Result<(), SendError> {
         let (_, message) = error.to_code_message();
         let params = ShowMessageParams {
             typ: MessageType::ERROR,

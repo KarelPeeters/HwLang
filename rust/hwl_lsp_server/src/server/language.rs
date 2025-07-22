@@ -25,7 +25,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         } = params;
         let TextDocumentIdentifier { uri } = text_document;
 
-        let source = self.vfs.inner()?.get_text(&uri)?;
+        self.log("getting source for semantic tokens");
+        let source = self.vfs.read_str_maybe_from_disk(&uri)?;
         // TODO cache offsets somewhere
         let offsets = LineOffsets::new(source);
 
@@ -68,6 +69,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
             }
         }
 
+        self.log("finished tokenizing");
         let result = SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: semantic_tokens,
@@ -90,7 +92,7 @@ impl RequestHandler<GotoDefinition> for ServerState {
         let TextDocumentIdentifier { uri } = text_document;
 
         // TODO integrate all of this better with the main compiler, eg. cache the parsed ast, reason about imports, ...
-        let src = self.vfs.inner()?.get_text(&uri)?;
+        let src = self.vfs.read_str_maybe_from_disk(&uri)?;
         let (source, file) = {
             let mut source = SourceDatabaseBuilder::new();
             let file = source

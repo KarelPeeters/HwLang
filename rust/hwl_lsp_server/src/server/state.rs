@@ -1,17 +1,12 @@
-use crate::engine::vfs::VfsError;
-use crate::engine::vfs::VirtualFileSystem;
-use crate::server::sender::ServerSender;
+use crate::engine::vfs::{Vfs, VfsError};
+use crate::server::sender::{SendError, SendErrorOr, ServerSender};
 use crate::server::settings::Settings;
-use crossbeam_channel::SendError;
-use hwl_util::constants::HWL_FILE_EXTENSION;
+use hwl_language::syntax::source::SourceSetError;
+use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
-use lsp_types::{
-    notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, Registration,
-    RegistrationParams, Uri,
-};
-use std::collections::HashSet;
+use lsp_types::{notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, Registration, Uri};
 
 pub struct ServerState {
     pub settings: Settings,
@@ -19,31 +14,26 @@ pub struct ServerState {
 
     pub has_received_shutdown_request: bool,
 
-    pub open_files: HashSet<Uri>,
-    pub vfs: VirtualFileSystemWrapper,
-}
+    pub open_files: IndexSet<Uri>,
+    pub vfs: Vfs,
 
-pub struct VirtualFileSystemWrapper {
-    inner: Option<VirtualFileSystem>,
-    root: Uri,
+    // local model of the client-side state, used to correctly send incremental messages
+    pub curr_watchers: Vec<FileSystemWatcher>,
+    pub curr_files_with_diagnostics: IndexSet<Uri>,
 }
 
 // TODO move these to some common place
 // TODO rename these to something better
 pub type RequestResult<T> = Result<T, RequestError>;
 
-#[derive(Debug)]
-pub enum OrSendError<E> {
-    SendError(SendError<Message>),
-    Error(E),
-}
-
+// TODO rethink error handling, do we want to distinguish between hard failures and soft failures?
 #[derive(Debug)]
 pub enum RequestError {
     ParamParse(serde_json::Error),
-    MethodNotImplemented,
+    MethodNotImplemented(String),
     Invalid(String),
     Vfs(VfsError),
+    SourceSet(SourceSetError),
     Internal(String),
 }
 
@@ -55,44 +45,51 @@ pub enum HandleMessageOutcome {
 
 impl ServerState {
     pub fn new(settings: Settings, sender: ServerSender) -> Self {
-        // TODO support multiple workspaces through a list of VFSs instead of just a single one
-        #[allow(deprecated)]
-        let vfs = VirtualFileSystemWrapper::new(settings.initialize_params.root_uri.clone().unwrap());
-
-        Self {
+        ServerState {
             settings,
             sender,
             has_received_shutdown_request: false,
-            open_files: HashSet::new(),
-            vfs,
+            open_files: IndexSet::new(),
+            vfs: Vfs::new(),
+
+            curr_watchers: vec![],
+            curr_files_with_diagnostics: IndexSet::new(),
         }
     }
 
-    pub fn initial_registrations(&mut self) -> Result<(), SendError<Message>> {
-        // subscribe to file changes
-        let pattern = format!("**/{{*.{HWL_FILE_EXTENSION}}}");
-        let params = RegistrationParams {
-            registrations: vec![Registration {
-                id: self.sender.next_unique_id(),
-                method: notification::DidChangeWatchedFiles::METHOD.to_string(),
-                register_options: Some(
-                    serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![FileSystemWatcher {
-                            // TODO use relative?
-                            glob_pattern: GlobPattern::String(pattern),
-                            kind: None,
-                        }],
-                    })
-                    .unwrap(),
-                ),
-            }],
-        };
-        self.sender.send_request::<RegisterCapability>(params)?;
-
+    pub fn initial_registrations(&mut self) -> Result<(), SendError> {
+        // TODO register initial watchers here?
         Ok(())
     }
 
-    pub fn handle_message(&mut self, msg: Message) -> Result<HandleMessageOutcome, SendError<Message>> {
+    /// Set the file watchers. This overrides any existing watchers, so ensure that the list passed here is complete.
+    /// To avoid missed events, set the watchers before reading the corresponding files from disk.
+    pub fn set_watchers(&mut self, watchers: Vec<FileSystemWatcher>) -> Result<(), SendError> {
+        // TODO assert that the client has the right capability
+        // avoid watcher churn
+        if watchers == self.curr_watchers {
+            return Ok(());
+        }
+
+        let register_options = Some(
+            serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                watchers: watchers.clone(),
+            })
+            .unwrap(),
+        );
+        let registrations = vec![Registration {
+            id: self.sender.next_unique_id(),
+            method: notification::DidChangeWatchedFiles::METHOD.to_string(),
+            register_options,
+        }];
+        let params = lsp_types::RegistrationParams { registrations };
+        self.sender.send_request::<RegisterCapability>(params)?;
+
+        self.curr_watchers = watchers;
+        Ok(())
+    }
+
+    pub fn handle_message(&mut self, msg: Message) -> Result<HandleMessageOutcome, SendError> {
         match msg {
             Message::Request(request) => {
                 eprintln!("received request: {request:?}");
@@ -144,26 +141,12 @@ impl ServerState {
         Ok(HandleMessageOutcome::Continue)
     }
 
-    pub fn do_background_work(&mut self) -> Result<(), OrSendError<RequestError>> {
-        self.compile_project_and_send_diagnostics()?;
-        Ok(())
+    pub fn do_background_work(&mut self) -> Result<(), SendErrorOr<RequestError>> {
+        self.compile_project_and_send_diagnostics()
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
         self.sender.logger.log(msg);
-    }
-}
-
-impl VirtualFileSystemWrapper {
-    pub fn new(root: Uri) -> Self {
-        Self { inner: None, root }
-    }
-
-    pub fn inner(&mut self) -> Result<&mut VirtualFileSystem, VfsError> {
-        if self.inner.is_none() {
-            self.inner = Some(VirtualFileSystem::new(self.root.clone())?);
-        }
-        Ok(self.inner.as_mut().unwrap())
     }
 }
 
@@ -176,10 +159,14 @@ impl RequestError {
     pub fn to_code_message(self) -> (ErrorCode, String) {
         match self {
             RequestError::ParamParse(e) => (ErrorCode::InvalidParams, format!("failed to parameters: {e:?}")),
-            RequestError::MethodNotImplemented => (ErrorCode::MethodNotFound, "method not implemented".to_string()),
+            RequestError::MethodNotImplemented(m) => {
+                (ErrorCode::MethodNotFound, format!("method not implemented: {m}"))
+            }
             RequestError::Invalid(reason) => (ErrorCode::InvalidRequest, format!("invalid request {reason:?}")),
             RequestError::Vfs(e) => (ErrorCode::InternalError, format!("vfs error {e:?}")),
             RequestError::Internal(e) => (ErrorCode::InternalError, format!("internal error {e:?}")),
+            // TODO this one should be removed at some point
+            RequestError::SourceSet(e) => (ErrorCode::InternalError, format!("source set error {e:?}")),
         }
     }
 }
@@ -187,11 +174,5 @@ impl RequestError {
 impl From<VfsError> for RequestError {
     fn from(value: VfsError) -> Self {
         RequestError::Vfs(value)
-    }
-}
-
-impl<E> From<E> for OrSendError<E> {
-    fn from(value: E) -> Self {
-        OrSendError::Error(value)
     }
 }

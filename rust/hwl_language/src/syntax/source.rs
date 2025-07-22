@@ -16,6 +16,7 @@ pub struct SourceDatabaseBuilder {
     files: Arena<BuilderFileId, FileSourceInfo<BuilderFileId, BuilderDirectory>>,
 }
 
+// TODO separate out raw source (ie. map<file, (path, string)>) from higher level stuff like import paths and directories
 /// The full set of source files that are part of this compilation. This type is immutable.
 pub struct SourceDatabase {
     root_directory: Directory,
@@ -31,6 +32,7 @@ new_index_type!(pub Directory, Ord);
 new_index_type!(pub BuilderDirectory);
 
 // TODO rename
+// TODO this can be converted to a DiagError pointing to the manifest
 #[derive(Debug, Clone)]
 pub enum SourceSetError {
     EmptyPath,
@@ -223,12 +225,19 @@ impl SourceDatabaseBuilder {
         Ok(file_id)
     }
 
-    pub fn add_tree(&mut self, prefix: Vec<String>, root_path: &Path) -> Result<(), SourceSetOrIoError> {
+    // TODO skip stem for extra file
+    pub fn add_tree(
+        &mut self,
+        prefix: Vec<String>,
+        root_path: &Path,
+    ) -> Result<IndexMap<BuilderFileId, PathBuf>, SourceSetOrIoError> {
         if !root_path.exists() {
             return Err(std::io::Error::from(std::io::ErrorKind::NotFound)
                 .with_path(root_path.to_owned())
                 .into());
         }
+
+        let mut file_to_path = IndexMap::new();
 
         recurse_for_each_file(root_path, |stack, path| -> Result<(), SourceSetOrIoError> {
             if path.extension() != Some(OsStr::new(HWL_FILE_EXTENSION)) {
@@ -247,11 +256,16 @@ impl SourceDatabaseBuilder {
 
             let filepath = FilePath(vec_concat([prefix.clone(), stack]));
             let source = std::fs::read_to_string(path).map_err(|e| e.with_path(path.to_owned()))?;
-            self.add_file(filepath, path.to_str().unwrap().to_owned(), source)
+            let file_id = self
+                .add_file(filepath, path.to_str().unwrap().to_owned(), source)
                 .unwrap();
 
+            file_to_path.insert(file_id, path.to_owned());
+
             Ok(())
-        })
+        })?;
+
+        Ok(file_to_path)
     }
 
     fn get_directory(&mut self, path: &FilePath) -> BuilderDirectory {

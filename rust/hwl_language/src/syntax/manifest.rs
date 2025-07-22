@@ -1,6 +1,4 @@
-use crate::syntax::source::{SourceDatabaseBuilder, SourceSetOrIoError};
 use indexmap::IndexMap;
-use std::path::{Path, PathBuf};
 
 // TODO maybe add default elaboration root(s)
 // TODO allow manifests to refer to other manifests
@@ -8,7 +6,20 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    pub source: ManifestSourceNode,
+    pub source: ManifestSource,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, transparent)]
+pub struct ManifestSource {
+    node: ManifestSourceNode,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum ManifestSourceNode {
+    Leaf(String),
+    Branch(IndexMap<String, ManifestSourceNode>),
 }
 
 impl Manifest {
@@ -19,36 +30,40 @@ impl Manifest {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-pub enum ManifestSourceNode {
-    Leaf(PathBuf),
-    Branch(IndexMap<String, ManifestSourceNode>),
+pub struct SourceEntry {
+    pub steps: Vec<String>,
+    pub path_relative: String,
 }
 
-// TODO add stdlib by default
-//   maybe include stdlib in the compiler itself, but still allow for an stdlib environment override
-//   for stdlib development
-pub fn manifest_collect_sources(
-    manifest_parent: &Path,
-    builder: &mut SourceDatabaseBuilder,
-    prefix: &mut Vec<String>,
-    node: ManifestSourceNode,
-) -> Result<(), SourceSetOrIoError> {
+// TODO somehow add stdlib by default
+impl ManifestSource {
+    pub fn entries(&self) -> Vec<SourceEntry> {
+        let mut entries = vec![];
+        for_each_entry_impl(&mut vec![], &self.node, &mut |prefix, path| {
+            let entry = SourceEntry {
+                steps: prefix.iter().map(|s| s.to_string()).collect(),
+                path_relative: path.to_string(),
+            };
+            entries.push(entry);
+        });
+        entries
+    }
+}
+
+fn for_each_entry_impl<'n>(prefix: &mut Vec<&'n str>, node: &'n ManifestSourceNode, f: &mut impl FnMut(&[&str], &str)) {
     match node {
-        ManifestSourceNode::Leaf(path) => builder.add_tree(prefix.clone(), &manifest_parent.join(path)),
+        ManifestSourceNode::Leaf(path) => f(prefix, path),
         ManifestSourceNode::Branch(map) => {
             for (k, v) in map {
                 let actual_key = k != "_";
                 if actual_key {
                     prefix.push(k);
                 }
-                manifest_collect_sources(manifest_parent, builder, prefix, v)?;
+                for_each_entry_impl(prefix, v, f);
                 if actual_key {
                     prefix.pop();
                 }
             }
-            Ok(())
         }
     }
 }
