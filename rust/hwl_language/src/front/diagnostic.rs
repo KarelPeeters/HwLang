@@ -272,7 +272,7 @@ impl Diagnostic {
 
             // create snippet
             let mut snippet = Snippet::source(source)
-                .origin(&file_info.path_raw)
+                .origin(&file_info.debug_info_path)
                 .line_start(start_line_0 + 1);
             for annotation in annotations {
                 let Annotation {

@@ -55,3 +55,14 @@ pub fn vec_concat<const N: usize, T>(vecs: [Vec<T>; N]) -> Vec<T> {
     }
     result
 }
+
+/// Workaround for https://github.com/rust-lang/rust/issues/34162
+pub trait SliceExt<T> {
+    fn sort_by_key_ref<K: Ord>(&mut self, f: impl FnMut(&T) -> &K);
+}
+
+impl<T> SliceExt<T> for [T] {
+    fn sort_by_key_ref<K: Ord>(&mut self, mut f: impl FnMut(&T) -> &K) {
+        self.sort_by(|a, b| f(a).cmp(f(b)));
+    }
+}

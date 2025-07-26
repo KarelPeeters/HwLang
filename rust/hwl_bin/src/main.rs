@@ -2,21 +2,24 @@ use clap::Parser;
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
-use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::diagnostic::{DiagResult, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::StdoutPrintHandler;
-use hwl_language::syntax::manifest::{Manifest, SourceEntry};
+use hwl_language::syntax::hierarchy::{HierarchyNode, SourceHierarchy};
+use hwl_language::syntax::manifest::{Manifest, ManifestSource, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::SourceDatabaseBuilder;
+use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
+use hwl_language::util::data::SliceExt;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
-use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
-use hwl_util::io::IoErrorExt;
-use itertools::Itertools;
+use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_MANIFEST_FILE_NAME};
+use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
+use itertools::chain;
 use path_clean::PathClean;
+use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -94,14 +97,19 @@ fn main_inner(args: Args) -> ExitCode {
     let start_source = Instant::now();
 
     // find and parse manifest file
-    let (manifest_parent, manifest_source) = match find_and_read_manifest(manifest) {
-        Ok(s) => s,
+    let mut source = SourceDatabase::new();
+    let found_manifest = match find_and_read_manifest(manifest) {
+        Ok(m) => m,
         Err(FindManifestError(msg)) => {
             eprintln!("{msg}");
             return ExitCode::FAILURE;
         }
     };
-    let manifest = match Manifest::from_toml(&manifest_source) {
+    let manifest_file = source.add_file(
+        found_manifest.manifest_path.to_string_lossy().into_owned(),
+        found_manifest.manifest_source,
+    );
+    let manifest = match Manifest::from_toml(&source[manifest_file].source) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to parse manifest file: {e}");
@@ -113,27 +121,19 @@ fn main_inner(args: Args) -> ExitCode {
     } = manifest;
 
     // collect source
-    let source = {
-        let mut source_builder = SourceDatabaseBuilder::new();
-        for entry in manifest_source.entries() {
-            let SourceEntry {
-                steps: entry_steps,
-                path_relative: entry_path_relative,
-            } = entry;
-
-            let entry_path = manifest_parent.join(entry_path_relative).clean();
-            let source_result = source_builder.add_tree(entry_steps, &entry_path);
-
-            match source_result {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("Failed to collect sources: {e:?}");
-                    return ExitCode::FAILURE;
-                }
-            }
+    let diags = Diagnostics::new();
+    let hierarchy = match find_and_collect_source(
+        &diags,
+        &mut source,
+        manifest_file,
+        &found_manifest.manifest_parent,
+        &manifest_source,
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            print_diagnostics(&source, diags);
+            return ExitCode::FAILURE;
         }
-
-        source_builder.finish()
     };
     let time_source = start_source.elapsed();
 
@@ -142,23 +142,24 @@ fn main_inner(args: Args) -> ExitCode {
         eprintln!("Collected sources:");
         for file in source.files() {
             let file_info = &source[file];
-            let dir_info = &source[file_info.directory];
-            eprintln!(
-                "  [{}]: {:?} as {}",
-                file.inner().index(),
-                &file_info.path_raw,
-                &dir_info.path.0.iter().join(".")
-            );
+            eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path,);
         }
+        eprintln!("Collected hierarchy:");
+        fn print_node(prefix: &str, node: &HierarchyNode) {
+            if let Some(file) = node.file {
+                eprintln!("{prefix}: [{:?}]", file.inner().index());
+            }
+            for (key, child) in &node.children {
+                print_node(&format!("{prefix}/{key}"), child);
+            }
+        }
+        print_node("  ", &hierarchy.root);
     }
-
-    // build diagnostics
-    let diags = Diagnostics::new();
 
     // run compilation
     // TODO parallelize parsing
     let start_parse = Instant::now();
-    let parsed = ParsedDatabase::new(&diags, &source);
+    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
     let time_parse = start_parse.elapsed();
 
     let should_stop = Arc::new(AtomicBool::new(false));
@@ -171,6 +172,7 @@ fn main_inner(args: Args) -> ExitCode {
     let compiled = compile(
         &diags,
         &source,
+        &hierarchy,
         &parsed,
         elaboration_set,
         &mut StdoutPrintHandler,
@@ -200,13 +202,8 @@ fn main_inner(args: Args) -> ExitCode {
 
     let time_all = start_all.elapsed();
 
-    // print diagnostics
-    let diagnostics = diags.finish();
-    let any_error = !diagnostics.is_empty();
-    for diag in diagnostics {
-        let s = diag.to_string(&source, DiagnosticStringSettings::default());
-        eprintln!("{s}\n");
-    }
+    // print results
+    let any_error = print_diagnostics(&source, diags);
 
     if print_ir {
         eprintln!("{compiled:#?}");
@@ -236,7 +233,7 @@ fn main_inner(args: Args) -> ExitCode {
         // profile tokenization separately
         let start_tokenize = Instant::now();
         let mut total_tokens = 0;
-        for file in source.files() {
+        for file in hierarchy.files() {
             total_tokens += Tokenizer::new(file, &source[file].source, false).into_iter().count();
         }
         let time_tokenize = start_tokenize.elapsed();
@@ -272,9 +269,15 @@ fn main_inner(args: Args) -> ExitCode {
     }
 }
 
+struct FoundManifest {
+    manifest_path: PathBuf,
+    manifest_parent: PathBuf,
+    manifest_source: String,
+}
+
 struct FindManifestError(String);
 
-fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, String), FindManifestError> {
+fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundManifest, FindManifestError> {
     let cwd = std::env::current_dir()
         .map_err(|e| FindManifestError(format!("Failed to get current working directory: {e:?}")))?;
     let cwd = std::path::absolute(&cwd).map_err(|e| {
@@ -290,12 +293,19 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
             let manifest_path = cwd.join(manifest_path).clean();
             match std::fs::read_to_string(&manifest_path) {
                 Ok(s) => {
-                    let manifest_parent = manifest_path.parent().ok_or_else(|| {
-                        FindManifestError(format!(
-                            "Manifest path {manifest_path:?} does not have a parent directory"
-                        ))
-                    })?;
-                    Ok((manifest_parent.to_owned(), s))
+                    let manifest_parent = manifest_path
+                        .parent()
+                        .ok_or_else(|| {
+                            FindManifestError(format!(
+                                "Manifest path {manifest_path:?} does not have a parent directory"
+                            ))
+                        })?
+                        .to_owned();
+                    Ok(FoundManifest {
+                        manifest_path,
+                        manifest_parent,
+                        manifest_source: s,
+                    })
                 }
                 Err(e) => Err(FindManifestError(format!(
                     "Failed to read manifest file: {:?}",
@@ -308,7 +318,13 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
             for ancestor in cwd.ancestors() {
                 let cand_manifest_path = ancestor.join(HWL_MANIFEST_FILE_NAME);
                 match std::fs::read_to_string(&cand_manifest_path) {
-                    Ok(s) => return Ok((ancestor.to_owned(), s)),
+                    Ok(s) => {
+                        return Ok(FoundManifest {
+                            manifest_path: cand_manifest_path,
+                            manifest_parent: ancestor.to_owned(),
+                            manifest_source: s,
+                        })
+                    }
                     Err(e) => match e.kind() {
                         ErrorKind::NotFound => continue,
                         _ => {
@@ -326,4 +342,111 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
             )))
         }
     }
+}
+
+// TODO check that keys are valid identifiers
+fn find_and_collect_source(
+    diags: &Diagnostics,
+    source: &mut SourceDatabase,
+    // TODO get more detailed spans
+    manifest_file: FileId,
+    manifest_path: &Path,
+    manifest: &ManifestSource,
+) -> DiagResult<SourceHierarchy> {
+    let mut hierarchy = SourceHierarchy::new();
+
+    let manifest_span = source.full_span(manifest_file);
+    let report_error = |m: String| diags.report_simple(m, manifest_span, "while collecting source here");
+
+    for entry in manifest.entries() {
+        let SourceEntry { steps, path_relative } = entry;
+        let entry_path = manifest_path.join(path_relative).clean();
+
+        let entry_meta = match entry_path.metadata() {
+            Ok(m) => m,
+            Err(e) => return Err(report_error(io_error_message(e.with_path(entry_path)))),
+        };
+
+        // collect the set of relevant files
+        let mut files = vec![];
+        if entry_meta.is_file() {
+            // for single files we don't include the filename itself in the steps
+            files.push((vec![], entry_path));
+        } else {
+            let mut step_err = Ok(());
+            recurse_for_each_file(&entry_path, |relative_steps, path_file| {
+                // short-circuit on error
+                if step_err.is_err() {
+                    return Ok(());
+                }
+
+                // filter by extension
+                if path_file.extension() != Some(OsStr::new(HWL_FILE_EXTENSION)) {
+                    return Ok(());
+                }
+
+                // add filename to steps
+                let Some(file_stem) = path_file.file_stem() else {
+                    return Ok(());
+                };
+                let all_steps = chain(
+                    relative_steps.iter().map(OsString::as_os_str),
+                    std::iter::once(file_stem),
+                );
+
+                // convert steps to strings
+                let mut relative_steps_str = vec![];
+                for step in all_steps {
+                    match step.to_str() {
+                        Some(step) => relative_steps_str.push(step.to_owned()),
+                        None => {
+                            step_err = Err(report_error(format!("Encountered non-UTF8 path {path_file:?}")));
+                            return Ok(());
+                        }
+                    }
+                }
+
+                files.push((relative_steps_str, path_file.to_owned()));
+                Ok(())
+            })
+            .map_err(|e| report_error(io_error_message(e)))?;
+
+            step_err?;
+        }
+
+        // sort to ensure cross-platform determinism
+        files.sort_by_key_ref(|(steps, _)| steps);
+
+        // actually read in the files and add them to source and hierarchy
+        // TODO maybe allow storing errors for non-UTF8 files into source?
+        for (relative_steps, path) in files {
+            let mut all_steps = steps.clone();
+            all_steps.extend(relative_steps);
+
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| report_error(io_error_message(e.with_path(path.clone()))))?;
+            let file = source.add_file(path.to_string_lossy().into_owned(), content);
+
+            hierarchy.add_file(diags, source, manifest_span, &all_steps, file)?;
+        }
+    }
+
+    Ok(hierarchy)
+}
+
+fn io_error_message(e: IoErrorWithPath) -> String {
+    let IoErrorWithPath { error, path } = e;
+    format!("IO error: {error:?} at {path:?}")
+}
+
+fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
+    let diags = diags.finish();
+    let any_error = !diags.is_empty();
+
+    for diag in diags {
+        let s = diag.to_string(&source, DiagnosticStringSettings::default());
+        eprintln!("{s}\n");
+    }
+
+    any_error
 }

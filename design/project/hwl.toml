@@ -1,9 +1,9 @@
+# TODO include min. compiler version?
+# TODO include manifest version?
+
 [source]
 _ = "."
 
-derp = "derp"
-
-# TODO avoid extra step when specifying single files here
-# _ = "top.kh"
-# std = "std"
-# examples = "examples"
+#std = "std"
+#examples = "examples"
+#top = "top.kh"

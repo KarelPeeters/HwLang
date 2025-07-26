@@ -16,29 +16,25 @@ fn recurse_for_each_file_impl<E: From<IoErrorWithPath>>(
     stack: &mut Vec<OsString>,
     f: &mut impl FnMut(&[OsString], &Path) -> Result<(), E>,
 ) -> Result<(), E> {
-    if root.is_file() {
-        f(stack, root)
-    } else {
-        let read_dir = fs::read_dir(root).map_err(|e| IoErrorWithPath {
+    let read_dir = fs::read_dir(root).map_err(|e| IoErrorWithPath {
+        path: root.to_owned(),
+        error: e,
+    })?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| IoErrorWithPath {
             path: root.to_owned(),
             error: e,
         })?;
-        for entry in read_dir {
-            let entry = entry.map_err(|e| IoErrorWithPath {
-                path: root.to_owned(),
-                error: e,
-            })?;
-            let next = entry.path();
-            if next.is_dir() {
-                stack.push(entry.file_name());
-                recurse_for_each_file_impl(&next, stack, f)?;
-                stack.pop();
-            } else {
-                f(stack, &entry.path())?;
-            }
+        let next = entry.path();
+        if next.is_dir() {
+            stack.push(entry.file_name());
+            recurse_for_each_file_impl(&next, stack, f)?;
+            stack.pop();
+        } else {
+            f(stack, &entry.path())?;
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[derive(Debug)]
