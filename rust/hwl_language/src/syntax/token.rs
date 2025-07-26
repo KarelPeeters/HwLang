@@ -1,10 +1,11 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::syntax::pos::{Pos, Span};
+use crate::syntax::source::FileId;
+use crate::util::data::VecExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
 use strum::EnumIter;
-
-use crate::syntax::pos::{Pos, Span};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Token {
@@ -12,7 +13,6 @@ pub struct Token {
     pub span: Span,
 }
 
-// TODO remove string from this? we have better error infrastructure by now
 #[derive(Debug, Eq, PartialEq)]
 pub enum TokenError {
     InvalidToken { pos: Pos },
@@ -27,9 +27,6 @@ pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Resu
         .try_collect()
 }
 
-// TODO implement recovery by matching without start anchor?
-// TODO error check regex overlap in advance at test-time using ... (called from a unit test too)
-//   https://users.rust-lang.org/t/detect-regex-conflict/57184/13
 // TODO remove string here? only deal with offset, simplifying the lifetime
 pub struct Tokenizer<'s> {
     // happy path state
@@ -427,6 +424,16 @@ pub fn apply_string_literal_escapes(raw: &str) -> Cow<str> {
     Cow::Borrowed(raw)
 }
 
+pub fn is_valid_identifier(s: &str) -> bool {
+    match tokenize(FileId::dummy(), s, false) {
+        Ok(tokens) => match tokens.single() {
+            None => false,
+            Some(token) => token.ty == TokenType::Identifier,
+        },
+        Err(_) => false,
+    }
+}
+
 impl<'s> IntoIterator for Tokenizer<'s> {
     type Item = Result<Token, TokenError>;
     type IntoIter = TokenizerIterator<'s>;
@@ -467,6 +474,8 @@ macro_rules! declare_tokens {
             $($f_token:ident($f_string:literal, $f_cat:expr),)*
         }
     ) => {
+        use TokenCategory as TC;
+
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
         pub enum TokenType {
             $($c_token,)*
@@ -515,9 +524,6 @@ impl TokenCategory {
         self as usize
     }
 }
-
-use crate::syntax::source::FileId;
-use TokenCategory as TC;
 
 declare_tokens! {
     custom {

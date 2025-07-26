@@ -29,7 +29,7 @@ fn recurse_for_each_file_impl<E: From<IoErrorWithPath>>(
         if next.is_dir() {
             stack.push(entry.file_name());
             recurse_for_each_file_impl(&next, stack, f)?;
-            stack.pop();
+            assert!(stack.pop().is_some());
         } else {
             f(stack, &entry.path())?;
         }

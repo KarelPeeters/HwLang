@@ -1,6 +1,7 @@
 use crate::front::diagnostic::{DiagError, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
+use crate::syntax::token::is_valid_identifier;
 use indexmap::{IndexMap, IndexSet};
 
 #[derive(Debug)]
@@ -36,6 +37,7 @@ impl SourceHierarchy {
         steps: &[String],
         file: FileId,
     ) -> Result<(), DiagError> {
+        // check file not yet added
         if !self.files.insert(file) {
             return Err(diags.report_simple(
                 format!("File `{}` already exists in hierarchy", source[file].debug_info_path),
@@ -44,6 +46,18 @@ impl SourceHierarchy {
             ));
         }
 
+        // check that steps are valid identifiers
+        for step in steps {
+            if !is_valid_identifier(step) {
+                return Err(diags.report_simple(
+                    format!("Invalid identifier `{step}` in hierarchy steps"),
+                    span,
+                    "file added here",
+                ));
+            }
+        }
+
+        // add the file to the right node
         let mut curr_node = &mut self.root;
         let mut steps_left = steps;
         loop {

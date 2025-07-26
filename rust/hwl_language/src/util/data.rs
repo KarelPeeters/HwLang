@@ -32,9 +32,9 @@ pub trait VecExt<T> {
 }
 
 impl<T> VecExt<T> for Vec<T> {
-    fn single(self) -> Option<T> {
+    fn single(mut self) -> Option<T> {
         if self.len() == 1 {
-            Some(self.into_iter().next().unwrap())
+            Some(self.pop().unwrap())
         } else {
             None
         }

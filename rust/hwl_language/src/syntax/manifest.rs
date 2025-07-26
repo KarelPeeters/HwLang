@@ -1,3 +1,4 @@
+use crate::util::data::VecExt;
 use indexmap::IndexMap;
 
 // TODO maybe add default elaboration root(s)
@@ -56,12 +57,13 @@ fn for_each_entry_impl<'n>(prefix: &mut Vec<&'n str>, node: &'n ManifestSourceNo
         ManifestSourceNode::Branch(map) => {
             for (k, v) in map {
                 let actual_key = k != "_";
+
                 if actual_key {
-                    prefix.push(k);
-                }
-                for_each_entry_impl(prefix, v, f);
-                if actual_key {
-                    prefix.pop();
+                    prefix.with_pushed(k, |prefix| {
+                        for_each_entry_impl(prefix, v, f);
+                    })
+                } else {
+                    for_each_entry_impl(prefix, v, f);
                 }
             }
         }
