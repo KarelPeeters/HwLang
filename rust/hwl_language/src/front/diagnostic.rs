@@ -268,10 +268,10 @@ impl Diagnostic {
             );
             let start_byte = offsets.line_start(start_line_0);
             let end_byte = offsets.line_end(end_line_0, false);
-            let source = &file_info.source[start_byte..end_byte];
+            let content = &file_info.content[start_byte..end_byte];
 
             // create snippet
-            let mut snippet = Snippet::source(source)
+            let mut snippet = Snippet::source(content)
                 .origin(&file_info.debug_info_path)
                 .line_start(start_line_0 + 1);
             for annotation in annotations {

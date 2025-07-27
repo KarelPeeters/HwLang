@@ -19,7 +19,7 @@ pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(
     }
 }
 
-pub fn map_diag_error<T>(source: &RustSourceDatabase, diags: &Diagnostics, value: DiagResult<T>) -> Result<T, PyErr> {
+pub fn map_diag_error<T>(diags: &Diagnostics, source: &RustSourceDatabase, value: DiagResult<T>) -> Result<T, PyErr> {
     check_diags(source, diags)?;
     unwrap_diag_result(value)
 }
@@ -28,8 +28,8 @@ pub fn unwrap_diag_result<T>(result: DiagResult<T>) -> Result<T, PyErr> {
     result.map_err(|_| DiagnosticException::new_err("diagnostic already reported previously"))
 }
 
-pub fn convert_diag_error(source: &RustSourceDatabase, diags: &Diagnostics, err: DiagError) -> PyErr {
-    match map_diag_error::<Never>(source, diags, Err(err)) {
+pub fn convert_diag_error(diags: &Diagnostics, source: &RustSourceDatabase, err: DiagError) -> PyErr {
+    match map_diag_error::<Never>(diags, source, Err(err)) {
         Ok(never) => never.unreachable(),
         Err(e) => e,
     }

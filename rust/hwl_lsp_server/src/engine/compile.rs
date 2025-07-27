@@ -319,7 +319,7 @@ fn diagnostic_to_lsp(
             related_information.push(DiagnosticRelatedInformation {
                 location: Location {
                     uri: file_to_uri.get(&file).unwrap().clone(),
-                    range: span_to_lsp(encoding, &file_info.offsets, &file_info.source, span),
+                    range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, span),
                 },
                 message: format!("{}: {}", level_to_str(level), label),
             });
@@ -338,7 +338,7 @@ fn diagnostic_to_lsp(
         range: span_to_lsp(
             encoding,
             &top_file_info.offsets,
-            &top_file_info.source,
+            &top_file_info.content,
             top_annotation.span,
         ),
         severity: Some(level_to_severity(top_annotation.level)),

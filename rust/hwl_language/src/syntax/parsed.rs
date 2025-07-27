@@ -22,7 +22,7 @@ impl ParsedDatabase {
         for file in hierarchy.files() {
             let file_info = &source[file];
             let ast =
-                parse_file_content(file, &file_info.source).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
+                parse_file_content(file, &file_info.content).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
             file_ast.insert_first(file, ast);
         }
 

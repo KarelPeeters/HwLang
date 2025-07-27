@@ -24,7 +24,7 @@ fn main() {
         if entry_path.extension() == Some(OsStr::new(HWL_FILE_EXTENSION)) {
             let mut steps = steps.iter().map(|s| s.to_str().unwrap().to_owned()).collect_vec();
             steps.insert(0, "std".to_owned());
-            steps.push(entry_path.file_stem().unwrap().to_str().unwrap().to_owned());
+            steps.push(entry_path.file_name().unwrap().to_str().unwrap().to_owned());
 
             let steps_str = steps.join("/");
 

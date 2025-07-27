@@ -12,7 +12,7 @@ new_index_type!(pub FileId: Ord);
 #[derive(Clone)]
 pub struct FileSourceInfo {
     pub debug_info_path: String,
-    pub source: String,
+    pub content: String,
     pub offsets: LineOffsets,
 }
 
@@ -21,11 +21,11 @@ impl SourceDatabase {
         SourceDatabase { files: Arena::new() }
     }
 
-    pub fn add_file(&mut self, debug_info_path: String, source: String) -> FileId {
-        let offsets = LineOffsets::new(&source);
+    pub fn add_file(&mut self, debug_info_path: String, content: String) -> FileId {
+        let offsets = LineOffsets::new(&content);
         let info = FileSourceInfo {
             debug_info_path,
-            source,
+            content,
             offsets,
         };
         self.files.push(info)
@@ -55,7 +55,7 @@ impl SourceDatabase {
     }
 
     pub fn span_str(&self, span: Span) -> &str {
-        &self[span.file].source[span.start_byte..span.end_byte]
+        &self[span.file].content[span.start_byte..span.end_byte]
     }
 
     pub fn full_span(&self, file: FileId) -> Span {

@@ -16,15 +16,12 @@ use hwl_language::front::value::Value;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
+use hwl_language::syntax::collect::collect_source_from_tree;
+use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
-use hwl_language::syntax::source::{BuilderFileId, FilePath};
-use hwl_language::syntax::source::{
-    SourceDatabase as RustSourceDatabase, SourceDatabaseBuilder as RustSourceDatabaseBuilder, SourceSetError,
-    SourceSetOrIoError,
-};
+use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
-use hwl_util::io::IoErrorWithPath;
 use itertools::{enumerate, Either, Itertools};
 use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
 use pyo3::types::PyIterator;
@@ -34,21 +31,16 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyTuple},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod check;
 mod convert;
 
 #[pyclass]
-struct SourceBuilder {
-    source_builder: RustSourceDatabaseBuilder,
-    dummy_file: BuilderFileId,
-}
-
-#[pyclass]
 struct Source {
     source: RustSourceDatabase,
+    hierarchy: SourceHierarchy,
     dummy_span: Span,
 }
 
@@ -142,7 +134,6 @@ create_exception!(hwl, VerilationException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<SourceBuilder>()?;
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
@@ -169,67 +160,70 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 const DUMMY_SOURCE: &str = "// dummy file, representing the python caller";
 
 #[pymethods]
-impl SourceBuilder {
+impl Source {
     #[new]
     fn new() -> Self {
-        let mut source_builder = RustSourceDatabaseBuilder::new();
-        let dummy_file = source_builder
-            .add_file(
-                FilePath(vec!["python".to_owned(), "dummy.py".to_owned()]),
-                "dummy.py".to_owned(),
-                DUMMY_SOURCE.to_owned(),
-            )
-            .unwrap();
-        Self {
-            source_builder,
-            dummy_file,
+        let mut source = RustSourceDatabase::new();
+
+        let dummy_file = source.add_file("dummy_caller.py".to_owned(), DUMMY_SOURCE.to_owned());
+        let dummy_span = source.full_span(dummy_file);
+
+        Source {
+            source,
+            hierarchy: SourceHierarchy::new(),
+            dummy_span,
         }
     }
 
-    fn add_file(&mut self, path: Vec<String>, path_raw: String, source: String) -> PyResult<()> {
-        self.source_builder
-            .add_file(FilePath(path), path_raw, source)
-            .map_err(map_source_set_error)?;
-        Ok(())
-    }
-
-    fn add_tree(&mut self, prefix: Vec<String>, path: &str) -> PyResult<()> {
-        self.source_builder
-            .add_tree(prefix, Path::new(path))
-            .map_err(map_source_set_or_io_error)?;
-        Ok(())
-    }
-
-    fn finish(&self) -> Source {
-        let (source, _, mapping) = self.source_builder.finish_with_mapping();
-        let dummy_file = *mapping.get(&self.dummy_file).unwrap();
-        let dummy_span = Span::new(dummy_file, 0, DUMMY_SOURCE.len());
-        Source { source, dummy_span }
-    }
-}
-
-#[pymethods]
-impl Source {
     #[staticmethod]
-    fn simple(path: &str) -> PyResult<Self> {
-        // TODO include std?
-        let mut builder = SourceBuilder::new();
-        builder.add_tree(vec![], path)?;
-        Ok(builder.finish())
+    fn new_from_manifest_path(path: &str) -> PyResult<Self> {
+        todo!()
+    }
+
+    #[staticmethod]
+    fn new_from_single_tree(path: &str) -> PyResult<Self> {
+        // TODO get other manifest options somehow?
+        todo!()
+    }
+
+    fn add_file_content(&mut self, steps: Vec<String>, debug_info_path: String, content: String) -> PyResult<()> {
+        let diags = Diagnostics::new();
+        let file = self.source.add_file(debug_info_path, content);
+        let result = self
+            .hierarchy
+            .add_file(&diags, &self.source, self.dummy_span, &steps, file);
+        map_diag_error(&diags, &self.source, result)
+    }
+
+    fn add_tree(&mut self, steps: Vec<String>, path: &str) -> PyResult<()> {
+        let diags = Diagnostics::new();
+        let result = collect_source_from_tree(
+            &diags,
+            &mut self.source,
+            &mut self.hierarchy,
+            self.dummy_span,
+            steps,
+            PathBuf::from(path),
+        );
+        map_diag_error(&diags, &self.source, result)
     }
 
     #[getter]
     fn files(&self) -> Vec<String> {
-        self.source.files().map(|id| self.source[id].path_raw.clone()).collect()
+        self.source
+            .files()
+            // filter out the dummy file
+            .skip(1)
+            .map(|id| self.source[id].debug_info_path.clone())
+            .collect()
     }
 
     fn parse(slf: Py<Self>, py: Python) -> PyResult<Parsed> {
         let diags = Diagnostics::new();
         let source = slf.borrow(py);
-        let parsed = RustParsedDatabase::new(&diags, &source.source);
+        let parsed = RustParsedDatabase::new(&diags, &source.source, &source.hierarchy);
 
         check_diags(&source.source, &diags)?;
-
         drop(source);
 
         Ok(Parsed { source: slf, parsed })
@@ -252,6 +246,7 @@ impl Parsed {
             let source = parsed.source.borrow(py);
             let fixed = CompileFixed {
                 source: &source.source,
+                hierarchy: &source.hierarchy,
                 parsed: &parsed.parsed,
             };
 
@@ -275,7 +270,9 @@ impl Compile {
 
         let parsed_ref = slf_ref.parsed.borrow(py);
         let parsed = &parsed_ref.parsed;
-        let source = &parsed_ref.source.borrow(py).source;
+        let source_ref = &parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let hierarchy = &source_ref.hierarchy;
 
         // find directory, file and scope
         if path.is_empty() {
@@ -284,9 +281,9 @@ impl Compile {
         let steps: Vec<&str> = path.split('.').collect_vec();
         let (item_name, steps) = steps.split_last().unwrap();
 
-        let mut curr_dir = source.root_directory();
+        let mut curr_node = &hierarchy.root;
         for (i_step, &step) in enumerate(steps) {
-            curr_dir = source[curr_dir].children.get(step).copied().ok_or_else(|| {
+            curr_node = curr_node.children.get(step).ok_or_else(|| {
                 ResolveException::new_err(format!(
                     "path `{}` does not have child `{}`",
                     steps[..i_step].iter().join("."),
@@ -294,14 +291,14 @@ impl Compile {
                 ))
             })?;
         }
-        let file = source[curr_dir].file.ok_or_else(|| {
+        let file = curr_node.file.ok_or_else(|| {
             ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
         })?;
         let scope = state.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
 
         // look up the item
         let diags = Diagnostics::new();
-        let found = map_diag_error(source, &diags, scope.find_immediate_str(&diags, item_name))?;
+        let found = map_diag_error(&diags, source, scope.find_immediate_str(&diags, item_name))?;
         let item = match found.value {
             &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
             ScopedEntry::Named(_) => {
@@ -309,13 +306,17 @@ impl Compile {
                     found.defining_span,
                     "file scope should only contain items, not named/value",
                 );
-                return Err(convert_diag_error(source, &diags, e));
+                return Err(convert_diag_error(&diags, source, e));
             }
         };
 
         // evaluate the item
         let refs = CompileRefs {
-            fixed: CompileFixed { source, parsed },
+            fixed: CompileFixed {
+                source,
+                hierarchy,
+                parsed,
+            },
             shared: state,
             diags: &diags,
             print_handler: &StdoutPrintHandler,
@@ -324,7 +325,7 @@ impl Compile {
         let mut item_ctx = CompileItemContext::new_empty(refs, None);
 
         let value = item_ctx.eval_item(item);
-        let value = map_diag_error(source, &diags, value)?;
+        let value = map_diag_error(&diags, source, value)?;
 
         refs.run_elaboration_loop();
         check_diags(source, &diags)?;
@@ -378,6 +379,7 @@ impl Function {
             let parsed = &parsed_ref.parsed;
             let source_ref = parsed_ref.source.borrow(py);
             let source = &source_ref.source;
+            let hierarchy = &source_ref.hierarchy;
             let dummy_span = source_ref.dummy_span;
 
             // convert args
@@ -400,7 +402,11 @@ impl Function {
 
             // call function
             let refs = CompileRefs {
-                fixed: CompileFixed { source, parsed },
+                fixed: CompileFixed {
+                    source,
+                    hierarchy,
+                    parsed,
+                },
                 shared: state,
                 diags: &diags,
                 print_handler: &StdoutPrintHandler,
@@ -419,7 +425,7 @@ impl Function {
                 &self.function_value,
                 args,
             );
-            let returned = map_diag_error(source, &diags, returned)?;
+            let returned = map_diag_error(&diags, source, returned)?;
 
             // run any downstream elaboration
             refs.run_elaboration_loop();
@@ -433,7 +439,7 @@ impl Function {
                         dummy_span,
                         "function called with only compile-time args should return compile-time value",
                     );
-                    return Err(convert_diag_error(source, &diags, err));
+                    return Err(convert_diag_error(&diags, source, err));
                 }
             }
         };
@@ -597,7 +603,7 @@ impl Module {
         // create temporary ir database
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
-        let ir_database = map_diag_error(source, &diags, ir_database)?;
+        let ir_database = map_diag_error(&diags, source, ir_database)?;
 
         // actual lowering
         let lowered = lower_to_verilog(
@@ -606,7 +612,7 @@ impl Module {
             &ir_database.external_modules,
             ir_module,
         );
-        let lowered = map_diag_error(source, &diags, lowered)?;
+        let lowered = map_diag_error(&diags, source, lowered)?;
 
         Ok((ir_database, ir_module, lowered))
     }
@@ -736,7 +742,7 @@ impl VerilatedPort {
 
         result.map_err(|e| match e {
             Either::Left(e) => map_verilator_error(e),
-            Either::Right(e) => convert_diag_error(&source.source, &diags, e),
+            Either::Right(e) => convert_diag_error(&diags, &source.source, e),
         })?;
 
         Ok(())
@@ -774,26 +780,4 @@ impl VerilatedPort {
 
 fn map_verilator_error(e: VerilatorError) -> PyErr {
     VerilationException::new_err(e.to_string())
-}
-
-fn map_source_set_or_io_error(e: SourceSetOrIoError) -> PyErr {
-    match e {
-        SourceSetOrIoError::SourceSet(e) => map_source_set_error(e),
-        SourceSetOrIoError::Io(IoErrorWithPath { error, path }) => {
-            SourceSetException::new_err(format!("io error `{error}` for path `{path:?}`"))
-        }
-    }
-}
-
-fn map_source_set_error(e: SourceSetError) -> PyErr {
-    match e {
-        SourceSetError::EmptyPath => SourceSetException::new_err("empty path"),
-        SourceSetError::DuplicatePath(file_path) => {
-            SourceSetException::new_err(format!("duplicate path `{file_path:?}`"))
-        }
-        SourceSetError::NonUtf8Path(path_buf) => SourceSetException::new_err(format!("non-UTF-8 path `{path_buf:?}`")),
-        SourceSetError::MissingFileName(path_buf) => {
-            SourceSetException::new_err(format!("missing file name `{path_buf:?}`"))
-        }
-    }
 }
