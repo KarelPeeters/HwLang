@@ -16,8 +16,11 @@ use hwl_language::front::value::Value;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
-use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree, io_error_message};
+use hwl_language::syntax::collect::{
+    add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
+};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
+use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
@@ -177,14 +180,42 @@ impl Source {
     }
 
     #[staticmethod]
-    fn new_from_manifest_path(path: &str) -> PyResult<Self> {
-        todo!()
-    }
+    fn new_from_manifest_path(manifest_path: &str) -> PyResult<Self> {
+        let diags = Diagnostics::new();
+        let mut source = RustSourceDatabase::new();
 
-    #[staticmethod]
-    fn new_from_single_tree(path: &str) -> PyResult<Self> {
-        // TODO get other manifest options somehow?
-        todo!()
+        // read manifest
+        let manifest_path = &PathBuf::from(manifest_path);
+        println!("a");
+        let manifest_parent = manifest_path
+            .parent()
+            .ok_or_else(|| SourceSetException::new_err("manifest path does not have a parent directory"))?;
+        println!("b");
+        let manifest_content = std::fs::read_to_string(manifest_path)
+            .map_err(|e| SourceSetException::new_err(io_error_message(e.with_path(manifest_path.clone()))))?;
+        println!("c");
+        let manifest_file = source.add_file(manifest_path.to_string_lossy().into_owned(), manifest_content);
+
+        println!("d");
+
+        // parse manifest
+        let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
+        let manifest = map_diag_error(&diags, &source, manifest)?;
+        let Manifest {
+            source: manifest_source,
+        } = manifest;
+
+        // collect hierarchy
+        let hierarchy =
+            collect_source_from_manifest(&diags, &mut source, manifest_file, &manifest_parent, &manifest_source);
+        let hierarchy = map_diag_error(&diags, &source, hierarchy)?;
+
+        let manifest_span = source.full_span(manifest_file);
+        Ok(Source {
+            source,
+            hierarchy,
+            dummy_span: manifest_span,
+        })
     }
 
     fn add_file_content(&mut self, steps: Vec<String>, debug_info_path: String, content: String) -> PyResult<()> {
