@@ -35,5 +35,6 @@ fn target(data: String) {
         &mut NoPrintHandler,
         &|| false,
         NON_ZERO_USIZE_ONE,
+        dummy_span,
     );
 }

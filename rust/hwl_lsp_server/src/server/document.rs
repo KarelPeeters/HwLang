@@ -29,7 +29,8 @@ impl NotificationHandler<DidOpenTextDocument> for ServerState {
             )))
         }
 
-        self.vfs.create_or_update(uri, text.into_bytes());
+        let path = uri_to_path(&uri)?;
+        self.vfs.create_or_update(path, text.into_bytes());
 
         Ok(())
     }
@@ -73,7 +74,9 @@ impl NotificationHandler<DidChangeTextDocument> for ServerState {
                 text,
             } = change;
             assert!(range.is_none() && range_length.is_none());
-            self.vfs.create_or_update(uri.clone(), text.into_bytes());
+
+            let path = uri_to_path(&uri)?;
+            self.vfs.create_or_update(path, text.into_bytes());
         }
 
         Ok(())
@@ -87,18 +90,17 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
         for change in changes {
             let FileEvent { uri, typ } = change;
             match typ {
-                FileChangeType::CREATED => {
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
                     let path = uri_to_path(&uri)?;
-                    let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
-                    self.vfs.create_or_update(uri, content);
-                }
-                FileChangeType::CHANGED => {
-                    let path = uri_to_path(&uri)?;
-                    let content = std::fs::read(&path).map_err(|e| VfsError::Io(e.with_path(path)))?;
-                    self.vfs.create_or_update(uri, content);
+                    let content = match std::fs::read(&path) {
+                        Ok(c) => c,
+                        Err(e) => return Err(RequestError::Vfs(VfsError::Io(e.with_path(path)))),
+                    };
+                    self.vfs.create_or_update(path, content);
                 }
                 FileChangeType::DELETED => {
-                    self.vfs.delete(&uri)?;
+                    let path = uri_to_path(&uri)?;
+                    self.vfs.delete(&path)?;
                 }
                 _ => throw!(RequestError::Invalid(format!(
                     "unknown file change type {typ:?} for uri {uri:?}"

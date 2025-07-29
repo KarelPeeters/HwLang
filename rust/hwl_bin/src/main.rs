@@ -95,6 +95,7 @@ fn main_inner(args: Args) -> ExitCode {
     let start_source = Instant::now();
 
     // find and parse manifest file
+    let diags = Diagnostics::new();
     let mut source = SourceDatabase::new();
     let found_manifest = match find_and_read_manifest(manifest) {
         Ok(m) => m,
@@ -107,10 +108,10 @@ fn main_inner(args: Args) -> ExitCode {
         found_manifest.manifest_path.to_string_lossy().into_owned(),
         found_manifest.manifest_source,
     );
-    let manifest = match Manifest::from_toml(&source[manifest_file].content) {
+    let manifest = match Manifest::parse_toml(&diags, &source, manifest_file) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("Failed to parse manifest file: {e}");
+        Err(_) => {
+            print_diagnostics(&source, diags);
             return ExitCode::FAILURE;
         }
     };
@@ -119,7 +120,6 @@ fn main_inner(args: Args) -> ExitCode {
     } = manifest;
 
     // collect source
-    let diags = Diagnostics::new();
     let hierarchy = match collect_source_from_manifest(
         &diags,
         &mut source,
@@ -176,6 +176,7 @@ fn main_inner(args: Args) -> ExitCode {
         &mut StdoutPrintHandler,
         &|| should_stop.load(Ordering::Relaxed),
         thread_count,
+        source.full_span(manifest_file),
     );
     let time_compile = start_compile.elapsed();
 
@@ -336,7 +337,7 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundManifes
             }
 
             Err(FindManifestError(format!(
-                "No manifest file {HWL_MANIFEST_FILE_NAME} found in any parent directory of the current working directory {cwd:?}"
+                "No manifest file `{HWL_MANIFEST_FILE_NAME}` found in any parent directory of the current working directory {cwd:?}"
             )))
         }
     }

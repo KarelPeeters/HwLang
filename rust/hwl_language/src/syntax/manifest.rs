@@ -1,3 +1,6 @@
+use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::syntax::pos::Span;
+use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::VecExt;
 use indexmap::IndexMap;
 
@@ -24,10 +27,21 @@ enum ManifestSourceNode {
 }
 
 impl Manifest {
-    pub fn from_toml(src: &str) -> Result<Manifest, toml::de::Error> {
+    pub fn parse_toml(diags: &Diagnostics, source: &SourceDatabase, file: FileId) -> DiagResult<Manifest> {
         // Note: it's important that the `toml` crate feature `preserve_order` is enabled,
         //   since the order of fields in the manifest can be significant, especially for the resulting error messages.
-        toml::from_str(src)
+        let content = &source[file].content;
+        toml::from_str(content).map_err(|e| {
+            let span = match e.span() {
+                None => source.full_span(file),
+                Some(span) => Span::new(file, span.start, span.end),
+            };
+            diags.report_simple(
+                format!("failed to parse manifest: {:?}", e.message()),
+                span,
+                "while parsing manifest here",
+            )
+        })
     }
 }
 

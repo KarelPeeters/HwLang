@@ -53,6 +53,7 @@ pub fn compile(
     print_handler: &mut (dyn PrintHandler + Sync),
     should_stop: &(dyn Fn() -> bool + Sync),
     thread_count: NonZeroUsize,
+    manifest_span: Span,
 ) -> DiagResult<IrDatabase> {
     let fixed = CompileFixed {
         source,
@@ -77,7 +78,7 @@ pub fn compile(
             print_handler,
             should_stop,
         };
-        find_top_module(diags, fixed, &shared).and_then(|top_item| {
+        find_top_module(diags, fixed, &shared, manifest_span).and_then(|top_item| {
             let mut ctx = CompileItemContext::new_empty(refs, None);
             let result = ctx.eval_item(top_item.item())?;
 
@@ -560,6 +561,7 @@ fn find_top_module(
     diags: &Diagnostics,
     fixed: CompileFixed,
     shared: &CompileShared,
+    manifest_span: Span,
 ) -> DiagResult<AstRefModuleInternal> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
@@ -570,8 +572,11 @@ fn find_top_module(
         .get("top")
         .and_then(|top_node| top_node.file)
         .ok_or_else(|| {
-            let title = "no top file found, should be called `top` and be in the root directory of the project";
-            diags.report(Diagnostic::new(title).finish())
+            diags.report_simple(
+                "no top file found, should be called `top` and be in the root directory of the project",
+                manifest_span,
+                "manifest should point to top file",
+            )
         })?;
     let top_file_scope = shared.file_scopes.get(&top_file).unwrap().as_ref_ok()?;
     let top_entry = top_file_scope.find_immediate_str(diags, "top")?;

@@ -16,12 +16,13 @@ use hwl_language::front::value::Value;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
-use hwl_language::syntax::collect::collect_source_from_tree;
+use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree, io_error_message};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use hwl_util::io::IoErrorExt;
 use itertools::{enumerate, Either, Itertools};
 use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
 use pyo3::types::PyIterator;
@@ -197,15 +198,22 @@ impl Source {
 
     fn add_tree(&mut self, steps: Vec<String>, path: &str) -> PyResult<()> {
         let diags = Diagnostics::new();
-        let result = collect_source_from_tree(
+
+        let files = collect_source_files_from_tree(&diags, self.dummy_span, PathBuf::from(path));
+        let files = map_diag_error(&diags, &self.source, files)?;
+
+        let result = add_source_files_to_tree(
             &diags,
             &mut self.source,
             &mut self.hierarchy,
             self.dummy_span,
             steps,
-            PathBuf::from(path),
+            files,
+            |path| std::fs::read_to_string(path).map_err(|e| io_error_message(e.with_path(path.to_owned()))),
         );
-        map_diag_error(&diags, &self.source, result)
+        map_diag_error(&diags, &self.source, result)?;
+
+        Ok(())
     }
 
     #[getter]

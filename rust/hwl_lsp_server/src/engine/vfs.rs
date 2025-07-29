@@ -1,8 +1,7 @@
-use crate::server::util::uri_to_path;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 
 // TODO make sure we only track manifest files and files with the right extension,
@@ -10,12 +9,12 @@ use std::str::Utf8Error;
 // TODO somehow collect all files referenced by the manifest file and add listeners for them
 pub struct Vfs {
     changed: bool,
-    files: IndexMap<Uri, Vec<u8>>,
+    files: IndexMap<PathBuf, Vec<u8>>,
 }
 
 pub type VfsResult<T> = Result<T, VfsError>;
 
-// TODO remove unused variants
+// TODO cleanup, mostly remove unused variants
 #[derive(Debug)]
 pub enum VfsError {
     InvalidPathUri(Uri),
@@ -23,7 +22,7 @@ pub enum VfsError {
     ExpectedAbsolutePath(PathBuf),
     FailedToConvertPathToUri(PathBuf, String, fluent_uri::ParseError),
     AlreadyExists(Uri),
-    DoesNotExist(Uri),
+    DoesNotExist(PathBuf),
     // TODO this should not really be a VfsError
     ContentInvalidUtf8(Utf8Error),
     PathInvalidUtf8(PathBuf),
@@ -38,14 +37,14 @@ impl Vfs {
         }
     }
 
-    pub fn create_or_update(&mut self, uri: Uri, content: Vec<u8>) {
-        self.files.insert(uri, content);
+    pub fn create_or_update(&mut self, path: PathBuf, content: Vec<u8>) {
+        self.files.insert(path, content);
         self.changed = true;
     }
 
-    pub fn delete(&mut self, uri: &Uri) -> Result<(), VfsError> {
-        match self.files.swap_remove(uri) {
-            None => Err(VfsError::DoesNotExist(uri.clone())),
+    pub fn delete(&mut self, path: &Path) -> Result<(), VfsError> {
+        match self.files.swap_remove(path) {
+            None => Err(VfsError::DoesNotExist(path.to_owned())),
             Some(_) => {
                 self.changed = true;
                 Ok(())
@@ -53,22 +52,21 @@ impl Vfs {
         }
     }
 
-    pub fn read_maybe_from_disk(&mut self, uri: &Uri) -> Result<&[u8], VfsError> {
+    pub fn read_maybe_from_disk(&mut self, path: &Path) -> Result<&[u8], VfsError> {
         // https://github.com/rust-lang/rust/issues/54663
-        if self.files.contains_key(uri) {
-            return Ok(self.files.get(uri).unwrap());
+        if self.files.contains_key(path) {
+            return Ok(self.files.get(path).unwrap());
         }
 
-        let path = uri_to_path(uri)?;
-        let content = std::fs::read(&path).map_err(|e| e.with_path(path))?;
+        let content = std::fs::read(&path).map_err(|e| e.with_path(path.to_owned()))?;
 
-        let slot = self.files.entry(uri.clone()).or_default();
+        let slot = self.files.entry(path.to_owned()).or_default();
         *slot = content;
         Ok(slot)
     }
 
-    pub fn read_str_maybe_from_disk(&mut self, uri: &Uri) -> Result<&str, VfsError> {
-        let content = self.read_maybe_from_disk(uri)?;
+    pub fn read_str_maybe_from_disk(&mut self, path: &Path) -> Result<&str, VfsError> {
+        let content = self.read_maybe_from_disk(path)?;
         std::str::from_utf8(content).map_err(VfsError::ContentInvalidUtf8)
     }
 

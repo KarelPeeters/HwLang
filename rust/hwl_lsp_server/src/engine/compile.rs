@@ -1,34 +1,53 @@
 use crate::engine::encode::span_to_lsp;
-use crate::engine::vfs::{VfsError, VfsResult};
+use crate::engine::vfs::{Vfs, VfsResult};
 use crate::server::sender::SendErrorOr;
 use crate::server::settings::{PositionEncoding, Settings};
 use crate::server::state::{RequestError, ServerState};
-use crate::server::util::{uri_join, uri_to_path, watcher_any_file_with_name};
+use crate::server::util::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
 use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet};
-use hwl_language::front::diagnostic::{Annotation, Diagnostic, Diagnostics};
+use hwl_language::front::diagnostic::{Annotation, DiagResult, Diagnostic, Diagnostics};
 use hwl_language::front::print::NoPrintHandler;
+use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree};
+use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{FileId, SourceDatabase, SourceDatabaseBuilder, SourceSetOrIoError};
+use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME, HWL_MANIFEST_FILE_NAME};
 use hwl_util::io::recurse_for_each_file;
 use indexmap::{IndexMap, IndexSet};
-use itertools::zip_eq;
+use itertools::{zip_eq, Itertools};
 use lsp_types::{
     notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
 };
 use std::ffi::OsStr;
 use std::fmt::Write;
+use std::path::PathBuf;
 
-#[allow(dead_code)]
-struct CollectedManifest {
-    manifest_folder_uri: Uri,
-    manifest: Manifest,
+struct ManifestCommon {
+    diags: Diagnostics,
     source: SourceDatabase,
-    file_to_uri: IndexMap<FileId, Uri>,
+    manifest_folder: PathBuf,
+    manifest_file: FileId,
+    file_to_path: IndexMap<FileId, PathBuf>,
+}
+
+struct ManifestPartial {
+    common: ManifestCommon,
+    manifest: DiagResult<Manifest>,
+}
+
+struct ManifestCollected {
+    common: ManifestCommon,
+    inner: DiagResult<ManifestCollectedInner>,
+}
+
+struct ManifestCollectedInner {
+    #[allow(dead_code)]
+    manifest: Manifest,
+    hierarchy: SourceHierarchy,
 }
 
 impl ServerState {
@@ -46,45 +65,42 @@ impl ServerState {
         let mut grouped_diags = IndexMap::new();
 
         for manifest in manifests {
-            self.log(format!(
-                "compiling manifest {:?}",
-                uri_join(&manifest.manifest_folder_uri, HWL_MANIFEST_FILE_NAME)
-                    .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?
-                    .to_string()
-            ));
+            let diags = manifest.common.diags;
+            let source = &manifest.common.source;
 
-            let diags = Diagnostics::new();
-            let source = &manifest.source;
-            let parsed = ParsedDatabase::new(&diags, source);
+            if let Ok(inner) = &manifest.inner {
+                let hierarchy = &inner.hierarchy;
+                let parsed = ParsedDatabase::new(&diags, source, hierarchy);
 
-            for file in source.files() {
-                self.log(format!("  file {}", source[file].path_raw));
+                // TODO enable multithreading
+                // TODO optionally also check C++ generation
+                //   or maybe remove verilog instead, hopefully the backends get complete enough
+                // TODO compile all items in the open files first, then later the rest for increased interactivity
+                // TODO propagate prints to a separate output channel or log file
+                // TODO enable multithreading
+                let compiled = compile(
+                    &diags,
+                    source,
+                    hierarchy,
+                    &parsed,
+                    ElaborationSet::AsMuchAsPossible,
+                    &mut NoPrintHandler,
+                    &|| false,
+                    NON_ZERO_USIZE_ONE,
+                    source.full_span(manifest.common.manifest_file),
+                );
+                let _ = compiled.and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
             }
 
-            // TODO enable multithreading
-            // TODO optionally also check C++ generation
-            //   or maybe remove verilog instead, hopefully the backends get complete enough
-            // TODO compile all items in the open files first, then later the rest for increased interactivity
-            // TODO propagate prints to a separate output channel or log file
-            // TODO enable multithreading
-            let compiled = compile(
-                &diags,
-                source,
-                &parsed,
-                ElaborationSet::AsMuchAsPossible,
-                &mut NoPrintHandler,
-                &|| false,
-                NON_ZERO_USIZE_ONE,
-            );
-            let _ = compiled.and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
+            let file_to_uri = manifest
+                .common
+                .file_to_path
+                .into_iter()
+                .map(|(k, b)| Ok((k, abs_path_to_uri(&b)?)))
+                .try_collect()
+                .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
-            group_diagnostics(
-                &mut grouped_diags,
-                &self.settings,
-                source,
-                &manifest.file_to_uri,
-                diags.finish(),
-            )?;
+            group_diagnostics(&mut grouped_diags, &self.settings, source, &file_to_uri, diags.finish())?;
         }
 
         self.log(format!(
@@ -94,7 +110,7 @@ impl ServerState {
         self.send_diagnostics(grouped_diags)
     }
 
-    fn collect_manifests(&mut self) -> Result<Vec<CollectedManifest>, SendErrorOr<RequestError>> {
+    fn collect_manifests(&mut self) -> Result<Vec<ManifestCollected>, SendErrorOr<RequestError>> {
         // TODO support multiple workspaces, root_path, no workspace
         //   also register change listeners for workspaces when we add support for them
         #[allow(deprecated)]
@@ -121,111 +137,69 @@ impl ServerState {
         // find manifests
         let mut manifest_folders = vec![];
         recurse_for_each_file(&root_path, |_, entry_path| {
-            // skip non-manifest files
             if entry_path.file_name() != Some(OsStr::new(HWL_MANIFEST_FILE_NAME)) {
                 return Ok(());
             }
-
-            // record manifest for later
-            let entry_parent_rel = entry_path.strip_prefix(&root_path).unwrap().parent().unwrap();
-            let entry_parent_uri = uri_join(&root_uri, entry_parent_rel)?;
-            manifest_folders.push(entry_parent_uri);
+            manifest_folders.push(entry_path.parent().unwrap().to_owned());
             Ok(())
         })
         .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
         // parse manifests and add watchers to their files
-        let mut manifests = vec![];
-        for manifest_folder_uri in &manifest_folders {
-            let manifest_uri = uri_join(manifest_folder_uri, HWL_MANIFEST_FILE_NAME)
-                .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-            self.log(format!("reading manifest {:?}", manifest_uri.to_string()));
+        let mut manifests_partial: Vec<ManifestPartial> = vec![];
+        for manifest_folder in manifest_folders {
+            let manifest_path = manifest_folder.join(HWL_MANIFEST_FILE_NAME);
 
             let manifest_source = self
                 .vfs
-                .read_str_maybe_from_disk(&manifest_uri)
+                .read_str_maybe_from_disk(&manifest_path)
                 .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
-            // TODO record parsing error as diagnostic once SourceDatabase has been split
-            //   and we can convert toml errors to diagnostics
-            let manifest = match Manifest::from_toml(manifest_source) {
-                Ok(manifest) => manifest,
-                Err(e) => {
-                    return Err(SendErrorOr::Other(RequestError::Internal(format!(
-                        "failed to parse manifest: {e}"
-                    ))));
+            let diags = Diagnostics::new();
+            let mut source = SourceDatabase::new();
+            let mut file_to_path = IndexMap::new();
+
+            let manifest_file =
+                source.add_file(manifest_path.to_string_lossy().into_owned(), manifest_source.to_owned());
+            file_to_path.insert(manifest_file, manifest_path);
+
+            let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
+
+            if let Ok(manifest) = &manifest {
+                for entry in manifest.source.entries() {
+                    let SourceEntry {
+                        steps: _,
+                        path_relative,
+                    } = entry;
+                    let entry_path = manifest_folder.join(path_relative);
+                    watchers.push(watcher_any_file_with_name(
+                        abs_path_to_uri(&entry_path).map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?,
+                        &format!("*.{HWL_FILE_EXTENSION}"),
+                    ));
                 }
-            };
-
-            for entry in manifest.source.entries() {
-                let SourceEntry {
-                    steps: _,
-                    path_relative,
-                } = entry;
-
-                let entry_uri = uri_join(manifest_folder_uri, path_relative)
-                    .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-                watchers.push(watcher_any_file_with_name(
-                    entry_uri,
-                    &format!("*.{HWL_FILE_EXTENSION}"),
-                ));
             }
 
-            manifests.push(manifest);
+            let common = ManifestCommon {
+                diags,
+                source,
+                manifest_folder,
+                manifest_file,
+                file_to_path,
+            };
+            manifests_partial.push(ManifestPartial { common, manifest });
         }
         self.set_watchers(watchers)?;
 
         // collect sources
-        // TODO fully share code with main binary
-        let mut collected_manifests = vec![];
-        for (manifest_folder_uri, manifest) in zip_eq(manifest_folders, manifests) {
-            let mut source = SourceDatabaseBuilder::new();
-            let mut file_to_uri = IndexMap::new();
-
-            for entry in manifest.source.entries() {
-                let SourceEntry {
-                    steps: entry_steps,
-                    path_relative: entry_path_relative,
-                } = entry;
-                let entry_uri = uri_join(&manifest_folder_uri, entry_path_relative)
-                    .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-                let entry_path = uri_to_path(&entry_uri).map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-
-                // TODO source set errors should become diagnostics, not LSP errors
-                let file_to_path = source.add_tree(entry_steps, &entry_path).map_err(|e| match e {
-                    SourceSetOrIoError::SourceSet(e) => SendErrorOr::Other(RequestError::SourceSet(e)),
-                    SourceSetOrIoError::Io(io) => SendErrorOr::Other(RequestError::Vfs(VfsError::Io(io))),
-                })?;
-
-                // TODO rethink fileid/path/uri mapping, this is sketchy
-                for (file_id, file_path) in file_to_path {
-                    let file_path_rel = file_path.strip_prefix(&entry_path).unwrap();
-                    let file_uri =
-                        uri_join(&entry_uri, file_path_rel).map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-                    self.log(format!(
-                        "  file {file_id:?} -> {file_path:?} {file_path_rel:?} {}",
-                        file_uri.as_str()
-                    ));
-                    file_to_uri.insert(file_id, file_uri);
-                }
-            }
-
-            let (source, _, file_to_file) = source.finish_with_mapping();
-            let file_to_uri = file_to_uri
-                .into_iter()
-                .map(|(k, v)| (*file_to_file.get(&k).unwrap(), v))
-                .collect();
-
-            let collected = CollectedManifest {
-                manifest_folder_uri,
-                manifest,
-                source,
-                file_to_uri,
-            };
-            collected_manifests.push(collected);
+        // TODO fully share as much code as possible with the main binary
+        let mut manifests_collected = vec![];
+        for manifest in manifests_partial {
+            let ManifestPartial { mut common, manifest } = manifest;
+            let inner = manifest.and_then(|manifest| collect_partial_manifest(&mut self.vfs, &mut common, manifest));
+            manifests_collected.push(ManifestCollected { common, inner });
         }
 
-        Ok(collected_manifests)
+        Ok(manifests_collected)
     }
 
     fn send_diagnostics(
@@ -269,6 +243,50 @@ impl ServerState {
 
         Ok(())
     }
+}
+
+fn collect_partial_manifest(
+    vfs: &mut Vfs,
+    common: &mut ManifestCommon,
+    manifest: Manifest,
+) -> DiagResult<ManifestCollectedInner> {
+    let diags = &common.diags;
+    let source = &mut common.source;
+    let mut hierarchy = SourceHierarchy::new();
+
+    // TODO get more precise span
+    let manifest_span = source.full_span(common.manifest_file);
+
+    for entry in manifest.source.entries() {
+        let SourceEntry { steps, path_relative } = entry;
+        let entry_path = common.manifest_folder.join(&path_relative);
+
+        // TODO don't early exit, visit all entries before returning error
+        // TODO insert extra files from Vfs that don't yet exist on disk
+        let files = collect_source_files_from_tree(diags, manifest_span, entry_path)?;
+
+        let file_paths = files.iter().map(|(_, p)| p.to_owned()).collect_vec();
+
+        let file_ids = add_source_files_to_tree(
+            diags,
+            source,
+            &mut hierarchy,
+            manifest_span,
+            steps,
+            files,
+            // TODO this is sketchy
+            |file_path| match vfs.read_str_maybe_from_disk(file_path) {
+                Ok(s) => Ok(s.to_owned()),
+                Err(e) => Err(format!("{e:?}")),
+            },
+        )?;
+
+        for (file_id, file_path) in zip_eq(file_ids, file_paths) {
+            common.file_to_path.insert(file_id, file_path);
+        }
+    }
+
+    Ok(ManifestCollectedInner { manifest, hierarchy })
 }
 
 fn group_diagnostics(

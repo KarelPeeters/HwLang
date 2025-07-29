@@ -1,7 +1,6 @@
 use crate::engine::vfs::{Vfs, VfsError};
 use crate::server::sender::{SendError, SendErrorOr, ServerSender};
 use crate::server::settings::Settings;
-use hwl_language::syntax::source::SourceSetError;
 use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
@@ -33,7 +32,6 @@ pub enum RequestError {
     MethodNotImplemented(String),
     Invalid(String),
     Vfs(VfsError),
-    SourceSet(SourceSetError),
     Internal(String),
 }
 
@@ -165,8 +163,6 @@ impl RequestError {
             RequestError::Invalid(reason) => (ErrorCode::InvalidRequest, format!("invalid request {reason:?}")),
             RequestError::Vfs(e) => (ErrorCode::InternalError, format!("vfs error {e:?}")),
             RequestError::Internal(e) => (ErrorCode::InternalError, format!("internal error {e:?}")),
-            // TODO this one should be removed at some point
-            RequestError::SourceSet(e) => (ErrorCode::InternalError, format!("source set error {e:?}")),
         }
     }
 }

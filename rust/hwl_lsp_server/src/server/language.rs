@@ -2,10 +2,11 @@ use crate::engine::encode::{lsp_to_pos, span_to_lsp};
 use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestResult, ServerState};
+use crate::server::util::uri_to_path;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{LineOffsets, Span};
 use hwl_language::syntax::resolve::{find_definition, FindDefinition};
-use hwl_language::syntax::source::{FileId, FilePath, SourceDatabaseBuilder};
+use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;
 use lsp_types::request::{GotoDefinition, SemanticTokensFullRequest};
@@ -26,7 +27,8 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
         let TextDocumentIdentifier { uri } = text_document;
 
         self.log("getting source for semantic tokens");
-        let source = self.vfs.read_str_maybe_from_disk(&uri)?;
+        let path = uri_to_path(&uri)?;
+        let source = self.vfs.read_str_maybe_from_disk(&path)?;
         // TODO cache offsets somewhere
         let offsets = LineOffsets::new(source);
 
@@ -92,15 +94,11 @@ impl RequestHandler<GotoDefinition> for ServerState {
         let TextDocumentIdentifier { uri } = text_document;
 
         // TODO integrate all of this better with the main compiler, eg. cache the parsed ast, reason about imports, ...
-        let src = self.vfs.read_str_maybe_from_disk(&uri)?;
-        let (source, file) = {
-            let mut source = SourceDatabaseBuilder::new();
-            let file = source
-                .add_file(FilePath(vec!["dummy".to_owned()]), "dummy".to_owned(), src.to_owned())
-                .unwrap();
-            let (source, _, file_map) = source.finish_with_mapping();
-            (source, *file_map.get(&file).unwrap())
-        };
+        let path = uri_to_path(&uri)?;
+        let src = self.vfs.read_str_maybe_from_disk(&path)?;
+
+        let mut source = SourceDatabase::new();
+        let file = source.add_file("dummy".to_owned(), src.to_owned());
         let offsets = &source[file].offsets;
 
         // parse source to ast

@@ -37,12 +37,14 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 #[wasm_bindgen]
 pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
     let diags = Diagnostics::new();
-    let (source, hierarchy) = build_source(&diags, top_src);
+    let (source, hierarchy, file) = build_source(&diags, top_src);
     let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
 
     let mut print_handler = CollectPrintHandler::new();
     let start = wasm_timer::Instant::now();
     let should_stop = || start.elapsed() >= TIMEOUT;
+    let dummy_span = source.full_span(file);
+
     let compiled = compile(
         &diags,
         &source,
@@ -52,6 +54,7 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         &mut print_handler,
         &should_stop,
         NON_ZERO_USIZE_ONE,
+        dummy_span,
     );
 
     let lowered = compiled
@@ -90,7 +93,7 @@ pub fn initial_source() -> String {
     included_sources::SRC_INITIAL_TOP.to_owned()
 }
 
-fn build_source(diags: &Diagnostics, top_src: String) -> (SourceDatabase, SourceHierarchy) {
+fn build_source(diags: &Diagnostics, top_src: String) -> (SourceDatabase, SourceHierarchy, FileId) {
     let mut source = SourceDatabase::new();
     let mut hierarchy = SourceHierarchy::new();
 
@@ -107,7 +110,7 @@ fn build_source(diags: &Diagnostics, top_src: String) -> (SourceDatabase, Source
         .add_file(diags, &source, dummy_span, &["top".to_owned()], file)
         .unwrap();
 
-    (source, hierarchy)
+    (source, hierarchy, file)
 }
 
 /// See <https://lezer.codemirror.net/docs/ref/#common.Tree^build>

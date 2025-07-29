@@ -324,6 +324,7 @@ impl DiagnosticBuilder {
     }
 
     pub fn finish(self) -> Diagnostic {
+        assert!(!self.diagnostic.snippets.is_empty());
         self.diagnostic
     }
 }
