@@ -1,7 +1,7 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet};
-use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::diagnostic::{DiagResult, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
@@ -37,25 +37,30 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 #[wasm_bindgen]
 pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
     let diags = Diagnostics::new();
-    let (source, hierarchy, file) = build_source(&diags, top_src);
-    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
+    let mut source = SourceDatabase::new();
+    let hierarchy_file = build_source(&diags, &mut source, top_src);
 
     let mut print_handler = CollectPrintHandler::new();
-    let start = wasm_timer::Instant::now();
-    let should_stop = || start.elapsed() >= TIMEOUT;
-    let dummy_span = source.full_span(file);
 
-    let compiled = compile(
-        &diags,
-        &source,
-        &hierarchy,
-        &parsed,
-        ElaborationSet::AsMuchAsPossible,
-        &mut print_handler,
-        &should_stop,
-        NON_ZERO_USIZE_ONE,
-        dummy_span,
-    );
+    let compiled = hierarchy_file.and_then(|(hierarchy, top_file)| {
+        let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
+
+        let start = wasm_timer::Instant::now();
+        let should_stop = || start.elapsed() >= TIMEOUT;
+        let dummy_span = source.full_span(top_file);
+
+        compile(
+            &diags,
+            &source,
+            &hierarchy,
+            &parsed,
+            ElaborationSet::AsMuchAsPossible,
+            &mut print_handler,
+            &should_stop,
+            NON_ZERO_USIZE_ONE,
+            dummy_span,
+        )
+    });
 
     let lowered = compiled
         .as_ref_ok()
@@ -93,24 +98,25 @@ pub fn initial_source() -> String {
     included_sources::SRC_INITIAL_TOP.to_owned()
 }
 
-fn build_source(diags: &Diagnostics, top_src: String) -> (SourceDatabase, SourceHierarchy, FileId) {
-    let mut source = SourceDatabase::new();
+fn build_source(
+    diags: &Diagnostics,
+    source: &mut SourceDatabase,
+    top_src: String,
+) -> DiagResult<(SourceHierarchy, FileId)> {
     let mut hierarchy = SourceHierarchy::new();
 
     for &(steps, path, content) in included_sources::STD_SOURCES {
         let file = source.add_file(path.to_owned(), content.to_owned());
         let dummy_span = source.full_span(file);
         let steps = steps.iter().map(|&s| s.to_owned()).collect_vec();
-        hierarchy.add_file(diags, &source, dummy_span, &steps, file).unwrap();
+        hierarchy.add_file(diags, source, dummy_span, &steps, file)?;
     }
 
     let file = source.add_file("top.kh".to_owned(), top_src);
     let dummy_span = source.full_span(file);
-    hierarchy
-        .add_file(diags, &source, dummy_span, &["top".to_owned()], file)
-        .unwrap();
+    hierarchy.add_file(diags, &source, dummy_span, &["top".to_owned()], file)?;
 
-    (source, hierarchy, file)
+    Ok((hierarchy, file))
 }
 
 /// See <https://lezer.codemirror.net/docs/ref/#common.Tree^build>

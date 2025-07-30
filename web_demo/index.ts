@@ -129,7 +129,6 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     // https://developer.mozilla.org/en-US/docs/Glossary/Base64#the_unicode_problem
     const url = new URL(window.location.href);
     url.searchParams.set("source", "cb64-" + btoa(String.fromCharCode.apply(null, pako.deflate(source))));
-    console.log("share link", url.toString());
     element_share_link.href = url.toString()
 
     // run the compiler
