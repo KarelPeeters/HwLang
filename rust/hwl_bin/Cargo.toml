@@ -11,8 +11,10 @@ hwl_language.workspace = true
 
 clap.workspace = true
 ctrlc.workspace = true
+itertools.workspace = true
 mimalloc.workspace = true
 num_cpus.workspace = true
+path-clean.workspace = true
 toml.workspace = true
 
 [lints]

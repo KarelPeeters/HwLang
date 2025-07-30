@@ -866,3 +866,18 @@ Updated simulator design:
   * schedule blocks dynamically depending on the set of inputs and intermediate signals that changed?
     * add schedule caching, in a design there won't be many different ones
     * correct, potentially fastest, tricky
+
+# Resolving and capturing
+
+Maybe scopes should be fully/mostly resolved in a separate phase.
+Advantages:
+
+* we can catch more errors for generic modules earlier
+* functions can easily only capture the necessary identifiers
+* LSP go to definition can share the code with the compiler
+* maybe we can even do some early type checking
+
+Disadvantages:
+
+* it's a whole extra phase, maybe with some extra intermediate bytecode format
+* `id_from_str` and dynamic signals is not really possible anymore

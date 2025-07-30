@@ -4,6 +4,7 @@ pub mod sender;
 pub mod dispatch;
 pub mod settings;
 pub mod state;
+pub mod util;
 
 // The different parts of the LSP protocol are spread over the following modules, mirroring the chapters in
 // <https://microsoft.github.io/language-server-protocol/specifications/lsp/>

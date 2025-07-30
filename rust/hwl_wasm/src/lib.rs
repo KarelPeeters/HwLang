@@ -4,7 +4,7 @@ use hwl_language::front::compile::{compile, ElaborationSet};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{FileId, FilePath, SourceDatabase, SourceDatabaseBuilder};
+use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use itertools::Itertools;
@@ -16,6 +16,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 // It's in the dependency list for its side effects, not for direct use.
 #[allow(unused_imports)]
 use getrandom as _;
+use hwl_language::syntax::hierarchy::SourceHierarchy;
 
 /// This function automatically runs when the module gets initialized.
 #[wasm_bindgen(start)]
@@ -35,22 +36,25 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[wasm_bindgen]
 pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
-    let source = build_source(top_src);
-
     let diags = Diagnostics::new();
-    let parsed = ParsedDatabase::new(&diags, &source);
+    let (source, hierarchy, file) = build_source(&diags, top_src);
+    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
 
     let mut print_handler = CollectPrintHandler::new();
     let start = wasm_timer::Instant::now();
     let should_stop = || start.elapsed() >= TIMEOUT;
+    let dummy_span = source.full_span(file);
+
     let compiled = compile(
         &diags,
         &source,
+        &hierarchy,
         &parsed,
         ElaborationSet::AsMuchAsPossible,
         &mut print_handler,
         &should_stop,
         NON_ZERO_USIZE_ONE,
+        dummy_span,
     );
 
     let lowered = compiled
@@ -89,16 +93,24 @@ pub fn initial_source() -> String {
     included_sources::SRC_INITIAL_TOP.to_owned()
 }
 
-fn build_source(top_src: String) -> SourceDatabase {
-    let mut source = SourceDatabaseBuilder::new();
+fn build_source(diags: &Diagnostics, top_src: String) -> (SourceDatabase, SourceHierarchy, FileId) {
+    let mut source = SourceDatabase::new();
+    let mut hierarchy = SourceHierarchy::new();
+
     for &(steps, path, content) in included_sources::STD_SOURCES {
-        let steps = FilePath(steps.iter().map(|&s| s.to_owned()).collect_vec());
-        source.add_file(steps, path.to_owned(), content.to_owned()).unwrap();
+        let file = source.add_file(path.to_owned(), content.to_owned());
+        let dummy_span = source.full_span(file);
+        let steps = steps.iter().map(|&s| s.to_owned()).collect_vec();
+        hierarchy.add_file(diags, &source, dummy_span, &steps, file).unwrap();
     }
-    source
-        .add_file(FilePath(vec!["top".to_owned()]), "top.kh".to_owned(), top_src)
+
+    let file = source.add_file("top.kh".to_owned(), top_src);
+    let dummy_span = source.full_span(file);
+    hierarchy
+        .add_file(diags, &source, dummy_span, &["top".to_owned()], file)
         .unwrap();
-    source.finish()
+
+    (source, hierarchy, file)
 }
 
 /// See <https://lezer.codemirror.net/docs/ref/#common.Tree^build>

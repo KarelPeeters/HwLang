@@ -1,6 +1,8 @@
-use crate::syntax::source::{SourceDatabaseBuilder, SourceSetOrIoError};
+use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::syntax::pos::Span;
+use crate::syntax::source::{FileId, SourceDatabase};
+use crate::util::data::VecExt;
 use indexmap::IndexMap;
-use std::path::{Path, PathBuf};
 
 // TODO maybe add default elaboration root(s)
 // TODO allow manifests to refer to other manifests
@@ -8,47 +10,76 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    pub source: ManifestSourceNode,
+    pub source: ManifestSource,
 }
 
-impl Manifest {
-    pub fn from_toml(src: &str) -> Result<Manifest, toml::de::Error> {
-        // Note: it's important that the `toml` crate feature `preserve_order` is enabled,
-        //   since the order of fields in the manifest can be significant, especially for the resulting error messages.
-        toml::from_str(src)
-    }
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, transparent)]
+pub struct ManifestSource {
+    node: ManifestSourceNode,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
-pub enum ManifestSourceNode {
-    Leaf(PathBuf),
+enum ManifestSourceNode {
+    Leaf(String),
     Branch(IndexMap<String, ManifestSourceNode>),
 }
 
-// TODO add stdlib by default
-//   maybe include stdlib in the compiler itself, but still allow for an stdlib environment override
-//   for stdlib development
-pub fn manifest_collect_sources(
-    manifest_parent: &Path,
-    builder: &mut SourceDatabaseBuilder,
-    prefix: &mut Vec<String>,
-    node: ManifestSourceNode,
-) -> Result<(), SourceSetOrIoError> {
+impl Manifest {
+    pub fn parse_toml(diags: &Diagnostics, source: &SourceDatabase, file: FileId) -> DiagResult<Manifest> {
+        // Note: it's important that the `toml` crate feature `preserve_order` is enabled,
+        //   since the order of fields in the manifest can be significant, especially for the resulting error messages.
+        let content = &source[file].content;
+        toml::from_str(content).map_err(|e| {
+            let span = match e.span() {
+                None => source.full_span(file),
+                Some(span) => Span::new(file, span.start, span.end),
+            };
+            diags.report_simple(
+                format!("failed to parse manifest: {:?}", e.message()),
+                span,
+                "while parsing manifest here",
+            )
+        })
+    }
+}
+
+pub struct SourceEntry {
+    pub steps: Vec<String>,
+    pub path_relative: String,
+}
+
+// TODO somehow add stdlib by default
+impl ManifestSource {
+    pub fn entries(&self) -> Vec<SourceEntry> {
+        let mut entries = vec![];
+        for_each_entry_impl(&mut vec![], &self.node, &mut |prefix, path| {
+            let entry = SourceEntry {
+                steps: prefix.iter().map(|s| s.to_string()).collect(),
+                path_relative: path.to_string(),
+            };
+            entries.push(entry);
+        });
+        entries
+    }
+}
+
+fn for_each_entry_impl<'n>(prefix: &mut Vec<&'n str>, node: &'n ManifestSourceNode, f: &mut impl FnMut(&[&str], &str)) {
     match node {
-        ManifestSourceNode::Leaf(path) => builder.add_tree(prefix.clone(), &manifest_parent.join(path)),
+        ManifestSourceNode::Leaf(path) => f(prefix, path),
         ManifestSourceNode::Branch(map) => {
             for (k, v) in map {
                 let actual_key = k != "_";
+
                 if actual_key {
-                    prefix.push(k);
-                }
-                manifest_collect_sources(manifest_parent, builder, prefix, v)?;
-                if actual_key {
-                    prefix.pop();
+                    prefix.with_pushed(k, |prefix| {
+                        for_each_entry_impl(prefix, v, f);
+                    })
+                } else {
+                    for_each_entry_impl(prefix, v, f);
                 }
             }
-            Ok(())
         }
     }
 }

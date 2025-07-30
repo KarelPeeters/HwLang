@@ -4,14 +4,17 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
 use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::StdoutPrintHandler;
-use hwl_language::syntax::manifest::{manifest_collect_sources, Manifest};
+use hwl_language::syntax::collect::collect_source_from_manifest;
+use hwl_language::syntax::hierarchy::HierarchyNode;
+use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::SourceDatabaseBuilder;
+use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::IoErrorExt;
+use path_clean::PathClean;
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -92,17 +95,23 @@ fn main_inner(args: Args) -> ExitCode {
     let start_source = Instant::now();
 
     // find and parse manifest file
-    let (manifest_parent, manifest_source) = match find_and_read_manifest(manifest) {
-        Ok(s) => s,
+    let diags = Diagnostics::new();
+    let mut source = SourceDatabase::new();
+    let found_manifest = match find_and_read_manifest(manifest) {
+        Ok(m) => m,
         Err(FindManifestError(msg)) => {
             eprintln!("{msg}");
             return ExitCode::FAILURE;
         }
     };
-    let manifest = match Manifest::from_toml(&manifest_source) {
+    let manifest_file = source.add_file(
+        found_manifest.manifest_path.to_string_lossy().into_owned(),
+        found_manifest.manifest_source,
+    );
+    let manifest = match Manifest::parse_toml(&diags, &source, manifest_file) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("Failed to parse manifest file: {e}");
+        Err(_) => {
+            print_diagnostics(&source, diags);
             return ExitCode::FAILURE;
         }
     };
@@ -111,32 +120,44 @@ fn main_inner(args: Args) -> ExitCode {
     } = manifest;
 
     // collect source
-    let mut source_builder = SourceDatabaseBuilder::new();
-    match manifest_collect_sources(&manifest_parent, &mut source_builder, &mut vec![], manifest_source) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("Failed to collect sources: {e:?}");
+    let hierarchy = match collect_source_from_manifest(
+        &diags,
+        &mut source,
+        manifest_file,
+        &found_manifest.manifest_parent,
+        &manifest_source,
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            print_diagnostics(&source, diags);
             return ExitCode::FAILURE;
         }
-    }
-    let source = source_builder.finish();
+    };
     let time_source = start_source.elapsed();
 
     // print source info
     if print_files {
         eprintln!("Collected sources:");
         for file in source.files() {
-            eprintln!("  [{}]: {:?}", file.inner().index(), &source[file].path_raw);
+            let file_info = &source[file];
+            eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path,);
         }
+        eprintln!("Collected hierarchy:");
+        fn print_node(prefix: &str, node: &HierarchyNode) {
+            if let Some(file) = node.file {
+                eprintln!("{prefix}: [{:?}]", file.inner().index());
+            }
+            for (key, child) in &node.children {
+                print_node(&format!("{prefix}/{key}"), child);
+            }
+        }
+        print_node("  ", &hierarchy.root);
     }
-
-    // build diagnostics
-    let diags = Diagnostics::new();
 
     // run compilation
     // TODO parallelize parsing
     let start_parse = Instant::now();
-    let parsed = ParsedDatabase::new(&diags, &source);
+    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
     let time_parse = start_parse.elapsed();
 
     let should_stop = Arc::new(AtomicBool::new(false));
@@ -149,11 +170,13 @@ fn main_inner(args: Args) -> ExitCode {
     let compiled = compile(
         &diags,
         &source,
+        &hierarchy,
         &parsed,
         elaboration_set,
         &mut StdoutPrintHandler,
         &|| should_stop.load(Ordering::Relaxed),
         thread_count,
+        source.full_span(manifest_file),
     );
     let time_compile = start_compile.elapsed();
 
@@ -178,13 +201,8 @@ fn main_inner(args: Args) -> ExitCode {
 
     let time_all = start_all.elapsed();
 
-    // print diagnostics
-    let diagnostics = diags.finish();
-    let any_error = !diagnostics.is_empty();
-    for diag in diagnostics {
-        let s = diag.to_string(&source, DiagnosticStringSettings::default());
-        eprintln!("{s}\n");
-    }
+    // print results
+    let any_error = print_diagnostics(&source, diags);
 
     if print_ir {
         eprintln!("{compiled:#?}");
@@ -214,8 +232,8 @@ fn main_inner(args: Args) -> ExitCode {
         // profile tokenization separately
         let start_tokenize = Instant::now();
         let mut total_tokens = 0;
-        for file in source.files() {
-            total_tokens += Tokenizer::new(file, &source[file].source, false).into_iter().count();
+        for file in hierarchy.files() {
+            total_tokens += Tokenizer::new(file, &source[file].content, false).into_iter().count();
         }
         let time_tokenize = start_tokenize.elapsed();
 
@@ -250,9 +268,15 @@ fn main_inner(args: Args) -> ExitCode {
     }
 }
 
+struct FoundManifest {
+    manifest_path: PathBuf,
+    manifest_parent: PathBuf,
+    manifest_source: String,
+}
+
 struct FindManifestError(String);
 
-fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, String), FindManifestError> {
+fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundManifest, FindManifestError> {
     let cwd = std::env::current_dir()
         .map_err(|e| FindManifestError(format!("Failed to get current working directory: {e:?}")))?;
     let cwd = std::path::absolute(&cwd).map_err(|e| {
@@ -265,15 +289,22 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
     match manifest_path {
         Some(manifest_path) => {
             // directly read the manifest file
-            let manifest_path = cwd.join(manifest_path);
+            let manifest_path = cwd.join(manifest_path).clean();
             match std::fs::read_to_string(&manifest_path) {
                 Ok(s) => {
-                    let manifest_parent = manifest_path.parent().ok_or_else(|| {
-                        FindManifestError(format!(
-                            "Manifest path {manifest_path:?} does not have a parent directory"
-                        ))
-                    })?;
-                    Ok((manifest_parent.to_owned(), s))
+                    let manifest_parent = manifest_path
+                        .parent()
+                        .ok_or_else(|| {
+                            FindManifestError(format!(
+                                "Manifest path {manifest_path:?} does not have a parent directory"
+                            ))
+                        })?
+                        .to_owned();
+                    Ok(FoundManifest {
+                        manifest_path,
+                        manifest_parent,
+                        manifest_source: s,
+                    })
                 }
                 Err(e) => Err(FindManifestError(format!(
                     "Failed to read manifest file: {:?}",
@@ -286,7 +317,13 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
             for ancestor in cwd.ancestors() {
                 let cand_manifest_path = ancestor.join(HWL_MANIFEST_FILE_NAME);
                 match std::fs::read_to_string(&cand_manifest_path) {
-                    Ok(s) => return Ok((ancestor.to_owned(), s)),
+                    Ok(s) => {
+                        return Ok(FoundManifest {
+                            manifest_path: cand_manifest_path,
+                            manifest_parent: ancestor.to_owned(),
+                            manifest_source: s,
+                        })
+                    }
                     Err(e) => match e.kind() {
                         ErrorKind::NotFound => continue,
                         _ => {
@@ -300,8 +337,20 @@ fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<(PathBuf, St
             }
 
             Err(FindManifestError(format!(
-                "No manifest file {HWL_MANIFEST_FILE_NAME} found in any parent directory of the current working directory {cwd:?}"
+                "No manifest file `{HWL_MANIFEST_FILE_NAME}` found in any parent directory of the current working directory {cwd:?}"
             )))
         }
     }
+}
+
+fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
+    let diags = diags.finish();
+    let any_error = !diags.is_empty();
+
+    for diag in diags {
+        let s = diag.to_string(&source, DiagnosticStringSettings::default());
+        eprintln!("{s}\n");
+    }
+
+    any_error
 }

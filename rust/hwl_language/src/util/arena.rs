@@ -14,7 +14,7 @@ use std::ops::{Index, IndexMut};
 
 #[macro_export]
 macro_rules! new_index_type {
-    ($vis:vis $name:ident, Ord) => {
+    ($vis:vis $name:ident: Ord) => {
         $crate::new_index_type!($vis $name);
 
         impl Ord for $name {

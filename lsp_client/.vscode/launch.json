@@ -9,14 +9,17 @@
 			"runtimeExecutable": "${execPath}",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceRoot}"
-              // "--disable-extensions",
-            ],
+				// "--disable-extensions",
+			],
 			"outFiles": [
 				"${workspaceRoot}/client/out/**/*.js",
 				"${workspaceRoot}/server/out/**/*.js"
 			],
 			"autoAttachChildProcesses": true,
 			"preLaunchTask": "prepare-lsp",
+			"env": {
+				"RUST_BACKTRACE": "1"
+			}
 		},
 		{
 			"name": "Language Server E2E Test",
@@ -28,7 +31,9 @@
 				"--extensionTestsPath=${workspaceRoot}/client/out/test/index",
 				"${workspaceRoot}/client/testFixture"
 			],
-			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
+			"outFiles": [
+				"${workspaceRoot}/client/out/test/**/*.js"
+			]
 		}
 	]
 }

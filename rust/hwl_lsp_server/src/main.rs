@@ -1,10 +1,11 @@
-use crossbeam_channel::{RecvError, SendError, TryRecvError};
+use crossbeam_channel::{RecvError, TryRecvError};
 use hwl_language::throw;
 use hwl_lsp_server::server::logger::Logger;
-use hwl_lsp_server::server::sender::ServerSender;
+use hwl_lsp_server::server::sender::{SendError, SendErrorOr, ServerSender};
 use hwl_lsp_server::server::settings::Settings;
-use hwl_lsp_server::server::state::{HandleMessageOutcome, OrSendError, RequestError, ServerState};
-use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
+use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
+use hwl_util::constants::{HWL_LSP_NAME, HWL_VERSION};
+use lsp_server::{Connection, ErrorCode, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
 use std::path::Path;
@@ -12,6 +13,8 @@ use std::path::Path;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+// TODO replace types with https://github.com/gluon-lang/lsp-types/issues/284#issuecomment-2720488780
+// TODO think about error handling some more
 fn main() -> Result<(), TopError> {
     std::panic::catch_unwind(main_inner).unwrap_or_else(|e| {
         let s = match e.downcast::<String>() {
@@ -26,7 +29,7 @@ fn main() -> Result<(), TopError> {
 
 fn main_inner() -> Result<(), TopError> {
     // TODO make this configurable through env var at least
-    let mut logger = Logger::new(false, Some(Path::new("log.txt")));
+    let mut logger = Logger::new(false, Some(Path::new("hwl_lsp_server_log.txt")));
     logger.log("server started");
 
     // open connection
@@ -62,8 +65,8 @@ fn main_inner() -> Result<(), TopError> {
         let initialize_result = InitializeResult {
             capabilities: server_capabilities.clone(),
             server_info: Some(ServerInfo {
-                name: env!("CARGO_PKG_NAME").to_string(),
-                version: Some(format!("{}-dev", env!("CARGO_PKG_VERSION"))),
+                name: HWL_LSP_NAME.to_owned(),
+                version: Some(HWL_VERSION.to_owned()),
             }),
         };
 
@@ -118,8 +121,8 @@ fn main_inner() -> Result<(), TopError> {
                 state.log("finished background work");
             }
             Err(e) => match e {
-                OrSendError::SendError(e) => throw!(e),
-                OrSendError::Error(e) => {
+                SendErrorOr::SendError(e) => throw!(e),
+                SendErrorOr::Other(e) => {
                     state.sender.send_notification_error(e, "background work")?;
                 }
             },
@@ -137,7 +140,7 @@ fn main_inner() -> Result<(), TopError> {
 #[derive(Debug)]
 pub enum TopError {
     IO(std::io::Error),
-    SendError(SendError<Message>),
+    SendError(SendError),
     Protocol(ProtocolError),
     InitJson(String),
     Panic,
@@ -149,8 +152,8 @@ impl From<std::io::Error> for TopError {
     }
 }
 
-impl From<SendError<Message>> for TopError {
-    fn from(value: SendError<Message>) -> Self {
+impl From<SendError> for TopError {
+    fn from(value: SendError) -> Self {
         TopError::SendError(value)
     }
 }

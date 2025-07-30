@@ -13,6 +13,7 @@ use crate::front::value::{CompileValue, Value};
 use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
 use crate::syntax::ast::Spanned;
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
+use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -46,13 +47,19 @@ const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 16;
 pub fn compile(
     diags: &Diagnostics,
     source: &SourceDatabase,
+    hierarchy: &SourceHierarchy,
     parsed: &ParsedDatabase,
     elaboration_set: ElaborationSet,
     print_handler: &mut (dyn PrintHandler + Sync),
     should_stop: &(dyn Fn() -> bool + Sync),
     thread_count: NonZeroUsize,
+    manifest_span: Span,
 ) -> DiagResult<IrDatabase> {
-    let fixed = CompileFixed { source, parsed };
+    let fixed = CompileFixed {
+        source,
+        hierarchy,
+        parsed,
+    };
 
     let queue_all_items = match elaboration_set {
         ElaborationSet::TopOnly => false,
@@ -71,7 +78,7 @@ pub fn compile(
             print_handler,
             should_stop,
         };
-        find_top_module(diags, fixed, &shared).and_then(|top_item| {
+        find_top_module(diags, fixed, &shared, manifest_span).and_then(|top_item| {
             let mut ctx = CompileItemContext::new_empty(refs, None);
             let result = ctx.eval_item(top_item.item())?;
 
@@ -208,6 +215,7 @@ impl<'a> CompileRefs<'a, '_> {
 #[derive(Copy, Clone)]
 pub struct CompileFixed<'a> {
     pub source: &'a SourceDatabase,
+    pub hierarchy: &'a SourceHierarchy,
     pub parsed: &'a ParsedDatabase,
 }
 
@@ -409,11 +417,15 @@ pub enum CompileStackEntry {
 }
 
 fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
-    let CompileFixed { source, parsed } = fixed;
+    let CompileFixed {
+        source,
+        hierarchy,
+        parsed,
+    } = fixed;
 
     // pass 0: add all items to their own file scope
     let mut file_scopes: FileScopes = IndexMap::new();
-    for file in source.files() {
+    for file in hierarchy.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
             let mut scope = Scope::new_root(ast.span, file);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
@@ -433,7 +445,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
 
     // pass 1: collect import items from source scopes for each target file
     let mut file_imported_items: Vec<Vec<(MaybeIdentifier, DiagResult<ScopedEntry>)>> = vec![];
-    for target_file in source.files() {
+    for target_file in hierarchy.files() {
         let mut curr_imported_items = vec![];
 
         if let Ok(target_file_ast) = &parsed[target_file] {
@@ -445,7 +457,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         entry,
                     } = item;
 
-                    let source_scope = resolve_import_path(diags, source, parents)
+                    let source_scope = resolve_import_path(diags, source, hierarchy, parents)
                         .and_then(|source_file| file_scopes.get(&source_file).unwrap().as_ref_ok());
 
                     let entries = match &entry.inner {
@@ -492,7 +504,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
 
     // pass 3: add imported items to the target file scope
-    for (target_file, items) in zip_eq(source.files(), file_imported_items) {
+    for (target_file, items) in zip_eq(hierarchy.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
                 scope.maybe_declare(diags, Ok(target_id.spanned_str(source)), value);
@@ -506,12 +518,13 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
 fn resolve_import_path(
     diags: &Diagnostics,
     source: &SourceDatabase,
+    hierarchy: &SourceHierarchy,
     path: &Spanned<Vec<Identifier>>,
 ) -> DiagResult<FileId> {
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
-    let mut curr_dir = source.root_directory();
+    let mut curr_node = &hierarchy.root;
 
     // get the span without the trailing separator
     let parents_span = if path.inner.is_empty() {
@@ -521,12 +534,10 @@ fn resolve_import_path(
     };
 
     for step in &path.inner {
-        let curr_dir_info = &source[curr_dir];
-
-        curr_dir = match curr_dir_info.children.get(step.str(source)) {
-            Some(&child_dir) => child_dir,
+        curr_node = match curr_node.children.get(step.str(source)) {
+            Some(child_node) => child_node,
             None => {
-                let mut options = curr_dir_info.children.keys().cloned().collect_vec();
+                let mut options = curr_node.children.keys().cloned().collect_vec();
                 options.sort();
 
                 // TODO without trailing separator
@@ -541,7 +552,7 @@ fn resolve_import_path(
         };
     }
 
-    source[curr_dir]
+    curr_node
         .file
         .ok_or_else(|| diags.report_simple("expected path to file", parents_span, "no file exists at this path"))
 }
@@ -550,16 +561,22 @@ fn find_top_module(
     diags: &Diagnostics,
     fixed: CompileFixed,
     shared: &CompileShared,
+    manifest_span: Span,
 ) -> DiagResult<AstRefModuleInternal> {
     // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
-    let top_file = fixed.source[fixed.source.root_directory()]
+    let top_file = fixed
+        .hierarchy
+        .root
         .children
         .get("top")
-        .and_then(|&top_dir| fixed.source[top_dir].file)
+        .and_then(|top_node| top_node.file)
         .ok_or_else(|| {
-            let title = "no top file found, should be called `top` and be in the root directory of the project";
-            diags.report(Diagnostic::new(title).finish())
+            diags.report_simple(
+                "no top file found, should be called `top` and be in the root directory of the project",
+                manifest_span,
+                "manifest should point to top file",
+            )
         })?;
     let top_file_scope = shared.file_scopes.get(&top_file).unwrap().as_ref_ok()?;
     let top_entry = top_file_scope.find_immediate_str(diags, "top")?;
@@ -588,7 +605,11 @@ fn find_top_module(
 
 impl CompileShared {
     pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
-        let CompileFixed { source, parsed } = fixed;
+        let CompileFixed {
+            source: _,
+            hierarchy,
+            parsed,
+        } = fixed;
         let file_scopes = populate_file_scopes(diags, fixed);
 
         // pass over all items, to:
@@ -597,7 +618,7 @@ impl CompileShared {
         // TODO make also skip trivial items already, eg. functions and generic modules
         let mut items = vec![];
         let mut external_modules: IndexMap<String, Vec<Span>> = IndexMap::new();
-        for file in source.files() {
+        for file in hierarchy.files() {
             if let Ok(file_ast) = &parsed[file] {
                 for (item_ref, item) in file_ast.items_with_ref() {
                     if !matches!(item, ast::Item::Import(_)) {

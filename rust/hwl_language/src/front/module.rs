@@ -471,7 +471,7 @@ impl CompileRefs<'_, '_> {
             wires: ctx.ir_wires,
             large: ctx_item.large,
             children: processes,
-            debug_info_file: source[def_id.span().file].path_raw.clone(),
+            debug_info_file: source[def_id.span().file].debug_info_path.clone(),
             debug_info_id: def_id.spanned_string(source),
             debug_info_generic_args: debug_info_params,
         })

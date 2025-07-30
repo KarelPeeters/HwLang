@@ -1,5 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
+use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
 use crate::util::arena::IndexType;
@@ -9,20 +10,20 @@ use std::fmt::{Debug, Formatter};
 use unwrap_match::unwrap_match;
 
 // TODO represent the set of existing items here already, so direct lookups become possible
-// TODO merge with SourceDatabase?
+// TODO make this more query-based like the rest of the compiler?
 pub struct ParsedDatabase {
     file_ast: IndexMap<FileId, DiagResult<FileContent>>,
 }
 
 impl ParsedDatabase {
-    pub fn new(diags: &Diagnostics, source: &SourceDatabase) -> Self {
+    pub fn new(diags: &Diagnostics, source: &SourceDatabase, hierarchy: &SourceHierarchy) -> Self {
         let mut file_ast = IndexMap::new();
 
-        for file_id in source.files() {
-            let file_info = &source[file_id];
+        for file in hierarchy.files() {
+            let file_info = &source[file];
             let ast =
-                parse_file_content(file_id, &file_info.source).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
-            file_ast.insert_first(file_id, ast);
+                parse_file_content(file, &file_info.content).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
+            file_ast.insert_first(file, ast);
         }
 
         Self { file_ast }
