@@ -1,21 +1,14 @@
 use crate::syntax::parse_file_content;
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::resolve::{find_definition, FindDefinition};
-use crate::syntax::source::{FilePath, SourceDatabaseBuilder};
+use crate::syntax::source::SourceDatabase;
 use itertools::Itertools;
 use std::ops::Range;
 
 #[track_caller]
 fn test_resolve(src: &str, pos: usize, expected: FindDefinition<&[Range<usize>]>) {
-    let (source, file) = {
-        let mut source = SourceDatabaseBuilder::new();
-        let file = source
-            .add_file(FilePath(vec!["dummy".to_owned()]), "dummy".to_owned(), src.to_owned())
-            .unwrap();
-        let (source, _, map) = source.finish_with_mapping();
-        let file = *map.get(&file).unwrap();
-        (source, file)
-    };
+    let mut source = SourceDatabase::new();
+    let file = source.add_file("dummy".to_owned(), src.to_owned());
     let ast = parse_file_content(file, src).unwrap();
 
     let pos = Pos { file, byte: pos };
