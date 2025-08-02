@@ -11,8 +11,10 @@ pub struct FileContent {
     pub span: Span,
     pub items: Vec<Item>,
 
-    pub arena_expressions: Arena<ExpressionKindIndex, ExpressionKind>,
+    pub arena_expressions: ArenaExpressions,
 }
+
+pub type ArenaExpressions = Arena<ExpressionKindIndex, ExpressionKind>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility<S = Span> {
@@ -66,9 +68,16 @@ pub struct ConstBlock {
 // TODO split this out from the items that actually define _new_ symbols?
 #[derive(Debug, Clone)]
 pub struct ItemImport {
-    pub span: Span,
+    pub span_import: Span,
     pub parents: Spanned<Vec<Identifier>>,
     pub entry: Spanned<ImportFinalKind>,
+    pub span_semi: Span,
+}
+
+impl ItemImport {
+    pub fn span(&self) -> Span {
+        self.span_import.join(self.span_semi)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +90,13 @@ pub enum ImportFinalKind {
 pub struct ImportEntry {
     pub span: Span,
     pub id: Identifier,
-    pub as_: Option<MaybeIdentifier>,
+    pub as_: Option<ImportAs>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ImportAs {
+    pub span_as: Span,
+    pub id: MaybeIdentifier,
 }
 
 // TODO allow "if" in a bunch of places? eg. struct fields
@@ -1020,11 +1035,14 @@ pub struct ItemDeclarationInfo {
 impl Item {
     pub fn info(&self) -> ItemInfo {
         match self {
-            Item::Import(item) => ItemInfo {
-                span_full: item.span,
-                span_short: item.span,
-                declaration: None,
-            },
+            Item::Import(item) => {
+                let span = item.span();
+                ItemInfo {
+                    span_full: span,
+                    span_short: span,
+                    declaration: None,
+                }
+            }
             Item::CommonDeclaration(item) => ItemInfo {
                 span_full: item.span,
                 span_short: item.inner.span_short(),

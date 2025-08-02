@@ -1,0 +1,51 @@
+import test.test.test.test.[test, test as a, test as b];
+
+import test.test.test.test.[
+    test,
+    test as a,
+    test as b,  <--
+];
+
+// maybe we don't need to support extra splitting, for now just emitting things as sequences is fine
+import test.test.test.test.[
+    test,
+    test as a,
+    test as b,
+];
+
+import test
+    .test
+    .test
+    .test;
+
+import test
+    .test
+    .test
+    .test
+    .[
+        test,
+        test as a,
+        test as b,
+    ];
+
+
+The node tree for this has to be:
+
+"import" space
+    group 0
+        "test"
+        "."
+        "test"
+        "."
+        "test"
+        "."
+        "test"
+        "."
+
+
+
+
+================
+
+
+

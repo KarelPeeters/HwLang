@@ -452,9 +452,10 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             for item in &target_file_ast.items {
                 if let ast::Item::Import(item) = item {
                     let ast::ItemImport {
-                        span: _,
+                        span_import: _,
                         parents,
                         entry,
+                        span_semi: _,
                     } = item;
 
                     let source_scope = resolve_import_path(diags, source, hierarchy, parents)
@@ -491,7 +492,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         }
 
                         let target_id: MaybeIdentifier = match as_ {
-                            Some(as_) => as_,
+                            Some(as_) => as_.id,
                             None => MaybeIdentifier::Identifier(id),
                         };
                         curr_imported_items.push((target_id, source_value));

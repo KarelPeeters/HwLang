@@ -118,8 +118,8 @@ pub FileItems: Vec<Item> = {
 
 // items
 Item: Item = {
-    <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
-        => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
+    <span_import:Span<"import">> <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> <span_semi:Span<";">>
+        => Item::Import(ItemImport { parents, entry, span_import, span_semi }),
 
     <decl:Spanned<CommonDeclaration<Vis>>>
         => Item::CommonDeclaration(decl),
@@ -174,8 +174,12 @@ ImportFinalKind: ImportFinalKind = {
 }
 
 ImportEntry: ImportEntry = {
-    <start:@L> <id:Id> <as_:("as" <MaybeId>)?> <end:@R>
+    <start:@L> <id:Id> <as_:ImportAs?> <end:@R>
         => ImportEntry { id, as_, span: loc.span(start, end) },
+}
+
+ImportAs: ImportAs = {
+    <span_as:Span<"as">> <id:MaybeId> => ImportAs { span_as, id }
 }
 
 EnumVariant: EnumVariant = {

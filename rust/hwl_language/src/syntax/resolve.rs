@@ -318,7 +318,7 @@ impl ResolveContext<'_> {
             if let Item::Import(item) = item {
                 let mut visit_entry = |entry: &ImportEntry| {
                     let &ImportEntry { span: _, id, as_ } = entry;
-                    let result = as_.unwrap_or(MaybeIdentifier::Identifier(id));
+                    let result = as_.map_or(MaybeIdentifier::Identifier(id), |as_| as_.id);
                     scope_file.maybe_declare(self.source, Conditional::No, result);
                 };
                 match &item.entry.inner {

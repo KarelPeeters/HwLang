@@ -254,7 +254,7 @@ impl CompileItemContext<'_, '_> {
         match item_ast {
             Item::Import(item_inner) => {
                 let reason = "import items should have been resolved in a separate pass already";
-                Err(diags.report_internal_error(item_inner.span, reason))
+                Err(diags.report_internal_error(item_inner.span(), reason))
             }
             Item::CommonDeclaration(decl) => {
                 let flow_root = FlowRoot::new(diags);

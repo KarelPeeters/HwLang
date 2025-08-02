@@ -4,40 +4,58 @@ import std.util.[print, assert];
 import examples.axi_gearbox.axi_gearbox;
 import examples.axi_stream.[axi_stream, axi_passthrough];
 
-const input_width = 8;
+const input_width: uint = 8;
 const output_width = 8;
+
+//pub struct SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName {
+//}
+
+//import
+//    a
+//    .b
+//    .c
+//    .d
+//    .[a, b, c];
+//
+//val a = 4
+//    + 6
+//    + 6
+//    + 7
+
+
+//const a = [1, 2, 3/*test*/];
 
 // TODO fix empty enums
 // TODO skip match arm checking for compile-time values
 // TODO fix current crash, "Range must be valid, got 0..=-1", also related to empty enums
-pub module top ports(
-    clk: in clock,
-    rst: in async bool,
-
-    x: in sync(clk, rst) bool,
-    y: out sync(clk, rst) bool,
-//    e: in sync(clk, rst) A,
-) {
-    reg out y = false;
-
-    clocked(clk, async rst) {
-        val a;
-        if (x) {
-            a = false;
-        } else {
-            a = false;
-//            a = true;
-        }
-
-        y = a;
-    }
-}
-
-enum A {
-}
-
-enum Derp {
-    Yes,
-    No,
-    Maybe,
-}
+//pub module top ports(
+//    clk: in clock,
+//    rst: in async bool,
+//
+//    x: in sync(clk, rst) bool,
+//    y: out sync(clk, rst) bool,
+////    e: in sync(clk, rst) A,
+//) {
+//    reg out y = false;
+//
+//    clocked(clk, async rst) {
+//        val a;
+//        if (x) {
+//            a = false;
+//        } else {
+//            a = false;
+////            a = true;
+//        }
+//
+//        y = a;
+//    }
+//}
+//
+//enum A {
+//}
+//
+//enum Derp {
+//    Yes,
+//    No,
+//    Maybe,
+//}

@@ -21,6 +21,22 @@ pub trait IterExt: Iterator {
     {
         self.collect()
     }
+
+    /// Iterate with an extra boolean `last`.
+    fn with_last(self) -> impl Iterator<Item = (Self::Item, bool)>
+    where
+        Self: Sized,
+    {
+        let mut iter = self.peekable();
+        std::iter::from_fn(move || {
+            if let Some(item) = iter.next() {
+                let is_last = iter.peek().is_none();
+                Some((item, is_last))
+            } else {
+                None
+            }
+        })
+    }
 }
 
 impl<I: Iterator> IterExt for I {
