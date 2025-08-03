@@ -4,8 +4,10 @@ import std.util.[print, assert];
 import examples.axi_gearbox.axi_gearbox;
 import examples.axi_stream.[axi_stream, axi_passthrough];
 
-const input_width: uint = 8;
+const input_width = 8;
 const output_width = 8;
+
+//const input_width: uint = 8;
 
 //pub struct SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName {
 //}
@@ -24,6 +26,14 @@ const output_width = 8;
 
 
 //const a = [1, 2, 3/*test*/];
+
+//const a = x + y + z;
+
+// TODO should this care about operator precedence or not??
+//   maybe flatten for ops with the same precedence, but nest for different precedence?
+//const a =
+//    x
+//    + y * z;
 
 // TODO fix empty enums
 // TODO skip match arm checking for compile-time values

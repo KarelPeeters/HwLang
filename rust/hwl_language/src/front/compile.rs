@@ -11,8 +11,8 @@ use crate::front::signal::{
 };
 use crate::front::value::{CompileValue, Value};
 use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
-use crate::syntax::ast::Spanned;
-use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
+use crate::syntax::ast::{self, Expression, ExpressionKind, MaybeIdentifier, Visibility};
+use crate::syntax::ast::{ImportStep, Spanned};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
@@ -492,7 +492,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         }
 
                         let target_id: MaybeIdentifier = match as_ {
-                            Some(as_) => as_.id,
+                            Some(as_) => as_.as_id,
                             None => MaybeIdentifier::Identifier(id),
                         };
                         curr_imported_items.push((target_id, source_value));
@@ -520,7 +520,7 @@ fn resolve_import_path(
     diags: &Diagnostics,
     source: &SourceDatabase,
     hierarchy: &SourceHierarchy,
-    path: &Spanned<Vec<Identifier>>,
+    path: &Spanned<Vec<ImportStep>>,
 ) -> DiagResult<FileId> {
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
@@ -529,13 +529,23 @@ fn resolve_import_path(
 
     // get the span without the trailing separator
     let parents_span = if path.inner.is_empty() {
+        // TODO is an empty path even possible?
         path.span
     } else {
-        path.inner.first().unwrap().span.join(path.inner.last().unwrap().span)
+        path.inner
+            .first()
+            .unwrap()
+            .id
+            .span
+            .join(path.inner.last().unwrap().id.span)
     };
 
     for step in &path.inner {
-        curr_node = match curr_node.children.get(step.str(source)) {
+        let ImportStep {
+            id: step_id,
+            span_dot: _,
+        } = step;
+        curr_node = match curr_node.children.get(step_id.str(source)) {
             Some(child_node) => child_node,
             None => {
                 let mut options = curr_node.children.keys().cloned().collect_vec();
@@ -544,7 +554,7 @@ fn resolve_import_path(
                 // TODO without trailing separator
                 let diag = Diagnostic::new("import not found")
                     .snippet(path.span)
-                    .add_error(step.span, "failed step")
+                    .add_error(step.id.span, "failed step")
                     .finish()
                     .footer(Level::Info, format!("possible options: {options:?}"))
                     .finish();

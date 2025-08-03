@@ -9,15 +9,14 @@
 //  we need access to the tokens anyway, so maybe just take a string? but then what if it's invalid?
 
 use crate::syntax::ast::{
-    ArenaExpressions, Block, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, Expression,
-    ExpressionKind, ExtraList, FileContent, Identifier, ImportAs, ImportEntry, ImportFinalKind, IntLiteral, Item,
-    ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
+    ArenaExpressions, Block, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration,
+    Expression, ExpressionKind, ExtraList, FileContent, Identifier, ImportAs, ImportEntry, ImportFinalKind, ImportStep,
+    IntLiteral, Item, ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
 };
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::syntax::token::tokenize;
 use crate::syntax::{parse_file_content, ParseError};
-use hwl_util::{swrite, swriteln};
 use itertools::enumerate;
 
 // TODO split out the core abstract formatting engine and the ast->IR conversion into separate modules?
@@ -70,90 +69,101 @@ pub fn format(source: &str, settings: &FormatSettings) -> Result<String, ParseEr
     //    maybe allow for changes to trailing commas
 
     // different idea, TODO decide whether to use it or the tree with nodes
-    let mut f = String::new();
+    let mut result = String::new();
 
-    let c = Context {
-        source,
+    let mut c = Context {
+        source_file: file_id,
+        source_str: source,
         arena_expressions: &ast.arena_expressions,
+        result: &mut result,
     };
+    c.format_file(&ast);
 
-    let node = c.format_file(&ast);
+    // TODO re-parse, check token equivalence (and maybe eventually AST equivalence?)
 
-    println!("{}", node.tree_to_string(source));
-
-    Ok(f)
-}
-
-
-// TODO how to handle spaces between keywords, should we include them in the literals? where should comments go?
-#[derive(Debug)]
-enum Node {
-
-
-    Sequence(Vec<Node>),
-    Literal(Span),
-    // TODO refer to group id?
-    SpaceOrLine,
-    Line,
-}
-
-impl Node {
-    fn empty() -> Node {
-        Node::Sequence(vec![])
-    }
+    Ok(result)
 }
 
 struct Context<'a> {
-    source: &'a str,
+    source_file: FileId,
+    source_str: &'a str,
     arena_expressions: &'a ArenaExpressions,
+
+    result: &'a mut String,
+}
+
+// TODO split the non-ast specific stuff into separate file/module
+impl Context<'_> {
+    fn push_copy(&mut self, span: Span) {
+        // TODO copy over any comments that happened before span
+        assert_eq!(span.file, self.source_file);
+        self.result.push_str(&self.source_str[span.range_bytes()]);
+    }
+
+    fn push_space(&mut self) {
+        // no need to check for comments
+        // TODO is that right?
+        self.result.push(' ');
+    }
+
+    fn push_newline(&mut self) {
+        // no need to check for comments
+        // TODO is that right?
+        // TODO indentation
+        // TODO should we use \r\n on windows?
+        self.result.push('\n');
+    }
 }
 
 impl Context<'_> {
-    fn format_file(&self, file: &FileContent) -> Node {
+    fn format_file(&mut self, file: &FileContent) {
         let FileContent {
             span: _,
             items,
             arena_expressions: _,
         } = file;
 
-        let mut nodes = vec![];
-
         for (i, item) in enumerate(items) {
-            nodes.push(self.format_item(item));
-            nodes.push(Node::Line);
+            self.format_item(item);
 
-            // add separating newlines between non-import items
+            // add extra newlines between non-import items
             if let Some(next) = items.get(i + 1) {
                 if !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_))) {
-                    nodes.push(Node::Line);
+                    self.push_newline();
                 }
             }
         }
-
-        Node::Sequence(nodes)
     }
 
-    fn format_item(&self, item: &Item) -> Node {
+    fn format_item(&mut self, item: &Item) {
         match item {
-            Item::Import(ItemImport {
-                span_import,
-                parents,
-                entry,
-                span_semi,
-            }) => {
-                // TODO sort imports, both within and across lines?
-                let mut nodes = vec![];
-                nodes.push(Node::Literal(*span_import));
+            Item::Import(item) => {
+                let &ItemImport {
+                    span_import,
+                    ref parents,
+                    ref entry,
+                    span_semi,
+                } = item;
+                // TODO sort imports, both within and across lines, combining them in some single-correct way
+                // TODO move imports to top of file?
+
+                // TODO implement line wrapping
+                self.push_copy(span_import);
+                self.push_space();
                 for parent in &parents.inner {
-                    nodes.push(self.format_id(parent));
+                    let &ImportStep { id: id, span_dot } = parent;
+                    self.format_id(id);
+                    self.push_copy(span_dot);
                 }
                 match &entry.inner {
                     ImportFinalKind::Single(entry) => {
-                        nodes.push(self.format_import_entry(entry));
+                        self.format_import_entry(entry);
                     }
                     ImportFinalKind::Multi(entries) => {
+                        // TODO definitely implement line wrapping here
+
                         // TODO
-                        // todo!()
+                        todo!()
                         // swrite!(self.f, "[");
                         // for (entry, last) in entries.iter().with_last() {
                         //     self.format_import_entry(entry);
@@ -164,8 +174,8 @@ impl Context<'_> {
                         // swrite!(self.f, "]");
                     }
                 }
-                nodes.push(Node::Literal(*span_semi));
-                Node::Sequence(nodes)
+                self.push_copy(span_semi);
+                self.push_newline();
             }
             Item::CommonDeclaration(decl) => self.format_common_declaration(&decl.inner),
             Item::ModuleInternal(decl) => {
@@ -192,23 +202,19 @@ impl Context<'_> {
         }
     }
 
-    fn format_import_entry(&self, entry: &ImportEntry) -> Node {
-        let ImportEntry { span: _, id, as_ } = entry;
-
-        let mut nodes = vec![self.format_id(id)];
-
-        // TODO does this need a wrapping group?
-        // TODO does every node sequence have the ability to wrap?
-        if let Some(ImportAs { span_as, id: as_id }) = as_ {
-            nodes.push(Node::SpaceOrLine);
-            nodes.push(Node::Literal(*span_as));
-            nodes.push(self.format_maybe_id(as_id));
+    fn format_import_entry(&mut self, entry: &ImportEntry) {
+        // TODO support wrapping?
+        let &ImportEntry { span: _, id, as_ } = entry;
+        self.format_id(id);
+        if let Some(ImportAs { span_as, as_id }) = as_ {
+            self.push_space();
+            self.push_copy(span_as);
+            self.push_space();
+            self.format_maybe_id(as_id);
         }
-
-        Node::Sequence(nodes)
     }
 
-    fn format_common_declaration<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> Node {
+    fn format_common_declaration<V: FormatVisibility>(&mut self, decl: &CommonDeclaration<V>) {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis, kind } = decl;
@@ -217,19 +223,26 @@ impl Context<'_> {
                 match kind {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
                     CommonDeclarationNamedKind::Const(decl) => {
-                        // let ConstDeclaration { span: _, id, ty, value } = decl;
-                        //
-                        // swrite!(self.f, "const ");
-                        // self.format_maybe_id(id);
-                        // if let Some(ty) = ty {
-                        //     swrite!(self.f, ": ");
-                        //     self.format_expr(ty);
-                        // }
-                        // swrite!(self.f, " = ");
-                        // self.format_expr(value);
-                        // swrite!(self.f, ";");
+                        let &ConstDeclaration {
+                            span_const,
+                            id,
+                            ty,
+                            span_eq,
+                            value,
+                            span_semi,
+                        } = decl;
 
-                        todo!()
+                        self.push_copy(span_const);
+                        self.push_space();
+                        self.format_maybe_id(id);
+                        if let Some(ty) = ty {
+                            todo!()
+                        }
+                        self.push_space();
+                        self.push_copy(span_eq);
+                        self.push_space();
+                        self.format_expr(value);
+                        self.push_copy(span_semi);
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -240,11 +253,11 @@ impl Context<'_> {
         }
     }
 
-    fn format_params(&self, params: &Parameters) -> Node {
+    fn format_params(&mut self, params: &Parameters) {
         todo!()
     }
 
-    fn format_ports(&self, ports: &ExtraList<ModulePortItem>) -> Node {
+    fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) {
         todo!()
         // let ExtraList { span: _, items } = ports;<
         //
@@ -266,11 +279,11 @@ impl Context<'_> {
         // swrite!(self.f, ")");
     }
 
-    fn format_block<S>(&self, block: &Block<S>, f: impl Fn(&mut Self, &S)) -> Node {
+    fn format_block<S>(&mut self, block: &Block<S>, f: impl Fn(&mut Self, &S)) {
         todo!()
     }
 
-    fn format_expr(&self, expr: &Expression) -> Node {
+    fn format_expr(&mut self, expr: Expression) {
         match &self.arena_expressions[expr.inner] {
             ExpressionKind::Dummy => todo!(),
             ExpressionKind::Undefined => todo!(),
@@ -279,14 +292,11 @@ impl Context<'_> {
             ExpressionKind::Wrapped(_) => todo!(),
             ExpressionKind::Block(_) => todo!(),
             ExpressionKind::Id(_) => todo!(),
-            ExpressionKind::IntLiteral(lit) => {
-                let span = match *lit {
-                    IntLiteral::Binary(span) => span,
-                    IntLiteral::Decimal(span) => span,
-                    IntLiteral::Hexadecimal(span) => span,
-                };
-                Node::Literal(span)
-            }
+            ExpressionKind::IntLiteral(lit) => match *lit {
+                IntLiteral::Binary(span) => self.push_copy(span),
+                IntLiteral::Decimal(span) => self.push_copy(span),
+                IntLiteral::Hexadecimal(span) => self.push_copy(span),
+            },
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
             ExpressionKind::ArrayLiteral(_) => todo!(),
@@ -306,66 +316,39 @@ impl Context<'_> {
         }
     }
 
-    fn format_visibility<V: FormatVisibility>(&self, vis: &V) -> Node {
+    fn format_visibility<V: FormatVisibility>(&mut self, vis: &V) {
         V::format_visibility(self, vis)
     }
 
-    fn format_maybe_id(&self, id: &MaybeIdentifier) -> Node {
+    fn format_maybe_id(&mut self, id: MaybeIdentifier) {
         match id {
-            &MaybeIdentifier::Dummy(span) => Node::Literal(span),
+            MaybeIdentifier::Dummy(span) => todo!(),
             MaybeIdentifier::Identifier(id) => self.format_id(id),
         }
     }
 
-    fn format_id(&self, id: &Identifier) -> Node {
-        let &Identifier { span } = id;
-        Node::Literal(span)
+    fn format_id(&mut self, id: Identifier) {
+        self.push_copy(id.span);
     }
 }
 
 trait FormatVisibility {
-    fn format_visibility(c: &Context, vis: &Self) -> Node;
+    fn format_visibility(c: &Context, vis: &Self);
 }
 
 impl FormatVisibility for Visibility {
-    fn format_visibility(c: &Context, vis: &Visibility) -> Node {
+    fn format_visibility(c: &Context, vis: &Visibility) {
         match *vis {
-            Visibility::Public(span) => Node::Sequence(vec![Node::Literal(span), Node::SpaceOrLine]),
-            Visibility::Private => Node::empty(),
+            Visibility::Public(span) => todo!(),
+            Visibility::Private => {
+                // do nothing, private visibility is the default
+            }
         }
     }
 }
 
 impl FormatVisibility for () {
-    fn format_visibility(_: &Context, _: &()) -> Node {
-        Node::empty()
-    }
-}
-
-impl Node {
-    pub fn tree_to_string(&self, source: &str) -> String {
-        fn node_to_string(f: &mut String, source: &str, indent: usize, node: &Node) {
-            for _ in 0..indent {
-                swrite!(f, " |  ");
-            }
-            match node {
-                Node::Sequence(children) => {
-                    swriteln!(f, "Sequence");
-                    for child in children {
-                        node_to_string(f, source, indent + 1, child);
-                    }
-                }
-                &Node::Literal(span) => {
-                    let s = &source[span.range_bytes()];
-                    swriteln!(f, "Literal({span:?}, {s:?})",)
-                }
-                Node::SpaceOrLine => swriteln!(f, "SpaceOrLine"),
-                Node::Line => swriteln!(f, "Line"),
-            }
-        }
-
-        let mut f = String::new();
-        node_to_string(&mut f, source, 0, self);
-        f
+    fn format_visibility(_: &Context, _: &()) {
+        todo!()
     }
 }
