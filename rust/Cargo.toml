@@ -83,6 +83,9 @@ single_range_in_vec_init = "allow"
 result_large_err = "allow"
 large_enum_variant = "allow"
 
-# Allow some cfgs that are set by wasm
 [workspace.lints.rust]
+# Correct error handling is very important, force it.
+unused_must_use = "deny"
+
+# Allow some cfgs that are set by wasm
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test_coverage)'] }

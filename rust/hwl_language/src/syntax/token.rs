@@ -13,7 +13,7 @@ pub struct Token {
     pub span: Span,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TokenError {
     InvalidToken { pos: Pos },
     InvalidIntLiteral { span: Span },
@@ -482,6 +482,11 @@ macro_rules! declare_tokens {
             $($f_token,)*
         }
 
+        #[derive(Eq, PartialEq, Copy, Clone, Debug)]
+        pub enum FixedTokenType {
+            $($f_token,)*
+        }
+
         impl TokenType {
             #[cfg(test)]
             const CUSTOM_TOKENS: &[(&str, TokenType)] = &[
@@ -502,6 +507,27 @@ macro_rules! declare_tokens {
                 match self {
                     $(TokenType::$c_token => stringify!($c_token),)*
                     $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
+                }
+            }
+
+            pub fn as_fixed(self) -> Option<FixedTokenType> {
+                match self {
+                    $(TokenType::$c_token => None,)*
+                    $(TokenType::$f_token => Some(FixedTokenType::$f_token),)*
+                }
+            }
+        }
+
+        impl FixedTokenType {
+            pub fn as_token(self) -> TokenType {
+                match self {
+                    $(FixedTokenType::$f_token => TokenType::$f_token,)*
+                }
+            }
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(FixedTokenType::$f_token => $f_string,)*
                 }
             }
         }
@@ -804,7 +830,7 @@ mod test {
     }
 
     #[test]
-    fn literal_tokens_unique() {
+    fn fixed_tokens_unique() {
         let mut set = HashSet::new();
         for info in TokenType::FIXED_TOKENS {
             assert!(!info.literal.is_empty());
@@ -813,7 +839,7 @@ mod test {
     }
 
     #[test]
-    fn literal_tokens_covered() {
+    fn fixed_tokens_covered() {
         let mut any_error = false;
 
         for info in TokenType::FIXED_TOKENS {

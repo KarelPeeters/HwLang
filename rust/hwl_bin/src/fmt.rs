@@ -1,6 +1,8 @@
 use crate::args::ArgsFormat;
-use crate::util::find_and_read_manifest;
+use crate::util::print_diagnostics;
+use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::syntax::format::{format, FormatSettings};
+use hwl_language::syntax::source::SourceDatabase;
 use std::process::ExitCode;
 
 pub fn main_fmt(args: ArgsFormat) -> ExitCode {
@@ -11,12 +13,25 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
 
     // let file = file.unwrap();
 
-    let src = std::fs::read_to_string("/home/karel/Documents/hwlang/design/project/top.kh").unwrap();
+    let path = "/home/karel/Documents/hwlang/design/project/top.kh";
+    let source_str = std::fs::read_to_string(path).unwrap();
+    let mut source = SourceDatabase::new();
+    let file = source.add_file(path.to_owned(), source_str);
 
     let settings = FormatSettings::default();
-    let result = format(&src, &settings).unwrap();
 
-    println!("{}", result);
+    let diags = Diagnostics::new();
+    let result = format(&diags, &source, file, &settings);
 
-    ExitCode::SUCCESS
+    match result {
+        Ok(result) => {
+            println!("Formatting result:");
+            println!("{}", result);
+            ExitCode::SUCCESS
+        }
+        Err(_) => {
+            print_diagnostics(&source, diags);
+            ExitCode::FAILURE
+        }
+    }
 }

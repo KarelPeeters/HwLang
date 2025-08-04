@@ -60,6 +60,7 @@ impl Diagnostics {
 
     // TODO go through and try to avoid early-exits as much as possible
     // TODO limit the number of diagnostics reported, eg. stop after 1k
+    // TODO turn this into diag.report(diags) so we can chain this
     pub fn report(&self, diag: Diagnostic) -> DiagError {
         self.diagnostics.borrow_mut().push(diag);
         DiagError(())
@@ -77,7 +78,7 @@ impl Diagnostics {
 
     // TODO rename to "report_bug"
     pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> DiagError {
-        self.report(Diagnostic::new_internal_error(span, reason))
+        self.report(Diagnostic::new_internal_error(span, reason).finish())
     }
 
     // TODO sort diagnostics by location, for a better user experience?
@@ -176,11 +177,11 @@ impl Diagnostic {
         Diagnostic::new(title).add_error(span, label).finish()
     }
 
-    pub fn new_internal_error(span: Span, reason: impl Into<String>) -> Diagnostic {
+    pub fn new_internal_error(span: Span, reason: impl Into<String>) -> DiagnosticBuilder {
         let mut diag =
             Diagnostic::new(format!("internal compiler error: '{}'", reason.into())).add_error(span, "caused here");
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
-        diag.finish()
+        diag
     }
 
     pub fn main_annotation(&self) -> Option<&Annotation> {
