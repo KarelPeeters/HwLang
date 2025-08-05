@@ -482,6 +482,7 @@ macro_rules! declare_tokens {
             $($f_token,)*
         }
 
+        // TODO remove if this doesn't end up being used
         #[derive(Eq, PartialEq, Copy, Clone, Debug)]
         pub enum FixedTokenType {
             $($f_token,)*

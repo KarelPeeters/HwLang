@@ -7,8 +7,9 @@
 
 // TODO should input be a string, an ast, tokens, ...?
 //  we need access to the tokens anyway, so maybe just take a string? but then what if it's invalid?
+// TODO create a test file that contains every syntactical construct, which should fully cover the parser and this
 
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{
     ArenaExpressions, Block, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration,
     Expression, ExpressionKind, ExtraList, FileContent, Identifier, ImportAs, ImportEntry, ImportFinalKind, ImportStep,
@@ -16,7 +17,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::{tokenize, FixedTokenType, Token, TokenCategory, TokenType};
+use crate::syntax::token::{tokenize, Token, TokenCategory, TokenType};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::enumerate;
@@ -96,81 +97,33 @@ struct Context<'a> {
     next_source_token: usize,
 }
 
-// TODO split the non-ast specific stuff into separate file/module
 impl Context<'_> {
-    // TODO merge both push functions into one, they're actually redundant
-    fn push_copy(&mut self, span: Span) -> DiagResult<()> {
-        assert_eq!(span.file, self.source_file);
+    fn push(&mut self, ty: TokenType) -> DiagResult<()> {
+        // TODO improve and double-check comma explanation: (dis)appear, unambiguous
         let diags = self.diags;
 
-        loop {
-            let source_token = self
-                .source_tokens
-                .get(self.next_source_token)
-                .ok_or_else(|| diags.report_internal_error(span, "pushing copy but no tokens left"))?;
-            self.next_source_token += 1;
-
-            match source_token.ty.category() {
-                TokenCategory::WhiteSpace => continue,
-                TokenCategory::Comment => {
-                    // TODO emit comments instead of dropping them
-                    continue;
-                }
-                TokenCategory::Identifier
-                | TokenCategory::IntegerLiteral
-                | TokenCategory::StringLiteral
-                | TokenCategory::Keyword
-                | TokenCategory::Symbol => {}
-            }
-
-            if source_token.span == span {
-                if source_token.ty.as_fixed().is_some() {
-                    let msg = format!(
-                        "push_copy should only be used for non-fixed tokens, got {:?}",
-                        source_token.ty
-                    );
-                    return Err(diags.report_internal_error(span, msg));
-                }
-                // matched token, push it
-                break;
-            }
-
-            // span mismatch
-            let diag = Diagnostic::new_internal_error(span, "push_copy failed to find matching span")
-                .add_info(source_token.span, format!("curr token has ty {:?}", source_token.ty))
-                .finish();
-            return Err(diags.report(diag));
-        }
-
-        self.result.push_str(&self.source_str[span.range_bytes()]);
-        Ok(())
-    }
-
-    // TODO fix code duplication
-    fn push_fixed(&mut self, ty: FixedTokenType) -> DiagResult<()> {
-        // TODO improve and double-check explanation
-        // Emit any tokens that were present before the
-        // The only token that can (dis)appear is the comma token, at the end of sequences
-        //   fortunately consecutive commas are not allowed in the grammar, so there's never any ambiguity.
-        // A comma can also never be the last token in the file, so we always expect there to be a next token.
-        loop {
+        let token_str = loop {
+            // pop the next source token
             let source_token = self.source_tokens.get(self.next_source_token).ok_or_else(|| {
                 let end_pos = Pos {
                     file: self.source_file,
                     byte: self.source_str.len(),
                 };
                 let end_span = Span::empty_at(end_pos);
-                self.diags
-                    .report_internal_error(end_span, "pushing token but no tokens left")
+                let msg = format!("pushing token {ty:?} but no tokens left");
+                diags.report_internal_error(end_span, msg)
             })?;
             self.next_source_token += 1;
 
             match source_token.ty.category() {
+                // drop whitespace, the formatter creates its own
                 TokenCategory::WhiteSpace => continue,
+                // emit comments
                 TokenCategory::Comment => {
                     // TODO emit comments instead of dropping them
                     continue;
                 }
+                // these are real tokens, fallthrough into matching the type
                 TokenCategory::Identifier
                 | TokenCategory::IntegerLiteral
                 | TokenCategory::StringLiteral
@@ -178,27 +131,34 @@ impl Context<'_> {
                 | TokenCategory::Symbol => {}
             }
 
-            if source_token.ty == ty.as_token() {
-                break;
+            if source_token.ty == ty {
+                // found matching token, emit it
+                break &self.source_str[source_token.span.range_bytes()];
             }
 
             if source_token.ty == TokenType::Comma {
-                // comma that disappeared, that's fine
-                return Ok(());
+                // comma in original source that disappeared, continue searching for the actually matching token
+                continue;
             }
-            if ty == FixedTokenType::Comma {
-                // comma that appeared, that's fine (if we un-pop the source token)
+            if ty == TokenType::Comma {
+                // comma that was not in original source but appeared due to formatting,
+                //   un-pop the source token and act as if we found a match
                 self.next_source_token -= 1;
-                return Ok(());
+                break ",";
             }
 
             let msg = format!("push_token expected {:?} but got {:?}", ty, source_token.ty);
-            return Err(self.diags.report_internal_error(source_token.span, msg));
-        }
+            return Err(diags.report_internal_error(source_token.span, msg));
+        };
 
-        // skipped past any early tokens and checked for type match, we can safely emit it now
-        self.result.push_str(ty.as_str());
+        self.result.push_str(token_str);
         Ok(())
+    }
+
+    fn push_with_span(&mut self, ty: TokenType, span: Span) -> DiagResult<()> {
+        // TODO use span
+        let _ = span;
+        self.push(ty)
     }
 
     fn push_space(&mut self) {
@@ -251,12 +211,12 @@ impl Context<'_> {
                 // TODO move imports to top of file?
 
                 // TODO implement line wrapping
-                self.push_fixed(FixedTokenType::Import)?;
+                self.push(TokenType::Import)?;
                 self.push_space();
                 for parent in &parents.inner {
                     let &ImportStep { id, span_dot } = parent;
                     self.format_id(id)?;
-                    self.push_fixed(FixedTokenType::Dot)?;
+                    self.push(TokenType::Dot)?;
                 }
                 match &entry.inner {
                     ImportFinalKind::Single(entry) => {
@@ -266,18 +226,18 @@ impl Context<'_> {
                         // TODO definitely implement line wrapping here, but not the typical "all or nothing" way,
                         //    more soft-wrap like where we keep things as compact as possible
 
-                        self.push_fixed(FixedTokenType::OpenS)?;
+                        self.push(TokenType::OpenS)?;
                         for (entry, last) in entries.iter().with_last() {
                             self.format_import_entry(entry)?;
                             if !last {
-                                self.push_fixed(FixedTokenType::Comma)?;
+                                self.push(TokenType::Comma)?;
                                 self.push_space();
                             }
                         }
-                        self.push_fixed(FixedTokenType::CloseS)?;
+                        self.push(TokenType::CloseS)?;
                     }
                 }
-                self.push_fixed(FixedTokenType::Semi)?;
+                self.push(TokenType::Semi)?;
                 self.push_newline();
                 Ok(())
             }
@@ -312,7 +272,7 @@ impl Context<'_> {
         self.format_id(id)?;
         if let Some(ImportAs { span_as, as_id }) = as_ {
             self.push_space();
-            self.push_fixed(FixedTokenType::As)?;
+            self.push(TokenType::As)?;
             self.push_space();
             self.format_maybe_id(as_id)?;
         }
@@ -337,17 +297,19 @@ impl Context<'_> {
                             span_semi,
                         } = decl;
 
-                        self.push_fixed(FixedTokenType::Const)?;
+                        self.push(TokenType::Const)?;
                         self.push_space();
                         self.format_maybe_id(id)?;
                         if let Some(ty) = ty {
-                            todo!()
+                            self.push(TokenType::Colon)?;
+                            self.push_space();
+                            self.format_expr(ty)?;
                         }
                         self.push_space();
-                        self.push_fixed(FixedTokenType::Eq)?;
+                        self.push(TokenType::Eq)?;
                         self.push_space();
                         self.format_expr(value)?;
-                        self.push_fixed(FixedTokenType::Semi)?;
+                        self.push(TokenType::Semi)?;
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -400,9 +362,9 @@ impl Context<'_> {
             ExpressionKind::Block(_) => todo!(),
             ExpressionKind::Id(_) => todo!(),
             ExpressionKind::IntLiteral(lit) => match *lit {
-                IntLiteral::Binary(span) => self.push_copy(span),
-                IntLiteral::Decimal(span) => self.push_copy(span),
-                IntLiteral::Hexadecimal(span) => self.push_copy(span),
+                IntLiteral::Binary(span) => self.push(TokenType::IntLiteralBinary),
+                IntLiteral::Decimal(span) => self.push(TokenType::IntLiteralDecimal),
+                IntLiteral::Hexadecimal(span) => self.push(TokenType::IntLiteralHexadecimal),
             },
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
@@ -429,13 +391,14 @@ impl Context<'_> {
 
     fn format_maybe_id(&mut self, id: MaybeIdentifier) -> DiagResult<()> {
         match id {
-            MaybeIdentifier::Dummy(span) => todo!(),
+            MaybeIdentifier::Dummy(span) => self.push_with_span(TokenType::Underscore, span),
             MaybeIdentifier::Identifier(id) => self.format_id(id),
         }
     }
 
     fn format_id(&mut self, id: Identifier) -> DiagResult<()> {
-        self.push_copy(id.span)
+        let Identifier { span } = id;
+        self.push_with_span(TokenType::Identifier, span)
     }
 }
 

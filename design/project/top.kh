@@ -2,7 +2,7 @@ import std.types.[bool, int, uint, natural, any];
 import std.math.[gcd, min, max];
 import std.util.[print, assert];
 import examples.axi_gearbox.axi_gearbox;
-import examples.axi_stream.[axi_stream, axi_passthrough];
+import examples.axi_stream.[axi_stream, axi_passthrough, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _];
 
 const input_width = 8;
 const output_width = 8;
