@@ -266,6 +266,14 @@ impl LineOffsets {
         }
     }
 
+    pub fn end_span(&self, file: FileId) -> Span {
+        Span {
+            file,
+            start_byte: self.total_bytes,
+            end_byte: self.total_bytes,
+        }
+    }
+
     pub fn expand_pos(&self, pos: Pos) -> PosFull {
         // OPTIMIZE: maybe cache the last lookup and check its neighborhood first
         let line_0 = self

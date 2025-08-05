@@ -15,7 +15,7 @@ use crate::syntax::ast::{
     Expression, ExpressionKind, ExtraList, FileContent, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item,
     ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
 };
-use crate::syntax::pos::{Pos, Span};
+use crate::syntax::pos::{LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{tokenize, Token, TokenCategory, TokenType};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
@@ -72,12 +72,14 @@ pub fn format(
     let mut c = Context {
         source_file: file,
         source_str,
+        source_offsets: &source[file].offsets,
         source_tokens: &tokens,
         source_expressions: &ast.arena_expressions,
-
+        settings,
         diags,
         next_source_token: 0,
         result: &mut result,
+        curr_line_length: 0,
     };
     c.format_file(&ast)?;
 
@@ -89,12 +91,16 @@ pub fn format(
 struct Context<'a> {
     source_file: FileId,
     source_str: &'a str,
+    source_offsets: &'a LineOffsets,
     source_tokens: &'a [Token],
     source_expressions: &'a ArenaExpressions,
 
+    settings: &'a FormatSettings,
+
     diags: &'a Diagnostics,
-    result: &'a mut String,
     next_source_token: usize,
+    result: &'a mut String,
+    curr_line_length: usize,
 }
 
 impl Context<'_> {
@@ -102,14 +108,20 @@ impl Context<'_> {
         // TODO improve and double-check comma explanation: (dis)appear, unambiguous
         let diags = self.diags;
 
+        if ty == TokenType::WhiteSpace {
+            let curr_span = match self.source_tokens.get(self.next_source_token) {
+                Some(token) => Span::empty_at(token.span.start()),
+                None => self.source_offsets.end_span(self.source_file),
+            };
+            return Err(self
+                .diags
+                .report_internal_error(curr_span, "pushing whitespace tokens is not allowed"));
+        }
+
         let token_str = loop {
             // pop the next source token
             let source_token = self.source_tokens.get(self.next_source_token).ok_or_else(|| {
-                let end_pos = Pos {
-                    file: self.source_file,
-                    byte: self.source_str.len(),
-                };
-                let end_span = Span::empty_at(end_pos);
+                let end_span = self.source_offsets.end_span(self.source_file);
                 let msg = format!("pushing token {ty:?} but no tokens left");
                 diags.report_internal_error(end_span, msg)
             })?;
@@ -200,45 +212,7 @@ impl Context<'_> {
 
     fn format_item(&mut self, item: &Item) -> DiagResult<()> {
         match item {
-            Item::Import(item) => {
-                let &ItemImport {
-                    span,
-                    ref parents,
-                    ref entry,
-                } = item;
-                // TODO sort imports, both within and across lines, combining them in some single-correct way
-                // TODO move imports to top of file?
-
-                // TODO implement line wrapping
-                self.push(TokenType::Import)?;
-                self.push_space();
-                for &parent in &parents.inner {
-                    self.format_id(parent)?;
-                    self.push(TokenType::Dot)?;
-                }
-                match &entry.inner {
-                    ImportFinalKind::Single(entry) => {
-                        self.format_import_entry(entry)?;
-                    }
-                    ImportFinalKind::Multi(entries) => {
-                        // TODO definitely implement line wrapping here, but not the typical "all or nothing" way,
-                        //    more soft-wrap like where we keep things as compact as possible
-
-                        self.push(TokenType::OpenS)?;
-                        for (entry, last) in entries.iter().with_last() {
-                            self.format_import_entry(entry)?;
-                            if !last {
-                                self.push(TokenType::Comma)?;
-                                self.push_space();
-                            }
-                        }
-                        self.push(TokenType::CloseS)?;
-                    }
-                }
-                self.push(TokenType::Semi)?;
-                self.push_newline();
-                Ok(())
-            }
+            Item::Import(item) => self.format_import(item),
             Item::CommonDeclaration(decl) => self.format_common_declaration(&decl.inner),
             Item::ModuleInternal(decl) => {
                 todo!()
@@ -262,6 +236,45 @@ impl Context<'_> {
             Item::ModuleExternal(_) => todo!(),
             Item::Interface(_) => todo!(),
         }
+    }
+
+    fn format_import(&mut self, item: &ItemImport) -> DiagResult<()> {
+        let ItemImport {
+            span: _,
+            parents,
+            entry,
+        } = item;
+
+        // TODO sort imports, both within and across lines, combining them in some single-correct way
+        // TODO move imports to top of file?
+
+        self.push(TokenType::Import)?;
+        self.push_space();
+        for &parent in &parents.inner {
+            self.format_id(parent)?;
+            self.push(TokenType::Dot)?;
+        }
+        match &entry.inner {
+            ImportFinalKind::Single(entry) => {
+                self.format_import_entry(entry)?;
+            }
+            ImportFinalKind::Multi(entries) => {
+                // TODO definitely implement line wrapping here, but not the typical "all or nothing" way,
+                //    more soft-wrap like where we keep things as compact as possible
+                self.push(TokenType::OpenS)?;
+                for (entry, last) in entries.iter().with_last() {
+                    self.format_import_entry(entry)?;
+                    if !last {
+                        self.push(TokenType::Comma)?;
+                        self.push_space();
+                    }
+                }
+                self.push(TokenType::CloseS)?;
+            }
+        }
+        self.push(TokenType::Semi)?;
+        self.push_newline();
+        Ok(())
     }
 
     fn format_import_entry(&mut self, entry: &ImportEntry) -> DiagResult<()> {
