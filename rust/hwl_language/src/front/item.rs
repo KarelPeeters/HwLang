@@ -254,7 +254,7 @@ impl CompileItemContext<'_, '_> {
         match item_ast {
             Item::Import(item_inner) => {
                 let reason = "import items should have been resolved in a separate pass already";
-                Err(diags.report_internal_error(item_inner.span(), reason))
+                Err(diags.report_internal_error(item_inner.span, reason))
             }
             Item::CommonDeclaration(decl) => {
                 let flow_root = FlowRoot::new(diags);
@@ -366,14 +366,7 @@ impl CompileItemContext<'_, '_> {
                 self.eval_maybe_generic_item(id.span(), body_span, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Const(decl) => {
-                let &ConstDeclaration {
-                    span_const: _,
-                    id,
-                    ty,
-                    span_eq: _,
-                    value,
-                    span_semi: _,
-                } = decl;
+                let &ConstDeclaration { span: _, id, ty, value } = decl;
 
                 let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 

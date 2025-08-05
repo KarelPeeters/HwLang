@@ -318,7 +318,7 @@ impl ResolveContext<'_> {
             if let Item::Import(item) = item {
                 let mut visit_entry = |entry: &ImportEntry| {
                     let &ImportEntry { span: _, id, as_ } = entry;
-                    let result = as_.map_or(MaybeIdentifier::Identifier(id), |as_| as_.as_id);
+                    let result = as_.unwrap_or(MaybeIdentifier::Identifier(id));
                     scope_file.maybe_declare(self.source, Conditional::No, result);
                 };
                 match &item.entry.inner {
@@ -528,14 +528,7 @@ impl ResolveContext<'_> {
                         id
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
-                        let &ConstDeclaration {
-                            span_const: _,
-                            id,
-                            ty,
-                            span_eq: _,
-                            value,
-                            span_semi: _,
-                        } = decl;
+                        let &ConstDeclaration { span: _, id, ty, value } = decl;
 
                         if let Some(ty) = ty {
                             self.visit_expression(scope_parent, ty)?;

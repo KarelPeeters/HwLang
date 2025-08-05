@@ -118,8 +118,8 @@ pub FileItems: Vec<Item> = {
 
 // items
 Item: Item = {
-    <span_import:Span<"import">> <parents:Spanned<ImportStep+>> <entry:Spanned<ImportFinalKind>> <span_semi:Span<";">>
-        => Item::Import(ItemImport { parents, entry, span_import, span_semi }),
+    <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
+        => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
 
     <decl:Spanned<CommonDeclaration<Vis>>>
         => Item::CommonDeclaration(decl),
@@ -168,22 +168,14 @@ InterfacePortDir: (Identifier, Spanned<PortDirection>) = {
     <id:Id> ":" <dir:Spanned<PortDirection>> => (id, dir),
 }
 
-ImportStep: ImportStep = {
-    <id:Id> <span_dot:Span<".">> => ImportStep { id, span_dot }
-}
-
 ImportFinalKind: ImportFinalKind = {
     ImportEntry => ImportFinalKind::Single(<>),
     "[" <Separated<ImportEntry,",">> "]" => ImportFinalKind::Multi(<>),
 }
 
 ImportEntry: ImportEntry = {
-    <start:@L> <id:Id> <as_:ImportAs?> <end:@R>
+    <start:@L> <id:Id> <as_:("as" <MaybeId>)?> <end:@R>
         => ImportEntry { id, as_, span: loc.span(start, end) },
-}
-
-ImportAs: ImportAs = {
-    <span_as:Span<"as">> <as_id:MaybeId> => ImportAs { span_as, as_id }
 }
 
 EnumVariant: EnumVariant = {
@@ -392,8 +384,8 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
     <start:@L> "type" <id:MaybeId> <params:Parameters?> "=" <body:Expr> ";" <end:@R>
         => CommonDeclarationNamedKind::Type(TypeDeclaration { id, params, body, span: loc.span(start, end) }),
 
-    <span_const:Span<"const">> <id:MaybeId> <ty:(":" <Expr>)?> <span_eq:Span<"=">> <value:Expr> <span_semi:Span<";">> <end:@R>
-        => CommonDeclarationNamedKind::Const(ConstDeclaration { span_const, id, ty, span_eq, value, span_semi }),
+    <start:@L> "const" <id:MaybeId> <ty:(":" <Expr>)?> "=" <value:Expr> ";" <end:@R>
+        => CommonDeclarationNamedKind::Const(ConstDeclaration { id, ty, value, span: loc.span(start, end) }),
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>

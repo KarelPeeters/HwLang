@@ -12,8 +12,8 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{
     ArenaExpressions, Block, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration,
-    Expression, ExpressionKind, ExtraList, FileContent, Identifier, ImportAs, ImportEntry, ImportFinalKind, ImportStep,
-    IntLiteral, Item, ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
+    Expression, ExpressionKind, ExtraList, FileContent, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item,
+    ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
 };
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -202,10 +202,9 @@ impl Context<'_> {
         match item {
             Item::Import(item) => {
                 let &ItemImport {
-                    span_import,
+                    span,
                     ref parents,
                     ref entry,
-                    span_semi,
                 } = item;
                 // TODO sort imports, both within and across lines, combining them in some single-correct way
                 // TODO move imports to top of file?
@@ -213,9 +212,8 @@ impl Context<'_> {
                 // TODO implement line wrapping
                 self.push(TokenType::Import)?;
                 self.push_space();
-                for parent in &parents.inner {
-                    let &ImportStep { id, span_dot } = parent;
-                    self.format_id(id)?;
+                for &parent in &parents.inner {
+                    self.format_id(parent)?;
                     self.push(TokenType::Dot)?;
                 }
                 match &entry.inner {
@@ -270,11 +268,11 @@ impl Context<'_> {
         // TODO support wrapping?
         let &ImportEntry { span: _, id, as_ } = entry;
         self.format_id(id)?;
-        if let Some(ImportAs { span_as, as_id }) = as_ {
+        if let Some(as_) = as_ {
             self.push_space();
             self.push(TokenType::As)?;
             self.push_space();
-            self.format_maybe_id(as_id)?;
+            self.format_maybe_id(as_)?;
         }
         Ok(())
     }
@@ -288,14 +286,7 @@ impl Context<'_> {
                 match kind {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
                     CommonDeclarationNamedKind::Const(decl) => {
-                        let &ConstDeclaration {
-                            span_const,
-                            id,
-                            ty,
-                            span_eq,
-                            value,
-                            span_semi,
-                        } = decl;
+                        let &ConstDeclaration { span, id, ty, value } = decl;
 
                         self.push(TokenType::Const)?;
                         self.push_space();

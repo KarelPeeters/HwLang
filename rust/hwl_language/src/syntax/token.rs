@@ -482,12 +482,6 @@ macro_rules! declare_tokens {
             $($f_token,)*
         }
 
-        // TODO remove if this doesn't end up being used
-        #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-        pub enum FixedTokenType {
-            $($f_token,)*
-        }
-
         impl TokenType {
             #[cfg(test)]
             const CUSTOM_TOKENS: &[(&str, TokenType)] = &[
@@ -508,27 +502,6 @@ macro_rules! declare_tokens {
                 match self {
                     $(TokenType::$c_token => stringify!($c_token),)*
                     $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
-                }
-            }
-
-            pub fn as_fixed(self) -> Option<FixedTokenType> {
-                match self {
-                    $(TokenType::$c_token => None,)*
-                    $(TokenType::$f_token => Some(FixedTokenType::$f_token),)*
-                }
-            }
-        }
-
-        impl FixedTokenType {
-            pub fn as_token(self) -> TokenType {
-                match self {
-                    $(FixedTokenType::$f_token => TokenType::$f_token,)*
-                }
-            }
-
-            pub fn as_str(self) -> &'static str {
-                match self {
-                    $(FixedTokenType::$f_token => $f_string,)*
                 }
             }
         }

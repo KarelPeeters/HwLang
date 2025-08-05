@@ -6,10 +6,6 @@ use crate::util::arena::Arena;
 
 new_index_type!(pub ExpressionKindIndex);
 
-// TODO create/generate a variant of the ast without or with much less spans?
-//   then generate a second parser that parses into that,
-//   so the rest of the compiler doesn't have to pattern match a bunch of times on spans
-
 #[derive(Debug)]
 pub struct FileContent {
     pub span: Span,
@@ -72,22 +68,9 @@ pub struct ConstBlock {
 // TODO split this out from the items that actually define _new_ symbols?
 #[derive(Debug, Clone)]
 pub struct ItemImport {
-    pub span_import: Span,
-    pub parents: Spanned<Vec<ImportStep>>,
+    pub span: Span,
+    pub parents: Spanned<Vec<Identifier>>,
     pub entry: Spanned<ImportFinalKind>,
-    pub span_semi: Span,
-}
-
-impl ItemImport {
-    pub fn span(&self) -> Span {
-        self.span_import.join(self.span_semi)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportStep {
-    pub id: Identifier,
-    pub span_dot: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -96,21 +79,11 @@ pub enum ImportFinalKind {
     Multi(Vec<ImportEntry>),
 }
 
-pub struct ImportMultiEntry {
-    span_open: Span,
-}
-
 #[derive(Debug, Clone)]
 pub struct ImportEntry {
     pub span: Span,
     pub id: Identifier,
-    pub as_: Option<ImportAs>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct ImportAs {
-    pub span_as: Span,
-    pub as_id: MaybeIdentifier,
+    pub as_: Option<MaybeIdentifier>,
 }
 
 // TODO allow "if" in a bunch of places? eg. struct fields
@@ -524,12 +497,10 @@ pub struct TypeDeclaration {
 
 #[derive(Debug, Clone)]
 pub struct ConstDeclaration {
-    pub span_const: Span,
+    pub span: Span,
     pub id: MaybeIdentifier,
     pub ty: Option<Expression>,
-    pub span_eq: Span,
     pub value: Expression,
-    pub span_semi: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -1051,14 +1022,11 @@ pub struct ItemDeclarationInfo {
 impl Item {
     pub fn info(&self) -> ItemInfo {
         match self {
-            Item::Import(item) => {
-                let span = item.span();
-                ItemInfo {
-                    span_full: span,
-                    span_short: span,
-                    declaration: None,
-                }
-            }
+            Item::Import(item) => ItemInfo {
+                span_full: item.span,
+                span_short: item.span,
+                declaration: None,
+            },
             Item::CommonDeclaration(item) => ItemInfo {
                 span_full: item.span,
                 span_short: item.inner.span_short(),
@@ -1111,8 +1079,7 @@ impl CommonDeclarationNamedKind {
     pub fn span(&self) -> Span {
         match self {
             CommonDeclarationNamedKind::Type(decl) => decl.span,
-            // TODO general "span join" mechanism
-            CommonDeclarationNamedKind::Const(decl) => decl.span_const.join(decl.span_semi),
+            CommonDeclarationNamedKind::Const(decl) => decl.span,
             CommonDeclarationNamedKind::Struct(decl) => decl.span,
             CommonDeclarationNamedKind::Enum(decl) => decl.span,
             CommonDeclarationNamedKind::Function(decl) => decl.span,
