@@ -22,7 +22,14 @@ pub trait IterExt: Iterator {
         self.collect()
     }
 
-    /// Iterate with an extra boolean `last`.
+    fn with_first(self) -> impl Iterator<Item = (Self::Item, bool)>
+    where
+        Self: Sized,
+    {
+        let mut first = true;
+        self.map(move |item| (item, std::mem::replace(&mut first, false)))
+    }
+
     fn with_last(self) -> impl Iterator<Item = (Self::Item, bool)>
     where
         Self: Sized,

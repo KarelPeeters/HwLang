@@ -26,7 +26,10 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     match result {
         Ok(result) => {
             println!("Formatting result:");
-            println!("{}", result);
+            println!("{result}");
+
+            std::fs::write("output.kh", result).unwrap();
+
             ExitCode::SUCCESS
         }
         Err(_) => {
