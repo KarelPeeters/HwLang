@@ -14,7 +14,7 @@ use unwrap_match::unwrap_match;
 
 // TODO expand all of this
 impl IrDatabase {
-    pub fn validate(&self, diags: &Diagnostics) -> DiagResult<()> {
+    pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
         for (_, info) in self.modules.iter() {
             info.validate(self, diags)?;
         }
@@ -23,7 +23,7 @@ impl IrDatabase {
 }
 
 impl IrModuleInfo {
-    pub fn validate(&self, db: &IrDatabase, diags: &Diagnostics) -> DiagResult<()> {
+    pub fn validate(&self, db: &IrDatabase, diags: &Diagnostics) -> DiagResult {
         let no_variables = &IrVariables::new();
 
         for child in &self.children {
@@ -133,7 +133,7 @@ impl IrModuleInfo {
 }
 
 impl IrBlock {
-    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, locals: &IrVariables) -> DiagResult<()> {
+    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, locals: &IrVariables) -> DiagResult {
         for stmt in &self.statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
@@ -205,13 +205,7 @@ fn assignment_target_ty<'a>(
 }
 
 impl IrExpression {
-    pub fn validate(
-        &self,
-        diags: &Diagnostics,
-        module: &IrModuleInfo,
-        locals: &IrVariables,
-        span: Span,
-    ) -> DiagResult<()> {
+    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, locals: &IrVariables, span: Span) -> DiagResult {
         let large = &module.large;
 
         // validate operands
@@ -280,7 +274,7 @@ impl IrExpression {
     }
 }
 
-fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: &IrType) -> DiagResult<()> {
+fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: &IrType) -> DiagResult {
     if expected != actual {
         let msg = format!("ir type mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));
@@ -288,7 +282,7 @@ fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: 
     Ok(())
 }
 
-fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult<()> {
+fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult {
     if expected != actual {
         let msg = format!("ir port direction mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));

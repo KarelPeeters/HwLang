@@ -1,5 +1,5 @@
 use crate::front::check::{
-    check_type_contains_compile_value, check_type_contains_type, check_type_contains_value, TypeContainsReason,
+    TypeContainsReason, check_type_contains_compile_value, check_type_contains_type, check_type_contains_value,
 };
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -41,12 +41,12 @@ use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
-use crate::util::{result_pair, result_pair_split, ResultExt};
+use crate::util::{ResultExt, result_pair, result_pair_split};
 use crate::{new_index_type, throw};
 use annotate_snippets::Level;
-use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, Either, Itertools};
+use indexmap::map::Entry;
+use itertools::{Either, Itertools, enumerate};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -621,7 +621,7 @@ fn claim_ir_name(
     used_ir_names: &mut IndexMap<String, Span>,
     name: &str,
     span: Span,
-) -> DiagResult<()> {
+) -> DiagResult {
     match used_ir_names.entry(name.to_owned()) {
         Entry::Vacant(entry) => {
             entry.insert(span);
@@ -655,7 +655,7 @@ struct BodyElaborationContext<'c, 'a, 's> {
     children: Vec<Spanned<Child>>,
 
     // TODO rename and rethink this
-    delayed_error: DiagResult<()>,
+    delayed_error: DiagResult,
 }
 
 enum Child {
@@ -1890,7 +1890,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         }
     }
 
-    fn pass_2_check_inferred(&mut self) -> DiagResult<()> {
+    fn pass_2_check_inferred(&mut self) -> DiagResult {
         let ctx = &*self.ctx;
         let diags = ctx.refs.diags;
 
@@ -1970,7 +1970,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         any_err
     }
 
-    fn pass_2_check_drivers_and_populate_resets(&mut self) -> DiagResult<()> {
+    fn pass_2_check_drivers_and_populate_resets(&mut self) -> DiagResult {
         // check exactly one valid driver for each signal
         // (all signals have been added the drivers in the first pass, so this also catches signals without any drivers)
         let Drivers {
@@ -2589,7 +2589,7 @@ impl Drivers {
         ctx: &CompileItemContext,
         driver: Driver,
         target: Spanned<Signal>,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         let diags = ctx.refs.diags;
 
         // check valid combination
@@ -2617,7 +2617,7 @@ impl Drivers {
             driver: DiagResult<Driver>,
             target: T,
             target_span: Span,
-        ) -> DiagResult<()> {
+        ) -> DiagResult {
             let inner = map.get_mut(&target).ok_or_else(|| {
                 diags.report_internal_error(target_span, "failed to record driver, target was not registered")
             })?;
@@ -2653,7 +2653,7 @@ fn pull_register_init_into_process(
     reg: Register,
     driver: Driver,
     driver_first_span: Span,
-) -> DiagResult<()> {
+) -> DiagResult {
     let diags = ctx.refs.diags;
     let reg_info = &ctx.registers[reg];
 

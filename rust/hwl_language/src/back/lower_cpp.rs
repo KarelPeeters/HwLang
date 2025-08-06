@@ -1,18 +1,18 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
-    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
-    IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules,
-    IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
-    IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
+    IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
+    IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort, ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
-use crate::util::{separator_non_trailing, Indent};
+use crate::util::{Indent, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use itertools::enumerate;
 use std::fmt::{Display, Formatter};
@@ -110,7 +110,9 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
 
     // children
     let (prev, next) = (Stage::Prev, Stage::Next);
-    let step_params = format!("{struct_signals} &{prev}_signals, {struct_ports_ptr} {prev}_ports, {struct_signals} &{next}_signals, {struct_ports_ptr} {next}_ports");
+    let step_params = format!(
+        "{struct_signals} &{prev}_signals, {struct_ports_ptr} {prev}_ports, {struct_signals} &{next}_signals, {struct_ports_ptr} {next}_ports"
+    );
     let step_args: String = format!("{prev}_signals, {prev}_ports, {next}_signals, {next}_ports");
 
     let mut f_step = String::new();
@@ -266,7 +268,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                                 return Err(diags.report_todo(
                                     expr.span,
                                     format!("simulator input port general expression {connection:?}"),
-                                ))
+                                ));
                             }
                         },
                         &IrPortConnection::Output(expr) => match expr {
@@ -493,7 +495,10 @@ impl CodegenBlockContext<'_> {
                             IrArrayLiteralElement::Spread(value) => {
                                 let value_eval = self.eval(indent, span, value, stage_read)?;
                                 let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
-                                swriteln!(self.f, "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});");
+                                swriteln!(
+                                    self.f,
+                                    "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});"
+                                );
                                 offset += element_len;
                             }
                         }
@@ -571,7 +576,7 @@ impl CodegenBlockContext<'_> {
         result: Temporary,
         result_offset: &str,
         value: &str,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         // TODO maybe it's better to switch to just storing bits for everything in C++ too?
         match ty {
             IrType::Bool => {
@@ -633,7 +638,7 @@ impl CodegenBlockContext<'_> {
         result: &str,
         value: Temporary,
         value_offset: &str,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         match ty {
             IrType::Bool => {
                 swriteln!(self.f, "{indent}{result} = {value}[{value_offset}];",);
@@ -689,14 +694,14 @@ impl CodegenBlockContext<'_> {
         Ok(())
     }
 
-    fn generate_nested_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult<()> {
+    fn generate_nested_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult {
         swriteln!(self.f, "{{");
         self.generate_block(indent.nest(), block, stage_read)?;
         swrite!(self.f, "{indent}}}");
         Ok(())
     }
 
-    fn generate_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult<()> {
+    fn generate_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult {
         let IrBlock { statements } = block;
 
         for stmt in statements {

@@ -121,7 +121,7 @@ pub struct ParamArgMacher<'a> {
     arg_used: Vec<bool>,
     param_names: IndexMap<&'a str, Span>,
 
-    any_err: DiagResult<()>,
+    any_err: DiagResult,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -310,7 +310,7 @@ impl<'a> ParamArgMacher<'a> {
         value
     }
 
-    pub fn finish(self) -> DiagResult<()> {
+    pub fn finish(self) -> DiagResult {
         let diags = self.diags;
         self.any_err?;
 

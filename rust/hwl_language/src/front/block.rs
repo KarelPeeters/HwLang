@@ -1,6 +1,6 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{
-    check_type_contains_compile_value, check_type_contains_value, check_type_is_bool_compile, TypeContainsReason,
+    TypeContainsReason, check_type_contains_compile_value, check_type_contains_value, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -23,11 +23,11 @@ use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
-use crate::util::{result_pair, ResultExt};
+use crate::util::{ResultExt, result_pair};
 use annotate_snippets::Level;
-use itertools::{zip_eq, Itertools};
-use std::collections::hash_map::Entry;
+use itertools::{Itertools, zip_eq};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -60,7 +60,7 @@ impl<S> BlockEnd<S> {
 }
 
 impl BlockEnd<BlockEndStopping> {
-    pub fn unwrap_normal_todo_in_conditional(self, diags: &Diagnostics, span_cond: Span) -> DiagResult<()> {
+    pub fn unwrap_normal_todo_in_conditional(self, diags: &Diagnostics, span_cond: Span) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => {
@@ -97,7 +97,7 @@ impl BlockEnd<BlockEndStopping> {
         }
     }
 
-    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> DiagResult<()> {
+    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
             BlockEnd::Stopping(end) => match end {
@@ -122,11 +122,7 @@ enum BranchMatched {
 
 impl BranchMatched {
     fn from_bool(b: bool) -> Self {
-        if b {
-            BranchMatched::Yes(None)
-        } else {
-            BranchMatched::No
-        }
+        if b { BranchMatched::Yes(None) } else { BranchMatched::No }
     }
 }
 
@@ -139,7 +135,7 @@ enum PatternEqual {
 type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;
 
 impl CompileItemContext<'_, '_> {
-    pub fn elaborate_const_block(&mut self, scope: &Scope, flow: &mut impl Flow, block: &ConstBlock) -> DiagResult<()> {
+    pub fn elaborate_const_block(&mut self, scope: &Scope, flow: &mut impl Flow, block: &ConstBlock) -> DiagResult {
         let diags = self.refs.diags;
         let &ConstBlock {
             span_keyword,
@@ -531,7 +527,7 @@ impl CompileItemContext<'_, '_> {
                                         "unsupported match type",
                                         value.span,
                                         format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
-                                    ))
+                                    ));
                                 }
                             };
 
@@ -555,7 +551,7 @@ impl CompileItemContext<'_, '_> {
                                     "expected range for in pattern",
                                     value.span,
                                     format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
-                                ))
+                                ));
                             }
                         };
 
@@ -569,7 +565,7 @@ impl CompileItemContext<'_, '_> {
                                     "expected enum type for enum variant pattern",
                                     variant.span,
                                     format!("value has type `{}`", target_ty.diagnostic_string()),
-                                ))
+                                ));
                             }
                         };
                         let info = self.refs.shared.elaboration_arenas.enum_info(elab);
@@ -1106,8 +1102,8 @@ impl CompileItemContext<'_, '_> {
         scope: &mut Scope,
         flow: &mut F,
         list: &'a ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a I) -> DiagResult<()>,
-    ) -> DiagResult<()> {
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a I) -> DiagResult,
+    ) -> DiagResult {
         let ExtraList { span: _, items } = list;
         for item in items {
             match item {
@@ -1153,11 +1149,7 @@ impl CompileItemContext<'_, '_> {
             let reason = TypeContainsReason::IfCondition(span_if);
             let cond = check_type_is_bool_compile(diags, reason, cond)?;
 
-            if cond {
-                Ok(Some(block))
-            } else {
-                Ok(None)
-            }
+            if cond { Ok(Some(block)) } else { Ok(None) }
         };
 
         if let Some(block) = eval_pair(initial_if)? {

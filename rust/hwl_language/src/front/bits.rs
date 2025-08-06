@@ -4,10 +4,10 @@ use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::front::value::CompileValue;
 use crate::mid::ir::IrType;
 use crate::syntax::pos::Span;
+use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::{IntRepresentation, InvalidRange};
-use crate::util::ResultExt;
-use itertools::{zip_eq, Itertools};
+use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
@@ -70,7 +70,7 @@ impl HardwareType {
         span: Span,
         value: &CompileValue,
         result: &mut Vec<bool>,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         let diags = refs.diags;
         let err_internal = || {
             diags.report_internal_error(

@@ -24,7 +24,7 @@ use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, zip_eq, Itertools};
+use itertools::{Itertools, enumerate, zip_eq};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -172,7 +172,7 @@ pub enum ElaborationSet {
 }
 
 impl<'a> CompileRefs<'a, '_> {
-    pub fn check_should_stop(&self, span: Span) -> DiagResult<()> {
+    pub fn check_should_stop(&self, span: Span) -> DiagResult {
         // TODO report only one error, now all threads report the same error
         //   put an Option<ErrorGuaranteed> somewhere in a mutex?
         if (self.should_stop)() {

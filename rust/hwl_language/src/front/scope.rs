@@ -49,7 +49,7 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     values: IndexMap<String, DeclaredValue>,
-    any_id_err: DiagResult<()>,
+    any_id_err: DiagResult,
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
@@ -78,7 +78,7 @@ pub struct ScopeFound<'s> {
 #[derive(Debug)]
 pub enum TryScopeFound<'s> {
     Found(ScopeFound<'s>),
-    NotFoundAnyIdErr(DiagResult<()>),
+    NotFoundAnyIdErr(DiagResult),
 }
 
 impl<'p> Scope<'p> {

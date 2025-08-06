@@ -32,7 +32,7 @@ use std::cmp::{Ordering, min};
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct DiagError(());
 
-pub type DiagResult<T> = Result<T, DiagError>;
+pub type DiagResult<T = ()> = Result<T, DiagError>;
 
 #[macro_export]
 macro_rules! impl_from_error_guaranteed {

@@ -18,7 +18,7 @@ impl CompileItemContext<'_, '_> {
         target: Spanned<ValueDomain>,
         source: Spanned<ValueDomain>,
         required_reason: &str,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         let diags = self.refs.diags;
 
         let valid = match (target.inner, source.inner) {
@@ -201,7 +201,7 @@ pub fn check_type_contains_value(
     value: Spanned<&Value>,
     accept_undefined: bool,
     allow_compound_subtype: bool,
-) -> DiagResult<()> {
+) -> DiagResult {
     match value.inner {
         Value::Compile(value_inner) => {
             let value = Spanned {
@@ -226,7 +226,7 @@ pub fn check_type_contains_compile_value(
     target_ty: &Type,
     value: Spanned<&CompileValue>,
     accept_undefined: bool,
-) -> DiagResult<()> {
+) -> DiagResult {
     let ty_contains_value = target_ty.contains_type(&value.inner.ty(), true);
 
     if ty_contains_value && (accept_undefined || !value.inner.contains_undefined()) {
@@ -253,7 +253,7 @@ pub fn check_type_contains_type(
     target_ty: &Type,
     value_ty: Spanned<&Type>,
     allow_compound_subtype: bool,
-) -> DiagResult<()> {
+) -> DiagResult {
     if target_ty.contains_type(value_ty.inner, allow_compound_subtype) {
         Ok(())
     } else {

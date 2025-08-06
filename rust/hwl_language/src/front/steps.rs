@@ -228,7 +228,7 @@ impl ArraySteps<ArrayStep> {
                         return Err(diags.report(diag_expected_array_value(
                             Spanned::new(curr.span, &curr_inner),
                             step.span,
-                        )))
+                        )));
                     }
                 },
                 (step_inner, curr_inner) => {
@@ -256,7 +256,7 @@ impl ArraySteps<ArrayStep> {
                             return Err(diags.report(diag_expected_array_type(
                                 Spanned::new(curr.span, &ty.as_type()),
                                 step.span,
-                            )))
+                            )));
                         }
                     };
                     let curr_array_len = Spanned::new(curr.span, curr_array_len);
@@ -482,7 +482,7 @@ pub fn check_range_index(
     diags: &Diagnostics,
     index: Spanned<ClosedIncRange<&BigInt>>,
     array_len: Spanned<&BigUint>,
-) -> DiagResult<()> {
+) -> DiagResult {
     if index.inner.start_inc < &BigInt::ZERO || index.inner.end_inc >= &BigInt::from(array_len.inner.clone()) {
         let index_str = if let Some(index) = index.inner.as_single() {
             format!("`{index}`")

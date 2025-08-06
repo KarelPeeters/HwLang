@@ -1,4 +1,4 @@
-use crate::front::check::{check_type_contains_compile_value, check_type_contains_value, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_compile_value, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -49,7 +49,7 @@ enum BlockKind {
 
 impl CompileItemContext<'_, '_> {
     // TODO this probably needs yet another refactor, there's a lot of semi-duplicate code here
-    pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult<()> {
+    pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult {
         let diags = self.refs.diags;
         let &Assignment {
             span: _,
@@ -192,7 +192,7 @@ impl CompileItemContext<'_, '_> {
                         return Err(diags.report_internal_error(
                             stmt.span,
                             "binary op on hardware values should result in hardware value again",
-                        ))
+                        ));
                     }
                 };
                 Spanned::new(stmt.span, Value::Hardware(value_eval))
@@ -355,7 +355,7 @@ impl CompileItemContext<'_, '_> {
         target_expected_ty: Type,
         op: Spanned<Option<BinaryOp>>,
         right_eval: Spanned<ValueWithImplications>,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         let diags = self.refs.diags;
 
         // TODO move all of this into a function
@@ -526,7 +526,7 @@ impl CompileItemContext<'_, '_> {
                             return Err(diags.report_internal_error(
                                 stmt_span,
                                 "binary op on compile values should result in compile value again",
-                            ))
+                            ));
                         }
                     };
 
@@ -611,7 +611,7 @@ impl CompileItemContext<'_, '_> {
         target_base_domain: Spanned<ValueDomain>,
         steps: &ArraySteps,
         value_domain: Spanned<ValueDomain>,
-    ) -> DiagResult<()> {
+    ) -> DiagResult {
         match block_kind {
             BlockKind::Combinatorial => {
                 let mut check = self.check_valid_domain_crossing(

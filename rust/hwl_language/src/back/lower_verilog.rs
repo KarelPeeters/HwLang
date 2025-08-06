@@ -130,7 +130,7 @@ impl LoweredNameScope {
 }
 
 // TODO replace with name mangling that forces everything to be valid
-fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<()> {
+fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult {
     let s = id.inner;
 
     if s.is_empty() {
@@ -389,7 +389,7 @@ fn lower_module_statements(
     children: &[Spanned<IrModuleChild>],
     newline: &mut NewlineGenerator,
     f: &mut String,
-) -> DiagResult<()> {
+) -> DiagResult {
     let diags = ctx.diags;
 
     for (child_index, child) in enumerate(children) {
@@ -605,7 +605,7 @@ fn lower_port_connections<S: AsRef<str>>(
     name_map: NameMap,
     port_name: impl Fn(usize) -> LoweredName<S>,
     port_connections: &Vec<Spanned<IrPortConnection>>,
-) -> DiagResult<()> {
+) -> DiagResult {
     swrite!(f, "(");
 
     if port_connections.is_empty() {
@@ -759,7 +759,7 @@ fn lower_block(
     f: &mut String,
     indent: Indent,
     newline: &mut NewlineGenerator,
-) -> DiagResult<()> {
+) -> DiagResult {
     let IrBlock { statements } = block;
 
     for stmt in statements {
@@ -812,7 +812,7 @@ fn lower_assign_target(
     name_map: NameMap,
     target: &IrAssignmentTarget,
     f: &mut String,
-) -> DiagResult<()> {
+) -> DiagResult {
     // TODO this is probably wrong, we might need intermediate variables for the base and after each step
     let IrAssignmentTarget { base, steps } = target;
 
@@ -846,7 +846,7 @@ fn lower_assign_target(
 }
 
 // TODO allow this to use intermediate variables and to generate multi-line expressions
-fn lower_expression(large: &IrLargeArena, name_map: NameMap, expr: &IrExpression, f: &mut String) -> DiagResult<()> {
+fn lower_expression(large: &IrLargeArena, name_map: NameMap, expr: &IrExpression, f: &mut String) -> DiagResult {
     match expr {
         &IrExpression::Bool(x) => swrite!(f, "1'b{}", x as u8),
         IrExpression::Int(x) => swrite!(f, "{}", lower_int_str(x)),
