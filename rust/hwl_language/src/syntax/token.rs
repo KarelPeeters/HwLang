@@ -352,9 +352,9 @@ impl<'s> Tokenizer<'s> {
             ['|', '|', _] => skip_fixed(2, TokenType::PipePipe),
             ['|', '=', _] => skip_fixed(2, TokenType::BarEq),
             ['|', _, _] => skip_fixed(1, TokenType::Pipe),
-            ['^', '^', _] => skip_fixed(2, TokenType::CircumflexCircumflex),
-            ['^', '=', _] => skip_fixed(2, TokenType::CircumflexEq),
-            ['^', _, _] => skip_fixed(1, TokenType::Circumflex),
+            ['^', '^', _] => skip_fixed(2, TokenType::CaretCaret),
+            ['^', '=', _] => skip_fixed(2, TokenType::CaretEq),
+            ['^', _, _] => skip_fixed(1, TokenType::Caret),
             ['+', '=', _] => skip_fixed(2, TokenType::PlusEq),
             ['+', _, _] => skip_fixed(1, TokenType::Plus),
             ['-', '=', _] => skip_fixed(2, TokenType::MinusEq),
@@ -612,7 +612,7 @@ declare_tokens! {
         PlusDots("+..", TC::Symbol),
         AmperAmper("&&", TC::Symbol),
         PipePipe("||", TC::Symbol),
-        CircumflexCircumflex("^^", TC::Symbol),
+        CaretCaret("^^", TC::Symbol),
         EqEq("==", TC::Symbol),
         Neq("!=", TC::Symbol),
         Gte(">=", TC::Symbol),
@@ -621,7 +621,7 @@ declare_tokens! {
         Lt("<", TC::Symbol),
         Amper("&", TC::Symbol),
         Pipe("|", TC::Symbol),
-        Circumflex("^", TC::Symbol),
+        Caret("^", TC::Symbol),
         LtLt("<<", TC::Symbol),
         GtGt(">>", TC::Symbol),
         Plus("+", TC::Symbol),
@@ -640,7 +640,7 @@ declare_tokens! {
         SlashEq("/=", TC::Symbol),
         PercentEq("%=", TC::Symbol),
         AmperEq("&=", TC::Symbol),
-        CircumflexEq("^=", TC::Symbol),
+        CaretEq("^=", TC::Symbol),
         BarEq("|=", TC::Symbol),
     }
 }
@@ -694,7 +694,7 @@ impl TokenError {
 mod test {
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
-    use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
+    use crate::syntax::token::{Token, TokenError, TokenType, Tokenizer, tokenize};
     use hwl_util::swriteln;
     use std::collections::HashSet;
 

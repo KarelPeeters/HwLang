@@ -2,6 +2,7 @@ use crate::front::value::Value;
 use crate::new_index_type;
 use crate::syntax::pos::Span;
 use crate::syntax::source::SourceDatabase;
+use crate::syntax::token::TokenType;
 use crate::util::arena::Arena;
 
 new_index_type!(pub ExpressionKindIndex);
@@ -1098,29 +1099,29 @@ impl CommonDeclarationNamedKind {
 }
 
 impl BinaryOp {
-    pub fn symbol(self) -> &'static str {
+    pub fn token(self) -> TokenType {
         match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Mod => "%",
-            BinaryOp::Pow => "**",
-            BinaryOp::BitAnd => "&",
-            BinaryOp::BitOr => "|",
-            BinaryOp::BitXor => "^",
-            BinaryOp::BoolAnd => "&&",
-            BinaryOp::BoolOr => "||",
-            BinaryOp::BoolXor => "^^",
-            BinaryOp::Shl => "<<",
-            BinaryOp::Shr => ">>",
-            BinaryOp::CmpEq => "==",
-            BinaryOp::CmpNeq => "!=",
-            BinaryOp::CmpLt => "<",
-            BinaryOp::CmpLte => "<=",
-            BinaryOp::CmpGt => ">",
-            BinaryOp::CmpGte => ">=",
-            BinaryOp::In => "in",
+            BinaryOp::Add => TokenType::Plus,
+            BinaryOp::Sub => TokenType::Minus,
+            BinaryOp::Mul => TokenType::Star,
+            BinaryOp::Div => TokenType::Slash,
+            BinaryOp::Mod => TokenType::Percent,
+            BinaryOp::Pow => TokenType::StarStar,
+            BinaryOp::BitAnd => TokenType::Amper,
+            BinaryOp::BitOr => TokenType::Pipe,
+            BinaryOp::BitXor => TokenType::Caret,
+            BinaryOp::BoolAnd => TokenType::AmperAmper,
+            BinaryOp::BoolOr => TokenType::PipePipe,
+            BinaryOp::BoolXor => TokenType::CaretCaret,
+            BinaryOp::Shl => TokenType::LtLt,
+            BinaryOp::Shr => TokenType::GtGt,
+            BinaryOp::CmpEq => TokenType::EqEq,
+            BinaryOp::CmpNeq => TokenType::Neq,
+            BinaryOp::CmpLt => TokenType::Lt,
+            BinaryOp::CmpLte => TokenType::Lte,
+            BinaryOp::CmpGt => TokenType::Gt,
+            BinaryOp::CmpGte => TokenType::Gte,
+            BinaryOp::In => TokenType::In,
         }
     }
 }

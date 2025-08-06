@@ -81,7 +81,7 @@ extern {
         "+.." => TokenType::PlusDots,
         "&&" => TokenType::AmperAmper,
         "||" => TokenType::PipePipe,
-        "^^" => TokenType::CircumflexCircumflex,
+        "^^" => TokenType::CaretCaret,
         "==" => TokenType::EqEq,
         "!=" => TokenType::Neq,
         ">=" => TokenType::Gte,
@@ -90,7 +90,7 @@ extern {
         "<" => TokenType::Lt,
         "&" => TokenType::Amper,
         "|" => TokenType::Pipe,
-        "^" => TokenType::Circumflex,
+        "^" => TokenType::Caret,
         "<<" => TokenType::LtLt,
         ">>" => TokenType::GtGt,
         "+" => TokenType::Plus,
@@ -107,7 +107,7 @@ extern {
         "/=" => TokenType::SlashEq,
         "%=" => TokenType::PercentEq,
         "&=" => TokenType::AmperEq,
-        "^=" => TokenType::CircumflexEq,
+        "^=" => TokenType::CaretEq,
         "|=" => TokenType::BarEq,
     }
 }

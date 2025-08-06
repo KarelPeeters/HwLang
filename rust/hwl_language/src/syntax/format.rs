@@ -86,6 +86,7 @@ pub fn format(
         state: CheckpointState {
             next_source_token: 0,
             curr_line_length: 0,
+            overflowing_lines: 0,
             indent: 0,
         },
     };
@@ -129,6 +130,8 @@ struct FormatContext<'a> {
 struct CheckpointState {
     next_source_token: usize,
     curr_line_length: usize,
+    /// The number of lines that have overflowed, not counting the current line.
+    overflowing_lines: usize,
     // TODO should this even be part of the checkpoint, the wrapping function will always restore it anyway?
     indent: usize,
 }
@@ -159,16 +162,13 @@ impl FormatContext<'_> {
         self.state = checkpoint.state;
     }
 
-    // TODO maybe remove
-    // fn any_overflow_since(&self, check_point: CheckPoint) -> bool {
-    //     let max_line_length = self.settings.max_line_length;
-    //     (self.state.overflowing_line_count > check_point.state.overflowing_line_count)
-    //         || (self.state.curr_line_length > max_line_length && check_point.state.curr_line_length <= max_line_length)
-    // }
-
     // TODO maybe rethink this, is this still needed?
-    fn line_overflow(&self) -> bool {
-        self.state.curr_line_length > self.settings.max_line_length
+    fn overflow_since(&self, check: CheckPoint) -> bool {
+        // TODO count number of overflowing lines, if it has increased then we overflowed at some point
+        // TODO what about lines that already overflowed, should they count again and how do we track that?
+
+        (self.state.overflowing_lines > check.state.overflowing_lines)
+            || (self.state.curr_line_length > self.settings.max_line_length)
     }
 
     fn push(&mut self, ty: TT) -> DiagResult {
@@ -262,6 +262,10 @@ impl FormatContext<'_> {
     fn push_newline(&mut self) {
         // TODO support configurable indent width, right now eg. tabs are counted as a single character
         // TODO should we use \r\n on windows?
+        if self.state.curr_line_length > self.settings.max_line_length {
+            self.state.overflowing_lines += 1;
+        }
+
         self.result.push('\n');
         self.state.curr_line_length = 0;
     }
@@ -288,9 +292,18 @@ impl FormatContext<'_> {
         for (i, item) in enumerate(items) {
             self.format_item(item)?;
 
-            // add extra newlines between non-import items
+            // preserve separating newlines between non-import items
+            // TODO sort and combine imports in adjacent blocks?
+            // TODO also do that for statements and common declarations elsewhere
             if let Some(next) = items.get(i + 1) {
-                if !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_))) {
+                if matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)) {
+                    continue;
+                }
+
+                let curr_end = self.source_offsets.expand_pos(item.info().span_full.end());
+                let next_start = self.source_offsets.expand_pos(next.info().span_full.start());
+
+                if next_start.line_0 > curr_end.line_0 + 1 {
                     self.push_newline();
                 }
             }
@@ -362,7 +375,7 @@ impl FormatContext<'_> {
                 self.push(TT::CloseS)?;
 
                 // maybe fallback to multi-line, as many entries as possible per line
-                if self.line_overflow() && !entries.is_empty() {
+                if self.overflow_since(check) && !entries.is_empty() {
                     self.restore(check);
 
                     self.indent(|slf| {
@@ -379,7 +392,7 @@ impl FormatContext<'_> {
                             slf.push(TT::Comma)?;
 
                             // maybe overflow to next line
-                            if slf.line_overflow() {
+                            if slf.overflow_since(check_entry) {
                                 slf.restore(check_entry);
                                 slf.push_newline();
                                 slf.format_import_entry(entry)?;
@@ -440,6 +453,7 @@ impl FormatContext<'_> {
                         self.push_space();
                         self.format_expr(value, true)?;
                         self.push(TT::Semi)?;
+                        self.push_newline();
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -523,7 +537,33 @@ impl FormatContext<'_> {
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
             ExpressionKind::UnaryOp(_, _) => todo!(),
-            ExpressionKind::BinaryOp(_, _, _) => todo!(),
+            &ExpressionKind::BinaryOp(op, left, right) => {
+                // TODO convert sequence of ops with the same precedence into a single list that is then flattened at once?
+                // try single line
+                let check = self.checkpoint();
+                self.format_expr(left, false)?;
+                self.push_space();
+                self.push_with_span(op.inner.token(), op.span)?;
+                self.push_space();
+                self.format_expr(right, allow_wrap)?;
+
+                // maybe fallback to multi-line, one item per line
+                // TODO in certain cases we want to start on the next line, eg. in `const a = long + long`,
+                //   but not in others, eg. `const a = [long, long]`, what is the actual rule?
+                if allow_wrap && self.overflow_since(check) {
+                    self.restore(check);
+                    self.format_expr(left, true)?;
+                    self.indent(|slf| {
+                        slf.push_newline();
+                        slf.push_with_span(op.inner.token(), op.span)?;
+                        slf.push_space();
+                        slf.format_expr(right, allow_wrap)?;
+                        Ok(())
+                    })?;
+                }
+
+                Ok(())
+            }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
             ExpressionKind::DotIdIndex(_, _) => todo!(),
@@ -587,7 +627,7 @@ impl FormatContext<'_> {
         }
 
         // maybe fallback to multi-line, one item per line
-        if allow_wrap && self.line_overflow() && !list.is_empty() {
+        if allow_wrap && self.overflow_since(check) && !list.is_empty() {
             self.restore(check);
             self.indent(|slf| {
                 slf.push_newline();
