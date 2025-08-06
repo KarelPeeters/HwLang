@@ -4,7 +4,11 @@ import std.util.[print, assert];
 import examples.axi_gearbox.axi_gearbox;
 import examples.axi_stream.[axi_stream, axi_passthrough, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _];
 
-const input_width = f(a, b, d, e, f, g, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier);
+const input_width = [
+    very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
+    [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier],
+    [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, 4],
+];
 const output_width = 8;
 
 //const input_width: uint = 8;

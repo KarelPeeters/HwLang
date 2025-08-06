@@ -11,13 +11,14 @@
 
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, Block, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind,
-    ConstDeclaration, Expression, ExpressionKind, ExtraList, FileContent, GeneralIdentifier, Identifier, ImportEntry,
-    ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, ModulePortItem, Parameters, Visibility,
+    ArenaExpressions, Arg, Args, ArrayLiteralElement, Block, CommonDeclaration, CommonDeclarationNamed,
+    CommonDeclarationNamedKind, ConstDeclaration, Expression, ExpressionKind, ExtraList, FileContent,
+    GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier,
+    ModulePortItem, Parameters, Visibility,
 };
 use crate::syntax::pos::{LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::{tokenize, Token, TokenCategory, TokenType};
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::enumerate;
@@ -30,6 +31,7 @@ pub struct FormatSettings {
     pub indent_str: String,
     // TODO tab size is such a weird setting, it only matters if `indent_str` or literals contain tabs,
     //   do we really want to support this?
+    // TODO assert settings validness somewhere, eg. indent_str should parse as a single whitespace token
     pub tab_size: usize,
     pub max_line_length: usize,
     // TODO think about newline settings, maybe orthogonal axes:
@@ -70,19 +72,23 @@ pub fn format(
     let mut result = String::new();
 
     let mut c = FormatContext {
+        settings,
         source_file: file,
         source_str,
         source_offsets: &source[file].offsets,
         source_tokens: &tokens,
         source_expressions: &ast.arena_expressions,
-        settings,
         diags,
-        next_source_token: 0,
-        result: &mut result,
-        curr_line_length: 0,
         event_checkpoint: 0,
         event_restore: 0,
         chars_restore: 0,
+        result: &mut result,
+        state: CheckpointState {
+            next_source_token: 0,
+            curr_line_length: 0,
+            overflowing_line_count: 0,
+            indent: 0,
+        },
     };
     c.format_file(&ast)?;
 
@@ -99,29 +105,40 @@ pub fn format(
 }
 
 struct FormatContext<'a> {
+    // settings
+    settings: &'a FormatSettings,
+
+    // input source
     source_file: FileId,
     source_str: &'a str,
     source_offsets: &'a LineOffsets,
     source_tokens: &'a [Token],
     source_expressions: &'a ArenaExpressions,
 
-    settings: &'a FormatSettings,
-
+    // diagnostic recording
     diags: &'a Diagnostics,
-    next_source_token: usize,
-    result: &'a mut String,
-    curr_line_length: usize,
-
     event_checkpoint: u64,
     event_restore: u64,
     chars_restore: u64,
+
+    // core state
+    result: &'a mut String,
+    state: CheckpointState,
 }
 
-// TODO this can cause exponential complexity
 #[derive(Debug, Copy, Clone)]
-struct CheckPoint {
+struct CheckpointState {
     next_source_token: usize,
     curr_line_length: usize,
+    overflowing_line_count: usize,
+
+    indent: usize,
+}
+
+// TODO this checkpointing system can cause exponential complexity, is it ever bad in practice?
+#[derive(Debug, Copy, Clone)]
+struct CheckPoint {
+    state: CheckpointState,
     result_len: usize,
 }
 
@@ -129,9 +146,8 @@ impl FormatContext<'_> {
     fn checkpoint(&mut self) -> CheckPoint {
         self.event_checkpoint += 1;
         CheckPoint {
-            next_source_token: self.next_source_token,
-            curr_line_length: self.curr_line_length,
             result_len: self.result.len(),
+            state: self.state,
         }
     }
 
@@ -141,21 +157,28 @@ impl FormatContext<'_> {
         self.event_restore += 1;
         self.chars_restore += (self.result.len() - checkpoint.result_len) as u64;
 
-        self.next_source_token = checkpoint.next_source_token;
-        self.curr_line_length = checkpoint.curr_line_length;
         self.result.truncate(checkpoint.result_len);
+        self.state = checkpoint.state;
     }
 
+    // TODO maybe remove
+    // fn any_overflow_since(&self, check_point: CheckPoint) -> bool {
+    //     let max_line_length = self.settings.max_line_length;
+    //     (self.state.overflowing_line_count > check_point.state.overflowing_line_count)
+    //         || (self.state.curr_line_length > max_line_length && check_point.state.curr_line_length <= max_line_length)
+    // }
+
+    // TODO maybe rethink this, is this still needed?
     fn line_overflow(&self) -> bool {
-        self.curr_line_length > self.settings.max_line_length
+        self.state.curr_line_length > self.settings.max_line_length
     }
 
-    fn push(&mut self, ty: TokenType) -> DiagResult<()> {
+    fn push(&mut self, ty: TT) -> DiagResult {
         // TODO improve and double-check comma explanation: (dis)appear, unambiguous
         let diags = self.diags;
 
-        if ty == TokenType::WhiteSpace {
-            let curr_span = match self.source_tokens.get(self.next_source_token) {
+        if ty == TT::WhiteSpace {
+            let curr_span = match self.source_tokens.get(self.state.next_source_token) {
                 Some(token) => Span::empty_at(token.span.start()),
                 None => self.source_offsets.end_span(self.source_file),
             };
@@ -166,12 +189,12 @@ impl FormatContext<'_> {
 
         let token_str = loop {
             // pop the next source token
-            let source_token = self.source_tokens.get(self.next_source_token).ok_or_else(|| {
+            let source_token = self.source_tokens.get(self.state.next_source_token).ok_or_else(|| {
                 let end_span = self.source_offsets.end_span(self.source_file);
                 let msg = format!("pushing token {ty:?} but no tokens left");
                 diags.report_internal_error(end_span, msg)
             })?;
-            self.next_source_token += 1;
+            self.state.next_source_token += 1;
 
             match source_token.ty.category() {
                 // drop whitespace, the formatter creates its own
@@ -194,14 +217,14 @@ impl FormatContext<'_> {
                 break &self.source_str[source_token.span.range_bytes()];
             }
 
-            if source_token.ty == TokenType::Comma {
+            if source_token.ty == TT::Comma {
                 // comma in original source that disappeared, continue searching for the actually matching token
                 continue;
             }
-            if ty == TokenType::Comma {
+            if ty == TT::Comma {
                 // comma that was not in original source but appeared due to formatting,
                 //   un-pop the source token and act as if we found a match
-                self.next_source_token -= 1;
+                self.state.next_source_token -= 1;
                 break ",";
             }
 
@@ -209,14 +232,23 @@ impl FormatContext<'_> {
             return Err(diags.report_internal_error(source_token.span, msg));
         };
 
+        // add indent if this is the first pushed token
+        if self.state.curr_line_length == 0 {
+            for _ in 0..self.state.indent {
+                self.result.push_str(&self.settings.indent_str);
+                self.state.curr_line_length += self.settings.indent_str.len();
+            }
+        }
+
+        // push the token itself
         self.result.push_str(token_str);
         // TODO handle newlines in string literals and comments?
-        self.curr_line_length += token_str.len();
+        self.state.curr_line_length += token_str.len();
 
         Ok(())
     }
 
-    fn push_with_span(&mut self, ty: TokenType, span: Span) -> DiagResult<()> {
+    fn push_with_span(&mut self, ty: TT, span: Span) -> DiagResult {
         // TODO use span
         let _ = span;
         self.push(ty)
@@ -226,26 +258,29 @@ impl FormatContext<'_> {
         // no need to check for comments
         // TODO is that right?
         self.result.push(' ');
-        self.curr_line_length += 1;
+        self.state.curr_line_length += 1;
     }
 
     fn push_newline(&mut self) {
-        // no need to check for comments
-        // TODO is that right?
-        // TODO indentation
+        // TODO support configurable indent width, right now eg. tabs are counted as a single character
         // TODO should we use \r\n on windows?
         self.result.push('\n');
-        self.curr_line_length = 0;
+        self.state.curr_line_length = 0;
     }
 
-    fn push_indent(&mut self) {
-        self.result.push_str(&self.settings.indent_str);
-        self.curr_line_length += self.settings.indent_str.len();
+    fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        // TODO should indent even be part of the checkpoint state? it will always be rolled back anyway...
+        let before = self.state.indent;
+        self.state.indent += 1;
+        let result = f(self);
+        assert_eq!(self.state.indent, before + 1, "indent level should increase");
+        self.state.indent -= 1;
+        result
     }
 }
 
 impl FormatContext<'_> {
-    fn format_file(&mut self, file: &FileContent) -> DiagResult<()> {
+    fn format_file(&mut self, file: &FileContent) -> DiagResult {
         let FileContent {
             span: _,
             items,
@@ -266,7 +301,7 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_item(&mut self, item: &Item) -> DiagResult<()> {
+    fn format_item(&mut self, item: &Item) -> DiagResult {
         match item {
             Item::Import(item) => self.format_import(item),
             Item::CommonDeclaration(decl) => self.format_common_declaration(&decl.inner),
@@ -294,7 +329,7 @@ impl FormatContext<'_> {
         }
     }
 
-    fn format_import(&mut self, item: &ItemImport) -> DiagResult<()> {
+    fn format_import(&mut self, item: &ItemImport) -> DiagResult {
         let ItemImport {
             span: _,
             parents,
@@ -304,11 +339,11 @@ impl FormatContext<'_> {
         // TODO sort imports, both within and across lines, combining them in some single-correct way
         // TODO move imports to top of file?
 
-        self.push(TokenType::Import)?;
+        self.push(TT::Import)?;
         self.push_space();
         for &parent in &parents.inner {
             self.format_id(parent)?;
-            self.push(TokenType::Dot)?;
+            self.push(TT::Dot)?;
         }
         match &entry.inner {
             ImportFinalKind::Single(entry) => {
@@ -318,71 +353,74 @@ impl FormatContext<'_> {
                 // TODO definitely implement line wrapping here, but not the typical "all or nothing" way,
                 //    more soft-wrap like where we keep things as compact as possible
 
-                self.push(TokenType::OpenS)?;
+                self.push(TT::OpenS)?;
 
                 // try single line
                 let check = self.checkpoint();
                 for (entry, last) in entries.iter().with_last() {
                     self.format_import_entry(entry)?;
                     if !last {
-                        self.push(TokenType::Comma)?;
+                        self.push(TT::Comma)?;
                         self.push_space();
                     }
                 }
-                self.push(TokenType::CloseS)?;
+                self.push(TT::CloseS)?;
 
                 // maybe fallback to multi-line, as many entries as possible per line
                 if self.line_overflow() && !entries.is_empty() {
                     self.restore(check);
-                    self.push_newline();
-                    self.push_indent();
 
-                    let mut first_on_line = true;
+                    self.indent(|slf| {
+                        slf.push_newline();
 
-                    for entry in entries.iter() {
-                        // try to fit the entry on the current line
-                        let check_entry = self.checkpoint();
-                        if !first_on_line {
-                            self.push_space();
+                        let mut first_on_line = true;
+                        for entry in entries.iter() {
+                            // try to fit the entry on the current line
+                            let check_entry = slf.checkpoint();
+                            if !first_on_line {
+                                slf.push_space();
+                            }
+                            slf.format_import_entry(entry)?;
+                            slf.push(TT::Comma)?;
+
+                            // maybe overflow to next line
+                            if slf.line_overflow() {
+                                slf.restore(check_entry);
+                                slf.push_newline();
+                                slf.format_import_entry(entry)?;
+                                slf.push(TT::Comma)?;
+                            }
+
+                            first_on_line = false;
                         }
-                        self.format_import_entry(entry)?;
-                        self.push(TokenType::Comma)?;
 
-                        // maybe overflow to next line
-                        if self.line_overflow() {
-                            self.restore(check_entry);
-                            self.push_newline();
-                            self.push_indent();
-                            self.format_import_entry(entry)?;
-                            self.push(TokenType::Comma)?;
-                        }
+                        Ok(())
+                    })?;
 
-                        first_on_line = false;
-                    }
                     self.push_newline();
-                    self.push(TokenType::CloseS)?;
+                    self.push(TT::CloseS)?;
                 }
             }
         }
-        self.push(TokenType::Semi)?;
+        self.push(TT::Semi)?;
         self.push_newline();
         Ok(())
     }
 
-    fn format_import_entry(&mut self, entry: &ImportEntry) -> DiagResult<()> {
+    fn format_import_entry(&mut self, entry: &ImportEntry) -> DiagResult {
         // TODO support wrapping?
         let &ImportEntry { span: _, id, as_ } = entry;
         self.format_id(id)?;
         if let Some(as_) = as_ {
             self.push_space();
-            self.push(TokenType::As)?;
+            self.push(TT::As)?;
             self.push_space();
             self.format_maybe_id(as_)?;
         }
         Ok(())
     }
 
-    fn format_common_declaration<V: FormatVisibility>(&mut self, decl: &CommonDeclaration<V>) -> DiagResult<()> {
+    fn format_common_declaration<V: FormatVisibility>(&mut self, decl: &CommonDeclaration<V>) -> DiagResult {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis, kind } = decl;
@@ -393,19 +431,20 @@ impl FormatContext<'_> {
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span, id, ty, value } = decl;
 
-                        self.push(TokenType::Const)?;
+                        self.push(TT::Const)?;
                         self.push_space();
                         self.format_maybe_id(id)?;
                         if let Some(ty) = ty {
-                            self.push(TokenType::Colon)?;
+                            // TODO allow wrapping in types?
+                            self.push(TT::Colon)?;
                             self.push_space();
-                            self.format_expr(ty)?;
+                            self.format_expr(ty, false)?;
                         }
                         self.push_space();
-                        self.push(TokenType::Eq)?;
+                        self.push(TT::Eq)?;
                         self.push_space();
-                        self.format_expr(value)?;
-                        self.push(TokenType::Semi)?;
+                        self.format_expr(value, true)?;
+                        self.push(TT::Semi)?;
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -418,11 +457,11 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_params(&mut self, params: &Parameters) -> DiagResult<()> {
+    fn format_params(&mut self, params: &Parameters) -> DiagResult {
         todo!()
     }
 
-    fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) -> DiagResult<()> {
+    fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) -> DiagResult {
         todo!()
         // let ExtraList { span: _, items } = ports;<
         //
@@ -444,11 +483,26 @@ impl FormatContext<'_> {
         // swrite!(self.f, ")");
     }
 
-    fn format_block<S>(&mut self, block: &Block<S>, f: impl Fn(&mut Self, &S)) -> DiagResult<()> {
+    fn format_block<S>(&mut self, block: &Block<S>, f: impl Fn(&mut Self, &S)) -> DiagResult {
         todo!()
     }
 
-    fn format_expr(&mut self, expr: Expression) -> DiagResult<()> {
+    // TODO this should communicate about overflows properly, in both directions(?)
+    //   so take a param "allow_wrap" and return "did_overflow"?
+    //   it should also take an "indent" param, probably only if "allow_wrap" is true
+    //   aborting should also be configurable, sometimes the parent does not allow aborting
+    //     (implement that later, that's just a performance improvement)
+
+    //   the possible states and typical call sequence is then:
+    //       allow_wrap   | did_overflow  | description
+    //       ============================================================================
+    //       false        | false         | no wrapping allow and not necessary, great!
+    //       false        | true          | no wrapping allowed but was necessary, potentially aborted
+    //                    |               |     parent should wrap itself, then re-call with allow_wrap=true
+    //       true         | false/true    | we were allowed to wrap and maybe did, but the parent does not care
+    fn format_expr(&mut self, expr: Expression, allow_wrap: bool) -> DiagResult {
+        // TODO indent and wrap should probably be separate things, wrapping can be banned while still having some indent
+
         match &self.source_expressions[expr.inner] {
             ExpressionKind::Dummy => todo!(),
             ExpressionKind::Undefined => todo!(),
@@ -458,13 +512,46 @@ impl FormatContext<'_> {
             ExpressionKind::Block(_) => todo!(),
             &ExpressionKind::Id(id) => self.format_general_id(id),
             ExpressionKind::IntLiteral(lit) => match *lit {
-                IntLiteral::Binary(span) => self.push_with_span(TokenType::IntLiteralBinary, span),
-                IntLiteral::Decimal(span) => self.push_with_span(TokenType::IntLiteralDecimal, span),
-                IntLiteral::Hexadecimal(span) => self.push_with_span(TokenType::IntLiteralHexadecimal, span),
+                IntLiteral::Binary(span) => self.push_with_span(TT::IntLiteralBinary, span),
+                IntLiteral::Decimal(span) => self.push_with_span(TT::IntLiteralDecimal, span),
+                IntLiteral::Hexadecimal(span) => self.push_with_span(TT::IntLiteralHexadecimal, span),
             },
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
-            ExpressionKind::ArrayLiteral(_) => todo!(),
+            ExpressionKind::ArrayLiteral(elements) => {
+                self.push(TT::OpenS)?;
+
+                // try single line
+                let check = self.checkpoint();
+                for (&elem, last) in elements.iter().with_last() {
+                    self.format_array_element(elem, false)?;
+                    if !last {
+                        self.push(TT::Comma)?;
+                        self.push_space();
+                    }
+                }
+
+                // maybe fallback to multi-line, one element per line
+                if allow_wrap && self.line_overflow() && !elements.is_empty() {
+                    self.restore(check);
+
+                    self.indent(|slf| {
+                        slf.push_newline();
+                        for &elem in elements.iter() {
+                            slf.format_array_element(elem, true)?;
+                            slf.push(TT::Comma)?;
+                            slf.push_newline();
+                        }
+                        Ok(())
+                    })?;
+                }
+
+                self.push(TT::CloseS)?;
+
+                // TODO stop propagaating overflow manually, we can just record some stuff
+                //   and then look at the span since the checkpoint
+                Ok(())
+            }
             ExpressionKind::TupleLiteral(_) => todo!(),
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
@@ -475,9 +562,11 @@ impl FormatContext<'_> {
             ExpressionKind::DotIdIndex(_, _) => todo!(),
             ExpressionKind::DotIntIndex(_, _) => todo!(),
             &ExpressionKind::Call(target, ref args) => {
-                self.format_expr(target)?;
-                self.format_args(args)?;
-                Ok(())
+                // TODO allow wrapping target?
+                // self.format_expr(target)?;
+                // self.format_args(args)?;
+                // Ok(())
+                todo!()
             }
             ExpressionKind::Builtin(_) => todo!(),
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
@@ -485,19 +574,29 @@ impl FormatContext<'_> {
         }
     }
 
-    fn format_args(&mut self, args: &Args) -> DiagResult<()> {
+    fn format_array_element(&mut self, elem: ArrayLiteralElement<Expression>, allow_wrap: bool) -> DiagResult {
+        match elem {
+            ArrayLiteralElement::Single(elem) => self.format_expr(elem, allow_wrap),
+            ArrayLiteralElement::Spread(spread_span, elem) => {
+                self.push_with_span(TT::Star, spread_span)?;
+                self.format_expr(elem, allow_wrap)
+            }
+        }
+    }
+
+    fn format_args(&mut self, args: &Args, allow_wrap: bool) -> DiagResult {
         let Args { span: _, inner } = args;
 
-        self.push(TokenType::OpenR)?;
+        self.push(TT::OpenR)?;
 
         // try single line
         // TODO common "comma separated list that wraps to full multiline" formatting function,
         //    maybe even with a compact variant that can be used for imports?
         let check = self.checkpoint();
         for (&arg, last) in inner.iter().with_last() {
-            self.format_arg(arg)?;
+            self.format_arg(arg, false)?;
             if !last {
-                self.push(TokenType::Comma)?;
+                self.push(TT::Comma)?;
                 self.push_space();
             }
         }
@@ -505,65 +604,68 @@ impl FormatContext<'_> {
         // TODO this should be "line_overflow or any child wrapped",
         //   maybe we can force inner expressions to not wrap, which should be equivalent?
         // maybe fallback to multi-line, one arg per line
-        if self.line_overflow() {
+        if allow_wrap && self.line_overflow() && !inner.is_empty() {
             self.restore(check);
+
+            self.indent(|slf| {
+                slf.push_newline();
+                for &arg in inner {
+                    slf.format_arg(arg, true)?;
+                    slf.push(TT::Comma)?;
+                }
+                Ok(())
+            })?;
             self.push_newline();
-            for &arg in inner {
-                self.push_indent();
-                self.format_arg(arg)?;
-                self.push(TokenType::Comma)?;
-                self.push_newline();
-            }
         }
 
-        self.push(TokenType::CloseR)?;
+        self.push(TT::CloseR)?;
 
         Ok(())
     }
 
-    fn format_arg(&mut self, arg: Arg) -> DiagResult<()> {
+    fn format_arg(&mut self, arg: Arg, allow_wrap: bool) -> DiagResult {
         let Arg { span: _, name, value } = arg;
         if let Some(name) = name {
             self.format_id(name)?;
-            self.push(TokenType::Eq)?;
+            self.push(TT::Eq)?;
         }
-        self.format_expr(value)?;
+        self.format_expr(value, allow_wrap)?;
         Ok(())
     }
 
-    fn format_visibility<V: FormatVisibility>(&mut self, vis: &V) -> DiagResult<()> {
+    fn format_visibility<V: FormatVisibility>(&mut self, vis: &V) -> DiagResult {
         V::format_visibility(self, vis)
     }
 
-    fn format_general_id(&mut self, id: GeneralIdentifier) -> DiagResult<()> {
+    fn format_general_id(&mut self, id: GeneralIdentifier) -> DiagResult {
         match id {
             GeneralIdentifier::Simple(id) => self.format_id(id),
             GeneralIdentifier::FromString(_, _) => todo!(),
         }
     }
 
-    fn format_maybe_id(&mut self, id: MaybeIdentifier) -> DiagResult<()> {
+    fn format_maybe_id(&mut self, id: MaybeIdentifier) -> DiagResult {
         match id {
-            MaybeIdentifier::Dummy(span) => self.push_with_span(TokenType::Underscore, span),
+            MaybeIdentifier::Dummy(span) => self.push_with_span(TT::Underscore, span),
             MaybeIdentifier::Identifier(id) => self.format_id(id),
         }
     }
 
-    fn format_id(&mut self, id: Identifier) -> DiagResult<()> {
+    fn format_id(&mut self, id: Identifier) -> DiagResult {
         let Identifier { span } = id;
-        self.push_with_span(TokenType::Identifier, span)
+        self.push_with_span(TT::Identifier, span)
     }
 }
 
 trait FormatVisibility {
-    fn format_visibility(c: &mut FormatContext, vis: &Self) -> DiagResult<()>;
+    fn format_visibility(c: &mut FormatContext, vis: &Self) -> DiagResult;
 }
 
 impl FormatVisibility for Visibility {
-    fn format_visibility(c: &mut FormatContext, vis: &Visibility) -> DiagResult<()> {
+    fn format_visibility(c: &mut FormatContext, vis: &Visibility) -> DiagResult {
         match *vis {
             Visibility::Public(span) => {
-                c.push_with_span(TokenType::Public, span)?;
+                c.push_with_span(TT::Public, span)?;
                 c.push_space();
                 Ok(())
             }
@@ -576,7 +678,7 @@ impl FormatVisibility for Visibility {
 }
 
 impl FormatVisibility for () {
-    fn format_visibility(_: &mut FormatContext, _: &()) -> DiagResult<()> {
+    fn format_visibility(_: &mut FormatContext, _: &()) -> DiagResult {
         // do nothing, no visibility
         Ok(())
     }
