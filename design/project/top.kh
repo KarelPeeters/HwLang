@@ -8,6 +8,7 @@ const input_width = [
     very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
     [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier],
     [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, 4],
+    f(very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, f(4, a=5))
 ];
 const output_width = 8;
 

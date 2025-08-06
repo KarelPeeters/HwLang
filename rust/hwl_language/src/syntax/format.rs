@@ -86,7 +86,6 @@ pub fn format(
         state: CheckpointState {
             next_source_token: 0,
             curr_line_length: 0,
-            overflowing_line_count: 0,
             indent: 0,
         },
     };
@@ -130,8 +129,7 @@ struct FormatContext<'a> {
 struct CheckpointState {
     next_source_token: usize,
     curr_line_length: usize,
-    overflowing_line_count: usize,
-
+    // TODO should this even be part of the checkpoint, the wrapping function will always restore it anyway?
     indent: usize,
 }
 
@@ -350,9 +348,6 @@ impl FormatContext<'_> {
                 self.format_import_entry(entry)?;
             }
             ImportFinalKind::Multi(entries) => {
-                // TODO definitely implement line wrapping here, but not the typical "all or nothing" way,
-                //    more soft-wrap like where we keep things as compact as possible
-
                 self.push(TT::OpenS)?;
 
                 // try single line
@@ -408,7 +403,7 @@ impl FormatContext<'_> {
     }
 
     fn format_import_entry(&mut self, entry: &ImportEntry) -> DiagResult {
-        // TODO support wrapping?
+        // TODO support wrapping between id as and as_ too?
         let &ImportEntry { span: _, id, as_ } = entry;
         self.format_id(id)?;
         if let Some(as_) = as_ {
@@ -520,36 +515,8 @@ impl FormatContext<'_> {
             ExpressionKind::StringLiteral(_) => todo!(),
             ExpressionKind::ArrayLiteral(elements) => {
                 self.push(TT::OpenS)?;
-
-                // try single line
-                let check = self.checkpoint();
-                for (&elem, last) in elements.iter().with_last() {
-                    self.format_array_element(elem, false)?;
-                    if !last {
-                        self.push(TT::Comma)?;
-                        self.push_space();
-                    }
-                }
-
-                // maybe fallback to multi-line, one element per line
-                if allow_wrap && self.line_overflow() && !elements.is_empty() {
-                    self.restore(check);
-
-                    self.indent(|slf| {
-                        slf.push_newline();
-                        for &elem in elements.iter() {
-                            slf.format_array_element(elem, true)?;
-                            slf.push(TT::Comma)?;
-                            slf.push_newline();
-                        }
-                        Ok(())
-                    })?;
-                }
-
+                self.format_comma_list(elements, allow_wrap, Self::format_array_element)?;
                 self.push(TT::CloseS)?;
-
-                // TODO stop propagaating overflow manually, we can just record some stuff
-                //   and then look at the span since the checkpoint
                 Ok(())
             }
             ExpressionKind::TupleLiteral(_) => todo!(),
@@ -563,10 +530,9 @@ impl FormatContext<'_> {
             ExpressionKind::DotIntIndex(_, _) => todo!(),
             &ExpressionKind::Call(target, ref args) => {
                 // TODO allow wrapping target?
-                // self.format_expr(target)?;
-                // self.format_args(args)?;
-                // Ok(())
-                todo!()
+                self.format_expr(target, false)?;
+                self.format_args(args, allow_wrap)?;
+                Ok(())
             }
             ExpressionKind::Builtin(_) => todo!(),
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
@@ -574,8 +540,8 @@ impl FormatContext<'_> {
         }
     }
 
-    fn format_array_element(&mut self, elem: ArrayLiteralElement<Expression>, allow_wrap: bool) -> DiagResult {
-        match elem {
+    fn format_array_element(&mut self, elem: &ArrayLiteralElement<Expression>, allow_wrap: bool) -> DiagResult {
+        match *elem {
             ArrayLiteralElement::Single(elem) => self.format_expr(elem, allow_wrap),
             ArrayLiteralElement::Spread(spread_span, elem) => {
                 self.push_with_span(TT::Star, spread_span)?;
@@ -586,50 +552,54 @@ impl FormatContext<'_> {
 
     fn format_args(&mut self, args: &Args, allow_wrap: bool) -> DiagResult {
         let Args { span: _, inner } = args;
-
         self.push(TT::OpenR)?;
+        self.format_comma_list(inner, allow_wrap, Self::format_arg)?;
+        self.push(TT::CloseR)?;
+        Ok(())
+    }
 
+    fn format_arg(&mut self, arg: &Arg, allow_wrap: bool) -> DiagResult {
+        let Arg { span: _, name, value } = *arg;
+        if let Some(name) = name {
+            self.format_id(name)?;
+            self.push(TT::Eq)?;
+        }
+        self.format_expr(value, allow_wrap)?;
+        Ok(())
+    }
+
+    fn format_comma_list<T>(
+        &mut self,
+        list: &[T],
+        allow_wrap: bool,
+        mut f: impl FnMut(&mut Self, &T, bool) -> DiagResult,
+    ) -> DiagResult {
         // try single line
-        // TODO common "comma separated list that wraps to full multiline" formatting function,
-        //    maybe even with a compact variant that can be used for imports?
+        // TODO performance optimization:
+        //   bail early if we overflow and we know we will be called with "allow_wrap=true" later
         let check = self.checkpoint();
-        for (&arg, last) in inner.iter().with_last() {
-            self.format_arg(arg, false)?;
+        for (item, last) in list.iter().with_last() {
+            f(self, item, false)?;
             if !last {
                 self.push(TT::Comma)?;
                 self.push_space();
             }
         }
 
-        // TODO this should be "line_overflow or any child wrapped",
-        //   maybe we can force inner expressions to not wrap, which should be equivalent?
-        // maybe fallback to multi-line, one arg per line
-        if allow_wrap && self.line_overflow() && !inner.is_empty() {
+        // maybe fallback to multi-line, one item per line
+        if allow_wrap && self.line_overflow() && !list.is_empty() {
             self.restore(check);
-
             self.indent(|slf| {
                 slf.push_newline();
-                for &arg in inner {
-                    slf.format_arg(arg, true)?;
+                for item in list {
+                    f(slf, item, true)?;
                     slf.push(TT::Comma)?;
+                    slf.push_newline();
                 }
                 Ok(())
             })?;
-            self.push_newline();
         }
 
-        self.push(TT::CloseR)?;
-
-        Ok(())
-    }
-
-    fn format_arg(&mut self, arg: Arg, allow_wrap: bool) -> DiagResult {
-        let Arg { span: _, name, value } = arg;
-        if let Some(name) = name {
-            self.format_id(name)?;
-            self.push(TT::Eq)?;
-        }
-        self.format_expr(value, allow_wrap)?;
         Ok(())
     }
 
