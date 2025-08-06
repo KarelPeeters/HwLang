@@ -60,7 +60,7 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
                             manifest_path: cand_manifest_path,
                             manifest_parent: ancestor.to_owned(),
                             manifest_source: s,
-                        })
+                        });
                     }
                     Err(e) => match e.kind() {
                         ErrorKind::NotFound => continue,
@@ -86,7 +86,7 @@ pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
     let any_error = !diags.is_empty();
 
     for diag in diags {
-        let s = diag.to_string(&source, DiagnosticStringSettings::default());
+        let s = diag.to_string(source, DiagnosticStringSettings::default());
         eprintln!("{s}\n");
     }
 

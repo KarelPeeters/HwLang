@@ -1,12 +1,12 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{compile, ElaborationSet};
+use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{DiagResult, DiagnosticStringSettings, Diagnostics};
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
-use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use itertools::Itertools;
 use std::time::Duration;
 use strum::IntoEnumIterator;
@@ -114,7 +114,7 @@ fn build_source(
 
     let file = source.add_file("top.kh".to_owned(), top_src);
     let dummy_span = source.full_span(file);
-    hierarchy.add_file(diags, &source, dummy_span, &["top".to_owned()], file)?;
+    hierarchy.add_file(diags, source, dummy_span, &["top".to_owned()], file)?;
 
     Ok((hierarchy, file))
 }

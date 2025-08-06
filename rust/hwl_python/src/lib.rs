@@ -1,8 +1,8 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use hwl_language::back::lower_verilator::{lower_verilator, LoweredVerilator};
-use hwl_language::back::lower_verilog::{lower_to_verilog, LoweredVerilog};
+use hwl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
+use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_verilator::{VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError};
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
 use hwl_language::front::diagnostic::Diagnostics;
@@ -24,9 +24,9 @@ use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
-use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
-use itertools::{enumerate, Either, Itertools};
+use itertools::{Either, Itertools, enumerate};
 use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
 use pyo3::types::PyIterator;
 use pyo3::{
@@ -207,7 +207,7 @@ impl Source {
 
         // collect hierarchy
         let hierarchy =
-            collect_source_from_manifest(&diags, &mut source, manifest_file, &manifest_parent, &manifest_source);
+            collect_source_from_manifest(&diags, &mut source, manifest_file, manifest_parent, &manifest_source);
         let hierarchy = map_diag_error(&diags, &source, hierarchy)?;
 
         let manifest_span = source.full_span(manifest_file);
@@ -634,7 +634,7 @@ impl Module {
             ElaboratedModule::External(_) => {
                 return Err(GenerateVerilogException::new_err(
                     "cannot generate verilog for external module",
-                ))
+                ));
             }
         };
         let ir_module = compile.state.elaboration_arenas.module_internal_info(module).module_ir;
