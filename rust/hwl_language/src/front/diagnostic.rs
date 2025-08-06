@@ -7,7 +7,7 @@ use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
-use std::cmp::{min, Ordering};
+use std::cmp::{Ordering, min};
 
 // TODO give this a better name to clarify that this means that the compiler gave up on this
 //   and that the error has already been reported as a diagnostic.
@@ -220,7 +220,7 @@ impl Diagnostic {
             for (span, mut annotations) in snippets {
                 // try merging with previous snippet
                 let mut merged = false;
-                for (span_prev, ref mut annotations_prev) in &mut snippets_merged {
+                for (span_prev, annotations_prev) in &mut snippets_merged {
                     // calculate distance
                     let span_full = database.expand_span(span);
                     let span_prev_full = database.expand_span(*span_prev);

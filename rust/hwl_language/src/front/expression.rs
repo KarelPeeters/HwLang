@@ -1,14 +1,14 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_hardware_type_for_bit_operation, check_type_contains_compile_value, check_type_contains_value,
-    check_type_is_bool, check_type_is_int, check_type_is_int_compile, check_type_is_int_hardware, check_type_is_string,
-    check_type_is_uint_compile, TypeContainsReason,
+    TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_compile_value,
+    check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_int_compile,
+    check_type_is_int_hardware, check_type_is_string, check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion};
-use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationOp, ValueWithImplications,
 };
@@ -30,16 +30,16 @@ use crate::syntax::ast::{
 use crate::syntax::pos::Span;
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{vec_concat, VecExt};
+use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
-use crate::util::{result_pair, Never, ResultDoubleExt, ResultNeverExt};
+use crate::util::{Never, ResultDoubleExt, ResultNeverExt, result_pair};
 use annotate_snippets::Level;
-use itertools::{enumerate, Either};
+use itertools::{Either, enumerate};
 use std::cmp::{max, min};
 use std::ops::Sub;
 use std::sync::Arc;
@@ -234,7 +234,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 ));
             }
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
-            ExpressionKind::IntLiteral(ref pattern) => {
+            ExpressionKind::IntLiteral(pattern) => {
                 let value = match *pattern {
                     IntLiteral::Binary(raw) => {
                         let raw = source.span_str(raw);
@@ -504,7 +504,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let len = match len {
                             ArrayLiteralElement::Single(len) => len,
                             ArrayLiteralElement::Spread(_, _) => {
-                                return Err(diags.report_todo(len.span(), "spread in array type lengths"))
+                                return Err(diags.report_todo(len.span(), "spread in array type lengths"));
                             }
                         };
                         let len_expected_ty = Type::Int(IncRange {
@@ -589,7 +589,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                     ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
                     ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
-                        return Err(err_not_tuple("interface instance"))
+                        return Err(err_not_tuple("interface instance"));
                     }
                 }
             }
@@ -642,7 +642,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
                 .flatten_err()?
             }
-            ExpressionKind::Builtin(ref args) => self.eval_builtin(scope, flow, expr.span, args)?,
+            ExpressionKind::Builtin(args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
 
@@ -1328,7 +1328,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 (
                     "fn",
                     "assert",
-                    &[Value::Compile(CompileValue::Bool(cond)), Value::Compile(CompileValue::String(ref msg))],
+                    &[
+                        Value::Compile(CompileValue::Bool(cond)),
+                        Value::Compile(CompileValue::String(ref msg)),
+                    ],
                 ) => {
                     return if cond {
                         Ok(Value::Compile(CompileValue::unit()))
@@ -1338,7 +1341,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             expr_span,
                             "failed here",
                         ))
-                    }
+                    };
                 }
                 ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {
                     return Err(diags.report_todo(expr_span, "runtime assert"));
@@ -1480,7 +1483,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
                         }
                         NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
-                            return Err(build_err("interface instance"))
+                            return Err(build_err("interface instance"));
                         }
                         NamedValue::Wire(w) => {
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
@@ -1568,11 +1571,11 @@ impl<'a> CompileItemContext<'a, '_> {
                         "dot index is only allowed on port/wire interfaces",
                         base.span,
                         "got other expression here",
-                    ))
+                    ));
                 }
             },
             ExpressionKind::DotIntIndex(_, _) => {
-                return Err(diags.report_todo(expr.span, "assignment target dot int index"))?
+                return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
             }
             _ => return Err(build_err("other expression")),
         };
@@ -1732,7 +1735,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                     end_inc
                                 }
                             ),
-                        ))
+                        ));
                     }
                 };
 
@@ -1820,7 +1823,7 @@ fn eval_int_ty_call(
                 "expected compile-time argument for int type",
                 value.span,
                 "got hardware value here",
-            ))
+            ));
         }
     };
 
@@ -2167,7 +2170,7 @@ pub fn eval_binary_expression(
                             return Err(diags.report_internal_error(
                                 left.span,
                                 "compile-time value with type array is not actually an array",
-                            ))
+                            ));
                         }
                         Value::Hardware(value) => {
                             // implement runtime repetition through spread array literal
@@ -2218,7 +2221,7 @@ pub fn eval_binary_expression(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
                         format!("got value with type `{}`", left.inner.ty().diagnostic_string()),
-                    ))
+                    ));
                 }
             }
         }
@@ -2799,7 +2802,7 @@ fn array_literal_combine_values(
                             return Err(diags.report_todo(
                                 span_spread,
                                 "compile-time spread only works for fully known arrays for now",
-                            ))
+                            ));
                         }
                     };
                     result.extend(elem_inner_array.iter().cloned())

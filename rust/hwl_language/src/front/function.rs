@@ -1,5 +1,5 @@
 use crate::front::block::{BlockEnd, BlockEndReturn};
-use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
@@ -22,11 +22,11 @@ use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
-use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, Itertools};
-use std::collections::hash_map::Entry as HashMapEntry;
+use indexmap::map::Entry;
+use itertools::{Itertools, enumerate};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -969,7 +969,7 @@ impl CapturedScope {
                             span,
                             value: ScopedEntry::Item(item),
                         },
-                        CapturedValue::Value(ref value) => {
+                        CapturedValue::Value(value) => {
                             // TODO this can be simplified, identifiers can be stored by value now
                             let id_recreated = MaybeIdentifier::Identifier(Identifier { span });
                             let var =

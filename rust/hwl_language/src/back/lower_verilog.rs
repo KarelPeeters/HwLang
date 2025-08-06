@@ -1,11 +1,12 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::types::HardwareType;
 use crate::mid::ir::{
-    ir_modules_topological_sort, IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo,
-    IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
+    IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement,
     IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    ir_modules_topological_sort,
 };
 use crate::syntax::ast::{PortDirection, Spanned};
 use crate::syntax::pos::Span;
@@ -14,7 +15,7 @@ use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
 use crate::util::int::IntRepresentation;
-use crate::util::{separator_non_trailing, Indent, ResultExt};
+use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
 use itertools::enumerate;
@@ -336,7 +337,10 @@ fn lower_module_signals(
         let ty_debug_str = debug_info_ty.diagnostic_string();
 
         // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
-        swriteln!(f, "{I}{prefix_str}reg {ty_prefix_str}{name}; // {signal_type} {name_debug_str}: {debug_info_domain} {ty_debug_str}");
+        swriteln!(
+            f,
+            "{I}{prefix_str}reg {ty_prefix_str}{name}; // {signal_type} {name_debug_str}: {debug_info_domain} {ty_debug_str}"
+        );
         Ok(name)
     };
 
@@ -859,7 +863,7 @@ fn lower_expression(large: &IrLargeArena, name_map: NameMap, expr: &IrExpression
                     lower_expression(large, name_map, inner, f)?;
                     swrite!(f, ")");
                 }
-                IrExpressionLarge::BoolBinary(op, ref left, ref right) => {
+                IrExpressionLarge::BoolBinary(op, left, right) => {
                     // logical and bitwise operators would both work,
                     //   bitwise is more consistent since it also has an xor operator
                     let op_str = match op {

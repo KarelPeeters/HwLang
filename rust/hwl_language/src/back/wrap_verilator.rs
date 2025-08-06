@@ -1,5 +1,5 @@
 use crate::front::bits::WrongType;
-use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
 use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
@@ -8,8 +8,8 @@ use crate::util::arena::{Arena, IndexType};
 use crate::util::big_int::BigUint;
 use dlopen2::wrapper::{Container, WrapperApi};
 use indexmap::IndexMap;
-use itertools::{enumerate, Either, Itertools};
-use std::ffi::{c_char, c_void, CString, NulError};
+use itertools::{Either, Itertools, enumerate};
+use std::ffi::{CString, NulError, c_char, c_void};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 use std::ptr::null;
@@ -85,9 +85,11 @@ impl VerilatedLib {
     /// We only make a best-effort to check that the right functions are present in the library
     /// and that the same `modules` and `top_module` were used.
     pub unsafe fn new(modules: &IrModules, top_module: IrModule, path: &Path) -> Result<Self, VerilatorError> {
-        let lib: Container<VerilatedApi> = Container::load(path)?;
-
-        let result = lib.check(modules.check().inner().get(), top_module.inner().index());
+        let (lib, result) = unsafe {
+            let lib: Container<VerilatedApi> = Container::load(path)?;
+            let result = lib.check(modules.check().inner().get(), top_module.inner().index());
+            (lib, result)
+        };
         if result != 0 {
             return Err(VerilatorError::CheckFailed);
         }

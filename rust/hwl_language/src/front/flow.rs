@@ -2,7 +2,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    join_implications, ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ValueWithVersion,
+    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
@@ -20,7 +20,7 @@ use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{zip_eq, Either, Itertools};
+use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
@@ -1503,18 +1503,18 @@ mod lifetime_cast {
     use crate::front::flow::{FlowCompile, FlowHardware, FlowHardwareBranch, FlowHardwareRoot};
 
     pub unsafe fn compile_ref<'s>(flow: &'s FlowCompile) -> &'s FlowCompile<'s> {
-        &*(flow as *const FlowCompile<'_> as *const FlowCompile<'s>)
+        unsafe { &*(flow as *const FlowCompile<'_> as *const FlowCompile<'s>) }
     }
     pub unsafe fn compile_mut<'s>(flow: &'s mut FlowCompile) -> &'s mut FlowCompile<'s> {
-        &mut *(flow as *mut FlowCompile<'_> as *mut FlowCompile<'s>)
+        unsafe { &mut *(flow as *mut FlowCompile<'_> as *mut FlowCompile<'s>) }
     }
     pub unsafe fn hardware_mut<'s>(flow: &'s mut FlowHardware) -> &'s mut FlowHardware<'s> {
-        &mut *(flow as *mut FlowHardware<'_> as *mut FlowHardware<'s>)
+        unsafe { &mut *(flow as *mut FlowHardware<'_> as *mut FlowHardware<'s>) }
     }
     pub unsafe fn hardware_root_mut<'s>(flow: &'s mut FlowHardwareRoot) -> &'s mut FlowHardwareRoot<'s> {
-        &mut *(flow as *mut FlowHardwareRoot<'_> as *mut FlowHardwareRoot<'s>)
+        unsafe { &mut *(flow as *mut FlowHardwareRoot<'_> as *mut FlowHardwareRoot<'s>) }
     }
     pub unsafe fn hardware_branch_mut<'s>(flow: &'s mut FlowHardwareBranch) -> &'s mut FlowHardwareBranch<'s> {
-        &mut *(flow as *mut FlowHardwareBranch<'_> as *mut FlowHardwareBranch<'s>)
+        unsafe { &mut *(flow as *mut FlowHardwareBranch<'_> as *mut FlowHardwareBranch<'s>) }
     }
 }
