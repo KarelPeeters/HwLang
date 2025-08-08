@@ -428,13 +428,9 @@ impl FormatContext<'_> {
             })?;
         }
 
-        if !port_types.items.is_empty() && !views.is_empty() {
-            self.push_newline();
-        }
-
         if !views.is_empty() {
             self.indent(|slf| {
-                for view in views {
+                for (view, last) in views.iter().with_last() {
                     let InterfaceView { id, port_dirs } = view;
 
                     slf.push(TT::Interface)?;
@@ -460,6 +456,9 @@ impl FormatContext<'_> {
 
                     slf.push(TT::CloseC)?;
                     slf.push_newline();
+                    if !last {
+                        slf.push_newline();
+                    }
                 }
                 Ok(())
             })?;
