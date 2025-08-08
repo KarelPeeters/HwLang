@@ -411,9 +411,8 @@ pub struct MatchBranch<B> {
 
 #[derive(Debug, Clone)]
 pub enum MatchPattern<E = Expression, R = Expression, V = Identifier, I = Identifier> {
-    Dummy,
+    Wildcard,
     Val(I),
-
     Equal(E),
     In(R),
     EnumVariant(V, Option<MaybeIdentifier>),
@@ -516,7 +515,7 @@ pub struct VariableDeclaration {
 #[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
-    pub op: Spanned<Option<BinaryOp>>,
+    pub op: Spanned<Option<AssignBinaryOp>>,
     pub target: Expression,
     pub value: Expression,
 }
@@ -837,6 +836,19 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub enum AssignBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    // TODO add boolean and shift operators
+    BitAnd,
+    BitOr,
+    BitXor,
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum UnaryOp {
     Plus,
     Neg,
@@ -1122,6 +1134,34 @@ impl BinaryOp {
             BinaryOp::CmpGt => TokenType::Gt,
             BinaryOp::CmpGte => TokenType::Gte,
             BinaryOp::In => TokenType::In,
+        }
+    }
+}
+
+impl AssignBinaryOp {
+    pub fn token(self) -> TokenType {
+        match self {
+            AssignBinaryOp::Add => TokenType::PlusEq,
+            AssignBinaryOp::Sub => TokenType::MinusEq,
+            AssignBinaryOp::Mul => TokenType::StarEq,
+            AssignBinaryOp::Div => TokenType::SlashEq,
+            AssignBinaryOp::Mod => TokenType::PercentEq,
+            AssignBinaryOp::BitAnd => TokenType::AmperEq,
+            AssignBinaryOp::BitOr => TokenType::PipeEq,
+            AssignBinaryOp::BitXor => TokenType::CaretEq,
+        }
+    }
+
+    pub fn to_binary_op(self) -> BinaryOp {
+        match self {
+            AssignBinaryOp::Add => BinaryOp::Add,
+            AssignBinaryOp::Sub => BinaryOp::Sub,
+            AssignBinaryOp::Mul => BinaryOp::Mul,
+            AssignBinaryOp::Div => BinaryOp::Div,
+            AssignBinaryOp::Mod => BinaryOp::Mod,
+            AssignBinaryOp::BitAnd => BinaryOp::BitAnd,
+            AssignBinaryOp::BitOr => BinaryOp::BitOr,
+            AssignBinaryOp::BitXor => BinaryOp::BitXor,
         }
     }
 }

@@ -51,7 +51,31 @@ const { if(false) { const a = false; } }
 
 const {
     if (very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier && very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier) {}
+
+    very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier += very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+
+    {
+        [true, false];
+    }
+
+    match (false) {
+        _ => {}
+    }
+
+    for (x in [1, 2, 3]) {}
+    for (x: uint in [1, 2, 3]) {}
+    for (
+        x: uint
+        in [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, 3]) {}
+
+    while (true) {}
+    while (
+        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
+            == very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
+    ) {}
 }
+
+
 
 //const input_width: uint = 8;
 

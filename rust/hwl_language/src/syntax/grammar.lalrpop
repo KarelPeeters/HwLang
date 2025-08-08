@@ -107,8 +107,8 @@ extern {
         "/=" => TokenType::SlashEq,
         "%=" => TokenType::PercentEq,
         "&=" => TokenType::AmperEq,
+        "|=" => TokenType::PipeEq,
         "^=" => TokenType::CaretEq,
-        "|=" => TokenType::BarEq,
     }
 }
 
@@ -357,7 +357,12 @@ MatchBranch<B>: MatchBranch<B> = {
 }
 
 MatchPattern: MatchPattern = {
-    <value:Expr> => MatchPattern::Equal(value),
+    <value:Expr> => {
+        match &arena_expr[value.inner] {
+            ExpressionKind::Dummy => MatchPattern::Wildcard,
+            _ => MatchPattern::Equal(value),
+        }
+    },
     "val" <id:Id> => MatchPattern::Val(id),
     "in" <value:Expr> => MatchPattern::In(value),
     "." <variant:Id> <id_content:("(" <MaybeValId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
@@ -832,18 +837,18 @@ Vis: Visibility = {
     => Visibility::Private,
 }
 
-AssignOp: Spanned<Option<BinaryOp>> = Spanned<AssignOpInner>;
+AssignOp: Spanned<Option<AssignBinaryOp>> = Spanned<AssignOpInner>;
 
-AssignOpInner: Option<BinaryOp> = {
+AssignOpInner: Option<AssignBinaryOp> = {
     "=" => None,
-    "+=" => Some(BinaryOp::Add),
-    "-=" => Some(BinaryOp::Sub),
-    "*=" => Some(BinaryOp::Mul),
-    "/=" => Some(BinaryOp::Div),
-    "%=" => Some(BinaryOp::Mod),
-    "&=" => Some(BinaryOp::BitAnd),
-    "^=" => Some(BinaryOp::BitXor),
-    "|=" => Some(BinaryOp::BitOr),
+    "+=" => Some(AssignBinaryOp::Add),
+    "-=" => Some(AssignBinaryOp::Sub),
+    "*=" => Some(AssignBinaryOp::Mul),
+    "/=" => Some(AssignBinaryOp::Div),
+    "%=" => Some(AssignBinaryOp::Mod),
+    "&=" => Some(AssignBinaryOp::BitAnd),
+    "|=" => Some(AssignBinaryOp::BitOr),
+    "^=" => Some(AssignBinaryOp::BitXor),
 }
 
 // utilities

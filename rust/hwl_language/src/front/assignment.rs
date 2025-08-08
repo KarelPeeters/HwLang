@@ -13,7 +13,7 @@ use crate::front::value::{HardwareValue, Value};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::syntax::ast::{Assignment, BinaryOp, MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::ast::{AssignBinaryOp, Assignment, MaybeIdentifier, Spanned, SyncDomain};
 use crate::syntax::pos::Span;
 use annotate_snippets::Level;
 
@@ -182,7 +182,7 @@ impl CompileItemContext<'_, '_> {
                     self.refs,
                     &mut self.large,
                     stmt.span,
-                    Spanned::new(op.span, op_inner),
+                    Spanned::new(op.span, op_inner.to_binary_op()),
                     Spanned::new(target.span, Value::Hardware(target_eval)),
                     right_eval,
                 )?;
@@ -353,7 +353,7 @@ impl CompileItemContext<'_, '_> {
         target_base: Spanned<Variable>,
         target_steps: &ArraySteps,
         target_expected_ty: Type,
-        op: Spanned<Option<BinaryOp>>,
+        op: Spanned<Option<AssignBinaryOp>>,
         right_eval: Spanned<ValueWithImplications>,
     ) -> DiagResult {
         let diags = self.refs.diags;
@@ -386,7 +386,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs,
                         &mut self.large,
                         stmt_span,
-                        Spanned::new(op.span, op_inner),
+                        Spanned::new(op.span, op_inner.to_binary_op()),
                         target_eval,
                         right_eval,
                     )?;
@@ -448,7 +448,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs,
                         &mut self.large,
                         stmt_span,
-                        Spanned::new(op.span, op_inner),
+                        Spanned::new(op.span, op_inner.to_binary_op()),
                         Spanned::new(target_span, ValueWithImplications::simple(target_eval)),
                         right_eval,
                     )?;
@@ -515,7 +515,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs,
                         &mut self.large,
                         stmt_span,
-                        Spanned::new(op.span, op_inner),
+                        Spanned::new(op.span, op_inner.to_binary_op()),
                         Spanned::new(target_span, ValueWithImplications::simple(Value::Compile(target_eval))),
                         right_eval.map_inner(ValueWithImplications::Compile),
                     )?

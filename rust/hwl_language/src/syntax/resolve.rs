@@ -789,7 +789,7 @@ impl ResolveContext<'_> {
 
                     let mut scope_inner = DeclScope::new_child(scope);
                     match &pattern.inner {
-                        MatchPattern::Dummy => {}
+                        MatchPattern::Wildcard => {}
                         &MatchPattern::Val(id) => {
                             scope_inner.declare(self.source, Conditional::No, id);
                         }

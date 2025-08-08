@@ -10,13 +10,8 @@
 // TODO create a test file that contains every syntactical construct, which should fully cover the parser and this
 
 use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayLiteralElement, Block, BlockStatement, BlockStatementKind, CommonDeclaration,
-    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, Expression, ExpressionKind,
-    ExtraItem, ExtraList, FileContent, GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry,
-    ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, ModulePortItem, Parameter, Parameters,
-    TypeDeclaration, Visibility,
-};
+// TODO remove star
+use crate::syntax::ast::*;
 use crate::syntax::pos::{LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT, tokenize};
@@ -247,12 +242,6 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn push_with_span(&mut self, ty: TT, span: Span) -> DiagResult {
-        // TODO use span
-        let _ = span;
-        self.push(ty)
-    }
-
     fn push_space(&mut self) {
         // no need to check for comments
         // TODO is that right?
@@ -460,46 +449,7 @@ impl FormatContext<'_> {
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-                        self.push(TT::Const)?;
-                        self.push_space();
-                        self.format_maybe_id(id)?;
-
-                        // try single line
-                        let check = self.checkpoint();
-                        if let Some(ty) = ty {
-                            // TODO allow wrapping in types?
-                            self.push(TT::Colon)?;
-                            self.push_space();
-                            self.format_expr(ty, false)?;
-                        }
-                        self.push_space();
-                        self.push(TT::Eq)?;
-                        self.push_space();
-                        self.format_expr(value, true)?;
-                        self.push(TT::Semi)?;
-                        self.push_newline();
-
-                        // maybe fallback to multi-line
-                        // TODO maybe add an intermediate state where only the value is on the next line?
-                        // TODO is this worth the complexity?
-                        if self.overflow_since(check) {
-                            self.restore(check);
-                            self.indent(|slf| {
-                                if let Some(ty) = ty {
-                                    // TODO allow wrapping in types?
-                                    slf.push(TT::Colon)?;
-                                    slf.push_space();
-                                    slf.format_expr(ty, false)?;
-                                    slf.push_newline();
-                                }
-                                slf.push(TT::Eq)?;
-                                slf.push_space();
-                                slf.format_expr(value, true)?;
-                                slf.push(TT::Semi)?;
-                                slf.push_newline();
-                                Ok(())
-                            })?;
-                        }
+                        self.format_const_or_var_declaration(TT::Const, id, ty, Some(value))?;
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -511,12 +461,66 @@ impl FormatContext<'_> {
                     span_keyword,
                     ref block,
                 } = block;
-                self.push_with_span(TT::Const, span_keyword)?;
+                self.push(TT::Const)?;
                 self.push_space();
                 self.format_block(block)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn format_const_or_var_declaration(
+        &mut self,
+        kind: TT,
+        id: MaybeIdentifier,
+        ty: Option<Expression>,
+        value: Option<Expression>,
+    ) -> DiagResult {
+        self.push(kind)?;
+        self.push_space();
+        self.format_maybe_id(id)?;
+
+        // try single line
+        let check = self.checkpoint();
+        if let Some(ty) = ty {
+            // TODO allow wrapping in types?
+            self.push(TT::Colon)?;
+            self.push_space();
+            self.format_expr(ty, false)?;
+        }
+        if let Some(value) = value {
+            self.push_space();
+            self.push(TT::Eq)?;
+            self.push_space();
+            self.format_expr(value, true)?;
+        }
+        self.push(TT::Semi)?;
+        self.push_newline();
+
+        // maybe fallback to multi-line
+        // TODO maybe add an intermediate state where only the value is on the next line?
+        // TODO is this worth the complexity?
+        if self.overflow_since(check) {
+            self.restore(check);
+            self.indent(|slf| {
+                if let Some(ty) = ty {
+                    // TODO allow wrapping in types?
+                    slf.push(TT::Colon)?;
+                    slf.push_space();
+                    slf.format_expr(ty, false)?;
+                    slf.push_newline();
+                }
+                if let Some(value) = value {
+                    slf.push(TT::Eq)?;
+                    slf.push_space();
+                    slf.format_expr(value, true)?;
+                }
+                slf.push(TT::Semi)?;
+                slf.push_newline();
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -535,6 +539,11 @@ impl FormatContext<'_> {
         f: &impl Fn(&mut Self, &T, bool) -> DiagResult,
     ) -> DiagResult {
         let ExtraList { span: _, items } = extra_list;
+
+        // prevent spurious empty newlines
+        if items.is_empty() {
+            return Ok(());
+        }
 
         // maybe try a single line
         if try_single_line && items.iter().all(|item| matches!(item, ExtraItem::Inner(_))) {
@@ -604,7 +613,7 @@ impl FormatContext<'_> {
                 cond,
                 ref block,
             } = pair;
-            slf.push_with_span(TT::If, span_if)?;
+            slf.push(TT::If)?;
             slf.push_space();
             slf.push(TT::OpenR)?;
             // TODO test this
@@ -640,6 +649,59 @@ impl FormatContext<'_> {
         Ok(())
     }
 
+    fn format_match<B>(&mut self, match_: &MatchStatement<B>, f: impl Fn(&mut Self, &B) -> DiagResult) -> DiagResult {
+        let &MatchStatement {
+            target,
+            span_branches: _,
+            ref branches,
+        } = match_;
+        self.push(TT::Match)?;
+        self.push(TT::OpenR)?;
+        self.format_expr(target, true)?;
+        self.push(TT::CloseR)?;
+        self.push_space();
+        self.push(TT::OpenC)?;
+
+        if !branches.is_empty() {
+            self.indent(|slf| {
+                // TODO respect extra newlines from input source
+                // TODO check if expression wrapping works correctly
+                for branch in branches {
+                    let MatchBranch { pattern, block } = branch;
+                    match &pattern.inner {
+                        MatchPattern::Wildcard => slf.push(TT::Underscore)?,
+                        &MatchPattern::Equal(expr) => slf.format_expr(expr, true)?,
+                        &MatchPattern::Val(id) => {
+                            slf.push(TT::Identifier)?;
+                            slf.format_id(id)?;
+                        }
+                        &MatchPattern::In(expr) => {
+                            slf.push(TT::In)?;
+                            slf.format_expr(expr, true)?;
+                        }
+                        &MatchPattern::EnumVariant(variant, data) => {
+                            slf.push(TT::Dot)?;
+                            slf.format_id(variant)?;
+                            if let Some(data) = data {
+                                slf.push(TT::OpenR)?;
+                                slf.format_maybe_id(data)?;
+                                slf.push(TT::CloseR)?;
+                            }
+                        }
+                    }
+                    slf.push_space();
+                    slf.push(TT::DoubleArrow)?;
+                    slf.push_space();
+                    f(slf, block)?;
+                }
+                Ok(())
+            })?
+        };
+        self.push(TT::CloseC)?;
+        self.push_newline();
+        Ok(())
+    }
+
     fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) -> DiagResult {
         todo!()
         // let ExtraList { span: _, items } = ports;<
@@ -663,34 +725,190 @@ impl FormatContext<'_> {
     }
 
     fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
-        let Block { span: _, statements } = block;
         self.push(TT::OpenC)?;
-        self.indent(|slf| slf.format_block_statements(statements))?;
+        self.format_block_inner(block)?;
         self.push(TT::CloseC)?;
+        self.push_newline();
         Ok(())
     }
 
-    fn format_block_statements(&mut self, statements: &[BlockStatement]) -> DiagResult {
-        for stmt in statements {
-            match &stmt.inner {
-                BlockStatementKind::CommonDeclaration(decl) => {
-                    self.format_common_declaration(decl)?;
+    fn format_block_inner(&mut self, block: &Block<BlockStatement>) -> DiagResult {
+        let Block { span: _, statements } = block;
+        if !statements.is_empty() {
+            self.indent(|slf| {
+                for stmt in statements {
+                    slf.format_block_statement(stmt)?;
                 }
-                BlockStatementKind::VariableDeclaration(_) => todo!(),
-                BlockStatementKind::Assignment(_) => todo!(),
-                BlockStatementKind::Expression(_) => todo!(),
-                BlockStatementKind::Block(_) => todo!(),
-                BlockStatementKind::If(if_) => {
-                    self.format_if(if_, |slf, s| {
-                        slf.indent(|slf| slf.format_block_statements(&s.statements))
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn format_block_statement(&mut self, stmt: &BlockStatement) -> DiagResult {
+        match &stmt.inner {
+            BlockStatementKind::CommonDeclaration(decl) => self.format_common_declaration(decl)?,
+            BlockStatementKind::VariableDeclaration(decl) => {
+                let &VariableDeclaration {
+                    span: _,
+                    mutable,
+                    id,
+                    ty,
+                    init,
+                } = decl;
+                let kind = if mutable { TT::Var } else { TT::Val };
+                self.format_const_or_var_declaration(kind, id, ty, init)?;
+            }
+            BlockStatementKind::Assignment(stmt) => {
+                let &Assignment {
+                    span: _,
+                    op,
+                    target,
+                    value,
+                } = stmt;
+                let op_token = op.inner.map_or(TT::Eq, AssignBinaryOp::token);
+
+                self.format_expr(target, false)?;
+
+                // try single line
+                let check = self.checkpoint();
+                self.push_space();
+                self.push(op_token)?;
+                self.push_space();
+                self.format_expr(value, true)?;
+                self.push(TT::Semi)?;
+
+                // maybe fallback to multi-line
+                if self.overflow_since(check) {
+                    self.restore(check);
+                    self.indent(|slf| {
+                        slf.push(op_token)?;
+                        slf.push_space();
+                        slf.format_expr(value, true)?;
+                        slf.push(TT::Semi)?;
+                        slf.push_newline();
+                        Ok(())
                     })?;
                 }
-                BlockStatementKind::Match(_) => todo!(),
-                BlockStatementKind::For(_) => todo!(),
-                BlockStatementKind::While(_) => todo!(),
-                BlockStatementKind::Return(_) => todo!(),
-                BlockStatementKind::Break(_) => todo!(),
-                BlockStatementKind::Continue(_) => todo!(),
+            }
+            &BlockStatementKind::Expression(expr) => {
+                self.format_expr(expr, true)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
+            }
+            BlockStatementKind::Block(block) => {
+                self.format_block(block)?;
+            }
+            BlockStatementKind::If(if_) => {
+                self.format_if(if_, Self::format_block_inner)?;
+            }
+            BlockStatementKind::Match(match_) => {
+                self.format_match(match_, Self::format_block)?;
+            }
+            BlockStatementKind::For(for_) => {
+                let &ForStatement {
+                    span_keyword: _,
+                    index,
+                    index_ty,
+                    iter,
+                    ref body,
+                } = for_;
+                self.push(TT::For)?;
+                self.push_space();
+                self.push(TT::OpenR)?;
+
+                // try single line
+                let check = self.checkpoint();
+                self.format_maybe_id(index)?;
+                if let Some(ty) = index_ty {
+                    self.push(TT::Colon)?;
+                    self.push_space();
+                    self.format_expr(ty, false)?;
+                }
+                self.push_space();
+                self.push(TT::In)?;
+                self.push_space();
+                self.format_expr(iter, false)?;
+                self.push(TT::CloseR)?;
+                self.push_space();
+                self.push(TT::OpenC)?;
+
+                // maybe fallback to multi-line
+                // TODO 3-choice wrap, allow wrapping the type and the value independently?
+                if self.overflow_since(check) {
+                    self.restore(check);
+                    self.indent(|slf| {
+                        slf.format_maybe_id(index)?;
+                        if let Some(ty) = index_ty {
+                            slf.push(TT::Colon)?;
+                            slf.push_space();
+                            slf.format_expr(ty, true)?;
+                        }
+                        slf.push_newline();
+                        slf.push(TT::In)?;
+                        slf.push_space();
+                        slf.format_expr(iter, true)?;
+                        slf.push(TT::CloseR)?;
+                        slf.push_space();
+                        slf.push(TT::OpenC)?;
+                        Ok(())
+                    })?;
+                }
+
+                self.format_block_inner(body)?;
+                self.push(TT::CloseC)?;
+                self.push_newline();
+            }
+            BlockStatementKind::While(while_) => {
+                let &WhileStatement {
+                    span_keyword: _,
+                    cond,
+                    ref body,
+                } = while_;
+                self.push(TT::While)?;
+                self.push_space();
+                self.push(TT::OpenR)?;
+
+                // try single line
+                let check = self.checkpoint();
+                self.format_expr(cond, false)?;
+                self.push(TT::CloseR)?;
+                self.push_space();
+                self.push(TT::OpenC)?;
+
+                // maybe fallback to multi-line
+                // TODO if body is empty, the closing curly should be included in the overflow check
+                if self.overflow_since(check) {
+                    self.restore(check);
+                    self.indent(|slf| {
+                        slf.format_expr(cond, true)?;
+                        slf.push_newline();
+                        Ok(())
+                    })?;
+                    self.push(TT::CloseR)?;
+                    self.push_space();
+                    self.push(TT::OpenC)?;
+                }
+
+                self.format_block_inner(body)?;
+                self.push(TT::CloseC)?;
+                self.push_newline();
+            }
+            BlockStatementKind::Return(stmt) => {
+                let &ReturnStatement { span_return, value } = stmt;
+                self.push(TT::Return)?;
+                if let Some(value) = value {
+                    self.push_space();
+                    self.format_expr(value, true)?;
+                }
+                self.push(TT::Semi)?;
+                self.push_newline();
+            }
+            &BlockStatementKind::Break(_span) => {
+                self.push(TT::Break)?;
+            }
+            &BlockStatementKind::Continue(_span) => {
+                self.push(TT::Continue)?;
             }
         }
         Ok(())
@@ -726,9 +944,9 @@ impl FormatContext<'_> {
             ExpressionKind::Block(_) => todo!(),
             &ExpressionKind::Id(id) => self.format_general_id(id),
             ExpressionKind::IntLiteral(lit) => match *lit {
-                IntLiteral::Binary(span) => self.push_with_span(TT::IntLiteralBinary, span),
-                IntLiteral::Decimal(span) => self.push_with_span(TT::IntLiteralDecimal, span),
-                IntLiteral::Hexadecimal(span) => self.push_with_span(TT::IntLiteralHexadecimal, span),
+                IntLiteral::Binary(_span) => self.push(TT::IntLiteralBinary),
+                IntLiteral::Decimal(_span) => self.push(TT::IntLiteralDecimal),
+                IntLiteral::Hexadecimal(_span) => self.push(TT::IntLiteralHexadecimal),
             },
             &ExpressionKind::BoolLiteral(bool) => match bool {
                 false => self.push(TT::False),
@@ -765,7 +983,7 @@ impl FormatContext<'_> {
                 let check = self.checkpoint();
                 self.format_expr(left, false)?;
                 self.push_space();
-                self.push_with_span(op.inner.token(), op.span)?;
+                self.push(op.inner.token())?;
                 self.push_space();
                 self.format_expr(right, allow_wrap)?;
 
@@ -776,7 +994,7 @@ impl FormatContext<'_> {
                     self.restore(check);
                     self.format_expr(left, true)?;
                     self.indent(|slf| {
-                        slf.push_with_span(op.inner.token(), op.span)?;
+                        slf.push(op.inner.token())?;
                         slf.push_space();
                         slf.format_expr(right, allow_wrap)?;
                         Ok(())
@@ -804,8 +1022,8 @@ impl FormatContext<'_> {
     fn format_array_element(&mut self, elem: &ArrayLiteralElement<Expression>, allow_wrap: bool) -> DiagResult {
         match *elem {
             ArrayLiteralElement::Single(elem) => self.format_expr(elem, allow_wrap),
-            ArrayLiteralElement::Spread(spread_span, elem) => {
-                self.push_with_span(TT::Star, spread_span)?;
+            ArrayLiteralElement::Spread(_span, elem) => {
+                self.push(TT::Star)?;
                 self.format_expr(elem, allow_wrap)
             }
         }
@@ -885,14 +1103,14 @@ impl FormatContext<'_> {
 
     fn format_maybe_id(&mut self, id: MaybeIdentifier) -> DiagResult {
         match id {
-            MaybeIdentifier::Dummy(span) => self.push_with_span(TT::Underscore, span),
+            MaybeIdentifier::Dummy(_span) => self.push(TT::Underscore),
             MaybeIdentifier::Identifier(id) => self.format_id(id),
         }
     }
 
     fn format_id(&mut self, id: Identifier) -> DiagResult {
-        let Identifier { span } = id;
-        self.push_with_span(TT::Identifier, span)
+        let Identifier { span: _ } = id;
+        self.push(TT::Identifier)
     }
 }
 
@@ -903,16 +1121,15 @@ trait FormatVisibility {
 impl FormatVisibility for Visibility {
     fn format_visibility(c: &mut FormatContext, vis: &Visibility) -> DiagResult {
         match *vis {
-            Visibility::Public(span) => {
-                c.push_with_span(TT::Public, span)?;
+            Visibility::Public(_span) => {
+                c.push(TT::Public)?;
                 c.push_space();
-                Ok(())
             }
             Visibility::Private => {
                 // do nothing, private visibility is the default
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 

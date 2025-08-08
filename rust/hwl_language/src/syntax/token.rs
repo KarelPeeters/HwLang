@@ -350,7 +350,7 @@ impl<'s> Tokenizer<'s> {
             ['&', '=', _] => skip_fixed(2, TokenType::AmperEq),
             ['&', _, _] => skip_fixed(1, TokenType::Amper),
             ['|', '|', _] => skip_fixed(2, TokenType::PipePipe),
-            ['|', '=', _] => skip_fixed(2, TokenType::BarEq),
+            ['|', '=', _] => skip_fixed(2, TokenType::PipeEq),
             ['|', _, _] => skip_fixed(1, TokenType::Pipe),
             ['^', '^', _] => skip_fixed(2, TokenType::CaretCaret),
             ['^', '=', _] => skip_fixed(2, TokenType::CaretEq),
@@ -640,8 +640,8 @@ declare_tokens! {
         SlashEq("/=", TC::Symbol),
         PercentEq("%=", TC::Symbol),
         AmperEq("&=", TC::Symbol),
+        PipeEq("|=", TC::Symbol),
         CaretEq("^=", TC::Symbol),
-        BarEq("|=", TC::Symbol),
     }
 }
 
