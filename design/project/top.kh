@@ -1,3 +1,5 @@
+// TODO extract some formatting tests from this, maybe just as one huge file for simplicity
+
 import std.types.[bool, int, uint, natural, any];
 import std.math.[gcd, min, max];
 import std.util.[print, assert];
@@ -21,6 +23,35 @@ const output_width = very_long_identifier_very_long_identifier_very_long_identif
         * very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
     + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
         * very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+
+
+const something = ();
+const something = (5,);
+const something = (5,6,7,8);
+const something = (very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,7,8);
+
+const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+const a: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: a = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = a;
+
+const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier______________;
+const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier_______________;
+const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier________________;
+const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier_________________;
+
+type x = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
+type x(n: uint) = 2**n;
+type x(very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: uint, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: bool) = false;
+
+type x(type v = uint;type v = uint;if(false) {type v = uint;} n: v, c: d) = bool;
+type x(type v = uint;type v = uint;if(false) {type v = uint;}else if(true) {} else {} n: v, c: d) = bool;
+
+const { if(false) { const a = false; } }
+
+const {
+    if (very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier && very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier) {}
+}
 
 //const input_width: uint = 8;
 

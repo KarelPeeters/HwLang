@@ -11,10 +11,11 @@
 
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayLiteralElement, Block, CommonDeclaration, CommonDeclarationNamed,
-    CommonDeclarationNamedKind, ConstDeclaration, Expression, ExpressionKind, ExtraList, FileContent,
-    GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier,
-    ModulePortItem, Parameters, Visibility,
+    ArenaExpressions, Arg, Args, ArrayLiteralElement, Block, BlockStatement, BlockStatementKind, CommonDeclaration,
+    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, Expression, ExpressionKind,
+    ExtraItem, ExtraList, FileContent, GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry,
+    ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, ModulePortItem, Parameter, Parameters,
+    TypeDeclaration, Visibility,
 };
 use crate::syntax::pos::{LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -272,9 +273,13 @@ impl FormatContext<'_> {
 
     fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         // TODO should indent even be part of the checkpoint state? it will always be rolled back anyway...
+        // TODO rename to reflect that this includes a newline?
         let before = self.state.indent;
         self.state.indent += 1;
+
+        self.push_newline();
         let result = f(self);
+
         assert_eq!(self.state.indent, before + 1, "indent level should increase");
         self.state.indent -= 1;
         result
@@ -379,8 +384,6 @@ impl FormatContext<'_> {
                     self.restore(check);
 
                     self.indent(|slf| {
-                        slf.push_newline();
-
                         let mut first_on_line = true;
                         for entry in entries.iter() {
                             // try to fit the entry on the current line
@@ -435,13 +438,34 @@ impl FormatContext<'_> {
                 self.format_visibility(vis)?;
 
                 match kind {
-                    CommonDeclarationNamedKind::Type(_) => todo!(),
+                    CommonDeclarationNamedKind::Type(decl) => {
+                        let &TypeDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            body,
+                        } = decl;
+                        self.push(TT::Type)?;
+                        self.push_space();
+                        self.format_maybe_id(id)?;
+                        if let Some(params) = params {
+                            self.format_params(params)?;
+                        }
+                        self.push_space();
+                        self.push(TT::Eq)?;
+                        self.push_space();
+                        self.format_expr(body, true)?;
+                        self.push(TT::Semi)?;
+                        self.push_newline();
+                    }
                     CommonDeclarationNamedKind::Const(decl) => {
-                        let &ConstDeclaration { span, id, ty, value } = decl;
-
+                        let &ConstDeclaration { span: _, id, ty, value } = decl;
                         self.push(TT::Const)?;
                         self.push_space();
                         self.format_maybe_id(id)?;
+
+                        // try single line
+                        let check = self.checkpoint();
                         if let Some(ty) = ty {
                             // TODO allow wrapping in types?
                             self.push(TT::Colon)?;
@@ -454,20 +478,166 @@ impl FormatContext<'_> {
                         self.format_expr(value, true)?;
                         self.push(TT::Semi)?;
                         self.push_newline();
+
+                        // maybe fallback to multi-line
+                        // TODO maybe add an intermediate state where only the value is on the next line?
+                        // TODO is this worth the complexity?
+                        if self.overflow_since(check) {
+                            self.restore(check);
+                            self.indent(|slf| {
+                                if let Some(ty) = ty {
+                                    // TODO allow wrapping in types?
+                                    slf.push(TT::Colon)?;
+                                    slf.push_space();
+                                    slf.format_expr(ty, false)?;
+                                    slf.push_newline();
+                                }
+                                slf.push(TT::Eq)?;
+                                slf.push_space();
+                                slf.format_expr(value, true)?;
+                                slf.push(TT::Semi)?;
+                                slf.push_newline();
+                                Ok(())
+                            })?;
+                        }
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
                     CommonDeclarationNamedKind::Function(_) => todo!(),
                 }
             }
-            CommonDeclaration::ConstBlock(_) => todo!(),
+            CommonDeclaration::ConstBlock(block) => {
+                let &ConstBlock {
+                    span_keyword,
+                    ref block,
+                } = block;
+                self.push_with_span(TT::Const, span_keyword)?;
+                self.push_space();
+                self.format_block(block)?;
+            }
         }
 
         Ok(())
     }
 
     fn format_params(&mut self, params: &Parameters) -> DiagResult {
-        todo!()
+        let Parameters { span: _, items } = params;
+        self.push(TT::OpenR)?;
+        self.format_extra_list(items, true, &Self::format_param)?;
+        self.push(TT::CloseR)?;
+        Ok(())
+    }
+
+    fn format_extra_list<T>(
+        &mut self,
+        extra_list: &ExtraList<T>,
+        try_single_line: bool,
+        f: &impl Fn(&mut Self, &T, bool) -> DiagResult,
+    ) -> DiagResult {
+        let ExtraList { span: _, items } = extra_list;
+
+        // maybe try a single line
+        if try_single_line && items.iter().all(|item| matches!(item, ExtraItem::Inner(_))) {
+            let check = self.checkpoint();
+
+            for (item, last) in items.iter().with_last() {
+                let item = match item {
+                    ExtraItem::Inner(item) => item,
+                    _ => unreachable!(),
+                };
+                f(self, item, false)?;
+                if !last {
+                    self.push(TT::Comma)?;
+                    self.push_space();
+                }
+            }
+
+            if !self.overflow_since(check) || items.is_empty() {
+                return Ok(());
+            }
+            self.restore(check);
+        }
+
+        // multiple lines, one item per line
+        // TODO respect separating newlines between items from the source code
+        self.indent(|slf| {
+            for item in items {
+                match item {
+                    ExtraItem::Inner(param) => {
+                        f(slf, param, true)?;
+                        slf.push(TT::Comma)?;
+                        slf.push_newline();
+                    }
+                    ExtraItem::Declaration(decl) => {
+                        slf.format_common_declaration(decl)?;
+                    }
+                    ExtraItem::If(if_) => {
+                        slf.format_if(if_, |slf, b| slf.format_extra_list(b, false, f))?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn format_param(&mut self, param: &Parameter, allow_wrap: bool) -> DiagResult {
+        let &Parameter { id, ty, default } = param;
+        self.format_id(id)?;
+        self.push(TT::Colon)?;
+        self.push_space();
+        // TODO allow wrapping in type or not?
+        self.format_expr(ty, allow_wrap)?;
+        if let Some(default) = default {
+            self.push_space();
+            self.push(TT::Eq)?;
+            self.push_space();
+            self.format_expr(default, allow_wrap)?;
+        }
+        Ok(())
+    }
+
+    fn format_if<B>(&mut self, if_: &IfStatement<B>, f: impl Fn(&mut Self, &B) -> DiagResult) -> DiagResult {
+        let format_pair = |slf: &mut Self, pair: &IfCondBlockPair<B>| {
+            let &IfCondBlockPair {
+                span: _,
+                span_if,
+                cond,
+                ref block,
+            } = pair;
+            slf.push_with_span(TT::If, span_if)?;
+            slf.push_space();
+            slf.push(TT::OpenR)?;
+            // TODO test this
+            slf.format_expr(cond, true)?;
+            slf.push(TT::CloseR)?;
+            slf.push_space();
+            slf.push(TT::OpenC)?;
+            f(slf, block)?;
+            slf.push(TT::CloseC)?;
+            slf.push_newline();
+            Ok(())
+        };
+
+        let IfStatement {
+            initial_if,
+            else_ifs,
+            final_else,
+        } = if_;
+        format_pair(self, initial_if)?;
+        for else_if in else_ifs {
+            self.push(TT::Else)?;
+            self.push_space();
+            format_pair(self, else_if)?;
+        }
+        if let Some(block) = final_else {
+            self.push(TT::Else)?;
+            self.push_space();
+            self.push(TT::OpenC)?;
+            f(self, block)?;
+            self.push(TT::CloseC)?;
+            self.push_newline();
+        }
+        Ok(())
     }
 
     fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) -> DiagResult {
@@ -492,8 +662,38 @@ impl FormatContext<'_> {
         // swrite!(self.f, ")");
     }
 
-    fn format_block<S>(&mut self, block: &Block<S>, f: impl Fn(&mut Self, &S)) -> DiagResult {
-        todo!()
+    fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
+        let Block { span: _, statements } = block;
+        self.push(TT::OpenC)?;
+        self.indent(|slf| slf.format_block_statements(statements))?;
+        self.push(TT::CloseC)?;
+        Ok(())
+    }
+
+    fn format_block_statements(&mut self, statements: &[BlockStatement]) -> DiagResult {
+        for stmt in statements {
+            match &stmt.inner {
+                BlockStatementKind::CommonDeclaration(decl) => {
+                    self.format_common_declaration(decl)?;
+                }
+                BlockStatementKind::VariableDeclaration(_) => todo!(),
+                BlockStatementKind::Assignment(_) => todo!(),
+                BlockStatementKind::Expression(_) => todo!(),
+                BlockStatementKind::Block(_) => todo!(),
+                BlockStatementKind::If(if_) => {
+                    self.format_if(if_, |slf, s| {
+                        slf.indent(|slf| slf.format_block_statements(&s.statements))
+                    })?;
+                }
+                BlockStatementKind::Match(_) => todo!(),
+                BlockStatementKind::For(_) => todo!(),
+                BlockStatementKind::While(_) => todo!(),
+                BlockStatementKind::Return(_) => todo!(),
+                BlockStatementKind::Break(_) => todo!(),
+                BlockStatementKind::Continue(_) => todo!(),
+            }
+        }
+        Ok(())
     }
 
     // TODO this should communicate about overflows properly, in both directions(?)
@@ -513,11 +713,16 @@ impl FormatContext<'_> {
         // TODO indent and wrap should probably be separate things, wrapping can be banned while still having some indent
 
         match &self.source_expressions[expr.inner] {
-            ExpressionKind::Dummy => todo!(),
-            ExpressionKind::Undefined => todo!(),
-            ExpressionKind::Type => todo!(),
-            ExpressionKind::TypeFunction => todo!(),
-            ExpressionKind::Wrapped(_) => todo!(),
+            ExpressionKind::Dummy => self.push(TT::Underscore),
+            ExpressionKind::Undefined => self.push(TT::Undefined),
+            ExpressionKind::Type => self.push(TT::Type),
+            ExpressionKind::TypeFunction => self.push(TT::Function),
+            ExpressionKind::Wrapped(inner) => {
+                self.push(TT::OpenR)?;
+                self.format_expr(*inner, allow_wrap)?;
+                self.push(TT::CloseR)?;
+                Ok(())
+            }
             ExpressionKind::Block(_) => todo!(),
             &ExpressionKind::Id(id) => self.format_general_id(id),
             ExpressionKind::IntLiteral(lit) => match *lit {
@@ -525,7 +730,10 @@ impl FormatContext<'_> {
                 IntLiteral::Decimal(span) => self.push_with_span(TT::IntLiteralDecimal, span),
                 IntLiteral::Hexadecimal(span) => self.push_with_span(TT::IntLiteralHexadecimal, span),
             },
-            ExpressionKind::BoolLiteral(_) => todo!(),
+            &ExpressionKind::BoolLiteral(bool) => match bool {
+                false => self.push(TT::False),
+                true => self.push(TT::True),
+            },
             ExpressionKind::StringLiteral(_) => todo!(),
             ExpressionKind::ArrayLiteral(elements) => {
                 self.push(TT::OpenS)?;
@@ -533,7 +741,21 @@ impl FormatContext<'_> {
                 self.push(TT::CloseS)?;
                 Ok(())
             }
-            ExpressionKind::TupleLiteral(_) => todo!(),
+            ExpressionKind::TupleLiteral(elements) => {
+                self.push(TT::OpenR)?;
+                match elements.as_slice() {
+                    &[] => {}
+                    &[single] => {
+                        self.format_expr(single, allow_wrap)?;
+                        self.push(TT::Comma)?;
+                    }
+                    multiple => {
+                        self.format_comma_list_copy(multiple, allow_wrap, Self::format_expr)?;
+                    }
+                }
+                self.push(TT::CloseR)?;
+                Ok(())
+            }
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
             ExpressionKind::UnaryOp(_, _) => todo!(),
@@ -554,7 +776,6 @@ impl FormatContext<'_> {
                     self.restore(check);
                     self.format_expr(left, true)?;
                     self.indent(|slf| {
-                        slf.push_newline();
                         slf.push_with_span(op.inner.token(), op.span)?;
                         slf.push_space();
                         slf.format_expr(right, allow_wrap)?;
@@ -630,7 +851,6 @@ impl FormatContext<'_> {
         if allow_wrap && self.overflow_since(check) && !list.is_empty() {
             self.restore(check);
             self.indent(|slf| {
-                slf.push_newline();
                 for item in list {
                     f(slf, item, true)?;
                     slf.push(TT::Comma)?;
@@ -641,6 +861,15 @@ impl FormatContext<'_> {
         }
 
         Ok(())
+    }
+
+    fn format_comma_list_copy<T: Copy>(
+        &mut self,
+        list: &[T],
+        allow_wrap: bool,
+        mut f: impl FnMut(&mut Self, T, bool) -> DiagResult,
+    ) -> DiagResult {
+        self.format_comma_list(list, allow_wrap, |c, item, allow_wrap| f(c, *item, allow_wrap))
     }
 
     fn format_visibility<V: FormatVisibility>(&mut self, vis: &V) -> DiagResult {

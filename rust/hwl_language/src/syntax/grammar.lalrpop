@@ -499,6 +499,7 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
     <E> if has_e == "true" => ExtraItem::Inner(<>),
 
     // declarations, these already include a trailing ";" if necessary
+    // TODO maybe these should use commas instead of semicolons as the separator?
     <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
     
     // control flow
