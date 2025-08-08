@@ -76,6 +76,20 @@ const {
 }
 
 
+external module foo(T: type) ports(x: in async T, y: out async T, if(false) { z: in async bool }
+    d: in sync(
+        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
+        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
+    ) bool,
+    d: interface async something,
+    sync(clk, rst) {
+        x: in bool,
+        y: out bool,
+
+        d: interface something,
+    }
+)
+
 
 //const input_width: uint = 8;
 

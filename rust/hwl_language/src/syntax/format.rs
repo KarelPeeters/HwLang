@@ -5,8 +5,6 @@
 //! TODO think about comments
 //! Comments are handled in a separate final pass.
 
-// TODO should input be a string, an ast, tokens, ...?
-//  we need access to the tokens anyway, so maybe just take a string? but then what if it's invalid?
 // TODO create a test file that contains every syntactical construct, which should fully cover the parser and this
 
 use crate::front::diagnostic::{DiagResult, Diagnostics};
@@ -22,6 +20,10 @@ use itertools::enumerate;
 // TODO split out the core abstract formatting engine and the ast->IR conversion into separate modules?
 // TODO add to python and wasm as a standalone function
 // TODO add as LSP action
+// TODO change allow_wrap to be an enum instead of a bool
+// TODO cleanup old docs and ideas
+// TODO maybe switch to more DSL based thing to avoid a bunch of code duplication?
+
 #[derive(Debug)]
 pub struct FormatSettings {
     pub indent_str: String,
@@ -35,6 +37,8 @@ pub struct FormatSettings {
     //   * wrap overlong lines: bool
     //   * fixup empty lines between defs/statements/comments
     // pub line_wrap: bool,
+    // pub respect_input_newlines: bool,
+    // pub sort_imports: bool,
 }
 
 impl Default for FormatSettings {
@@ -169,6 +173,8 @@ impl FormatContext<'_> {
 
     fn push(&mut self, ty: TT) -> DiagResult {
         // TODO improve and double-check comma explanation: (dis)appear, unambiguous
+        // TODO record sequence of pushed tokens to check for re-parsing at the end,
+        //   to double check that no tokens got joined
         let diags = self.diags;
 
         if ty == TT::WhiteSpace {
@@ -308,30 +314,78 @@ impl FormatContext<'_> {
 
     fn format_item(&mut self, item: &Item) -> DiagResult {
         match item {
-            Item::Import(item) => self.format_import(item),
-            Item::CommonDeclaration(decl) => self.format_common_declaration(&decl.inner),
+            Item::Import(item) => self.format_import(item)?,
+            Item::CommonDeclaration(decl) => self.format_common_declaration(&decl.inner)?,
             Item::ModuleInternal(decl) => {
-                todo!()
-                // let ItemDefModuleInternal {
-                //     span: _,
-                //     vis,
-                //     id,
-                //     params,
-                //     ports,
-                //     body,
-                // } = decl;
-                // self.format_visibility(vis);
-                // swrite!(self.f, "module ");
-                // self.format_maybe_id(id);
-                // if let Some(params) = params {
-                //     self.format_params(params);
-                // }
-                // self.format_ports(&ports.inner);
-                // self.format_block(body, |c, s| todo!());
+                let &ItemDefModuleInternal {
+                    span: _,
+                    vis,
+                    id,
+                    ref params,
+                    ref ports,
+                    ref body,
+                } = decl;
+                self.format_module(vis, false, id, params.as_ref(), &ports.inner, Some(body))?;
             }
-            Item::ModuleExternal(_) => todo!(),
+            Item::ModuleExternal(decl) => {
+                let &ItemDefModuleExternal {
+                    span: _,
+                    vis,
+                    span_ext: _,
+                    id,
+                    ref params,
+                    ref ports,
+                } = decl;
+                self.format_module(
+                    vis,
+                    true,
+                    MaybeIdentifier::Identifier(id),
+                    params.as_ref(),
+                    &ports.inner,
+                    None,
+                )?;
+            }
             Item::Interface(_) => todo!(),
         }
+        Ok(())
+    }
+
+    fn format_module(
+        &mut self,
+        vis: Visibility,
+        external: bool,
+        id: MaybeIdentifier,
+        params: Option<&Parameters>,
+        ports: &ExtraList<ModulePortItem>,
+        body: Option<&Block<ModuleStatement>>,
+    ) -> DiagResult {
+        self.format_visibility(&vis)?;
+        if external {
+            self.push(TT::External)?;
+            self.push_space();
+        }
+        self.push(TT::Module)?;
+        self.push_space();
+        self.format_maybe_id(id)?;
+        // TODO test line wrapping here
+        if let Some(params) = params {
+            self.push_space();
+            self.format_params(params)?;
+        }
+        self.push_space();
+        self.push(TT::Ports)?;
+        self.push(TT::OpenR)?;
+        // TODO maybe allow single-line ports?
+        self.format_extra_list_always_wrap(ports, &Self::format_port_item)?;
+        self.push(TT::CloseR)?;
+
+        if let Some(_) = body {
+            self.push_space();
+            self.push(TT::OpenC)?;
+            todo!("module body")
+        }
+
+        Ok(())
     }
 
     fn format_import(&mut self, item: &ItemImport) -> DiagResult {
@@ -527,12 +581,35 @@ impl FormatContext<'_> {
     fn format_params(&mut self, params: &Parameters) -> DiagResult {
         let Parameters { span: _, items } = params;
         self.push(TT::OpenR)?;
-        self.format_extra_list(items, true, &Self::format_param)?;
+        self.format_extra_list_maybe_wrap(items, &Self::format_param)?;
         self.push(TT::CloseR)?;
         Ok(())
     }
 
-    fn format_extra_list<T>(
+    fn format_extra_list_maybe_wrap<T>(
+        &mut self,
+        extra_list: &ExtraList<T>,
+        f: &impl Fn(&mut Self, &T, bool) -> DiagResult,
+    ) -> DiagResult {
+        self.format_extra_list_impl(extra_list, true, f)
+    }
+
+    fn format_extra_list_always_wrap<T>(
+        &mut self,
+        extra_list: &ExtraList<T>,
+        f: &impl Fn(&mut Self, &T) -> DiagResult,
+    ) -> DiagResult {
+        self.format_extra_list_impl(
+            extra_list,
+            false,
+            &(|slf, item, allow_wrap| {
+                assert!(allow_wrap);
+                f(slf, item)
+            }),
+        )
+    }
+
+    fn format_extra_list_impl<T>(
         &mut self,
         extra_list: &ExtraList<T>,
         try_single_line: bool,
@@ -581,7 +658,11 @@ impl FormatContext<'_> {
                         slf.format_common_declaration(decl)?;
                     }
                     ExtraItem::If(if_) => {
-                        slf.format_if(if_, |slf, b| slf.format_extra_list(b, false, f))?;
+                        slf.format_if(if_, |slf, b| {
+                            // TODO we could use format_extra_list_always_wrap here,
+                            //   but then we run into type recursion issues due to re-wrapping the Fn
+                            slf.format_extra_list_impl(b, false, f)
+                        })?;
                     }
                 }
             }
@@ -702,26 +783,109 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_ports(&mut self, ports: &ExtraList<ModulePortItem>) -> DiagResult {
-        todo!()
-        // let ExtraList { span: _, items } = ports;<
-        //
-        // if items.is_empty() {
-        //     swrite!(self.f, "ports()");
-        //     return;
-        // }
-        //
-        // swriteln!(self.f, "ports(");
-        // for port in items {
-        //     match port {
-        //         ExtraItem::Inner(item) => {
-        //             todo!()
-        //         }
-        //         ExtraItem::Declaration(_) => todo!(),
-        //         ExtraItem::If(_) => todo!(),
-        //     }
-        // }
-        // swrite!(self.f, ")");
+    fn format_port_item(&mut self, port: &ModulePortItem) -> DiagResult {
+        match port {
+            ModulePortItem::Single(port) => {
+                let &ModulePortSingle { span: _, id, ref kind } = port;
+                self.format_id(id)?;
+                self.push(TT::Colon)?;
+                self.push_space();
+                match kind {
+                    ModulePortSingleKind::Port { direction, kind } => {
+                        self.push(direction.inner.token())?;
+                        self.push_space();
+                        match kind {
+                            PortSingleKindInner::Clock { span_clock: _ } => self.push(TT::Clock)?,
+                            &PortSingleKindInner::Normal { domain, ty } => {
+                                self.format_domain(domain.inner, true)?;
+                                self.push_space();
+                                self.format_expr(ty, true)?;
+                            }
+                        }
+                    }
+                    &ModulePortSingleKind::Interface {
+                        span_keyword: _,
+                        domain,
+                        interface,
+                    } => {
+                        self.push(TT::Interface)?;
+                        self.push_space();
+                        self.format_domain(domain.inner, true)?;
+                        self.push_space();
+                        self.format_expr(interface, true)?;
+                    }
+                }
+            }
+            ModulePortItem::Block(port_block) => {
+                let ModulePortBlock { span: _, domain, ports } = port_block;
+                self.format_domain(domain.inner, true)?;
+                self.push_space();
+                self.push(TT::OpenC)?;
+                self.format_extra_list_always_wrap(ports, &Self::format_port_in_block)?;
+                self.push(TT::CloseC)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn format_port_in_block(&mut self, port: &ModulePortInBlock) -> DiagResult {
+        let &ModulePortInBlock { span: _, id, ref kind } = port;
+        self.format_id(id)?;
+        self.push(TT::Colon)?;
+        self.push_space();
+        match *kind {
+            ModulePortInBlockKind::Port { direction, ty } => {
+                self.push(direction.inner.token())?;
+                self.push_space();
+                self.format_expr(ty, true)?;
+            }
+            ModulePortInBlockKind::Interface {
+                span_keyword: _,
+                interface,
+            } => {
+                self.push(TT::Interface)?;
+                self.push_space();
+                self.format_expr(interface, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn format_domain(&mut self, domain: DomainKind<Expression>, allow_wrap: bool) -> DiagResult {
+        match domain {
+            DomainKind::Const => self.push(TT::Const)?,
+            DomainKind::Async => self.push(TT::Async)?,
+            DomainKind::Sync(SyncDomain { clock, reset }) => {
+                self.push(TT::Sync)?;
+                self.push(TT::OpenR)?;
+
+                // try single line
+                let check = self.checkpoint();
+                self.format_expr(clock, false)?;
+                if let Some(reset) = reset {
+                    self.push(TT::Comma)?;
+                    self.push_space();
+                    self.format_expr(reset, false)?;
+                    self.push(TT::CloseR)?;
+
+                    // maybe fallback to multi-line (only if there's a reset, otherwise we're not saving much)
+                    if allow_wrap && self.overflow_since(check) {
+                        self.restore(check);
+                        self.indent(|slf| {
+                            slf.format_expr(clock, true)?;
+                            slf.push(TT::Comma)?;
+                            slf.push_newline();
+                            slf.format_expr(reset, true)?;
+                            slf.push_newline();
+                            Ok(())
+                        })?;
+                        self.push(TT::CloseR)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
@@ -914,19 +1078,6 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    // TODO this should communicate about overflows properly, in both directions(?)
-    //   so take a param "allow_wrap" and return "did_overflow"?
-    //   it should also take an "indent" param, probably only if "allow_wrap" is true
-    //   aborting should also be configurable, sometimes the parent does not allow aborting
-    //     (implement that later, that's just a performance improvement)
-
-    //   the possible states and typical call sequence is then:
-    //       allow_wrap   | did_overflow  | description
-    //       ============================================================================
-    //       false        | false         | no wrapping allow and not necessary, great!
-    //       false        | true          | no wrapping allowed but was necessary, potentially aborted
-    //                    |               |     parent should wrap itself, then re-call with allow_wrap=true
-    //       true         | false/true    | we were allowed to wrap and maybe did, but the parent does not care
     fn format_expr(&mut self, expr: Expression, allow_wrap: bool) -> DiagResult {
         // TODO indent and wrap should probably be separate things, wrapping can be banned while still having some indent
 

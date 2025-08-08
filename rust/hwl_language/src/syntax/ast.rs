@@ -32,7 +32,7 @@ pub enum Item {
     // common declarations that are allowed anywhere
     CommonDeclaration(Spanned<CommonDeclaration<Visibility>>),
     // declarations that are only allowed top-level
-    // TODO maybe we should also just allow module declarations anywhere?
+    // TODO turn all of these into common declarations, even the imports
     ModuleInternal(ItemDefModuleInternal),
     ModuleExternal(ItemDefModuleExternal),
     Interface(ItemDefInterface),
@@ -319,6 +319,13 @@ impl PortDirection {
         match self {
             PortDirection::Input => "input",
             PortDirection::Output => "output",
+        }
+    }
+
+    pub fn token(self) -> TokenType {
+        match self {
+            PortDirection::Input => TokenType::In,
+            PortDirection::Output => TokenType::Out,
         }
     }
 }
