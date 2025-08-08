@@ -162,3 +162,54 @@ external module foo(T: type) ports(x: in async T, y: out async T, if(false) { z:
 //    No,
 //    Maybe,
 //}
+
+interface my_interface {
+    const WIDTH = 8;
+    type data_type = uint(WIDTH);
+    data: data_type,
+    valid: bool,
+    ready: bool,
+    if (WIDTH > 4) {
+        extra_signal: bool,
+    }
+    interface master {
+        data: out,
+        valid: out,
+        ready: in,
+        if (WIDTH > 4) {
+            extra_signal: out,
+        }
+    }
+    interface slave {
+        data: in,
+        valid: in,
+        ready: out,
+        if (WIDTH > 4) {
+            extra_signal: in,
+        }
+    }
+}
+
+pub interface bus_interface(WIDTH: uint, very_long_parameter_name_that_will_cause_wrapping: bool) {
+    const ADDR_WIDTH = WIDTH;
+    type addr_type = uint(ADDR_WIDTH);
+    addr: addr_type,
+    data: uint(32),
+    enable: bool,
+    if (very_long_parameter_name_that_will_cause_wrapping) {
+        debug_signal: bool,
+    }
+    interface master {
+        addr: out,
+        data: out,
+        enable: out,
+        if (very_long_parameter_name_that_will_cause_wrapping) {
+            debug_signal: out,
+        }
+    }
+}
+
+interface foo {
+//    interface master {}
+//    interface slave {}
+}

@@ -345,7 +345,7 @@ impl FormatContext<'_> {
                     None,
                 )?;
             }
-            Item::Interface(_) => todo!(),
+            Item::Interface(decl) => self.format_interface(decl)?,
         }
         Ok(())
     }
@@ -369,7 +369,6 @@ impl FormatContext<'_> {
         self.format_maybe_id(id)?;
         // TODO test line wrapping here
         if let Some(params) = params {
-            self.push_space();
             self.format_params(params)?;
         }
         self.push_space();
@@ -385,6 +384,80 @@ impl FormatContext<'_> {
             todo!("module body")
         }
 
+        Ok(())
+    }
+
+    fn format_interface(&mut self, interface: &ItemDefInterface) -> DiagResult {
+        let &ItemDefInterface {
+            span: _,
+            vis,
+            id,
+            ref params,
+            span_body: _,
+            ref port_types,
+            ref views,
+        } = interface;
+
+        self.format_visibility(&vis)?;
+        self.push(TT::Interface)?;
+        self.push_space();
+        self.format_maybe_id(id)?;
+        if let Some(params) = params {
+            self.format_params(params)?;
+        }
+        self.push_space();
+        self.push(TT::OpenC)?;
+
+        if !port_types.items.is_empty() {
+            self.format_extra_list_always_wrap(port_types, &|slf, port_type: &(Identifier, Expression)| {
+                let (id, expr) = port_type;
+                slf.format_id(*id)?;
+                slf.push(TT::Colon)?;
+                slf.push_space();
+                slf.format_expr(*expr, true)?;
+                Ok(())
+            })?;
+        }
+
+        if !port_types.items.is_empty() && !views.is_empty() {
+            self.push_newline();
+        }
+
+        if !views.is_empty() {
+            self.indent(|slf| {
+                for view in views {
+                    let InterfaceView { id, port_dirs } = view;
+
+                    slf.push(TT::Interface)?;
+                    slf.push_space();
+                    slf.format_maybe_id(*id)?;
+                    slf.push_space();
+                    slf.push(TT::OpenC)?;
+
+                    if !port_dirs.items.is_empty() {
+                        slf.format_extra_list_always_wrap(port_dirs, &|inner_slf,
+                                                                       port_dir: &(
+                            Identifier,
+                            Spanned<PortDirection>,
+                        )| {
+                            let (id, direction) = port_dir;
+                            inner_slf.format_id(*id)?;
+                            inner_slf.push(TT::Colon)?;
+                            inner_slf.push_space();
+                            inner_slf.push(direction.inner.token())?;
+                            Ok(())
+                        })?;
+                    }
+
+                    slf.push(TT::CloseC)?;
+                    slf.push_newline();
+                }
+                Ok(())
+            })?;
+        }
+
+        self.push(TT::CloseC)?;
+        self.push_newline();
         Ok(())
     }
 
