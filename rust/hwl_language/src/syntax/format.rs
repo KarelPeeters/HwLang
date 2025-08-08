@@ -378,10 +378,19 @@ impl FormatContext<'_> {
         self.format_extra_list_always_wrap(ports, &Self::format_port_item)?;
         self.push(TT::CloseR)?;
 
-        if let Some(_) = body {
+        if let Some(body) = body {
             self.push_space();
             self.push(TT::OpenC)?;
-            todo!("module body")
+            if !body.statements.is_empty() {
+                self.indent(|slf| {
+                    for stmt in &body.statements {
+                        slf.format_module_statement(stmt)?;
+                    }
+                    Ok(())
+                })?;
+            }
+            self.push(TT::CloseC)?;
+            self.push_newline();
         }
 
         Ok(())
@@ -458,6 +467,274 @@ impl FormatContext<'_> {
 
         self.push(TT::CloseC)?;
         self.push_newline();
+        Ok(())
+    }
+
+    fn format_module_statement(&mut self, stmt: &ModuleStatement) -> DiagResult {
+        match &stmt.inner {
+            ModuleStatementKind::Block(block) => {
+                self.push(TT::OpenC)?;
+                if !block.statements.is_empty() {
+                    self.indent(|slf| {
+                        for stmt in &block.statements {
+                            slf.format_module_statement(stmt)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                self.push(TT::CloseC)?;
+                self.push_newline();
+            }
+            ModuleStatementKind::If(if_) => {
+                self.format_if(if_, |slf, block| {
+                    if !block.statements.is_empty() {
+                        slf.indent(|inner_slf| {
+                            for stmt in &block.statements {
+                                inner_slf.format_module_statement(stmt)?;
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Ok(())
+                })?;
+            }
+            ModuleStatementKind::For(for_) => {
+                let &ForStatement {
+                    span_keyword: _,
+                    index,
+                    index_ty,
+                    iter,
+                    ref body,
+                } = for_;
+                self.push(TT::For)?;
+                self.push_space();
+                self.push(TT::OpenR)?;
+
+                // try single line
+                let check = self.checkpoint();
+                self.format_maybe_id(index)?;
+                if let Some(ty) = index_ty {
+                    self.push(TT::Colon)?;
+                    self.push_space();
+                    self.format_expr(ty, false)?;
+                }
+                self.push_space();
+                self.push(TT::In)?;
+                self.push_space();
+                self.format_expr(iter, false)?;
+                self.push(TT::CloseR)?;
+                self.push_space();
+                self.push(TT::OpenC)?;
+
+                // maybe fallback to multi-line
+                if self.overflow_since(check) {
+                    self.restore(check);
+                    self.indent(|slf| {
+                        slf.format_maybe_id(index)?;
+                        if let Some(ty) = index_ty {
+                            slf.push(TT::Colon)?;
+                            slf.push_space();
+                            slf.format_expr(ty, true)?;
+                        }
+                        slf.push_newline();
+                        slf.push(TT::In)?;
+                        slf.push_space();
+                        slf.format_expr(iter, true)?;
+                        slf.push(TT::CloseR)?;
+                        slf.push_space();
+                        slf.push(TT::OpenC)?;
+                        Ok(())
+                    })?;
+                }
+
+                if !body.statements.is_empty() {
+                    self.indent(|slf| {
+                        for stmt in &body.statements {
+                            slf.format_module_statement(stmt)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                self.push(TT::CloseC)?;
+                self.push_newline();
+            }
+            ModuleStatementKind::CommonDeclaration(decl) => {
+                self.format_common_declaration(decl)?;
+            }
+            ModuleStatementKind::RegDeclaration(decl) => {
+                let &RegDeclaration {
+                    vis,
+                    id,
+                    ref sync,
+                    ty,
+                    init,
+                } = decl;
+                self.format_visibility(&vis)?;
+                self.push(TT::Reg)?;
+                self.push_space();
+                self.format_maybe_general_id(id)?;
+                self.push(TT::Colon)?;
+                self.push_space();
+                if let Some(sync) = sync {
+                    self.format_domain(DomainKind::Sync(sync.inner), true)?;
+                    self.push_space();
+                }
+                self.format_expr(ty, true)?;
+                self.push_space();
+                self.push(TT::Eq)?;
+                self.push_space();
+                self.format_expr(init, true)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
+            }
+            ModuleStatementKind::WireDeclaration(decl) => {
+                let &WireDeclaration {
+                    vis,
+                    span_keyword: _,
+                    id,
+                    ref kind,
+                } = decl;
+                self.format_visibility(&vis)?;
+                self.push(TT::Wire)?;
+                self.push_space();
+                self.format_maybe_general_id(id)?;
+                match kind {
+                    WireDeclarationKind::Normal {
+                        domain_ty,
+                        assign_span_and_value,
+                    } => {
+                        match domain_ty {
+                            WireDeclarationDomainTyKind::Clock { span_clock: _ } => {
+                                self.push(TT::Colon)?;
+                                self.push_space();
+                                self.push(TT::Clock)?;
+                            }
+                            WireDeclarationDomainTyKind::Normal { domain, ty } => {
+                                if let Some(domain) = domain {
+                                    self.push(TT::Colon)?;
+                                    self.push_space();
+                                    self.format_domain(domain.inner, true)?;
+                                }
+                                if let Some(ty) = ty {
+                                    self.push_space();
+                                    self.format_expr(*ty, true)?;
+                                }
+                            }
+                        }
+                        if let Some((_, value)) = assign_span_and_value {
+                            self.push_space();
+                            self.push(TT::Eq)?;
+                            self.push_space();
+                            self.format_expr(*value, true)?;
+                        }
+                    }
+                    WireDeclarationKind::Interface {
+                        domain,
+                        span_keyword: _,
+                        interface,
+                    } => {
+                        self.push(TT::Colon)?;
+                        if let Some(domain) = domain {
+                            self.push_space();
+                            self.format_domain(domain.inner, true)?;
+                        }
+                        self.push_space();
+                        self.push(TT::Interface)?;
+                        self.push_space();
+                        self.format_expr(*interface, true)?;
+                    }
+                }
+                self.push(TT::Semi)?;
+                self.push_newline();
+            }
+            ModuleStatementKind::RegOutPortMarker(_marker) => {
+                // TODO: implement reg out port marker formatting
+                todo!("reg out port marker formatting")
+            }
+            ModuleStatementKind::CombinatorialBlock(block) => {
+                let &CombinatorialBlock {
+                    span_keyword: _,
+                    ref block,
+                } = block;
+                self.push(TT::Combinatorial)?;
+                self.push_space();
+                self.format_block(block)?;
+            }
+            ModuleStatementKind::ClockedBlock(block) => {
+                let &ClockedBlock {
+                    span_keyword: _,
+                    span_domain: _,
+                    clock,
+                    ref reset,
+                    ref block,
+                } = block;
+                self.push(TT::Clocked)?;
+                self.push(TT::OpenR)?;
+                self.format_expr(clock, true)?;
+                if let Some(reset) = reset {
+                    self.push(TT::Comma)?;
+                    self.push_space();
+                    self.push(reset.inner.kind.inner.token())?;
+                    self.push_space();
+                    self.format_expr(reset.inner.signal, true)?;
+                }
+                self.push(TT::CloseR)?;
+                self.push_space();
+                self.format_block(block)?;
+            }
+            ModuleStatementKind::Instance(instance) => {
+                let &ModuleInstance {
+                    name,
+                    span_keyword: _,
+                    module,
+                    ref port_connections,
+                } = instance;
+                if let Some(name) = name {
+                    self.format_id(name)?;
+                    self.push(TT::Colon)?;
+                    self.push_space();
+                }
+                self.push(TT::Instance)?;
+                self.push_space();
+                self.format_expr(module, true)?;
+                self.push_space();
+                self.push(TT::Ports)?;
+                self.push(TT::OpenR)?;
+
+                if !port_connections.inner.is_empty() {
+                    let check = self.checkpoint();
+                    for (conn, last) in port_connections.inner.iter().with_last() {
+                        let &PortConnection { id, expr } = &conn.inner;
+                        self.format_id(id)?;
+                        self.push(TT::Eq)?;
+                        self.format_expr(expr, false)?;
+                        if !last {
+                            self.push(TT::Comma)?;
+                            self.push_space();
+                        }
+                    }
+
+                    if self.overflow_since(check) {
+                        self.restore(check);
+                        self.indent(|slf| {
+                            for conn in &port_connections.inner {
+                                let &PortConnection { id, expr } = &conn.inner;
+                                slf.format_id(id)?;
+                                slf.push(TT::Eq)?;
+                                slf.format_expr(expr, true)?;
+                                slf.push(TT::Comma)?;
+                                slf.push_newline();
+                            }
+                            Ok(())
+                        })?;
+                    }
+                }
+
+                self.push(TT::CloseR)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
+            }
+        }
         Ok(())
     }
 
@@ -1014,6 +1291,7 @@ impl FormatContext<'_> {
                 self.push_space();
                 self.format_expr(value, true)?;
                 self.push(TT::Semi)?;
+                self.push_newline();
 
                 // maybe fallback to multi-line
                 if self.overflow_since(check) {
@@ -1143,9 +1421,13 @@ impl FormatContext<'_> {
             }
             &BlockStatementKind::Break(_span) => {
                 self.push(TT::Break)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
             }
             &BlockStatementKind::Continue(_span) => {
                 self.push(TT::Continue)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
             }
         }
         Ok(())
@@ -1322,6 +1604,13 @@ impl FormatContext<'_> {
         match id {
             GeneralIdentifier::Simple(id) => self.format_id(id),
             GeneralIdentifier::FromString(_, _) => todo!(),
+        }
+    }
+
+    fn format_maybe_general_id(&mut self, id: MaybeGeneralIdentifier) -> DiagResult {
+        match id {
+            MaybeIdentifier::Dummy(_span) => self.push(TT::Underscore),
+            MaybeIdentifier::Identifier(id) => self.format_general_id(id),
         }
     }
 

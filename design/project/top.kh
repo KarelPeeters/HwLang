@@ -213,3 +213,35 @@ interface foo {
 //    interface master {}
 //    interface slave {}
 }
+
+module test_module(WIDTH: uint) ports(
+    clk: in clock,
+    rst: in async bool,
+    data_in: in sync(clk, rst) uint(WIDTH),
+    data_out: out sync(clk, rst) uint(WIDTH),
+) {
+    wire intermediate: sync(clk, rst) uint(WIDTH);
+    reg counter: sync(clk, rst) uint = 0;
+    
+    if (WIDTH > 8) {
+        wire extra_signal: sync(clk, rst) bool;
+    }
+    
+    for (i in [0, 1, 2]) {
+        wire data_bit: sync(clk, rst) bool;
+    }
+    
+    comb {
+        intermediate = data_in + 1;
+    }
+    
+    clocked(clk, async rst) {
+        counter += 1;
+        if (counter > 10) {
+            counter = 0;
+        }
+        data_out = intermediate;
+    }
+    
+    instance some_sub_module ports(data=intermediate, enable=true);
+}

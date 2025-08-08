@@ -571,6 +571,15 @@ pub enum ResetKind {
     Sync,
 }
 
+impl ResetKind {
+    pub fn token(self) -> TokenType {
+        match self {
+            ResetKind::Async => TokenType::Async,
+            ResetKind::Sync => TokenType::Sync,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleInstanceItem {
     pub span: Span,
