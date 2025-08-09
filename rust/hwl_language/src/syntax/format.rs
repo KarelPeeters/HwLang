@@ -1604,32 +1604,21 @@ impl FormatContext<'_> {
                 }
                 self.push(TT::CloseR)?;
             }
-            ExpressionKind::RangeLiteral(_) => todo!(),
+            ExpressionKind::RangeLiteral(range) => match *range {
+                RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
+                    self.format_maybe_binary_op(TT::Dots, start, end, allow_wrap)?;
+                }
+                RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
+                    self.format_maybe_binary_op(TT::DotsEq, start, Some(end), allow_wrap)?;
+                }
+                RangeLiteral::Length { op_span: _, start, len } => {
+                    self.format_binary_op(TT::PlusDots, start, len, allow_wrap)?;
+                }
+            },
             ExpressionKind::ArrayComprehension(_) => todo!(),
             ExpressionKind::UnaryOp(_, _) => todo!(),
             &ExpressionKind::BinaryOp(op, left, right) => {
-                // TODO convert sequence of ops with the same precedence into a single list that is then flattened at once?
-                // try single line
-                let check = self.checkpoint();
-                self.format_expr(left, false)?;
-                self.push_space();
-                self.push(op.inner.token())?;
-                self.push_space();
-                self.format_expr(right, allow_wrap)?;
-
-                // maybe fallback to multi-line, one item per line
-                // TODO in certain cases we want to start on the next line, eg. in `const a = long + long`,
-                //   but not in others, eg. `const a = [long, long]`, what is the actual rule?
-                if allow_wrap && self.overflow_since(check) {
-                    self.restore(check);
-                    self.format_expr(left, true)?;
-                    self.indent(|slf| {
-                        slf.push(op.inner.token())?;
-                        slf.push_space();
-                        slf.format_expr(right, allow_wrap)?;
-                        Ok(())
-                    })?;
-                }
+                self.format_binary_op(op.inner.token(), left, right, allow_wrap)?
             }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
@@ -1644,6 +1633,53 @@ impl FormatContext<'_> {
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
             ExpressionKind::RegisterDelay(_) => todo!(),
         }
+        Ok(())
+    }
+
+    fn format_maybe_binary_op(
+        &mut self,
+        op: TT,
+        left: Option<Expression>,
+        right: Option<Expression>,
+        allow_wrap: bool,
+    ) -> DiagResult {
+        if let (Some(left), Some(right)) = (left, right) {
+            self.format_binary_op(op, left, right, allow_wrap)?
+        } else {
+            if let Some(left) = left {
+                self.format_expr(left, allow_wrap)?;
+            }
+            self.push(op)?;
+            if let Some(right) = right {
+                self.format_expr(right, allow_wrap)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn format_binary_op(&mut self, op: TT, left: Expression, right: Expression, allow_wrap: bool) -> DiagResult {
+        // try single line
+        let check = self.checkpoint();
+        self.format_expr(left, false)?;
+        self.push_space();
+        self.push(op)?;
+        self.push_space();
+        self.format_expr(right, allow_wrap)?;
+
+        // maybe fallback to multi-line
+        // TODO in certain cases we want to start on the next line, eg. in `const a = long + long`,
+        //   but not in others, eg. `const a = [long, long]`, what is the actual rule?
+        if allow_wrap && self.overflow_since(check) {
+            self.restore(check);
+            self.format_expr(left, true)?;
+            self.indent(|slf| {
+                slf.push(op)?;
+                slf.push_space();
+                slf.format_expr(right, allow_wrap)?;
+                Ok(())
+            })?;
+        }
+
         Ok(())
     }
 
