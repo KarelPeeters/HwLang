@@ -171,6 +171,10 @@ impl FormatContext<'_> {
             || (self.state.curr_line_length > self.settings.max_line_length)
     }
 
+    fn anything_since(&self, check: CheckPoint) -> bool {
+        self.result.len() > check.result_len
+    }
+
     fn push(&mut self, ty: TT) -> DiagResult {
         // TODO improve and double-check comma explanation: (dis)appear, unambiguous
         // TODO record sequence of pushed tokens to check for re-parsing at the end,
@@ -287,12 +291,20 @@ impl FormatContext<'_> {
         let before = self.state.indent;
         self.state.indent += 1;
 
-        // TODO is there a way to automatically skip the initial newline if the following call does not push anything?
-        //   -> yes, set a checkpoint and roll back if nothing has changed!
+        let check_before_line = self.checkpoint();
         self.push_newline();
-        let result = f(self);
 
-        assert_eq!(self.state.indent, before + 1, "indent level should increase");
+        let check_before_f = self.checkpoint();
+        let result = f(self);
+        if !self.anything_since(check_before_f) {
+            self.restore(check_before_line);
+        }
+
+        assert_eq!(
+            self.state.indent,
+            before + 1,
+            "indent should be back to the original level"
+        );
         self.state.indent -= 1;
         result
     }
@@ -391,18 +403,16 @@ impl FormatContext<'_> {
         if let Some(body) = body {
             self.push_space();
             self.push(TT::OpenC)?;
-            if !body.statements.is_empty() {
-                self.indent(|slf| {
-                    for (i, stmt) in body.statements.iter().enumerate() {
-                        slf.format_module_statement(stmt)?;
+            self.indent(|slf| {
+                for (i, stmt) in body.statements.iter().enumerate() {
+                    slf.format_module_statement(stmt)?;
 
-                        if let Some(next) = body.statements.get(i + 1) {
-                            slf.preserve_blank_line(stmt.span, next.span);
-                        }
+                    if let Some(next) = body.statements.get(i + 1) {
+                        slf.preserve_blank_line(stmt.span, next.span);
                     }
-                    Ok(())
-                })?;
-            }
+                }
+                Ok(())
+            })?;
             self.push(TT::CloseC)?;
         }
         self.push_newline();
@@ -441,38 +451,36 @@ impl FormatContext<'_> {
             })?;
         }
 
-        if !views.is_empty() {
-            self.indent(|slf| {
-                for (i, view) in views.iter().enumerate() {
-                    let InterfaceView { span: _, id, port_dirs } = view;
+        self.indent(|slf| {
+            for (i, view) in views.iter().enumerate() {
+                let InterfaceView { span: _, id, port_dirs } = view;
 
-                    slf.push(TT::Interface)?;
-                    slf.push_space();
-                    slf.format_maybe_id(*id)?;
-                    slf.push_space();
-                    slf.push(TT::OpenC)?;
+                slf.push(TT::Interface)?;
+                slf.push_space();
+                slf.format_maybe_id(*id)?;
+                slf.push_space();
+                slf.push(TT::OpenC)?;
 
-                    if !port_dirs.items.is_empty() {
-                        slf.format_extra_list_always_wrap(port_dirs, &|inner_slf, port_dir| {
-                            let (id, direction) = port_dir;
-                            inner_slf.format_id(*id)?;
-                            inner_slf.push(TT::Colon)?;
-                            inner_slf.push_space();
-                            inner_slf.push(direction.inner.token())?;
-                            Ok(())
-                        })?;
-                    }
-
-                    slf.push(TT::CloseC)?;
-                    slf.push_newline();
-
-                    if let Some(next_view) = views.get(i + 1) {
-                        slf.preserve_blank_line(view.span, next_view.span);
-                    }
+                if !port_dirs.items.is_empty() {
+                    slf.format_extra_list_always_wrap(port_dirs, &|inner_slf, port_dir| {
+                        let (id, direction) = port_dir;
+                        inner_slf.format_id(*id)?;
+                        inner_slf.push(TT::Colon)?;
+                        inner_slf.push_space();
+                        inner_slf.push(direction.inner.token())?;
+                        Ok(())
+                    })?;
                 }
-                Ok(())
-            })?;
-        }
+
+                slf.push(TT::CloseC)?;
+                slf.push_newline();
+
+                if let Some(next_view) = views.get(i + 1) {
+                    slf.preserve_blank_line(view.span, next_view.span);
+                }
+            }
+            Ok(())
+        })?;
 
         self.push(TT::CloseC)?;
         self.push_newline();
@@ -484,34 +492,30 @@ impl FormatContext<'_> {
             ModuleStatementKind::Block(block) => {
                 self.push(TT::OpenC)?;
                 // TODO call general format_block
-                if !block.statements.is_empty() {
-                    self.indent(|slf| {
-                        for (i, stmt) in block.statements.iter().enumerate() {
-                            slf.format_module_statement(stmt)?;
-                            if let Some(next) = block.statements.get(i + 1) {
-                                slf.preserve_blank_line(stmt.span, next.span);
-                            }
+                self.indent(|slf| {
+                    for (i, stmt) in block.statements.iter().enumerate() {
+                        slf.format_module_statement(stmt)?;
+                        if let Some(next) = block.statements.get(i + 1) {
+                            slf.preserve_blank_line(stmt.span, next.span);
                         }
-                        Ok(())
-                    })?;
-                }
+                    }
+                    Ok(())
+                })?;
                 self.push(TT::CloseC)?;
                 self.push_newline();
             }
             ModuleStatementKind::If(if_) => {
                 self.format_if(if_, |slf, block| {
-                    if !block.statements.is_empty() {
-                        slf.indent(|inner_slf| {
-                            for (i, stmt) in block.statements.iter().enumerate() {
-                                inner_slf.format_module_statement(stmt)?;
+                    slf.indent(|inner_slf| {
+                        for (i, stmt) in block.statements.iter().enumerate() {
+                            inner_slf.format_module_statement(stmt)?;
 
-                                if let Some(next) = block.statements.get(i + 1) {
-                                    inner_slf.preserve_blank_line(stmt.span, next.span);
-                                }
+                            if let Some(next) = block.statements.get(i + 1) {
+                                inner_slf.preserve_blank_line(stmt.span, next.span);
                             }
-                            Ok(())
-                        })?;
-                    }
+                        }
+                        Ok(())
+                    })?;
                     Ok(())
                 })?;
             }
@@ -564,19 +568,17 @@ impl FormatContext<'_> {
                     })?;
                 }
 
-                // TODO call general utility function
-                if !body.statements.is_empty() {
-                    self.indent(|slf| {
-                        for (i, stmt) in body.statements.iter().enumerate() {
-                            slf.format_module_statement(stmt)?;
+                // TODO call general utility function for blocks
+                self.indent(|slf| {
+                    for (i, stmt) in body.statements.iter().enumerate() {
+                        slf.format_module_statement(stmt)?;
 
-                            if let Some(next) = body.statements.get(i + 1) {
-                                slf.preserve_blank_line(stmt.span, next.span);
-                            }
+                        if let Some(next) = body.statements.get(i + 1) {
+                            slf.preserve_blank_line(stmt.span, next.span);
                         }
-                        Ok(())
-                    })?;
-                }
+                    }
+                    Ok(())
+                })?;
                 self.push(TT::CloseC)?;
                 self.push_newline();
             }
@@ -1207,41 +1209,39 @@ impl FormatContext<'_> {
         self.push_space();
         self.push(TT::OpenC)?;
 
-        if !branches.is_empty() {
-            self.indent(|slf| {
-                // TODO respect extra newlines from input source
-                // TODO check if expression wrapping works correctly
-                for branch in branches {
-                    let MatchBranch { pattern, block } = branch;
-                    match &pattern.inner {
-                        MatchPattern::Wildcard => slf.push(TT::Underscore)?,
-                        &MatchPattern::Equal(expr) => slf.format_expr(expr, true)?,
-                        &MatchPattern::Val(id) => {
-                            slf.push(TT::Identifier)?;
-                            slf.format_id(id)?;
-                        }
-                        &MatchPattern::In(expr) => {
-                            slf.push(TT::In)?;
-                            slf.format_expr(expr, true)?;
-                        }
-                        &MatchPattern::EnumVariant(variant, data) => {
-                            slf.push(TT::Dot)?;
-                            slf.format_id(variant)?;
-                            if let Some(data) = data {
-                                slf.push(TT::OpenR)?;
-                                slf.format_maybe_id(data)?;
-                                slf.push(TT::CloseR)?;
-                            }
+        self.indent(|slf| {
+            // TODO respect extra newlines from input source
+            // TODO check if expression wrapping works correctly
+            for branch in branches {
+                let MatchBranch { pattern, block } = branch;
+                match &pattern.inner {
+                    MatchPattern::Wildcard => slf.push(TT::Underscore)?,
+                    &MatchPattern::Equal(expr) => slf.format_expr(expr, true)?,
+                    &MatchPattern::Val(id) => {
+                        slf.push(TT::Identifier)?;
+                        slf.format_id(id)?;
+                    }
+                    &MatchPattern::In(expr) => {
+                        slf.push(TT::In)?;
+                        slf.format_expr(expr, true)?;
+                    }
+                    &MatchPattern::EnumVariant(variant, data) => {
+                        slf.push(TT::Dot)?;
+                        slf.format_id(variant)?;
+                        if let Some(data) = data {
+                            slf.push(TT::OpenR)?;
+                            slf.format_maybe_id(data)?;
+                            slf.push(TT::CloseR)?;
                         }
                     }
-                    slf.push_space();
-                    slf.push(TT::DoubleArrow)?;
-                    slf.push_space();
-                    f(slf, block)?;
                 }
-                Ok(())
-            })?
-        };
+                slf.push_space();
+                slf.push(TT::DoubleArrow)?;
+                slf.push_space();
+                f(slf, block)?;
+            }
+            Ok(())
+        })?;
         self.push(TT::CloseC)?;
         self.push_newline();
         Ok(())
@@ -1355,10 +1355,7 @@ impl FormatContext<'_> {
     fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
         let Block { span: _, statements } = block;
         self.push(TT::OpenC)?;
-        if !statements.is_empty() {
-            self.indent(|slf| slf.format_block_statements(statements))?;
-        }
-
+        self.indent(|slf| slf.format_block_statements(statements))?;
         self.push(TT::CloseC)?;
         self.push_newline();
         Ok(())
@@ -1695,7 +1692,7 @@ impl FormatContext<'_> {
         }
 
         // maybe fallback to multi-line, one item per line
-        if allow_wrap && self.overflow_since(check) && !list.is_empty() {
+        if allow_wrap && self.overflow_since(check) {
             self.restore(check);
             self.indent(|slf| {
                 for item in list {
