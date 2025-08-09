@@ -266,6 +266,15 @@ impl FormatContext<'_> {
         self.state.curr_line_length = 0;
     }
 
+    fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) {
+        let curr_end = self.source_offsets.expand_pos(curr_span.end());
+        let next_start = self.source_offsets.expand_pos(next_span.start());
+
+        if next_start.line_0 > curr_end.line_0 + 1 {
+            self.push_newline();
+        }
+    }
+
     fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         // TODO should indent even be part of the checkpoint state? it will always be rolled back anyway...
         // TODO rename to reflect that this includes a newline?
@@ -383,16 +392,19 @@ impl FormatContext<'_> {
             self.push(TT::OpenC)?;
             if !body.statements.is_empty() {
                 self.indent(|slf| {
-                    for stmt in &body.statements {
+                    for (i, stmt) in body.statements.iter().enumerate() {
                         slf.format_module_statement(stmt)?;
+
+                        if let Some(next) = body.statements.get(i + 1) {
+                            slf.preserve_blank_line(stmt.span, next.span);
+                        }
                     }
                     Ok(())
                 })?;
             }
             self.push(TT::CloseC)?;
-            self.push_newline();
         }
-
+        self.push_newline();
         Ok(())
     }
 
@@ -430,8 +442,8 @@ impl FormatContext<'_> {
 
         if !views.is_empty() {
             self.indent(|slf| {
-                for (view, last) in views.iter().with_last() {
-                    let InterfaceView { id, port_dirs } = view;
+                for (i, view) in views.iter().enumerate() {
+                    let InterfaceView { span: _, id, port_dirs } = view;
 
                     slf.push(TT::Interface)?;
                     slf.push_space();
@@ -456,8 +468,9 @@ impl FormatContext<'_> {
 
                     slf.push(TT::CloseC)?;
                     slf.push_newline();
-                    if !last {
-                        slf.push_newline();
+
+                    if let Some(next_view) = views.get(i + 1) {
+                        slf.preserve_blank_line(view.span, next_view.span);
                     }
                 }
                 Ok(())
@@ -475,8 +488,12 @@ impl FormatContext<'_> {
                 self.push(TT::OpenC)?;
                 if !block.statements.is_empty() {
                     self.indent(|slf| {
-                        for stmt in &block.statements {
+                        for (i, stmt) in block.statements.iter().enumerate() {
                             slf.format_module_statement(stmt)?;
+
+                            if let Some(next) = block.statements.get(i + 1) {
+                                slf.preserve_blank_line(stmt.span, next.span);
+                            }
                         }
                         Ok(())
                     })?;
@@ -488,8 +505,12 @@ impl FormatContext<'_> {
                 self.format_if(if_, |slf, block| {
                     if !block.statements.is_empty() {
                         slf.indent(|inner_slf| {
-                            for stmt in &block.statements {
+                            for (i, stmt) in block.statements.iter().enumerate() {
                                 inner_slf.format_module_statement(stmt)?;
+
+                                if let Some(next) = block.statements.get(i + 1) {
+                                    inner_slf.preserve_blank_line(stmt.span, next.span);
+                                }
                             }
                             Ok(())
                         })?;
@@ -548,8 +569,12 @@ impl FormatContext<'_> {
 
                 if !body.statements.is_empty() {
                     self.indent(|slf| {
-                        for stmt in &body.statements {
+                        for (i, stmt) in body.statements.iter().enumerate() {
                             slf.format_module_statement(stmt)?;
+
+                            if let Some(next) = body.statements.get(i + 1) {
+                                slf.preserve_blank_line(stmt.span, next.span);
+                            }
                         }
                         Ok(())
                     })?;

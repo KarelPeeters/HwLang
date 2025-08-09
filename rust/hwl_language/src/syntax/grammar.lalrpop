@@ -155,8 +155,8 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" => {
-        InterfaceView { id, port_dirs }
+    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
+        InterfaceView { id, port_dirs, span: loc.span(start, end) }
     }
 }
 

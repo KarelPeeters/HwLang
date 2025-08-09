@@ -90,6 +90,96 @@ external module foo(T: type) ports(x: in async T, y: out async T, if(false) { z:
     }
 )
 
+// TODO respect newline
+//    also for extra list
+interface my_interface {
+    const WIDTH = 8;
+    type data_type = uint(WIDTH);
+    data: data_type,
+    valid: bool,
+    ready: bool,
+    if (WIDTH > 4) {
+        extra_signal: bool,
+    }
+    interface master {
+        data: out,
+        valid: out,
+        ready: in,
+        if (WIDTH > 4) {
+            extra_signal: out,
+        }
+    }
+    interface slave {
+        data: in,
+        valid: in,
+        ready: out,
+        if (WIDTH > 4) {
+            extra_signal: in,
+        }
+    }
+}
+
+pub interface bus_interface(WIDTH: uint, very_long_parameter_name_that_will_cause_wrapping: bool) {
+    const ADDR_WIDTH = WIDTH;
+    type addr_type = uint(ADDR_WIDTH);
+    addr: addr_type,
+    data: uint(32),
+    enable: bool,
+    if (very_long_parameter_name_that_will_cause_wrapping) {
+        debug_signal: bool,
+    }
+    interface master {
+        addr: out,
+        data: out,
+        enable: out,
+        if (very_long_parameter_name_that_will_cause_wrapping) {
+            debug_signal: out,
+        }
+    }
+}
+
+interface foo {
+//    interface master {}
+//    interface slave {}
+}
+
+module test_module(WIDTH: uint) ports(
+    clk: in clock,
+    rst: in async bool,
+    data_in: in sync(clk, rst) uint(WIDTH),
+    data_out: out sync(clk, rst) uint(WIDTH),
+) {
+    wire intermediate: sync(clk, rst) uint(WIDTH);
+    reg counter: sync(clk, rst) uint = 0;
+    
+    if (WIDTH > 8) {
+        wire extra_signal: sync(clk, rst) bool;
+    }
+    
+    for (i in [0, 1, 2]) {
+        wire data_bit: sync(clk, rst) bool;
+    }
+    
+    comb {
+        intermediate = data_in + 1;
+        print(1);
+
+        print(2);
+    }
+    
+    clocked(clk, async rst) {
+        counter += 1;
+        if (counter > 10) {
+            counter = 0;
+        }
+        data_out = intermediate;
+    }
+    
+    instance some_sub_module ports(data=intermediate, enable=true);
+}
+
+
+
 
 //const input_width: uint = 8;
 
@@ -162,86 +252,3 @@ external module foo(T: type) ports(x: in async T, y: out async T, if(false) { z:
 //    No,
 //    Maybe,
 //}
-
-interface my_interface {
-    const WIDTH = 8;
-    type data_type = uint(WIDTH);
-    data: data_type,
-    valid: bool,
-    ready: bool,
-    if (WIDTH > 4) {
-        extra_signal: bool,
-    }
-    interface master {
-        data: out,
-        valid: out,
-        ready: in,
-        if (WIDTH > 4) {
-            extra_signal: out,
-        }
-    }
-    interface slave {
-        data: in,
-        valid: in,
-        ready: out,
-        if (WIDTH > 4) {
-            extra_signal: in,
-        }
-    }
-}
-
-pub interface bus_interface(WIDTH: uint, very_long_parameter_name_that_will_cause_wrapping: bool) {
-    const ADDR_WIDTH = WIDTH;
-    type addr_type = uint(ADDR_WIDTH);
-    addr: addr_type,
-    data: uint(32),
-    enable: bool,
-    if (very_long_parameter_name_that_will_cause_wrapping) {
-        debug_signal: bool,
-    }
-    interface master {
-        addr: out,
-        data: out,
-        enable: out,
-        if (very_long_parameter_name_that_will_cause_wrapping) {
-            debug_signal: out,
-        }
-    }
-}
-
-interface foo {
-//    interface master {}
-//    interface slave {}
-}
-
-module test_module(WIDTH: uint) ports(
-    clk: in clock,
-    rst: in async bool,
-    data_in: in sync(clk, rst) uint(WIDTH),
-    data_out: out sync(clk, rst) uint(WIDTH),
-) {
-    wire intermediate: sync(clk, rst) uint(WIDTH);
-    reg counter: sync(clk, rst) uint = 0;
-    
-    if (WIDTH > 8) {
-        wire extra_signal: sync(clk, rst) bool;
-    }
-    
-    for (i in [0, 1, 2]) {
-        wire data_bit: sync(clk, rst) bool;
-    }
-    
-    comb {
-        intermediate = data_in + 1;
-    }
-    
-    clocked(clk, async rst) {
-        counter += 1;
-        if (counter > 10) {
-            counter = 0;
-        }
-        data_out = intermediate;
-    }
-    
-    instance some_sub_module ports(data=intermediate, enable=true);
-}

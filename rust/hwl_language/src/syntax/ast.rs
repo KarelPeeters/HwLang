@@ -164,6 +164,7 @@ pub struct ItemDefInterface {
 
 #[derive(Debug, Clone)]
 pub struct InterfaceView {
+    pub span: Span,
     pub id: MaybeIdentifier,
     pub port_dirs: ExtraList<(Identifier, Spanned<PortDirection>)>,
 }

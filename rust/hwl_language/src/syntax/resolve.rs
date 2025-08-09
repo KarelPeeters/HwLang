@@ -417,7 +417,11 @@ impl ResolveContext<'_> {
                 })?;
 
                 for view in views {
-                    let &InterfaceView { id, ref port_dirs } = view;
+                    let &InterfaceView {
+                        span: _,
+                        id,
+                        ref port_dirs,
+                    } = view;
                     self.visit_extra_list(
                         &mut scope_body,
                         port_dirs,
