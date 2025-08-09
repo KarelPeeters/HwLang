@@ -5,7 +5,7 @@ use crate::server::state::{RequestResult, ServerState};
 use crate::server::util::uri_to_path;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{LineOffsets, Span};
-use hwl_language::syntax::resolve::{find_definition, FindDefinition};
+use hwl_language::syntax::resolve::{FindDefinition, find_definition};
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use itertools::Itertools;

@@ -1,5 +1,5 @@
 use hwl_util::constants::HWL_FILE_EXTENSION;
-use hwl_util::io::{recurse_for_each_file, IoErrorWithPath};
+use hwl_util::io::{IoErrorWithPath, recurse_for_each_file};
 use hwl_util::swriteln;
 use itertools::Itertools;
 use std::ffi::OsStr;

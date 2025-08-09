@@ -2,10 +2,10 @@ use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked, HardwareEnumInfo};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
-use crate::util::big_int::{BigInt, BigUint};
 use crate::util::ResultExt;
+use crate::util::big_int::{BigInt, BigUint};
 use hwl_util::swrite;
-use itertools::{zip_eq, Itertools};
+use itertools::{Itertools, zip_eq};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
 use std::ops::{AddAssign, RangeBounds};
@@ -396,7 +396,7 @@ impl<T> IncRange<T> {
                 return Err(IncRange {
                     start_inc: None,
                     end_inc,
-                })
+                });
             }
         };
         let end_inc = match end_inc {
@@ -405,7 +405,7 @@ impl<T> IncRange<T> {
                 return Err(IncRange {
                     start_inc: Some(start_inc),
                     end_inc: None,
-                })
+                });
             }
         };
 

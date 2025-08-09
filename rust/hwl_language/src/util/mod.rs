@@ -157,9 +157,5 @@ impl Display for Indent {
 }
 
 pub fn separator_non_trailing(s: &str, i: usize, len: usize) -> &str {
-    if i == len - 1 {
-        ""
-    } else {
-        s
-    }
+    if i == len - 1 { "" } else { s }
 }

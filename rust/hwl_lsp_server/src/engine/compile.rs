@@ -6,7 +6,7 @@ use crate::server::state::{RequestError, ServerState};
 use crate::server::util::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
 use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{compile, ElaborationSet};
+use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{Annotation, DiagResult, Diagnostic, Diagnostics};
 use hwl_language::front::print::NoPrintHandler;
 use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree};
@@ -18,9 +18,9 @@ use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME, HWL_MANIFEST_FILE_NAME};
 use hwl_util::io::recurse_for_each_file;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{zip_eq, Itertools};
+use itertools::{Itertools, zip_eq};
 use lsp_types::{
-    notification, DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri,
+    DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri, notification,
 };
 use std::ffi::OsStr;
 use std::fmt::Write;

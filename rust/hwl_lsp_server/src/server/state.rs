@@ -5,7 +5,7 @@ use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::RegisterCapability;
-use lsp_types::{notification, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, Registration, Uri};
+use lsp_types::{DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, Registration, Uri, notification};
 
 pub struct ServerState {
     pub settings: Settings,

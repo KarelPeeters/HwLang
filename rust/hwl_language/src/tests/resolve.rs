@@ -1,6 +1,6 @@
 use crate::syntax::parse_file_content;
 use crate::syntax::pos::{Pos, Span};
-use crate::syntax::resolve::{find_definition, FindDefinition};
+use crate::syntax::resolve::{FindDefinition, find_definition};
 use crate::syntax::source::SourceDatabase;
 use itertools::Itertools;
 use std::ops::Range;

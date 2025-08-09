@@ -6,9 +6,9 @@ use crate::front::item::{ElaboratedEnum, ElaboratedInterface, ElaboratedModule, 
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType, IrVariable};
 use crate::syntax::pos::Span;
-use crate::util::big_int::{BigInt, BigUint};
 use crate::util::ResultExt;
-use itertools::{enumerate, Itertools};
+use crate::util::big_int::{BigInt, BigUint};
+use itertools::{Itertools, enumerate};
 use std::convert::identity;
 use std::sync::Arc;
 

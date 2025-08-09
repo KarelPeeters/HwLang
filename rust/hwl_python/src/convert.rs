@@ -10,10 +10,10 @@ use hwl_language::{
 use itertools::Itertools;
 use pyo3::types::{PyBool, PyInt, PyType};
 use pyo3::{
+    IntoPyObjectExt,
     exceptions::PyException,
     prelude::*,
     types::{PyDict, PyList, PyTuple},
-    IntoPyObjectExt,
 };
 use std::sync::Arc;
 

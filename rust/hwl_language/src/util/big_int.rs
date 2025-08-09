@@ -175,11 +175,7 @@ impl BigUint {
 
     pub fn as_usize_if_lt(&self, len: usize) -> Option<usize> {
         let s = self.try_into().ok()?;
-        if s < len {
-            Some(s)
-        } else {
-            None
-        }
+        if s < len { Some(s) } else { None }
     }
 }
 

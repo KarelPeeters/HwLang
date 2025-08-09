@@ -1,5 +1,5 @@
-use indexmap::map::Entry;
 use indexmap::IndexMap;
+use indexmap::map::Entry;
 use std::hash::Hash;
 
 pub trait IndexMapExt<K, V> {

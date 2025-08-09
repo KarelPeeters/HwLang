@@ -4,7 +4,7 @@ use crate::syntax::manifest::{ManifestSource, SourceEntry};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use hwl_util::constants::HWL_FILE_EXTENSION;
-use hwl_util::io::{recurse_for_each_file, IoErrorExt, IoErrorWithPath};
+use hwl_util::io::{IoErrorExt, IoErrorWithPath, recurse_for_each_file};
 use itertools::chain;
 use path_clean::PathClean;
 use std::ffi::{OsStr, OsString};

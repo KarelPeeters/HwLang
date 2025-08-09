@@ -1,8 +1,8 @@
 use crate::args::ArgsBuild;
-use crate::util::{find_and_read_manifest, print_diagnostics, FindManifestError};
+use crate::util::{FindManifestError, find_and_read_manifest, print_diagnostics};
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{compile, ElaborationSet, COMPILE_THREAD_STACK_SIZE};
+use hwl_language::front::compile::{COMPILE_THREAD_STACK_SIZE, ElaborationSet, compile};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::syntax::collect::collect_source_from_manifest;
@@ -12,11 +12,11 @@ use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
-use hwl_language::util::{ResultExt, NON_ZERO_USIZE_ONE};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use std::num::NonZeroUsize;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 pub fn main_build(args: ArgsBuild) -> ExitCode {
