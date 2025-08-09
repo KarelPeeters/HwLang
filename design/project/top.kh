@@ -194,6 +194,18 @@ const a = {
     b
 };
 
+const {
+    print("test");
+    print("test {sub} test {sub}");
+    print("test {sub} test");
+
+    print(
+        "test {
+            SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
+        } test"
+    );
+}
+
 //const input_width: uint = 8;
 
 //pub struct SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName {

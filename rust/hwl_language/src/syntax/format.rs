@@ -93,9 +93,13 @@ pub fn format(
     c.format_file(&ast)?;
 
     // TODO remove
+    let restore_cost = c.chars_restore as f32 / c.result.len() as f32;
     println!(
-        "formatting events: checkpoint={}, restore={}, chars_restore={}",
-        c.event_checkpoint, c.event_restore, c.chars_restore
+        "formatting events: checkpoint={}, restore={}, chars_restore={}, result_len={}, restore_cost={restore_cost}",
+        c.event_checkpoint,
+        c.event_restore,
+        c.chars_restore,
+        result.len()
     );
 
     // TODO re-tokenize, check token equivalence (and maybe eventually AST equivalence?)
@@ -1510,15 +1514,14 @@ impl FormatContext<'_> {
 
     fn format_expr(&mut self, expr: Expression, allow_wrap: bool) -> DiagResult {
         match &self.source_expressions[expr.inner] {
-            ExpressionKind::Dummy => self.push(TT::Underscore),
-            ExpressionKind::Undefined => self.push(TT::Undefined),
-            ExpressionKind::Type => self.push(TT::Type),
-            ExpressionKind::TypeFunction => self.push(TT::Function),
+            ExpressionKind::Dummy => self.push(TT::Underscore)?,
+            ExpressionKind::Undefined => self.push(TT::Undefined)?,
+            ExpressionKind::Type => self.push(TT::Type)?,
+            ExpressionKind::TypeFunction => self.push(TT::Function)?,
             ExpressionKind::Wrapped(inner) => {
                 self.push(TT::OpenR)?;
                 self.format_expr(*inner, allow_wrap)?;
                 self.push(TT::CloseR)?;
-                Ok(())
             }
             ExpressionKind::Block(block) => {
                 let &BlockExpression {
@@ -1533,24 +1536,59 @@ impl FormatContext<'_> {
                     Ok(())
                 })?;
                 self.push(TT::CloseC)?;
-                Ok(())
             }
-            &ExpressionKind::Id(id) => self.format_general_id(id),
+            &ExpressionKind::Id(id) => self.format_general_id(id)?,
             ExpressionKind::IntLiteral(lit) => match *lit {
-                IntLiteral::Binary(_span) => self.push(TT::IntLiteralBinary),
-                IntLiteral::Decimal(_span) => self.push(TT::IntLiteralDecimal),
-                IntLiteral::Hexadecimal(_span) => self.push(TT::IntLiteralHexadecimal),
+                IntLiteral::Binary(_span) => self.push(TT::IntLiteralBinary)?,
+                IntLiteral::Decimal(_span) => self.push(TT::IntLiteralDecimal)?,
+                IntLiteral::Hexadecimal(_span) => self.push(TT::IntLiteralHexadecimal)?,
             },
             &ExpressionKind::BoolLiteral(bool) => match bool {
-                false => self.push(TT::False),
-                true => self.push(TT::True),
+                false => self.push(TT::False)?,
+                true => self.push(TT::True)?,
             },
-            ExpressionKind::StringLiteral(_) => todo!(),
+            ExpressionKind::StringLiteral(pieces) => {
+                self.push(TT::StringStart)?;
+
+                // try single line
+                let check = self.checkpoint();
+                let mut any_sub = false;
+                for piece in pieces {
+                    match piece {
+                        StringPiece::Literal(_span) => self.push(TT::StringMiddle)?,
+                        &StringPiece::Substitute(expr) => {
+                            any_sub = true;
+                            self.push(TT::StringSubStart)?;
+                            self.format_expr(expr, false)?;
+                            self.push(TT::StringSubEnd)?;
+                        }
+                    }
+                }
+                self.push(TT::StringEnd)?;
+
+                // maybe fallback to multi-line, one sub per line
+                if allow_wrap && any_sub && self.overflow_since(check) {
+                    self.restore(check);
+
+                    for piece in pieces {
+                        match piece {
+                            StringPiece::Literal(_span) => self.push(TT::StringMiddle)?,
+                            &StringPiece::Substitute(expr) => {
+                                any_sub = true;
+                                self.push(TT::StringSubStart)?;
+                                self.indent(|slf| slf.format_expr(expr, true))?;
+                                self.push_newline();
+                                self.push(TT::StringSubEnd)?;
+                            }
+                        }
+                    }
+                    self.push(TT::StringEnd)?;
+                }
+            }
             ExpressionKind::ArrayLiteral(elements) => {
                 self.push(TT::OpenS)?;
                 self.format_comma_list(elements, allow_wrap, Self::format_array_element)?;
                 self.push(TT::CloseS)?;
-                Ok(())
             }
             ExpressionKind::TupleLiteral(elements) => {
                 self.push(TT::OpenR)?;
@@ -1565,7 +1603,6 @@ impl FormatContext<'_> {
                     }
                 }
                 self.push(TT::CloseR)?;
-                Ok(())
             }
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
@@ -1593,8 +1630,6 @@ impl FormatContext<'_> {
                         Ok(())
                     })?;
                 }
-
-                Ok(())
             }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
@@ -1604,12 +1639,12 @@ impl FormatContext<'_> {
                 // TODO allow wrapping target?
                 self.format_expr(target, false)?;
                 self.format_args(args, allow_wrap)?;
-                Ok(())
             }
             ExpressionKind::Builtin(_) => todo!(),
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
             ExpressionKind::RegisterDelay(_) => todo!(),
         }
+        Ok(())
     }
 
     fn format_array_element(&mut self, elem: &ArrayLiteralElement<Expression>, allow_wrap: bool) -> DiagResult {
