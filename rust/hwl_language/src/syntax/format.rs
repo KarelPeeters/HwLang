@@ -286,7 +286,6 @@ impl FormatContext<'_> {
     }
 
     fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        // TODO should indent even be part of the checkpoint state? it will always be rolled back anyway...
         // TODO rename to reflect that this includes a newline?
         let before = self.state.indent;
         self.state.indent += 1;
@@ -300,12 +299,9 @@ impl FormatContext<'_> {
             self.restore(check_before_line);
         }
 
-        assert_eq!(
-            self.state.indent,
-            before + 1,
-            "indent should be back to the original level"
-        );
+        assert_eq!(self.state.indent, before + 1,);
         self.state.indent -= 1;
+
         result
     }
 }
@@ -399,21 +395,9 @@ impl FormatContext<'_> {
         // TODO maybe allow single-line ports?
         self.format_extra_list_always_wrap(ports, &Self::format_port_item)?;
         self.push(TT::CloseR)?;
-
         if let Some(body) = body {
             self.push_space();
-            self.push(TT::OpenC)?;
-            self.indent(|slf| {
-                for (i, stmt) in body.statements.iter().enumerate() {
-                    slf.format_module_statement(stmt)?;
-
-                    if let Some(next) = body.statements.get(i + 1) {
-                        slf.preserve_blank_line(stmt.span, next.span);
-                    }
-                }
-                Ok(())
-            })?;
-            self.push(TT::CloseC)?;
+            self.format_block_general(body, Self::format_module_statement)?;
         }
         self.push_newline();
         Ok(())
@@ -460,18 +444,14 @@ impl FormatContext<'_> {
                 slf.format_maybe_id(*id)?;
                 slf.push_space();
                 slf.push(TT::OpenC)?;
-
-                if !port_dirs.items.is_empty() {
-                    slf.format_extra_list_always_wrap(port_dirs, &|inner_slf, port_dir| {
-                        let (id, direction) = port_dir;
-                        inner_slf.format_id(*id)?;
-                        inner_slf.push(TT::Colon)?;
-                        inner_slf.push_space();
-                        inner_slf.push(direction.inner.token())?;
-                        Ok(())
-                    })?;
-                }
-
+                slf.format_extra_list_always_wrap(port_dirs, &|inner_slf, port_dir| {
+                    let (id, direction) = port_dir;
+                    inner_slf.format_id(*id)?;
+                    inner_slf.push(TT::Colon)?;
+                    inner_slf.push_space();
+                    inner_slf.push(direction.inner.token())?;
+                    Ok(())
+                })?;
                 slf.push(TT::CloseC)?;
                 slf.push_newline();
 
@@ -490,33 +470,12 @@ impl FormatContext<'_> {
     fn format_module_statement(&mut self, stmt: &ModuleStatement) -> DiagResult {
         match &stmt.inner {
             ModuleStatementKind::Block(block) => {
-                self.push(TT::OpenC)?;
-                // TODO call general format_block
-                self.indent(|slf| {
-                    for (i, stmt) in block.statements.iter().enumerate() {
-                        slf.format_module_statement(stmt)?;
-                        if let Some(next) = block.statements.get(i + 1) {
-                            slf.preserve_blank_line(stmt.span, next.span);
-                        }
-                    }
-                    Ok(())
-                })?;
-                self.push(TT::CloseC)?;
+                self.format_block_general(block, Self::format_module_statement)?;
                 self.push_newline();
             }
             ModuleStatementKind::If(if_) => {
                 self.format_if(if_, |slf, block| {
-                    slf.indent(|inner_slf| {
-                        for (i, stmt) in block.statements.iter().enumerate() {
-                            inner_slf.format_module_statement(stmt)?;
-
-                            if let Some(next) = block.statements.get(i + 1) {
-                                inner_slf.preserve_blank_line(stmt.span, next.span);
-                            }
-                        }
-                        Ok(())
-                    })?;
-                    Ok(())
+                    slf.format_block_general(block, Self::format_module_statement)
                 })?;
             }
             ModuleStatementKind::For(for_) => {
@@ -1117,7 +1076,10 @@ impl FormatContext<'_> {
                         slf.format_if(if_, |slf, b| {
                             // TODO we could use format_extra_list_always_wrap here,
                             //   but then we run into type recursion issues due to re-wrapping the Fn
-                            slf.format_extra_list_impl(b, false, f)
+                            slf.push(TT::OpenC)?;
+                            slf.format_extra_list_impl(b, false, f)?;
+                            slf.push(TT::CloseC)?;
+                            Ok(())
                         })?;
                     }
                 }
@@ -1166,9 +1128,7 @@ impl FormatContext<'_> {
             slf.format_expr(cond, true)?;
             slf.push(TT::CloseR)?;
             slf.push_space();
-            slf.push(TT::OpenC)?;
             f(slf, block)?;
-            slf.push(TT::CloseC)?;
             slf.push_newline();
             Ok(())
         };
@@ -1188,9 +1148,7 @@ impl FormatContext<'_> {
         if let Some(block) = final_else {
             self.push(TT::Else)?;
             self.push_space();
-            self.push(TT::OpenC)?;
             f(self, block)?;
-            self.push(TT::CloseC)?;
             self.push_newline();
         }
         Ok(())
@@ -1239,6 +1197,7 @@ impl FormatContext<'_> {
                 slf.push(TT::DoubleArrow)?;
                 slf.push_space();
                 f(slf, block)?;
+                slf.push_newline();
             }
             Ok(())
         })?;
@@ -1353,19 +1312,30 @@ impl FormatContext<'_> {
     }
 
     fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
+        self.format_block_general(block, Self::format_block_statement)
+    }
+
+    fn format_block_general<T: HasSpan>(
+        &mut self,
+        block: &Block<T>,
+        f: impl Fn(&mut Self, &T) -> DiagResult,
+    ) -> DiagResult {
         let Block { span: _, statements } = block;
         self.push(TT::OpenC)?;
-        self.indent(|slf| slf.format_block_statements(statements))?;
+        self.indent(|slf| slf.format_block_statements_general(statements, f))?;
         self.push(TT::CloseC)?;
-        self.push_newline();
         Ok(())
     }
 
-    fn format_block_statements(&mut self, statements: &[BlockStatement]) -> DiagResult {
+    fn format_block_statements_general<T: HasSpan>(
+        &mut self,
+        statements: &[T],
+        f: impl Fn(&mut Self, &T) -> DiagResult,
+    ) -> DiagResult {
         for (i, stmt) in enumerate(statements) {
-            self.format_block_statement(stmt)?;
+            f(self, stmt)?;
             if let Some(next) = statements.get(i + 1) {
-                self.preserve_blank_line(stmt.span, next.span);
+                self.preserve_blank_line(stmt.span(), next.span());
             }
         }
         Ok(())
@@ -1427,10 +1397,7 @@ impl FormatContext<'_> {
                 self.format_block(block)?;
             }
             BlockStatementKind::If(if_) => {
-                self.format_if(if_, |slf, block| {
-                    let Block { span: _, statements } = block;
-                    slf.format_block_statements(statements)
-                })?;
+                self.format_if(if_, Self::format_block)?;
             }
             BlockStatementKind::Match(match_) => {
                 self.format_match(match_, Self::format_block)?;
@@ -1560,7 +1527,7 @@ impl FormatContext<'_> {
                 } = block;
                 self.push(TT::OpenC)?;
                 self.indent(|slf| {
-                    slf.format_block_statements(statements)?;
+                    slf.format_block_statements_general(statements, Self::format_block_statement)?;
                     slf.format_expr(expression, true)?;
                     slf.push_newline();
                     Ok(())
