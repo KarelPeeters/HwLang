@@ -40,6 +40,13 @@ const output_width = very_long_identifier_very_long_identifier_very_long_identif
 const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier________________;
 const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier_________________;
 
+struct Point{x:int,y:int,}
+struct GenericStruct(T:type,N:uint){data:T,size:uint(N),if(N>4){extra_field:bool,}}
+enum Color{Red,Green,Blue(int),}
+enum Result(T:type,E:type){Ok(T),Err(E),if(false){None,}}
+fn add(a:int,b:int)->int{return a+b;}
+fn generic_func(T:type,x:T,y:T)->T{if(true){return x;}else{return y;}}
+
 type x = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
 type x(n: uint) = 2**n;
 type x(very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: uint, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: bool) = false;
@@ -152,6 +159,7 @@ module test_module(WIDTH: uint) ports(
     derp: in async bool,
     test: out async bool,
 ) {
+    reg out test_marker=42;
     wire intermediate: sync(clk, rst) uint(WIDTH);
     reg counter: sync(clk, rst) uint = 0;
     

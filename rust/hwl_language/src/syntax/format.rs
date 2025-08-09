@@ -669,9 +669,19 @@ impl FormatContext<'_> {
                 self.push(TT::Semi)?;
                 self.push_newline();
             }
-            ModuleStatementKind::RegOutPortMarker(_marker) => {
-                // TODO: implement reg out port marker formatting
-                todo!("reg out port marker formatting")
+            ModuleStatementKind::RegOutPortMarker(marker) => {
+                let &RegOutPortMarker { id, init } = marker;
+                self.push(TT::Reg)?;
+                self.push_space();
+                self.push(TT::Out)?;
+                self.push_space();
+                self.format_id(id)?;
+                self.push_space();
+                self.push(TT::Eq)?;
+                self.push_space();
+                self.format_expr(init, true)?;
+                self.push(TT::Semi)?;
+                self.push_newline();
             }
             ModuleStatementKind::CombinatorialBlock(block) => {
                 let CombinatorialBlock { span_keyword: _, block } = block;
@@ -874,9 +884,88 @@ impl FormatContext<'_> {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
                         self.format_const_or_var_declaration(TT::Const, id, ty, Some(value))?;
                     }
-                    CommonDeclarationNamedKind::Struct(_) => todo!(),
-                    CommonDeclarationNamedKind::Enum(_) => todo!(),
-                    CommonDeclarationNamedKind::Function(_) => todo!(),
+                    CommonDeclarationNamedKind::Struct(struct_decl) => {
+                        let &StructDeclaration {
+                            span: _,
+                            span_body: _,
+                            id,
+                            ref params,
+                            ref fields,
+                        } = struct_decl;
+                        self.push(TT::Struct)?;
+                        self.push_space();
+                        self.format_maybe_id(id)?;
+                        if let Some(params) = params {
+                            self.format_params(params)?;
+                        }
+                        self.push_space();
+                        self.push(TT::OpenC)?;
+
+                        self.format_extra_list_always_wrap(fields, &|slf, field: &StructField| {
+                            let &StructField { span: _, id, ty } = field;
+                            slf.format_id(id)?;
+                            slf.push(TT::Colon)?;
+                            slf.push_space();
+                            slf.format_expr(ty, true)?;
+                            Ok(())
+                        })?;
+
+                        self.push(TT::CloseC)?;
+                        self.push_newline();
+                    }
+                    CommonDeclarationNamedKind::Enum(enum_decl) => {
+                        let &EnumDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            ref variants,
+                        } = enum_decl;
+                        self.push(TT::Enum)?;
+                        self.push_space();
+                        self.format_maybe_id(id)?;
+                        if let Some(params) = params {
+                            self.format_params(params)?;
+                        }
+                        self.push_space();
+                        self.push(TT::OpenC)?;
+
+                        self.format_extra_list_always_wrap(variants, &|slf, variant: &EnumVariant| {
+                            let &EnumVariant { span: _, id, content } = variant;
+                            slf.format_id(id)?;
+                            if let Some(content) = content {
+                                slf.push(TT::OpenR)?;
+                                slf.format_expr(content, true)?;
+                                slf.push(TT::CloseR)?;
+                            }
+                            Ok(())
+                        })?;
+
+                        self.push(TT::CloseC)?;
+                        self.push_newline();
+                    }
+                    CommonDeclarationNamedKind::Function(func_decl) => {
+                        let &FunctionDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            ret_ty,
+                            ref body,
+                        } = func_decl;
+                        self.push(TT::Function)?;
+                        self.push_space();
+                        self.format_maybe_id(id)?;
+                        self.format_params(params)?;
+
+                        if let Some(ret_ty) = ret_ty {
+                            self.push_space();
+                            self.push(TT::Arrow)?;
+                            self.push_space();
+                            self.format_expr(ret_ty, true)?;
+                        }
+
+                        self.push_space();
+                        self.format_block(body)?;
+                    }
                 }
             }
             CommonDeclaration::ConstBlock(block) => {
