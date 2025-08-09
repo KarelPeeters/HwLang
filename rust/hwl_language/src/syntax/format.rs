@@ -12,7 +12,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::*;
 use crate::syntax::pos::{LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::{Token, TokenCategory, TokenType as TT, tokenize};
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::enumerate;
@@ -270,7 +270,12 @@ impl FormatContext<'_> {
         let curr_end = self.source_offsets.expand_pos(curr_span.end());
         let next_start = self.source_offsets.expand_pos(next_span.start());
 
-        if next_start.line_0 > curr_end.line_0 + 1 {
+        let any_blank_line = (curr_end.line_0..next_start.line_0).any(|line_0| {
+            let line_range = self.source_offsets.line_range(line_0, false);
+            let line_str = &self.source_str[line_range];
+            is_whitespace_or_empty(line_str)
+        });
+        if any_blank_line {
             self.push_newline();
         }
     }
@@ -305,15 +310,8 @@ impl FormatContext<'_> {
             // TODO sort and combine imports in adjacent blocks?
             // TODO also do that for statements and common declarations elsewhere
             if let Some(next) = items.get(i + 1) {
-                if matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)) {
-                    continue;
-                }
-
-                let curr_end = self.source_offsets.expand_pos(item.info().span_full.end());
-                let next_start = self.source_offsets.expand_pos(next.info().span_full.start());
-
-                if next_start.line_0 > curr_end.line_0 + 1 {
-                    self.push_newline();
+                if !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_))) {
+                    self.preserve_blank_line(item.info().span_full, next.info().span_full);
                 }
             }
         }
@@ -676,10 +674,7 @@ impl FormatContext<'_> {
                 todo!("reg out port marker formatting")
             }
             ModuleStatementKind::CombinatorialBlock(block) => {
-                let &CombinatorialBlock {
-                    span_keyword: _,
-                    ref block,
-                } = block;
+                let CombinatorialBlock { span_keyword: _, block } = block;
                 self.push(TT::Combinatorial)?;
                 self.push_space();
                 self.format_block(block)?;
@@ -885,10 +880,7 @@ impl FormatContext<'_> {
                 }
             }
             CommonDeclaration::ConstBlock(block) => {
-                let &ConstBlock {
-                    span_keyword,
-                    ref block,
-                } = block;
+                let ConstBlock { span_keyword: _, block } = block;
                 self.push(TT::Const)?;
                 self.push_space();
                 self.format_block(block)?;
@@ -1064,7 +1056,7 @@ impl FormatContext<'_> {
         let format_pair = |slf: &mut Self, pair: &IfCondBlockPair<B>| {
             let &IfCondBlockPair {
                 span: _,
-                span_if,
+                span_if: _,
                 cond,
                 ref block,
             } = pair;
@@ -1274,8 +1266,12 @@ impl FormatContext<'_> {
         let Block { span: _, statements } = block;
         if !statements.is_empty() {
             self.indent(|slf| {
-                for stmt in statements {
+                for (i, stmt) in enumerate(statements) {
                     slf.format_block_statement(stmt)?;
+
+                    if let Some(next) = statements.get(i + 1) {
+                        slf.preserve_blank_line(stmt.span, next.span);
+                    }
                 }
                 Ok(())
             })?;
@@ -1434,7 +1430,7 @@ impl FormatContext<'_> {
                 self.push_newline();
             }
             BlockStatementKind::Return(stmt) => {
-                let &ReturnStatement { span_return, value } = stmt;
+                let &ReturnStatement { span_return: _, value } = stmt;
                 self.push(TT::Return)?;
                 if let Some(value) = value {
                     self.push_space();

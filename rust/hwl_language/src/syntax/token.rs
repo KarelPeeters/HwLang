@@ -2,6 +2,7 @@ use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
+use crate::util::iter::IterExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
@@ -63,6 +64,7 @@ macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='
 macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
 
 impl<'s> Tokenizer<'s> {
+    // TODO is there ever really a reason to set emit_incomplete_token to false?
     pub fn new(file: FileId, source: &'s str, emit_incomplete_token: bool) -> Self {
         Tokenizer {
             file,
@@ -424,14 +426,20 @@ pub fn apply_string_literal_escapes(raw: &str) -> Cow<str> {
     Cow::Borrowed(raw)
 }
 
-pub fn is_valid_identifier(s: &str) -> bool {
-    match tokenize(FileId::dummy(), s, false) {
-        Ok(tokens) => match tokens.single() {
-            None => false,
-            Some(token) => token.ty == TokenType::Identifier,
-        },
-        Err(_) => false,
+fn is_single_token(s: &str, ty: TokenType) -> bool {
+    let tokenizer = Tokenizer::new(FileId::dummy(), s, false);
+    match tokenizer.into_iter().single() {
+        Some(Ok(token)) => token.ty == ty,
+        Some(Err(_)) | None => false,
     }
+}
+
+pub fn is_valid_identifier(s: &str) -> bool {
+    is_single_token(s, TokenType::Identifier)
+}
+
+pub fn is_whitespace_or_empty(s: &str) -> bool {
+    s.is_empty() || is_single_token(s, TokenType::WhiteSpace)
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {

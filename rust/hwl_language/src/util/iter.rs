@@ -48,12 +48,11 @@ pub trait IterExt: Iterator {
 
 impl<I: Iterator> IterExt for I {
     fn single(mut self) -> Option<Self::Item> {
-        self.try_fold(None, |a, x| match a {
-            None => Ok(Some(x)),
-            Some(_) => Err(()),
-        })
-        .ok()
-        .flatten()
+        let first = self.next()?;
+        match self.next() {
+            None => Some(first),
+            Some(_) => None,
+        }
     }
 
     fn try_collect_all<T, F: FromIterator<T>, E>(self) -> Result<F, E>
@@ -85,5 +84,18 @@ impl<I: Iterator> IterExt for I {
 
         any_err?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::util::iter::IterExt;
+
+    #[test]
+    fn iter_single() {
+        assert_eq!(Option::<&i32>::None, [].iter().single());
+        assert_eq!(Some(&0), [0].iter().single());
+        assert_eq!(None, [0, 1].iter().single());
+        assert_eq!(None, [0, 1, 2].iter().single());
     }
 }
