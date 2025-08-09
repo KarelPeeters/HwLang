@@ -289,13 +289,22 @@ impl FormatContext<'_> {
         }
     }
 
-    fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        // TODO rename to reflect that this includes a newline?
+    fn indent_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.indent_impl(true, f)
+    }
+
+    fn indent_no_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.indent_impl(false, f)
+    }
+
+    fn indent_impl<R>(&mut self, newline: bool, f: impl FnOnce(&mut Self) -> R) -> R {
         let before = self.state.indent;
         self.state.indent += 1;
 
         let check_before_line = self.checkpoint();
-        self.push_newline();
+        if newline {
+            self.push_newline();
+        }
 
         let check_before_f = self.checkpoint();
         let result = f(self);
@@ -439,7 +448,7 @@ impl FormatContext<'_> {
             })?;
         }
 
-        self.indent(|slf| {
+        self.indent_newline(|slf| {
             for (i, view) in views.iter().enumerate() {
                 let InterfaceView { span: _, id, port_dirs } = view;
 
@@ -513,7 +522,7 @@ impl FormatContext<'_> {
                 // maybe fallback to multi-line
                 if self.overflow_since(check) {
                     self.restore(check);
-                    self.indent(|slf| {
+                    self.indent_newline(|slf| {
                         slf.format_maybe_id(index)?;
                         if let Some(ty) = index_ty {
                             slf.push(TT::Colon)?;
@@ -532,7 +541,7 @@ impl FormatContext<'_> {
                 }
 
                 // TODO call general utility function for blocks
-                self.indent(|slf| {
+                self.indent_newline(|slf| {
                     for (i, stmt) in body.statements.iter().enumerate() {
                         slf.format_module_statement(stmt)?;
 
@@ -710,7 +719,7 @@ impl FormatContext<'_> {
 
                     if self.overflow_since(check) {
                         self.restore(check);
-                        self.indent(|slf| {
+                        self.indent_newline(|slf| {
                             for conn in &port_connections.inner {
                                 let &PortConnection { id, expr } = &conn.inner;
                                 slf.format_id(id)?;
@@ -770,7 +779,7 @@ impl FormatContext<'_> {
                 if self.overflow_since(check) && !entries.is_empty() {
                     self.restore(check);
 
-                    self.indent(|slf| {
+                    self.indent_newline(|slf| {
                         let mut first_on_line = true;
                         for entry in entries.iter() {
                             // try to fit the entry on the current line
@@ -832,22 +841,11 @@ impl FormatContext<'_> {
                             ref params,
                             body,
                         } = decl;
-                        self.push(TT::Type)?;
-                        self.push_space();
-                        self.format_maybe_id(id)?;
-                        if let Some(params) = params {
-                            self.format_params(params)?;
-                        }
-                        self.push_space();
-                        self.push(TT::Eq)?;
-                        self.push_space();
-                        self.format_expr(body, true)?;
-                        self.push(TT::Semi)?;
-                        self.push_newline();
+                        self.format_var_declaration(TT::Type, id, params.as_ref(), None, Some(body))?;
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-                        self.format_const_or_var_declaration(TT::Const, id, ty, Some(value))?;
+                        self.format_var_declaration(TT::Const, id, None, ty, Some(value))?;
                     }
                     CommonDeclarationNamedKind::Struct(struct_decl) => {
                         let &StructDeclaration {
@@ -944,57 +942,78 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_const_or_var_declaration(
+    fn format_var_declaration(
         &mut self,
         kind: TT,
         id: MaybeIdentifier,
+        params: Option<&Parameters>,
         ty: Option<Expression>,
         value: Option<Expression>,
     ) -> DiagResult {
+        // TODO this can be improved, there's still some weird wrapping behavior
+
+        // format kind, id, params
         self.push(kind)?;
         self.push_space();
         self.format_maybe_id(id)?;
+        if let Some(params) = params {
+            self.format_params(params)?;
+        }
 
         // try single line
-        let check = self.checkpoint();
+        let check_before_ty = self.checkpoint();
         if let Some(ty) = ty {
-            // TODO allow wrapping in types?
             self.push(TT::Colon)?;
             self.push_space();
             self.format_expr(ty, false)?;
         }
-        if let Some(value) = value {
+        let check_before_value = if let Some(value) = value {
             self.push_space();
             self.push(TT::Eq)?;
             self.push_space();
-            self.format_expr(value, true)?;
-        }
+            let check_before_value = self.checkpoint();
+            self.format_expr(value, false)?;
+            check_before_value
+        } else {
+            self.checkpoint()
+        };
         self.push(TT::Semi)?;
         self.push_newline();
+        if !self.overflow_since(check_before_ty) {
+            return Ok(());
+        }
 
-        // maybe fallback to multi-line
-        // TODO maybe add an intermediate state where only the value is on the next line?
-        // TODO is this worth the complexity?
-        if self.overflow_since(check) {
-            self.restore(check);
-            self.indent(|slf| {
-                if let Some(ty) = ty {
-                    // TODO allow wrapping in types?
-                    slf.push(TT::Colon)?;
-                    slf.push_space();
-                    slf.format_expr(ty, false)?;
-                    slf.push_newline();
-                }
-                if let Some(value) = value {
-                    slf.push(TT::Eq)?;
-                    slf.push_space();
-                    slf.format_expr(value, true)?;
-                }
-                slf.push(TT::Semi)?;
-                slf.push_newline();
+        // fallback, wrap value
+        if let Some(value) = value {
+            self.restore(check_before_value);
+            self.format_expr(value, true)?;
+            self.push(TT::Semi)?;
+            self.push_newline();
+        }
+        if !self.overflow_since(check_before_ty) {
+            return Ok(());
+        }
+
+        // fallback, type and value on new line
+        self.restore(check_before_ty);
+        if let Some(ty) = ty {
+            self.indent_newline(|slf| {
+                slf.push(TT::Colon)?;
+                slf.push_space();
+                slf.format_expr(ty, true)?;
                 Ok(())
             })?;
         }
+        if let Some(value) = value {
+            self.indent_newline(|slf| {
+                slf.push(TT::Eq)?;
+                slf.push_space();
+                slf.format_expr(value, true)?;
+                Ok(())
+            })?;
+        }
+        self.push(TT::Semi)?;
+        self.push_newline();
         Ok(())
     }
 
@@ -1065,7 +1084,7 @@ impl FormatContext<'_> {
         }
 
         // multiple lines, one item per line
-        self.indent(|slf| {
+        self.indent_newline(|slf| {
             for (i, item) in enumerate(items) {
                 match item {
                     ExtraItem::Inner(param) => {
@@ -1171,7 +1190,7 @@ impl FormatContext<'_> {
         self.push_space();
         self.push(TT::OpenC)?;
 
-        self.indent(|slf| {
+        self.indent_newline(|slf| {
             // TODO respect extra newlines from input source
             // TODO check if expression wrapping works correctly
             for branch in branches {
@@ -1299,7 +1318,7 @@ impl FormatContext<'_> {
                     // maybe fallback to multi-line (only if there's a reset, otherwise we're not saving much)
                     if allow_wrap && self.overflow_since(check) {
                         self.restore(check);
-                        self.indent(|slf| {
+                        self.indent_newline(|slf| {
                             slf.format_expr(clock, true)?;
                             slf.push(TT::Comma)?;
                             slf.push_newline();
@@ -1326,7 +1345,7 @@ impl FormatContext<'_> {
     ) -> DiagResult {
         let Block { span: _, statements } = block;
         self.push(TT::OpenC)?;
-        self.indent(|slf| slf.format_block_statements_general(statements, f))?;
+        self.indent_newline(|slf| slf.format_block_statements_general(statements, f))?;
         self.push(TT::CloseC)?;
         Ok(())
     }
@@ -1357,7 +1376,7 @@ impl FormatContext<'_> {
                     init,
                 } = decl;
                 let kind = if mutable { TT::Var } else { TT::Val };
-                self.format_const_or_var_declaration(kind, id, ty, init)?;
+                self.format_var_declaration(kind, id, None, ty, init)?;
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -1382,7 +1401,7 @@ impl FormatContext<'_> {
                 // maybe fallback to multi-line
                 if self.overflow_since(check) {
                     self.restore(check);
-                    self.indent(|slf| {
+                    self.indent_newline(|slf| {
                         slf.push(op_token)?;
                         slf.push_space();
                         slf.format_expr(value, true)?;
@@ -1437,7 +1456,7 @@ impl FormatContext<'_> {
                 // TODO 3-choice wrap, allow wrapping the type and the value independently?
                 if self.overflow_since(check) {
                     self.restore(check);
-                    self.indent(|slf| {
+                    self.indent_newline(|slf| {
                         slf.format_maybe_id(index)?;
                         if let Some(ty) = index_ty {
                             slf.push(TT::Colon)?;
@@ -1476,7 +1495,7 @@ impl FormatContext<'_> {
                 // TODO if body is empty, the closing curly should be included in the overflow check
                 if self.overflow_since(check) {
                     self.restore(check);
-                    self.indent(|slf| {
+                    self.indent_newline(|slf| {
                         slf.format_expr(cond, true)?;
                         slf.push_newline();
                         Ok(())
@@ -1529,7 +1548,7 @@ impl FormatContext<'_> {
                     expression,
                 } = block;
                 self.push(TT::OpenC)?;
-                self.indent(|slf| {
+                self.indent_newline(|slf| {
                     slf.format_block_statements_general(statements, Self::format_block_statement)?;
                     slf.format_expr(expression, true)?;
                     slf.push_newline();
@@ -1574,9 +1593,8 @@ impl FormatContext<'_> {
                         match piece {
                             StringPiece::Literal(_span) => self.push(TT::StringMiddle)?,
                             &StringPiece::Substitute(expr) => {
-                                any_sub = true;
                                 self.push(TT::StringSubStart)?;
-                                self.indent(|slf| slf.format_expr(expr, true))?;
+                                self.indent_newline(|slf| slf.format_expr(expr, true))?;
                                 self.push_newline();
                                 self.push(TT::StringSubEnd)?;
                             }
@@ -1606,19 +1624,60 @@ impl FormatContext<'_> {
             }
             ExpressionKind::RangeLiteral(range) => match *range {
                 RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
-                    self.format_maybe_binary_op(TT::Dots, start, end, allow_wrap)?;
+                    self.format_maybe_binary_op(TT::Dots, false, start, end, allow_wrap)?;
                 }
                 RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
-                    self.format_maybe_binary_op(TT::DotsEq, start, Some(end), allow_wrap)?;
+                    self.format_maybe_binary_op(TT::DotsEq, false, start, Some(end), allow_wrap)?;
                 }
                 RangeLiteral::Length { op_span: _, start, len } => {
-                    self.format_binary_op(TT::PlusDots, start, len, allow_wrap)?;
+                    self.format_binary_op(TT::PlusDots, false, start, len, allow_wrap)?;
                 }
             },
-            ExpressionKind::ArrayComprehension(_) => todo!(),
+            ExpressionKind::ArrayComprehension(expr) => {
+                let &ArrayComprehension {
+                    body,
+                    index,
+                    span_keyword: _,
+                    iter,
+                } = expr;
+
+                // try single line
+                let check = self.checkpoint();
+                self.push(TT::OpenS)?;
+                self.format_array_element(&body, false)?;
+                self.push_space();
+                self.push(TT::For)?;
+                self.push_space();
+                self.format_maybe_id(index)?;
+                self.push_space();
+                self.push(TT::In)?;
+                self.push_space();
+                self.format_expr(iter, false)?;
+                self.push(TT::CloseS)?;
+
+                // maybe fallback to multi-line
+                if allow_wrap && self.overflow_since(check) {
+                    self.restore(check);
+                    self.push(TT::OpenS)?;
+                    self.indent_newline(|slf| {
+                        slf.format_array_element(&body, true)?;
+                        slf.push_newline();
+                        slf.push(TT::For)?;
+                        slf.push_space();
+                        slf.format_maybe_id(index)?;
+                        slf.push_space();
+                        slf.push(TT::In)?;
+                        slf.push_space();
+                        slf.format_expr(iter, true)?;
+                        Ok(())
+                    })?;
+                    self.push_newline();
+                    self.push(TT::CloseS)?;
+                }
+            }
             ExpressionKind::UnaryOp(_, _) => todo!(),
             &ExpressionKind::BinaryOp(op, left, right) => {
-                self.format_binary_op(op.inner.token(), left, right, allow_wrap)?
+                self.format_binary_op(op.inner.token(), true, left, right, allow_wrap)?
             }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
@@ -1639,31 +1698,49 @@ impl FormatContext<'_> {
     fn format_maybe_binary_op(
         &mut self,
         op: TT,
+        op_space: bool,
         left: Option<Expression>,
         right: Option<Expression>,
         allow_wrap: bool,
     ) -> DiagResult {
         if let (Some(left), Some(right)) = (left, right) {
-            self.format_binary_op(op, left, right, allow_wrap)?
+            self.format_binary_op(op, op_space, left, right, allow_wrap)?
         } else {
             if let Some(left) = left {
                 self.format_expr(left, allow_wrap)?;
+                if op_space {
+                    self.push_space();
+                }
             }
             self.push(op)?;
             if let Some(right) = right {
+                if op_space {
+                    self.push_space();
+                }
                 self.format_expr(right, allow_wrap)?;
             }
         }
         Ok(())
     }
 
-    fn format_binary_op(&mut self, op: TT, left: Expression, right: Expression, allow_wrap: bool) -> DiagResult {
+    fn format_binary_op(
+        &mut self,
+        op: TT,
+        op_space: bool,
+        left: Expression,
+        right: Expression,
+        allow_wrap: bool,
+    ) -> DiagResult {
         // try single line
         let check = self.checkpoint();
         self.format_expr(left, false)?;
-        self.push_space();
+        if op_space {
+            self.push_space();
+        }
         self.push(op)?;
-        self.push_space();
+        if op_space {
+            self.push_space();
+        }
         self.format_expr(right, allow_wrap)?;
 
         // maybe fallback to multi-line
@@ -1672,9 +1749,11 @@ impl FormatContext<'_> {
         if allow_wrap && self.overflow_since(check) {
             self.restore(check);
             self.format_expr(left, true)?;
-            self.indent(|slf| {
+            self.indent_newline(|slf| {
                 slf.push(op)?;
-                slf.push_space();
+                if op_space {
+                    slf.push_space();
+                }
                 slf.format_expr(right, allow_wrap)?;
                 Ok(())
             })?;
@@ -1732,7 +1811,7 @@ impl FormatContext<'_> {
         // maybe fallback to multi-line, one item per line
         if allow_wrap && self.overflow_since(check) {
             self.restore(check);
-            self.indent(|slf| {
+            self.indent_newline(|slf| {
                 for item in list {
                     f(slf, item, true)?;
                     slf.push(TT::Comma)?;
