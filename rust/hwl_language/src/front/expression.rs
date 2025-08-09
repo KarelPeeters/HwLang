@@ -25,9 +25,9 @@ use crate::mid::ir::{
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
     ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    RegisterDelay, Spanned, StringPiece, SyncDomain, UnaryOp,
+    RegisterDelay, StringPiece, SyncDomain, UnaryOp,
 };
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};

@@ -13,8 +13,8 @@ use crate::front::value::{HardwareValue, Value};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::syntax::ast::{AssignBinaryOp, Assignment, MaybeIdentifier, Spanned, SyncDomain};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::{AssignBinaryOp, Assignment, MaybeIdentifier, SyncDomain};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use annotate_snippets::Level;
 
 #[derive(Debug, Clone)]

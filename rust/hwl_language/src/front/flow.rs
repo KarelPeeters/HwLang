@@ -12,9 +12,9 @@ use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
     IrVariableInfo, IrVariables, IrWires,
 };
-use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;

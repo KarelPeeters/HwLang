@@ -148,6 +148,9 @@ module test_module(WIDTH: uint) ports(
     rst: in async bool,
     data_in: in sync(clk, rst) uint(WIDTH),
     data_out: out sync(clk, rst) uint(WIDTH),
+
+    derp: in async bool,
+    test: out async bool,
 ) {
     wire intermediate: sync(clk, rst) uint(WIDTH);
     reg counter: sync(clk, rst) uint = 0;

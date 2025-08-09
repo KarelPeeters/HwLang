@@ -7,10 +7,10 @@ use crate::front::types::HardwareType;
 use crate::front::value::{ElaboratedInterfaceView, HardwareValue};
 use crate::mid::ir::{IrAssignmentTargetBase, IrExpression, IrPort, IrRegister, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, Spanned, SyncDomain};
-use crate::syntax::pos::Span;
-use crate::util::arena::Arena;
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, SyncDomain};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
+use crate::util::arena::Arena;
 use annotate_snippets::Level;
 
 new_index_type!(pub Port);

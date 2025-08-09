@@ -8,8 +8,8 @@ use crate::mid::ir::{
     IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
     ir_modules_topological_sort,
 };
-use crate::syntax::ast::{PortDirection, Spanned};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::PortDirection;
+use crate::syntax::pos::{Span, Spanned};
 use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};

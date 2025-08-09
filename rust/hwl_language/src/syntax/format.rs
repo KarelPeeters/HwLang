@@ -10,7 +10,7 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 // TODO remove star
 use crate::syntax::ast::*;
-use crate::syntax::pos::{LineOffsets, Span};
+use crate::syntax::pos::{HasSpan, LineOffsets, Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
@@ -952,7 +952,7 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_extra_list_maybe_wrap<T>(
+    fn format_extra_list_maybe_wrap<T: HasSpan>(
         &mut self,
         extra_list: &ExtraList<T>,
         f: &impl Fn(&mut Self, &T, bool) -> DiagResult,
@@ -960,7 +960,7 @@ impl FormatContext<'_> {
         self.format_extra_list_impl(extra_list, true, f)
     }
 
-    fn format_extra_list_always_wrap<T>(
+    fn format_extra_list_always_wrap<T: HasSpan>(
         &mut self,
         extra_list: &ExtraList<T>,
         f: &impl Fn(&mut Self, &T) -> DiagResult,
@@ -975,7 +975,7 @@ impl FormatContext<'_> {
         )
     }
 
-    fn format_extra_list_impl<T>(
+    fn format_extra_list_impl<T: HasSpan>(
         &mut self,
         extra_list: &ExtraList<T>,
         try_single_line: bool,
@@ -1011,9 +1011,8 @@ impl FormatContext<'_> {
         }
 
         // multiple lines, one item per line
-        // TODO respect separating newlines between items from the source code
         self.indent(|slf| {
-            for item in items {
+            for (i, item) in enumerate(items) {
                 match item {
                     ExtraItem::Inner(param) => {
                         f(slf, param, true)?;
@@ -1031,13 +1030,22 @@ impl FormatContext<'_> {
                         })?;
                     }
                 }
+
+                if let Some(next) = items.get(i + 1) {
+                    slf.preserve_blank_line(item.span(), next.span());
+                }
             }
             Ok(())
         })
     }
 
     fn format_param(&mut self, param: &Parameter, allow_wrap: bool) -> DiagResult {
-        let &Parameter { id, ty, default } = param;
+        let &Parameter {
+            span: _,
+            id,
+            ty,
+            default,
+        } = param;
         self.format_id(id)?;
         self.push(TT::Colon)?;
         self.push_space();
@@ -1075,6 +1083,7 @@ impl FormatContext<'_> {
         };
 
         let IfStatement {
+            span: _,
             initial_if,
             else_ifs,
             final_else,

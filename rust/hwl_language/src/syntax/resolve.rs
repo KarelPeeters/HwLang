@@ -8,10 +8,10 @@ use crate::syntax::ast::{
     MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, Spanned, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
-    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
-use crate::syntax::pos::{Pos, Span};
+use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::arena::Arena;
@@ -625,7 +625,12 @@ impl ResolveContext<'_> {
         let Parameters { span: _, items } = params;
 
         self.visit_extra_list(scope, items, &mut |scope, param| {
-            let &Parameter { id, ty, default } = param;
+            let &Parameter {
+                span: _,
+                id,
+                ty,
+                default,
+            } = param;
             self.visit_expression(scope, ty)?;
             if let Some(default) = default {
                 self.visit_expression(scope, default)?;
@@ -635,7 +640,7 @@ impl ResolveContext<'_> {
         })
     }
 
-    fn visit_extra_list<I>(
+    fn visit_extra_list<I: HasSpan>(
         &self,
         scope_parent: &mut DeclScope,
         extra: &ExtraList<I>,
@@ -681,6 +686,7 @@ impl ResolveContext<'_> {
         };
 
         let IfStatement {
+            span: _,
             initial_if,
             else_ifs,
             final_else,
@@ -853,6 +859,7 @@ impl ResolveContext<'_> {
                 }
                 ModuleStatementKind::If(if_stmt) => {
                     let IfStatement {
+                        span: _,
                         initial_if,
                         else_ifs,
                         final_else,

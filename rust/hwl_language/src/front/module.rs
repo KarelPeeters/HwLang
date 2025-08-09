@@ -32,10 +32,10 @@ use crate::syntax::ast::{
 };
 use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
-    PortConnection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration,
+    PortConnection, RegDeclaration, RegOutPortMarker, SyncDomain, WireDeclaration,
 };
 use crate::syntax::parsed::{AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;

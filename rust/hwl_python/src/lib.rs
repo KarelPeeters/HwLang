@@ -14,7 +14,6 @@ use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
 use hwl_language::front::value::Value;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
-use hwl_language::syntax::ast::Spanned;
 use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
@@ -23,6 +22,7 @@ use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
+use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;

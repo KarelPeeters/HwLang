@@ -11,11 +11,11 @@ use crate::front::signal::{
 };
 use crate::front::value::{CompileValue, Value};
 use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
-use crate::syntax::ast::Spanned;
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::throw;
 use crate::util::arena::Arena;

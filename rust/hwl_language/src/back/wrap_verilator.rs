@@ -3,7 +3,8 @@ use crate::front::check::{TypeContainsReason, check_type_contains_compile_value}
 use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
-use crate::syntax::ast::{PortDirection, Spanned};
+use crate::syntax::ast::PortDirection;
+use crate::syntax::pos::Spanned;
 use crate::util::arena::{Arena, IndexType};
 use crate::util::big_int::BigUint;
 use dlopen2::wrapper::{Container, WrapperApi};

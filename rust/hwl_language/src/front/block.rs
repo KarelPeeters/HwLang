@@ -16,10 +16,10 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, Identifier,
-    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, Spanned,
+    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement,
     VariableDeclaration, WhileStatement,
 };
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
@@ -258,6 +258,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 BlockStatementKind::If(stmt) => {
                     let IfStatement {
+                        span: _,
                         initial_if,
                         else_ifs,
                         final_else,
@@ -1091,7 +1092,7 @@ impl CompileItemContext<'_, '_> {
         Ok(BlockEnd::Normal)
     }
 
-    pub fn compile_elaborate_extra_list<'a, F: Flow, I>(
+    pub fn compile_elaborate_extra_list<'a, F: Flow, I: HasSpan>(
         &mut self,
         scope: &mut Scope,
         flow: &mut F,
@@ -1125,6 +1126,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
         let IfStatement {
+            span: _,
             initial_if,
             else_ifs,
             final_else,

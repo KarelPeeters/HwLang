@@ -1,9 +1,8 @@
-use crate::front::value::Value;
-use crate::new_index_type;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
 use crate::util::arena::Arena;
+use crate::{impl_has_span, new_index_type};
 
 new_index_type!(pub ExpressionKindIndex);
 
@@ -177,19 +176,20 @@ pub struct Parameters {
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    pub span: Span,
     pub id: Identifier,
     pub ty: Expression,
     pub default: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ExtraList<I> {
+pub struct ExtraList<I: HasSpan> {
     pub span: Span,
     pub items: Vec<ExtraItem<I>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ExtraItem<I> {
+pub enum ExtraItem<I: HasSpan> {
     Inner(I),
     Declaration(CommonDeclaration<()>),
     // TODO add `match`
@@ -391,6 +391,7 @@ pub enum BlockStatementKind {
 
 #[derive(Debug, Clone)]
 pub struct IfStatement<B> {
+    pub span: Span,
     pub initial_if: IfCondBlockPair<B>,
     pub else_ifs: Vec<IfCondBlockPair<B>>,
     pub final_else: Option<B>,
@@ -681,24 +682,6 @@ pub enum ArrayLiteralElement<V> {
     Spread(Span, V),
 }
 
-impl<V> ArrayLiteralElement<Spanned<V>> {
-    pub fn span(&self) -> Span {
-        match self {
-            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
-            ArrayLiteralElement::Single(value) => value.span,
-        }
-    }
-}
-
-impl<V> ArrayLiteralElement<Box<Spanned<V>>> {
-    pub fn span(&self) -> Span {
-        match self {
-            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
-            ArrayLiteralElement::Single(value) => value.span,
-        }
-    }
-}
-
 impl<V> ArrayLiteralElement<V> {
     pub fn map_inner<W>(self, f: impl FnOnce(V) -> W) -> ArrayLiteralElement<W> {
         match self {
@@ -872,72 +855,6 @@ pub enum UnaryOp {
     Not,
 }
 
-// TODO move to pos?
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Spanned<T> {
-    pub span: Span,
-    pub inner: T,
-}
-
-impl<T> Spanned<T> {
-    pub fn new(span: Span, inner: T) -> Spanned<T> {
-        Spanned { span, inner }
-    }
-
-    pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
-        Spanned {
-            span: self.span,
-            inner: f(self.inner),
-        }
-    }
-
-    pub fn as_ref(&self) -> Spanned<&T> {
-        Spanned {
-            span: self.span,
-            inner: &self.inner,
-        }
-    }
-}
-
-impl<T> Spanned<&T> {
-    pub fn cloned(&self) -> Spanned<T>
-    where
-        T: Clone,
-    {
-        Spanned {
-            span: self.span,
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<T, E> Spanned<Result<T, E>> {
-    pub fn transpose(self) -> Result<Spanned<T>, E> {
-        self.inner.map(|inner| Spanned { span: self.span, inner })
-    }
-}
-
-impl<T> Spanned<Option<T>> {
-    pub fn transpose(self) -> Option<Spanned<T>> {
-        self.inner.map(|inner| Spanned { span: self.span, inner })
-    }
-}
-
-impl<T, C> Spanned<Value<T, C>> {
-    pub fn transpose(self) -> Value<Spanned<T>, Spanned<C>> {
-        match self.inner {
-            Value::Compile(value) => Value::Compile(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-            Value::Hardware(value) => Value::Hardware(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-        }
-    }
-}
-
 impl Identifier {
     pub fn str(self, source: &SourceDatabase) -> &str {
         source.span_str(self.span)
@@ -968,23 +885,7 @@ impl<I> MaybeIdentifier<I> {
     }
 }
 
-impl<T> MaybeIdentifier<Spanned<T>> {
-    pub fn span(&self) -> Span {
-        match self {
-            &MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-}
-
 impl MaybeIdentifier<Identifier> {
-    pub fn span(self) -> Span {
-        match self {
-            MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-
     pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
         match self {
             MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
@@ -1014,24 +915,6 @@ impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
         match self {
             MaybeIdentifier::Dummy(span) => Spanned::new(*span, None),
             MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.inner.as_ref().to_owned())),
-        }
-    }
-}
-
-impl GeneralIdentifier {
-    pub fn span(self) -> Span {
-        match self {
-            GeneralIdentifier::Simple(id) => id.span,
-            GeneralIdentifier::FromString(span, _) => span,
-        }
-    }
-}
-
-impl MaybeIdentifier<GeneralIdentifier> {
-    pub fn span(self) -> Span {
-        match self {
-            MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span(),
         }
     }
 }
@@ -1106,16 +989,6 @@ impl<V> CommonDeclaration<V> {
 }
 
 impl CommonDeclarationNamedKind {
-    pub fn span(&self) -> Span {
-        match self {
-            CommonDeclarationNamedKind::Type(decl) => decl.span,
-            CommonDeclarationNamedKind::Const(decl) => decl.span,
-            CommonDeclarationNamedKind::Struct(decl) => decl.span,
-            CommonDeclarationNamedKind::Enum(decl) => decl.span,
-            CommonDeclarationNamedKind::Function(decl) => decl.span,
-        }
-    }
-
     pub fn id(&self) -> MaybeIdentifier {
         match self {
             CommonDeclarationNamedKind::Type(decl) => decl.id,
@@ -1179,6 +1052,115 @@ impl AssignBinaryOp {
             AssignBinaryOp::BitAnd => BinaryOp::BitAnd,
             AssignBinaryOp::BitOr => BinaryOp::BitOr,
             AssignBinaryOp::BitXor => BinaryOp::BitXor,
+        }
+    }
+}
+
+// TODO this could be reduced a bit with a derive macro, eg. for enums it could automatically combine the branches
+impl_has_span!(Identifier);
+impl_has_span!(Parameter);
+impl_has_span!(ModulePortInBlock);
+impl_has_span!(StructField);
+impl_has_span!(EnumDeclaration);
+impl_has_span!(EnumVariant);
+
+impl HasSpan for ModulePortItem {
+    fn span(&self) -> Span {
+        match self {
+            ModulePortItem::Single(port) => port.span,
+            ModulePortItem::Block(block) => block.span,
+        }
+    }
+}
+
+impl<I: HasSpan> HasSpan for ExtraItem<I> {
+    fn span(&self) -> Span {
+        match self {
+            ExtraItem::Inner(item) => item.span(),
+            ExtraItem::Declaration(decl) => decl.span(),
+            ExtraItem::If(if_stmt) => if_stmt.span,
+        }
+    }
+}
+
+impl<V> HasSpan for ArrayLiteralElement<Spanned<V>> {
+    fn span(&self) -> Span {
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
+impl<V> HasSpan for ArrayLiteralElement<Box<Spanned<V>>> {
+    fn span(&self) -> Span {
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
+impl<T> HasSpan for MaybeIdentifier<Spanned<T>> {
+    fn span(&self) -> Span {
+        match self {
+            &MaybeIdentifier::Dummy(span) => span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+}
+
+impl HasSpan for MaybeIdentifier<Identifier> {
+    fn span(&self) -> Span {
+        match self {
+            MaybeIdentifier::Dummy(span) => *span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+}
+
+impl HasSpan for GeneralIdentifier {
+    fn span(&self) -> Span {
+        match self {
+            GeneralIdentifier::Simple(id) => id.span,
+            GeneralIdentifier::FromString(span, _) => *span,
+        }
+    }
+}
+
+impl HasSpan for MaybeIdentifier<GeneralIdentifier> {
+    fn span(&self) -> Span {
+        match self {
+            MaybeIdentifier::Dummy(span) => *span,
+            MaybeIdentifier::Identifier(id) => id.span(),
+        }
+    }
+}
+
+impl<V> HasSpan for CommonDeclaration<V> {
+    fn span(&self) -> Span {
+        match self {
+            CommonDeclaration::Named(decl) => decl.kind.span(),
+            CommonDeclaration::ConstBlock(decl) => decl.span(),
+        }
+    }
+}
+
+impl HasSpan for ConstBlock {
+    fn span(&self) -> Span {
+        let ConstBlock { span_keyword, block } = self;
+        span_keyword.join(block.span)
+    }
+}
+
+impl HasSpan for CommonDeclarationNamedKind {
+    fn span(&self) -> Span {
+        match self {
+            CommonDeclarationNamedKind::Type(decl) => decl.span,
+            CommonDeclarationNamedKind::Const(decl) => decl.span,
+            CommonDeclarationNamedKind::Struct(decl) => decl.span,
+            CommonDeclarationNamedKind::Enum(decl) => decl.span,
+            CommonDeclarationNamedKind::Function(decl) => decl.span,
         }
     }
 }

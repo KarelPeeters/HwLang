@@ -3,8 +3,8 @@ use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagno
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::syntax::ast::{Spanned, SyncDomain};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::SyncDomain;
+use crate::syntax::pos::{Span, Spanned};
 use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
 use itertools::Itertools;

@@ -1,5 +1,6 @@
 use crate::syntax::ast::*;
-use crate::syntax::{Span, LocationBuilder};
+use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::LocationBuilder;
 use crate::syntax::token::{TokenType, TokenError};
 use crate::util::arena::Arena;
 
@@ -326,8 +327,9 @@ BlockStatementKind: BlockStatementKind = {
 IfStatement<B>: IfStatement<B> = {
     <start:@L> <span_if:Span<"if">> "(" <cond:Expr> ")" <then_block:B> <end_if:@R>
     <else_ifs:ElseIfPair<B>*>
-    <final_else:("else" <B>)?> => {
+    <final_else:("else" <B>)?> <end:@R> => {
         IfStatement {
+            span: loc.span(start, end),
             initial_if: IfCondBlockPair {
                 span: loc.span(start, end_if),
                 span_if: span_if,
@@ -432,12 +434,13 @@ Parameters: Parameters = {
 }
 
 Parameter: Parameter = {
-    <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> => Parameter { id, ty, default },
+    <start:@L> <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> <end:@R>
+        => Parameter { id, ty, default, span: loc.span(start, end) },
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
     <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
-        => Spanned { span: loc.span(start_ports, end_ports), inner: ports },
+        => Spanned { inner: ports, span: loc.span(start_ports, end_ports) },
 }
 
 ModulePortItemPort: ModulePortItem = {

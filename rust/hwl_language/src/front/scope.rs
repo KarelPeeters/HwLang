@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{FailedCaptureReason, Variable};
 use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
-use crate::syntax::ast::{MaybeIdentifier, Spanned};
+use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::FileId;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
