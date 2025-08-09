@@ -189,8 +189,10 @@ module test_module(WIDTH: uint) ports(
     instance some_sub_module ports(data=intermediate, enable=true);
 }
 
-
-
+const a = {
+    val b = 3;
+    b
+};
 
 //const input_width: uint = 8;
 

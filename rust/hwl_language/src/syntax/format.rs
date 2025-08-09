@@ -10,7 +10,7 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 // TODO remove star
 use crate::syntax::ast::*;
-use crate::syntax::pos::{HasSpan, LineOffsets, Span, Spanned};
+use crate::syntax::pos::{HasSpan, LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
@@ -266,6 +266,7 @@ impl FormatContext<'_> {
         self.state.curr_line_length = 0;
     }
 
+    // TODO can we make this a general mechanism instead of having to call this everywhere?
     fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) {
         let curr_end = self.source_offsets.expand_pos(curr_span.end());
         let next_start = self.source_offsets.expand_pos(next_span.start());
@@ -286,6 +287,8 @@ impl FormatContext<'_> {
         let before = self.state.indent;
         self.state.indent += 1;
 
+        // TODO is there a way to automatically skip the initial newline if the following call does not push anything?
+        //   -> yes, set a checkpoint and roll back if nothing has changed!
         self.push_newline();
         let result = f(self);
 
@@ -450,11 +453,7 @@ impl FormatContext<'_> {
                     slf.push(TT::OpenC)?;
 
                     if !port_dirs.items.is_empty() {
-                        slf.format_extra_list_always_wrap(port_dirs, &|inner_slf,
-                                                                       port_dir: &(
-                            Identifier,
-                            Spanned<PortDirection>,
-                        )| {
+                        slf.format_extra_list_always_wrap(port_dirs, &|inner_slf, port_dir| {
                             let (id, direction) = port_dir;
                             inner_slf.format_id(*id)?;
                             inner_slf.push(TT::Colon)?;
@@ -484,11 +483,11 @@ impl FormatContext<'_> {
         match &stmt.inner {
             ModuleStatementKind::Block(block) => {
                 self.push(TT::OpenC)?;
+                // TODO call general format_block
                 if !block.statements.is_empty() {
                     self.indent(|slf| {
                         for (i, stmt) in block.statements.iter().enumerate() {
                             slf.format_module_statement(stmt)?;
-
                             if let Some(next) = block.statements.get(i + 1) {
                                 slf.preserve_blank_line(stmt.span, next.span);
                             }
@@ -565,6 +564,7 @@ impl FormatContext<'_> {
                     })?;
                 }
 
+                // TODO call general utility function
                 if !body.statements.is_empty() {
                     self.indent(|slf| {
                         for (i, stmt) in body.statements.iter().enumerate() {
@@ -1353,26 +1353,23 @@ impl FormatContext<'_> {
     }
 
     fn format_block(&mut self, block: &Block<BlockStatement>) -> DiagResult {
+        let Block { span: _, statements } = block;
         self.push(TT::OpenC)?;
-        self.format_block_inner(block)?;
+        if !statements.is_empty() {
+            self.indent(|slf| slf.format_block_statements(statements))?;
+        }
+
         self.push(TT::CloseC)?;
         self.push_newline();
         Ok(())
     }
 
-    fn format_block_inner(&mut self, block: &Block<BlockStatement>) -> DiagResult {
-        let Block { span: _, statements } = block;
-        if !statements.is_empty() {
-            self.indent(|slf| {
-                for (i, stmt) in enumerate(statements) {
-                    slf.format_block_statement(stmt)?;
-
-                    if let Some(next) = statements.get(i + 1) {
-                        slf.preserve_blank_line(stmt.span, next.span);
-                    }
-                }
-                Ok(())
-            })?;
+    fn format_block_statements(&mut self, statements: &[BlockStatement]) -> DiagResult {
+        for (i, stmt) in enumerate(statements) {
+            self.format_block_statement(stmt)?;
+            if let Some(next) = statements.get(i + 1) {
+                self.preserve_blank_line(stmt.span, next.span);
+            }
         }
         Ok(())
     }
@@ -1433,7 +1430,10 @@ impl FormatContext<'_> {
                 self.format_block(block)?;
             }
             BlockStatementKind::If(if_) => {
-                self.format_if(if_, Self::format_block_inner)?;
+                self.format_if(if_, |slf, block| {
+                    let Block { span: _, statements } = block;
+                    slf.format_block_statements(statements)
+                })?;
             }
             BlockStatementKind::Match(match_) => {
                 self.format_match(match_, Self::format_block)?;
@@ -1464,7 +1464,6 @@ impl FormatContext<'_> {
                 self.format_expr(iter, false)?;
                 self.push(TT::CloseR)?;
                 self.push_space();
-                self.push(TT::OpenC)?;
 
                 // maybe fallback to multi-line
                 // TODO 3-choice wrap, allow wrapping the type and the value independently?
@@ -1483,13 +1482,10 @@ impl FormatContext<'_> {
                         slf.format_expr(iter, true)?;
                         slf.push(TT::CloseR)?;
                         slf.push_space();
-                        slf.push(TT::OpenC)?;
                         Ok(())
                     })?;
                 }
-
-                self.format_block_inner(body)?;
-                self.push(TT::CloseC)?;
+                self.format_block(body)?;
                 self.push_newline();
             }
             BlockStatementKind::While(while_) => {
@@ -1507,7 +1503,6 @@ impl FormatContext<'_> {
                 self.format_expr(cond, false)?;
                 self.push(TT::CloseR)?;
                 self.push_space();
-                self.push(TT::OpenC)?;
 
                 // maybe fallback to multi-line
                 // TODO if body is empty, the closing curly should be included in the overflow check
@@ -1520,11 +1515,9 @@ impl FormatContext<'_> {
                     })?;
                     self.push(TT::CloseR)?;
                     self.push_space();
-                    self.push(TT::OpenC)?;
                 }
 
-                self.format_block_inner(body)?;
-                self.push(TT::CloseC)?;
+                self.format_block(body)?;
                 self.push_newline();
             }
             BlockStatementKind::Return(stmt) => {
@@ -1552,8 +1545,6 @@ impl FormatContext<'_> {
     }
 
     fn format_expr(&mut self, expr: Expression, allow_wrap: bool) -> DiagResult {
-        // TODO indent and wrap should probably be separate things, wrapping can be banned while still having some indent
-
         match &self.source_expressions[expr.inner] {
             ExpressionKind::Dummy => self.push(TT::Underscore),
             ExpressionKind::Undefined => self.push(TT::Undefined),
@@ -1565,7 +1556,21 @@ impl FormatContext<'_> {
                 self.push(TT::CloseR)?;
                 Ok(())
             }
-            ExpressionKind::Block(_) => todo!(),
+            ExpressionKind::Block(block) => {
+                let &BlockExpression {
+                    ref statements,
+                    expression,
+                } = block;
+                self.push(TT::OpenC)?;
+                self.indent(|slf| {
+                    slf.format_block_statements(statements)?;
+                    slf.format_expr(expression, true)?;
+                    slf.push_newline();
+                    Ok(())
+                })?;
+                self.push(TT::CloseC)?;
+                Ok(())
+            }
             &ExpressionKind::Id(id) => self.format_general_id(id),
             ExpressionKind::IntLiteral(lit) => match *lit {
                 IntLiteral::Binary(_span) => self.push(TT::IntLiteralBinary),
