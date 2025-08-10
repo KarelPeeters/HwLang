@@ -333,10 +333,10 @@ impl FormatContext<'_> {
             // preserve separating newlines between non-import items
             // TODO sort and combine imports in adjacent blocks?
             // TODO also do that for statements and common declarations elsewhere
-            if let Some(next) = items.get(i + 1) {
-                if !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_))) {
-                    self.preserve_blank_line(item.info().span_full, next.info().span_full);
-                }
+            if let Some(next) = items.get(i + 1)
+                && !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)))
+            {
+                self.preserve_blank_line(item.info().span_full, next.info().span_full);
             }
         }
 
