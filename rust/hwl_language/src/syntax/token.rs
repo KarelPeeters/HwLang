@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use std::borrow::Cow;
 use strum::EnumIter;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Token {
     pub ty: TokenType,
     pub span: Span,

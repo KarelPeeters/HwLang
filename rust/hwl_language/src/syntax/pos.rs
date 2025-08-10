@@ -229,6 +229,7 @@ impl LineOffsets {
     // This set of line endings was chosen because it matches what the LSP protocol wants,
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
+    pub const LINE_ENDING_CHARS: &'static [char] = &['\r', '\n'];
 
     // TODO switch to memchr, benchmark the difference
     pub fn new(src: &str) -> Self {

@@ -3,7 +3,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::*;
 use crate::syntax::pos::{HasSpan, LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
+use crate::syntax::token::{Token, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::{Either, enumerate};
@@ -55,6 +55,7 @@ pub struct FormatSettings {
     pub max_line_length: usize,
     // TODO add option to sort imports, tricky because tokens won't match and we might lose even more comments
     // pub sort_imports: bool,
+    // pub newline_str: String,
 }
 
 impl Default for FormatSettings {
@@ -85,7 +86,9 @@ pub fn format(
 ) -> DiagResult<String> {
     // tokenize and parse
     let source_str = &source[file].content;
-    let tokens = tokenize(file, source_str, false).map_err(|e| diags.report(e.to_diagnostic()))?;
+    let mut tokens = tokenize(file, source_str, false).map_err(|e| diags.report(e.to_diagnostic()))?;
+    // TODO remove whitespace tokens, everyone just filters them out anyway, we can always recover whitespace as "stuff between other tokens" if we really want to
+    tokens.retain(|t| t.ty != TT::WhiteSpace);
     let ast = parse_file_content(file, source_str).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
     // format to string
@@ -106,6 +109,7 @@ pub fn format(
             next_source_token: 0,
             curr_line_length: 0,
             overflowing_lines: 0,
+            line_comment_count: 0,
             indent: 0,
         },
     };
@@ -153,6 +157,7 @@ struct CheckpointState {
     curr_line_length: usize,
     /// The number of lines that have overflowed, not counting the current line.
     overflowing_lines: usize,
+    line_comment_count: usize,
     indent: usize,
 }
 
@@ -182,12 +187,67 @@ impl FormatContext<'_> {
     }
 
     fn overflow_since(&self, check: CheckPoint) -> bool {
-        (self.state.overflowing_lines > check.state.overflowing_lines)
-            || (self.state.curr_line_length > self.settings.max_line_length)
+        let curr = self.state;
+        curr.overflowing_lines > check.state.overflowing_lines
+            || curr.curr_line_length > self.settings.max_line_length
+            || curr.line_comment_count > check.state.line_comment_count
     }
 
     fn anything_since(&self, check: CheckPoint) -> bool {
         self.result.len() > check.result_len
+    }
+
+    fn push_raw_str(&mut self, s: &str, indent: bool) {
+        // indent if asked and this is the first thing on the line
+        if indent && self.state.curr_line_length == 0 {
+            for _ in 0..self.state.indent {
+                self.result.push_str(&self.settings.indent_str);
+                self.state.curr_line_length += self.settings.indent_str.len();
+            }
+        }
+
+        // push the string itself
+        self.result.push_str(s);
+
+        // update newlines and line length
+        for c in s.chars() {
+            if LineOffsets::LINE_ENDING_CHARS.contains(&c) {
+                if self.state.curr_line_length > self.settings.max_line_length {
+                    self.state.overflowing_lines += 1;
+                }
+                self.state.curr_line_length = 0;
+            } else {
+                // TODO tab size?
+                self.state.curr_line_length += 1;
+            }
+        }
+    }
+
+    fn push_comment(&mut self, span: Span, line_comment: bool, next: Option<TT>) {
+        // TODO how exactly to format comments probably depends on:
+        //   * the current indent level
+        //   * the line of the previous token and the comment
+
+        let curr_start = self.source_offsets.expand_pos(span.start());
+
+        // push newline if the comment started on a new line
+        if self.state.next_source_token > 0 {
+            let prev_token = self.source_tokens[self.state.next_source_token - 1];
+            let prev_end = self.source_offsets.expand_pos(prev_token.span.end());
+            if curr_start.line_0 > prev_end.line_0 {
+                self.push_newline();
+            }
+        }
+
+        let comment_str = &self.source_str[span.range_bytes()];
+        self.push_raw_str(comment_str, true);
+
+        if line_comment {
+            self.state.line_comment_count += 1;
+            self.push_newline();
+        } else {
+            // TODO only push newline if next token is on a new line
+        }
     }
 
     fn push(&mut self, ty: TT) -> DiagResult {
@@ -212,20 +272,20 @@ impl FormatContext<'_> {
             })?;
             self.state.next_source_token += 1;
 
-            match source_token.ty.category() {
+            match source_token.ty {
                 // drop whitespace, the formatter creates its own
-                TokenCategory::WhiteSpace => continue,
+                TT::WhiteSpace => continue,
                 // emit comments
-                TokenCategory::Comment => {
-                    // TODO emit comments instead of dropping them
+                TT::LineComment => {
+                    self.push_comment(source_token.span, true, Some(ty));
                     continue;
                 }
-                // these are real tokens, fallthrough into matching the type
-                TokenCategory::Identifier
-                | TokenCategory::IntegerLiteral
-                | TokenCategory::StringLiteral
-                | TokenCategory::Keyword
-                | TokenCategory::Symbol => {}
+                TT::BlockComment => {
+                    self.push_comment(source_token.span, false, Some(ty));
+                    continue;
+                }
+                // everything else is a real token, fallthrough into matching the type
+                _ => {}
             }
 
             if source_token.ty == ty {
@@ -248,33 +308,19 @@ impl FormatContext<'_> {
             return Err(diags.report_internal_error(source_token.span, msg));
         };
 
-        // add indent if this is the first pushed token
-        if self.state.curr_line_length == 0 {
-            for _ in 0..self.state.indent {
-                self.result.push_str(&self.settings.indent_str);
-                self.state.curr_line_length += self.settings.indent_str.len();
-            }
-        }
-
-        // push the token itself
-        self.result.push_str(token_str);
-        // TODO handle newlines in string literals and comments?
-        self.state.curr_line_length += token_str.len();
+        // finally we can push the actual string
+        self.push_raw_str(token_str, true);
 
         Ok(())
     }
 
     fn push_space(&mut self) {
-        self.result.push(' ');
-        self.state.curr_line_length += 1;
+        // TODO error if this is the first thing on the line
+        self.push_raw_str(" ", true);
     }
 
     fn push_newline(&mut self) {
-        if self.state.curr_line_length > self.settings.max_line_length {
-            self.state.overflowing_lines += 1;
-        }
-        self.result.push('\n');
-        self.state.curr_line_length = 0;
+        self.push_raw_str("\n", false);
     }
 
     fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) {
@@ -323,12 +369,12 @@ impl FormatContext<'_> {
 
 impl FormatContext<'_> {
     fn format_file(&mut self, file: &FileContent) -> DiagResult {
+        // emit all tokens in the ast
         let FileContent {
             span: _,
             items,
             arena_expressions: _,
         } = file;
-
         for (i, item) in enumerate(items) {
             self.format_item(item)?;
 
@@ -336,6 +382,25 @@ impl FormatContext<'_> {
                 && !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)))
             {
                 self.preserve_blank_line(item.info().span_full, next.info().span_full);
+            }
+        }
+
+        // check for leftover tokens and emit comments
+        // TODO respect newlines between comments?
+        for token in &self.source_tokens[self.state.next_source_token..] {
+            match token.ty {
+                // ignore whitespace
+                TT::WhiteSpace => {}
+                // emit comments
+                TT::LineComment => self.push_space(),
+                TT::BlockComment => todo!(),
+                // other tokens are unexpected
+                _ => {
+                    let err = self
+                        .diags
+                        .report_internal_error(token.span, "leftover token not printed by ast");
+                    return Err(err);
+                }
             }
         }
 

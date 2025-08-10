@@ -165,22 +165,22 @@ module test_module(WIDTH: uint) ports(
     reg out test_marker=42;
     wire intermediate: sync(clk, rst) uint(WIDTH);
     reg counter: sync(clk, rst) uint = 0;
-    
+
     if (WIDTH > 8) {
         wire extra_signal: sync(clk, rst) bool;
     }
-    
+
     for (i in [0, 1, 2]) {
         wire data_bit: sync(clk, rst) bool;
     }
-    
+
     comb {
         intermediate = data_in + 1;
         print(1);
 
         print(2);
     }
-    
+
     clocked(clk, async rst) {
         counter += 1;
         if (counter > 10) {
@@ -188,7 +188,7 @@ module test_module(WIDTH: uint) ports(
         }
         data_out = intermediate;
     }
-    
+
     instance some_sub_module ports(data=intermediate, enable=true);
 }
 
@@ -245,11 +245,5 @@ const {
 }
 
 module foo ports() {
-    // comment in module
     wire id_from_str("derp") = 5;
 }
-
-const a = [
-    /* test */ 4,
-    /* test */ 6,
-];
