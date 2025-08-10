@@ -1,8 +1,45 @@
 # HwLang
 
 An experimental new language for hardware design.
-
 A webdemo is available at https://karelpeeters.github.io/HwLang/.
+
+A short sneak-peak at the language:
+
+```
+import std.types.[bool, int, uint, natural, any];
+
+pub module top ports( 
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        data_to_add: in uint(0..8),
+        stream_in: interface axi_stream(uint(0..8)).input,
+        stream_out: interface axi_stream(uint(0..16)).output,
+        values_transferred: out uint(32),
+    }
+) {
+    comb {
+        stream_in.ready = stream_out.ready;
+        stream_out.valid = stream_in.valid;
+        stream_out.data = stream_in.data + data_to_add;
+    }
+
+    reg out values_transferred = 0;
+    clocked(clk, async rst) {
+        if (stream_out.valid && stream_out.ready) {
+            values_transferred = (values_transferred + 1) % 2**32;
+        }
+    }
+}
+
+interface axi_stream(T: type) {
+    ready: bool, valid: bool, data: T,
+    interface input { ready: out, valid: in, data: in }
+    interface output { ready: in, valid: out, data: out }
+}
+
+```
 
 ## Background
 
@@ -42,6 +79,20 @@ existing RTL languages, prefixed by _SV_ or _VHDL_.
       assigned to each other), in some ways it's too weak in that integer ranges are not checked and even types are not
       fully checked at compile-time, only at run- or synthesis time.
 
+* Powerful generics
+    * Can be values, types, functions, modules.
+    * Can affect the presence or absence of ports.
+    * Modules, structs, enums and interfaces can all be generic.
+    * _SV_/_VHDL_: both are very slowly marking progress here, but their generics are comparatively very limited.
+
+* Support for interfaces
+    * Leads to code generation or lots of duplicate code
+    * Makes instantiating and connection modules (one of the most basic and common things to do in RTL) much more
+      convenient.
+    * _SV_/_VHDL_: the latest versions have a limited form of interfaces, but vendor support is lacking. THis means that
+      developers have to resort to writing lots of duplicate code, using editor templates or ad-hoc code generation
+      tools. This makes instantiating and connecting modules with large interfaces cumbersome.
+
 * Clock and reset domains are tracked by the compiler
     * Every port and signal is marked with its domain, and the compiler checks every assignment and connection to ensure
       that the
@@ -69,24 +120,20 @@ existing RTL languages, prefixed by _SV_ or _VHDL_.
     * Types can optionally be inferred
     * _SV_/_VHDL_ both have weird limitations on where variables can be declared
 
-* Powerful generics
-    * Can be values, types, functions, modules.
-    * Can affect the presence or absence of ports.
-    * Modules, structs, enums and interfaces can all be generic.
-    * _SV_/_VHDL_: both are very slowly marking progress here, but their generics are comparatively very limited.
-
-* Support for interfaces
-    * Leads to code generation or lots of duplicate code
-    * Makes instantiating and connection modules (one of the most basic and common things to do in RTL) much more
-      convenient.
-    * _SV_/_VHDL_: the latest versions have a limited form of interfaces, but vendor support is lacking. THis means that
-      developers have to resort to writing lots of duplicate code, using editor templates or ad-hoc code generation
-      tools. This makes instantiating and connecting modules with large interfaces cumbersome.
+* Intuitive assignment semantics
+    * There is only a single assignment operator, `=`, which always immediately assigns the value. THe following lines
+      in the code always immediately observe the newly assigned value. It is the compiler's responsibility to correctly
+      generate code that simulates and synthesizes correctly.
+    * Both _SV_ and _VHDL_ have different assignment operators, blocking and non-blocking. The developer constantly has
+      to be careful to use the right one, and reason correctly about the delayed assignment effects on non-blocking
+      assignments. There seem to be a historic artifact of the early event-driven models of the languages, but there is
+      no need to repeat this design mistake in a new language.
 
 * Proper import and file scope system
     * The compiler parses all the source files in the project at once, and then resolves all imports between files as
       needed. This also completely eliminates any name collision issues.
     * There is a full module hierarchy, allowing code to be organized nicely.
+  * Developers are free to choose th order of items in a file, the compiler does not simply read files top-down.
     * _SV_ doesn't have a library or import system at all, the user is responsible for compiling all files in the right
       order, and names always resolve to the last definition with a matching name.
     * _VHDL_ does a little better, allowing code to organized in libraries. This is still much weaker than a full module
@@ -101,16 +148,19 @@ immediately.
 * Modern error messages
     * If anything is wrong in the RTL, the compiler emits very clear error messages. EDA tools set the bar ver low here,
       we can do better.
-      [//]: # (TODO screenshot here)
+  * ![Example domain crossing error message](docs/error.png)
+
 
 * The compiler comes with a built-in [LSP](https://microsoft.github.io/language-server-protocol/) server. This allows
   different editors to get IDE-like features. Implementing this as part of the compiler means that there's no need to
   maintain a separate codebase for the LSP server, guaranteeing that the behavior matches that of the actual compiler.
 
+[//]: # (TODO add autoformatter once it's merged)
+
 * Care has been taken to optimize the compiler, for example it is fully multithreaded up to the level of individual
   file-level items and elaborated module. This means that even large projects should compile quickly.
 
-### Interoperation
+### Interoperability
 
 The goal of this project is not to immediately replace all existing RTL source code, interoperability with existing code
 and workflows is very important.
