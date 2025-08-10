@@ -1,12 +1,3 @@
-//! Core ideas are based on:
-//! * https://journal.stuffwithstuff.com/2015/09/08/the-hardest-program-ive-ever-written/
-//! * https://yorickpeterse.com/articles/how-to-write-a-code-formatter/
-//!
-//! TODO think about comments
-//! Comments are handled in a separate final pass.
-
-// TODO create a test file that contains every syntactical construct, which should fully cover the parser and this
-
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 // TODO remove star
 use crate::syntax::ast::*;
@@ -17,12 +8,42 @@ use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::{Either, enumerate};
 
-// TODO split out the core abstract formatting engine and the ast->IR conversion into separate modules?
-// TODO add to python and wasm as a standalone function
-// TODO add as LSP action
-// TODO change allow_wrap to be an enum instead of a bool
-// TODO cleanup old docs and ideas
-// TODO maybe switch to more DSL based thing to avoid a bunch of code duplication?
+// TODO core:
+//   * preserve comments?
+//   * what to do about multi-line comments?
+//   * record sequence of pushed tokens to check for re-parsing at the end,
+//       to double check that no tokens got incorrectly joined
+//   * sort and combine imports
+//   * maybe switch to some IR anyway, it's becoming a bit hacky
+
+// TODO test
+//   * create a test file that contains every syntactical construct, which should fully cover the parser and this
+//     * check coverage
+//   * full fuzz test, try a bunch of random inputs, if they parse then reformat
+//   * fuzz test:
+//     * insert block or line comment at every possible location, see if they all survive
+//     * also do a variant where every tokens is on a separate line
+//   * test idempotency
+
+// TODO interface:
+//   * add to python and wasm as a standalone function
+//   * add as LSP action
+//   * implement proper fmt binary
+//     * modes:
+//       * format entire project in-place
+//       * format single file in-place
+//       * check entire project/single file for CI jobs, print diff
+//     * if no manifest specified, print warning to stderr and use defaults
+
+// TODO docs/cleanup:
+//   * split out the core abstract formatting engine and the ast->IR conversion into separate modules?
+//   * cleanup old docs and ideas
+//   * write proper docs about what the implementation actually ended up being
+//   * core ideas are based on:
+//      * https://journal.stuffwithstuff.com/2015/09/08/the-hardest-program-ive-ever-written/
+//      * https://yorickpeterse.com/articles/how-to-write-a-code-formatter/
+//   * checkpointing can be exponential
+//   * improve and double-check comma explanation: (dis)appear, unambiguous
 
 #[derive(Debug)]
 pub struct FormatSettings {
@@ -32,12 +53,7 @@ pub struct FormatSettings {
     // TODO assert settings validness somewhere, eg. indent_str should parse as a single whitespace token
     pub tab_size: usize,
     pub max_line_length: usize,
-    // TODO think about newline settings, maybe orthogonal axes:
-    //   * recombine short lines: bool
-    //   * wrap overlong lines: bool
-    //   * fixup empty lines between defs/statements/comments
-    // pub line_wrap: bool,
-    // pub respect_input_newlines: bool,
+    // TODO add option to sort imports, tricky because tokens won't match and we might lose even more comments
     // pub sort_imports: bool,
 }
 
@@ -51,12 +67,16 @@ impl Default for FormatSettings {
     }
 }
 
-// TODO preserve comments?
-// TODO what to do about multi-line comments?
-// TODO fuzz test:
-//   * insert block or line comment at every possible location, see if they all survive
-//   * also do a variant where every tokens is on a separate line
-// TODO should this work with diags too?
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct FormatStats {
+    pub event_checkpoint: u64,
+    pub event_restore: u64,
+    pub chars_restore: u64,
+    pub result_len: usize,
+    pub restore_cost: f32,
+}
+
 pub fn format(
     diags: &Diagnostics,
     source: &SourceDatabase,
@@ -70,7 +90,6 @@ pub fn format(
 
     // format to string
     let mut result = String::new();
-
     let mut c = FormatContext {
         settings,
         source_file: file,
@@ -92,18 +111,16 @@ pub fn format(
     };
     c.format_file(&ast)?;
 
-    // TODO remove
-    let restore_cost = c.chars_restore as f32 / c.result.len() as f32;
-    println!(
-        "formatting events: checkpoint={}, restore={}, chars_restore={}, result_len={}, restore_cost={restore_cost}",
-        c.event_checkpoint,
-        c.event_restore,
-        c.chars_restore,
-        result.len()
-    );
-
-    // TODO re-tokenize, check token equivalence (and maybe eventually AST equivalence?)
-    //   actually, the push method already kind of does that, but maybe it's safer to repeat it again
+    // collect some debug stats
+    let result_len = c.result.len();
+    let stats = FormatStats {
+        event_checkpoint: c.event_checkpoint,
+        event_restore: c.event_restore,
+        chars_restore: c.chars_restore,
+        result_len,
+        restore_cost: c.chars_restore as f32 / result_len as f32,
+    };
+    let _ = stats;
 
     Ok(result)
 }
@@ -136,11 +153,9 @@ struct CheckpointState {
     curr_line_length: usize,
     /// The number of lines that have overflowed, not counting the current line.
     overflowing_lines: usize,
-    // TODO should this even be part of the checkpoint, the wrapping function will always restore it anyway?
     indent: usize,
 }
 
-// TODO this checkpointing system can cause exponential complexity, is it ever bad in practice?
 #[derive(Debug, Copy, Clone)]
 struct CheckPoint {
     state: CheckpointState,
@@ -166,11 +181,7 @@ impl FormatContext<'_> {
         self.state = checkpoint.state;
     }
 
-    // TODO maybe rethink this, is this still needed?
     fn overflow_since(&self, check: CheckPoint) -> bool {
-        // TODO count number of overflowing lines, if it has increased then we overflowed at some point
-        // TODO what about lines that already overflowed, should they count again and how do we track that?
-
         (self.state.overflowing_lines > check.state.overflowing_lines)
             || (self.state.curr_line_length > self.settings.max_line_length)
     }
@@ -180,9 +191,6 @@ impl FormatContext<'_> {
     }
 
     fn push(&mut self, ty: TT) -> DiagResult {
-        // TODO improve and double-check comma explanation: (dis)appear, unambiguous
-        // TODO record sequence of pushed tokens to check for re-parsing at the end,
-        //   to double check that no tokens got joined
         let diags = self.diags;
 
         if ty == TT::WhiteSpace {
@@ -257,24 +265,18 @@ impl FormatContext<'_> {
     }
 
     fn push_space(&mut self) {
-        // no need to check for comments
-        // TODO is that right?
         self.result.push(' ');
         self.state.curr_line_length += 1;
     }
 
     fn push_newline(&mut self) {
-        // TODO support configurable indent width, right now eg. tabs are counted as a single character
-        // TODO should we use \r\n on windows?
         if self.state.curr_line_length > self.settings.max_line_length {
             self.state.overflowing_lines += 1;
         }
-
         self.result.push('\n');
         self.state.curr_line_length = 0;
     }
 
-    // TODO can we make this a general mechanism instead of having to call this everywhere?
     fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) {
         let curr_end = self.source_offsets.expand_pos(curr_span.end());
         let next_start = self.source_offsets.expand_pos(next_span.start());
@@ -330,9 +332,6 @@ impl FormatContext<'_> {
         for (i, item) in enumerate(items) {
             self.format_item(item)?;
 
-            // preserve separating newlines between non-import items
-            // TODO sort and combine imports in adjacent blocks?
-            // TODO also do that for statements and common declarations elsewhere
             if let Some(next) = items.get(i + 1)
                 && !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)))
             {
@@ -690,9 +689,6 @@ impl FormatContext<'_> {
             entry,
         } = item;
 
-        // TODO sort imports, both within and across lines, combining them in some single-correct way
-        // TODO move imports to top of file?
-
         self.push(TT::Import)?;
         self.push_space();
         for &parent in &parents.inner {
@@ -757,7 +753,6 @@ impl FormatContext<'_> {
     }
 
     fn format_import_entry(&mut self, entry: &ImportEntry) -> DiagResult {
-        // TODO support wrapping between id as and as_ too?
         let &ImportEntry { span: _, id, as_ } = entry;
         self.format_id(id)?;
         if let Some(as_) = as_ {
@@ -1040,8 +1035,6 @@ impl FormatContext<'_> {
                     }
                     ExtraItem::If(if_) => {
                         slf.format_if(if_, |slf, b| {
-                            // TODO we could use format_extra_list_always_wrap here,
-                            //   but then we run into type recursion issues due to re-wrapping the Fn
                             slf.push(TT::OpenC)?;
                             slf.format_extra_list_impl(b, false, f)?;
                             slf.push(TT::CloseC)?;
@@ -1068,7 +1061,6 @@ impl FormatContext<'_> {
         self.format_id(id)?;
         self.push(TT::Colon)?;
         self.push_space();
-        // TODO allow wrapping in type or not?
         self.format_expr(ty, allow_wrap)?;
         if let Some(default) = default {
             self.push_space();
@@ -1089,10 +1081,7 @@ impl FormatContext<'_> {
             } = pair;
             slf.push(TT::If)?;
             slf.push_space();
-            slf.push(TT::OpenR)?;
-            // TODO test this
-            slf.format_expr(cond, true)?;
-            slf.push(TT::CloseR)?;
+            slf.format_condition(cond)?;
             slf.push_space();
             f(slf, block)?;
             slf.push_newline();
@@ -1117,6 +1106,32 @@ impl FormatContext<'_> {
             f(self, block)?;
             self.push_newline();
         }
+        Ok(())
+    }
+
+    fn format_condition(&mut self, cond: Expression) -> DiagResult {
+        self.push(TT::OpenR)?;
+
+        // try single line
+        let check = self.checkpoint();
+        self.format_expr(cond, false)?;
+        self.push(TT::CloseR)?;
+
+        // (simulate the following curly to check the final line length)
+        let check_dummy = self.checkpoint();
+        self.push_space();
+        self.push(TT::OpenC)?;
+        let overflow = self.overflow_since(check);
+        self.restore(check_dummy);
+
+        // maybe fallback to multi-line
+        if overflow {
+            self.restore(check);
+            self.indent_newline(|slf| slf.format_expr(cond, true))?;
+            self.push_newline();
+            self.push(TT::CloseR)?;
+        }
+
         Ok(())
     }
 
@@ -1151,8 +1166,13 @@ impl FormatContext<'_> {
         self.push(TT::CloseR)?;
         self.push_space();
 
+        let check_dummy = self.checkpoint();
+        self.push(TT::OpenC)?;
+        let overflow = self.overflow_since(check);
+        self.restore(check_dummy);
+
         // maybe fallback to multi-line
-        if self.overflow_since(check) {
+        if overflow {
             self.restore(check);
             self.indent_newline(|slf| {
                 slf.format_maybe_id(index)?;
@@ -1183,15 +1203,12 @@ impl FormatContext<'_> {
             ref branches,
         } = match_;
         self.push(TT::Match)?;
-        self.push(TT::OpenR)?;
-        self.format_expr(target, true)?;
-        self.push(TT::CloseR)?;
+        self.push_space();
+        self.format_condition(target)?;
         self.push_space();
         self.push(TT::OpenC)?;
 
         self.indent_newline(|slf| {
-            // TODO respect extra newlines from input source
-            // TODO check if expression wrapping works correctly
             for branch in branches {
                 let MatchBranch { pattern, block } = branch;
                 match &pattern.inner {
@@ -1777,8 +1794,6 @@ impl FormatContext<'_> {
         self.format_expr(right, allow_wrap)?;
 
         // maybe fallback to multi-line
-        // TODO in certain cases we want to start on the next line, eg. in `const a = long + long`,
-        //   but not in others, eg. `const a = [long, long]`, what is the actual rule?
         if allow_wrap && self.overflow_since(check) {
             self.restore(check);
             self.format_expr(left, true)?;
@@ -1830,8 +1845,6 @@ impl FormatContext<'_> {
         mut f: impl FnMut(&mut Self, &T, bool) -> DiagResult,
     ) -> DiagResult {
         // try single line
-        // TODO performance optimization:
-        //   bail early if we overflow and we know we will be called with "allow_wrap=true" later
         let check = self.checkpoint();
         for (item, last) in list.iter().with_last() {
             f(self, item, false)?;
