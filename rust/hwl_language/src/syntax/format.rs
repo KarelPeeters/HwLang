@@ -492,67 +492,9 @@ impl FormatContext<'_> {
                 })?;
             }
             ModuleStatementKind::For(for_) => {
-                let &ForStatement {
-                    span_keyword: _,
-                    index,
-                    index_ty,
-                    iter,
-                    ref body,
-                } = for_;
-                self.push(TT::For)?;
-                self.push_space();
-                self.push(TT::OpenR)?;
-
-                // try single line
-                let check = self.checkpoint();
-                self.format_maybe_id(index)?;
-                if let Some(ty) = index_ty {
-                    self.push(TT::Colon)?;
-                    self.push_space();
-                    self.format_expr(ty, false)?;
-                }
-                self.push_space();
-                self.push(TT::In)?;
-                self.push_space();
-                self.format_expr(iter, false)?;
-                self.push(TT::CloseR)?;
-                self.push_space();
-                self.push(TT::OpenC)?;
-
-                // maybe fallback to multi-line
-                if self.overflow_since(check) {
-                    self.restore(check);
-                    self.indent_newline(|slf| {
-                        slf.format_maybe_id(index)?;
-                        if let Some(ty) = index_ty {
-                            slf.push(TT::Colon)?;
-                            slf.push_space();
-                            slf.format_expr(ty, true)?;
-                        }
-                        slf.push_newline();
-                        slf.push(TT::In)?;
-                        slf.push_space();
-                        slf.format_expr(iter, true)?;
-                        slf.push(TT::CloseR)?;
-                        slf.push_space();
-                        slf.push(TT::OpenC)?;
-                        Ok(())
-                    })?;
-                }
-
-                // TODO call general utility function for blocks
-                self.indent_newline(|slf| {
-                    for (i, stmt) in body.statements.iter().enumerate() {
-                        slf.format_module_statement(stmt)?;
-
-                        if let Some(next) = body.statements.get(i + 1) {
-                            slf.preserve_blank_line(stmt.span, next.span);
-                        }
-                    }
-                    Ok(())
+                self.format_for_statement(for_, |slf, block| {
+                    slf.format_block_general(block, Self::format_module_statement)
                 })?;
-                self.push(TT::CloseC)?;
-                self.push_newline();
             }
             ModuleStatementKind::CommonDeclaration(decl) => {
                 self.format_common_declaration(decl)?;
@@ -1178,6 +1120,62 @@ impl FormatContext<'_> {
         Ok(())
     }
 
+    fn format_for_statement<B>(
+        &mut self,
+        for_: &ForStatement<B>,
+        f: impl Fn(&mut Self, &Block<B>) -> DiagResult,
+    ) -> DiagResult {
+        let &ForStatement {
+            span_keyword: _,
+            index,
+            index_ty,
+            iter,
+            ref body,
+        } = for_;
+        self.push(TT::For)?;
+        self.push_space();
+        self.push(TT::OpenR)?;
+
+        // try single line
+        let check = self.checkpoint();
+        self.format_maybe_id(index)?;
+        if let Some(ty) = index_ty {
+            self.push(TT::Colon)?;
+            self.push_space();
+            self.format_expr(ty, false)?;
+        }
+        self.push_space();
+        self.push(TT::In)?;
+        self.push_space();
+        self.format_expr(iter, false)?;
+        self.push(TT::CloseR)?;
+        self.push_space();
+
+        // maybe fallback to multi-line
+        if self.overflow_since(check) {
+            self.restore(check);
+            self.indent_newline(|slf| {
+                slf.format_maybe_id(index)?;
+                if let Some(ty) = index_ty {
+                    slf.push(TT::Colon)?;
+                    slf.push_space();
+                    slf.format_expr(ty, true)?;
+                }
+                slf.push_newline();
+                slf.push(TT::In)?;
+                slf.push_space();
+                slf.format_expr(iter, true)?;
+                slf.push(TT::CloseR)?;
+                slf.push_space();
+                Ok(())
+            })?;
+        }
+
+        f(self, body)?;
+        self.push_newline();
+        Ok(())
+    }
+
     fn format_match<B>(&mut self, match_: &MatchStatement<B>, f: impl Fn(&mut Self, &B) -> DiagResult) -> DiagResult {
         let &MatchStatement {
             target,
@@ -1429,54 +1427,7 @@ impl FormatContext<'_> {
                 self.format_match(match_, Self::format_block)?;
             }
             BlockStatementKind::For(for_) => {
-                let &ForStatement {
-                    span_keyword: _,
-                    index,
-                    index_ty,
-                    iter,
-                    ref body,
-                } = for_;
-                self.push(TT::For)?;
-                self.push_space();
-                self.push(TT::OpenR)?;
-
-                // try single line
-                let check = self.checkpoint();
-                self.format_maybe_id(index)?;
-                if let Some(ty) = index_ty {
-                    self.push(TT::Colon)?;
-                    self.push_space();
-                    self.format_expr(ty, false)?;
-                }
-                self.push_space();
-                self.push(TT::In)?;
-                self.push_space();
-                self.format_expr(iter, false)?;
-                self.push(TT::CloseR)?;
-                self.push_space();
-
-                // maybe fallback to multi-line
-                // TODO 3-choice wrap, allow wrapping the type and the value independently?
-                if self.overflow_since(check) {
-                    self.restore(check);
-                    self.indent_newline(|slf| {
-                        slf.format_maybe_id(index)?;
-                        if let Some(ty) = index_ty {
-                            slf.push(TT::Colon)?;
-                            slf.push_space();
-                            slf.format_expr(ty, true)?;
-                        }
-                        slf.push_newline();
-                        slf.push(TT::In)?;
-                        slf.push_space();
-                        slf.format_expr(iter, true)?;
-                        slf.push(TT::CloseR)?;
-                        slf.push_space();
-                        Ok(())
-                    })?;
-                }
-                self.format_block(body)?;
-                self.push_newline();
+                self.format_for_statement(for_, Self::format_block)?;
             }
             BlockStatementKind::While(while_) => {
                 let &WhileStatement {
