@@ -928,7 +928,7 @@ impl FormatContext<'_> {
             self.push(TT::Semi)?;
             self.push_newline();
         }
-        if !self.overflow_since(check_before_ty) || ty.is_none() {
+        if !self.overflow_since(check_before_ty) {
             return Ok(());
         }
 
