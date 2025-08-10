@@ -227,8 +227,7 @@ language available for parametrization and code reuse. The downside is that
 * [Chisel](https://www.chisel-lang.org/): Uses Scala as a host language.
 * [MyHDL](https://www.myhdl.org/): Uses Python as a host language.
 
-There is also CIRCT which uses MLIR to define a common intermediate representation for hardware. This is similar (but
+There is also [CIRCT](https://circt.llvm.org/) which uses MLIR to define a common intermediate representation for
+hardware. This is similar (but
 much more feature complete) than the one defined in this project, at some point it might make sense to switch to CIRCT
 for better interoperability with other tools.
-
-* [CIRCT](https://circt.llvm.org/): 
