@@ -207,76 +207,34 @@ const {
             SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
         } test"
     );
+
+    val d = [[i] for i in 0..8];
+    val d = [[SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName] for i in 0..8];
+    val d = [[SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName] for i in 0..8];
+    val d = [[i] for i in 0..];
+    val d = [[i] for i in 0..SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName];
+
+    val SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName;
+
+    val SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
+        : SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
+        = SomeVeryLongName;
+
+    val foo: bool = SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName;
 }
 
-//const input_width: uint = 8;
+const {
+    val a: [8, 3, 4]bool;
+    val b = a[2, 3][7, 8];
+    val c = a.foo.bar.baz.SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName.derp;
+}
 
-//pub struct SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName {
-//}
+const {
+    reg(derp, 5);
+    __builtin("something", 5, 6, 7, 8);
+    unsafe_value_with_domain(x, sync(clk));
+}
 
-//import
-//    a
-//    .b
-//    .c
-//    .d
-//    .[a, b, c];
-//
-//val a = 4
-//    + 6
-//    + 6
-//    + 7
-
-
-
-//const a = [1, 2, 3];
-//const a = [1, 2, 3,];
-//const a = [
-//    1,
-//    2,
-//    3,
-//];
-
-//const a = [1, 2, 3/*test*/];
-
-//const a = x + y + z;
-
-// TODO should this care about operator precedence or not??
-//   maybe flatten for ops with the same precedence, but nest for different precedence?
-//const a =
-//    x
-//    + y * z;
-
-// TODO fix empty enums
-// TODO skip match arm checking for compile-time values
-// TODO fix current crash, "Range must be valid, got 0..=-1", also related to empty enums
-//pub module top ports(
-//    clk: in clock,
-//    rst: in async bool,
-//
-//    x: in sync(clk, rst) bool,
-//    y: out sync(clk, rst) bool,
-////    e: in sync(clk, rst) A,
-//) {
-//    reg out y = false;
-//
-//    clocked(clk, async rst) {
-//        val a;
-//        if (x) {
-//            a = false;
-//        } else {
-//            a = false;
-////            a = true;
-//        }
-//
-//        y = a;
-//    }
-//}
-//
-//enum A {
-//}
-//
-//enum Derp {
-//    Yes,
-//    No,
-//    Maybe,
-//}
+module foo ports() {
+    wire id_from_str("derp") = 5;
+}

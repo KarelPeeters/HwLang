@@ -1200,11 +1200,7 @@ impl ResolveContext<'_> {
                     self.visit_expression(scope, index)?;
                 }
             }
-            &ExpressionKind::DotIdIndex(base, _) => {
-                // TODO try resolving index, needs type info
-                self.visit_expression(scope, base)?;
-            }
-            &ExpressionKind::DotIntIndex(base, _) => {
+            &ExpressionKind::DotIndex(base, _) => {
                 // TODO try resolving index, needs type info
                 self.visit_expression(scope, base)?;
             }

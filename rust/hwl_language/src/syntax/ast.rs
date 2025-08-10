@@ -641,14 +641,19 @@ pub enum ExpressionKind {
     // Indexing
     ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Expression),
     ArrayIndex(Expression, Spanned<Vec<Expression>>),
-    DotIdIndex(Expression, Identifier),
-    DotIntIndex(Expression, Span),
+    DotIndex(Expression, DotIndexKind),
 
     // Calls
     Call(Expression, Args),
     Builtin(Spanned<Vec<Expression>>),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum DotIndexKind {
+    Id(Identifier),
+    Int(Span),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -997,6 +1002,16 @@ impl CommonDeclarationNamedKind {
             CommonDeclarationNamedKind::Struct(decl) => decl.id,
             CommonDeclarationNamedKind::Enum(decl) => decl.id,
             CommonDeclarationNamedKind::Function(decl) => decl.id,
+        }
+    }
+}
+
+impl UnaryOp {
+    pub fn token(self) -> TokenType {
+        match self {
+            UnaryOp::Plus => TokenType::Plus,
+            UnaryOp::Neg => TokenType::Minus,
+            UnaryOp::Not => TokenType::Bang,
         }
     }
 }

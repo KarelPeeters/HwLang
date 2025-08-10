@@ -15,7 +15,7 @@ use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
-use itertools::enumerate;
+use itertools::{Either, enumerate};
 
 // TODO split out the core abstract formatting engine and the ast->IR conversion into separate modules?
 // TODO add to python and wasm as a standalone function
@@ -936,6 +936,7 @@ impl FormatContext<'_> {
                 self.push(TT::Const)?;
                 self.push_space();
                 self.format_block(block)?;
+                self.push_newline();
             }
         }
 
@@ -990,7 +991,7 @@ impl FormatContext<'_> {
             self.push(TT::Semi)?;
             self.push_newline();
         }
-        if !self.overflow_since(check_before_ty) {
+        if !self.overflow_since(check_before_ty) || ty.is_none() {
             return Ok(());
         }
 
@@ -1328,6 +1329,8 @@ impl FormatContext<'_> {
                         })?;
                         self.push(TT::CloseR)?;
                     }
+                } else {
+                    self.push(TT::CloseR)?;
                 }
             }
         }
@@ -1675,24 +1678,103 @@ impl FormatContext<'_> {
                     self.push(TT::CloseS)?;
                 }
             }
-            ExpressionKind::UnaryOp(_, _) => todo!(),
+            &ExpressionKind::UnaryOp(op, inner) => {
+                self.push(op.inner.token())?;
+                self.format_expr(inner, allow_wrap)?;
+            }
             &ExpressionKind::BinaryOp(op, left, right) => {
                 self.format_binary_op(op.inner.token(), true, left, right, allow_wrap)?
             }
-            ExpressionKind::ArrayType(_, _) => todo!(),
-            ExpressionKind::ArrayIndex(_, _) => todo!(),
-            ExpressionKind::DotIdIndex(_, _) => todo!(),
-            ExpressionKind::DotIntIndex(_, _) => todo!(),
+            &ExpressionKind::ArrayType(ref elements, inner) => {
+                self.push(TT::OpenS)?;
+                self.format_comma_list(&elements.inner, allow_wrap, Self::format_array_element)?;
+                self.push(TT::CloseS)?;
+                self.format_expr(inner, allow_wrap)?;
+            }
+            &ExpressionKind::ArrayIndex(base, ref indices) => {
+                self.format_expr(base, allow_wrap)?;
+                self.push(TT::OpenS)?;
+                self.format_comma_list_copy(&indices.inner, allow_wrap, Self::format_expr)?;
+                self.push(TT::CloseS)?;
+            }
+            &ExpressionKind::DotIndex(initial_base, initial_index) => {
+                // deep collect
+                // TODO collect together with DotIntIndex
+                let mut base = initial_base;
+                let mut indices = vec![initial_index];
+                while let &ExpressionKind::DotIndex(new_base, new_index) = &self.source_expressions[base.inner] {
+                    base = new_base;
+                    indices.push(new_index);
+                }
+
+                // try single line
+                let check = self.checkpoint();
+                self.format_expr(base, false)?;
+                for &index in indices.iter().rev() {
+                    self.push(TT::Dot)?;
+                    self.format_dot_index_kind(index)?;
+                }
+
+                // maybe fallback to multi-line
+                if allow_wrap && self.overflow_since(check) {
+                    self.restore(check);
+                    self.format_expr(base, true)?;
+                    self.indent_no_newline(|slf| {
+                        for (&index, last) in indices.iter().rev().with_last() {
+                            slf.push(TT::Dot)?;
+                            slf.format_dot_index_kind(index)?;
+                            if !last {
+                                slf.push_newline();
+                            }
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
             &ExpressionKind::Call(target, ref args) => {
                 // TODO allow wrapping target?
                 self.format_expr(target, false)?;
                 self.format_args(args, allow_wrap)?;
             }
-            ExpressionKind::Builtin(_) => todo!(),
-            ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
-            ExpressionKind::RegisterDelay(_) => todo!(),
+            ExpressionKind::Builtin(args) => {
+                self.push(TT::Builtin)?;
+                self.push(TT::OpenR)?;
+                self.format_comma_list_copy(&args.inner, allow_wrap, Self::format_expr)?;
+                self.push(TT::CloseR)?;
+            }
+            &ExpressionKind::UnsafeValueWithDomain(inner, domain) => {
+                self.push(TT::UnsafeValueWithDomain)?;
+                self.push(TT::OpenR)?;
+                self.format_comma_list_copy(
+                    &[Either::Left(inner), Either::Right(domain.inner)],
+                    allow_wrap,
+                    |slf, item, allow_wrap| match item {
+                        Either::Left(inner) => slf.format_expr(inner, allow_wrap),
+                        Either::Right(domain) => slf.format_domain(domain, allow_wrap),
+                    },
+                )?;
+                self.push(TT::CloseR)?;
+            }
+            ExpressionKind::RegisterDelay(expr) => {
+                let &RegisterDelay {
+                    span_keyword: _,
+                    value,
+                    init,
+                } = expr;
+                self.push(TT::Reg)?;
+                self.push(TT::OpenR)?;
+                self.format_comma_list_copy(&[value, init], allow_wrap, Self::format_expr)?;
+                self.push(TT::CloseR)?;
+            }
         }
         Ok(())
+    }
+
+    fn format_dot_index_kind(&mut self, index: DotIndexKind) -> DiagResult {
+        match index {
+            DotIndexKind::Id(index) => self.format_id(index),
+            DotIndexKind::Int(_span) => self.push(TT::IntLiteralDecimal),
+        }
     }
 
     fn format_maybe_binary_op(
@@ -1840,7 +1922,14 @@ impl FormatContext<'_> {
     fn format_general_id(&mut self, id: GeneralIdentifier) -> DiagResult {
         match id {
             GeneralIdentifier::Simple(id) => self.format_id(id),
-            GeneralIdentifier::FromString(_, _) => todo!(),
+            GeneralIdentifier::FromString(_span, inner) => {
+                // TODO support wrapping?
+                self.push(TT::IdFromStr)?;
+                self.push(TT::OpenR)?;
+                self.format_expr(inner, false)?;
+                self.push(TT::CloseR)?;
+                Ok(())
+            }
         }
     }
 

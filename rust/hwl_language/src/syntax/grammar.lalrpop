@@ -747,12 +747,14 @@ ExprLevelCall<allow_block>: ExpressionKind = {
 }
 
 ExprLevelDot<allow_block>: ExpressionKind = {
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index: Id>
-        => ExpressionKind::DotIdIndex(target, index),
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:Span<TokenIntLiteralDecimal>>
-        => ExpressionKind::DotIntIndex(target, index),
-
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:DotIndexKind>
+        => ExpressionKind::DotIndex(target, index),
     ExprLevelAtomic<allow_block>,
+}
+
+DotIndexKind: DotIndexKind = {
+    <index:Id> => DotIndexKind::Id(index),
+    <index:Span<TokenIntLiteralDecimal>> => DotIndexKind::Int(index),
 }
 
 // TODO allow "if" here

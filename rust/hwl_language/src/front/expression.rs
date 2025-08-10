@@ -23,9 +23,9 @@ use crate::mid::ir::{
     IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
-    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
-    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    RegisterDelay, StringPiece, SyncDomain, UnaryOp,
+    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind,
+    Expression, ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection,
+    RangeLiteral, RegisterDelay, StringPiece, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
@@ -529,70 +529,72 @@ impl<'a> CompileItemContext<'a, '_> {
                     .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
-            &ExpressionKind::DotIdIndex(base, index) => {
-                return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
-            }
-            &ExpressionKind::DotIntIndex(base, index_span) => {
-                let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
-                let index = source.span_str(index_span);
+            &ExpressionKind::DotIndex(base, index) => match index {
+                DotIndexKind::Id(index) => {
+                    return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
+                }
+                DotIndexKind::Int(index_span) => {
+                    let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
+                    let index = source.span_str(index_span);
 
-                let index_int = BigUint::from_str_radix(index, 10)
-                    .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
-                let err_not_tuple = |ty: &str| {
-                    let diag = Diagnostic::new("indexing into non-tuple type")
-                        .add_error(index_span, "attempt to index into non-tuple type here")
-                        .add_info(base.span, format!("base has type `{ty}`"))
-                        .finish();
-                    diags.report(diag)
-                };
-                let err_index_out_of_bounds = |len: usize| {
-                    let diag = Diagnostic::new("tuple index out of bounds")
-                        .add_error(index_span, format!("index `{index_int}` is out of bounds"))
-                        .add_info(base.span, format!("base is tuple with length `{len}`"))
-                        .finish();
-                    diags.report(diag)
-                };
+                    let index_int = BigUint::from_str_radix(index, 10)
+                        .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
+                    let err_not_tuple = |ty: &str| {
+                        let diag = Diagnostic::new("indexing into non-tuple type")
+                            .add_error(index_span, "attempt to index into non-tuple type here")
+                            .add_info(base.span, format!("base has type `{ty}`"))
+                            .finish();
+                        diags.report(diag)
+                    };
+                    let err_index_out_of_bounds = |len: usize| {
+                        let diag = Diagnostic::new("tuple index out of bounds")
+                            .add_error(index_span, format!("index `{index_int}` is out of bounds"))
+                            .add_info(base.span, format!("base is tuple with length `{len}`"))
+                            .finish();
+                        diags.report(diag)
+                    };
 
-                match base_eval {
-                    ValueInner::Value(Value::Compile(CompileValue::Tuple(inner))) => {
-                        let index = index_int
-                            .as_usize_if_lt(inner.len())
-                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                        Value::Compile(inner[index].clone())
-                    }
-                    ValueInner::Value(Value::Compile(CompileValue::Type(Type::Tuple(inner)))) => {
-                        let index = index_int
-                            .as_usize_if_lt(inner.len())
-                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                        Value::Compile(CompileValue::Type(inner[index].clone()))
-                    }
-                    ValueInner::Value(Value::Hardware(value)) => {
-                        let value = value.value;
-                        match value.ty {
-                            HardwareType::Tuple(inner_tys) => {
-                                let index = index_int
-                                    .as_usize_if_lt(inner_tys.len())
-                                    .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
+                    match base_eval {
+                        ValueInner::Value(Value::Compile(CompileValue::Tuple(inner))) => {
+                            let index = index_int
+                                .as_usize_if_lt(inner.len())
+                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                            Value::Compile(inner[index].clone())
+                        }
+                        ValueInner::Value(Value::Compile(CompileValue::Type(Type::Tuple(inner)))) => {
+                            let index = index_int
+                                .as_usize_if_lt(inner.len())
+                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                            Value::Compile(CompileValue::Type(inner[index].clone()))
+                        }
+                        ValueInner::Value(Value::Hardware(value)) => {
+                            let value = value.value;
+                            match value.ty {
+                                HardwareType::Tuple(inner_tys) => {
+                                    let index = index_int
+                                        .as_usize_if_lt(inner_tys.len())
+                                        .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
 
-                                let expr = IrExpressionLarge::TupleIndex {
-                                    base: value.expr,
-                                    index: index.into(),
-                                };
-                                Value::Hardware(HardwareValue {
-                                    ty: inner_tys[index].clone(),
-                                    domain: value.domain,
-                                    expr: self.large.push_expr(expr),
-                                })
+                                    let expr = IrExpressionLarge::TupleIndex {
+                                        base: value.expr,
+                                        index: index.into(),
+                                    };
+                                    Value::Hardware(HardwareValue {
+                                        ty: inner_tys[index].clone(),
+                                        domain: value.domain,
+                                        expr: self.large.push_expr(expr),
+                                    })
+                                }
+                                _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
                             }
-                            _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
+                        }
+                        ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
+                        ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
+                            return Err(err_not_tuple("interface instance"));
                         }
                     }
-                    ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
-                    ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
-                        return Err(err_not_tuple("interface instance"));
-                    }
                 }
-            }
+            },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
                 let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
@@ -1518,64 +1520,78 @@ impl<'a> CompileItemContext<'a, '_> {
                     array_steps,
                 }
             }
-            &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
-                &ExpressionKind::Id(base) => {
-                    let base = self.eval_general_id(scope, flow, base)?;
-                    let base = base.as_ref().map_inner(ArcOrRef::as_ref);
+            &ExpressionKind::DotIndex(base, index) => {
+                match index {
+                    DotIndexKind::Id(index) => {
+                        match self.refs.get_expr(base) {
+                            &ExpressionKind::Id(base) => {
+                                let base = self.eval_general_id(scope, flow, base)?;
+                                let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
-                    match self.eval_named_or_value(scope, base)?.inner {
-                        NamedOrValue::Named(NamedValue::PortInterface(base)) => {
-                            // get port
-                            let port_interface_info = &self.port_interfaces[base];
-                            let interface_info = self
-                                .refs
-                                .shared
-                                .elaboration_arenas
-                                .interface_info(port_interface_info.view.inner.interface);
-                            let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                            let port = port_interface_info.ports[port_index];
+                                match self.eval_named_or_value(scope, base)?.inner {
+                                    NamedOrValue::Named(NamedValue::PortInterface(base)) => {
+                                        // get port
+                                        let port_interface_info = &self.port_interfaces[base];
+                                        let interface_info = self
+                                            .refs
+                                            .shared
+                                            .elaboration_arenas
+                                            .interface_info(port_interface_info.view.inner.interface);
+                                        let (port_index, _) =
+                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                                        let port = port_interface_info.ports[port_index];
 
-                            // check direction
-                            let direction = self.ports[port].direction;
-                            match direction.inner {
-                                PortDirection::Input => return Err(build_err("input port")),
-                                PortDirection::Output => {}
+                                        // check direction
+                                        let direction = self.ports[port].direction;
+                                        match direction.inner {
+                                            PortDirection::Input => return Err(build_err("input port")),
+                                            PortDirection::Output => {}
+                                        }
+
+                                        AssignmentTarget::simple(Spanned::new(
+                                            expr.span,
+                                            AssignmentTargetBase::Port(port),
+                                        ))
+                                    }
+                                    NamedOrValue::Named(NamedValue::WireInterface(base)) => {
+                                        // get port
+                                        let wire_interface_info = &self.wire_interfaces[base];
+                                        let interface_info = self
+                                            .refs
+                                            .shared
+                                            .elaboration_arenas
+                                            .interface_info(wire_interface_info.interface.inner);
+                                        let (wire_index, _) =
+                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                                        let wire = wire_interface_info.wires[wire_index];
+
+                                        AssignmentTarget::simple(Spanned::new(
+                                            expr.span,
+                                            AssignmentTargetBase::Wire(wire),
+                                        ))
+                                    }
+                                    _ => {
+                                        return Err(diags.report_simple(
+                                            "dot index is only allowed on port/wire interfaces",
+                                            base.span,
+                                            "got other named value here",
+                                        ));
+                                    }
+                                }
                             }
-
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
-                        }
-                        NamedOrValue::Named(NamedValue::WireInterface(base)) => {
-                            // get port
-                            let wire_interface_info = &self.wire_interfaces[base];
-                            let interface_info = self
-                                .refs
-                                .shared
-                                .elaboration_arenas
-                                .interface_info(wire_interface_info.interface.inner);
-                            let (wire_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                            let wire = wire_interface_info.wires[wire_index];
-
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(wire)))
-                        }
-                        _ => {
-                            return Err(diags.report_simple(
-                                "dot index is only allowed on port/wire interfaces",
-                                base.span,
-                                "got other named value here",
-                            ));
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "dot index is only allowed on port/wire interfaces",
+                                    base.span,
+                                    "got other expression here",
+                                ));
+                            }
                         }
                     }
+                    DotIndexKind::Int(_) => {
+                        return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
+                    }
                 }
-                _ => {
-                    return Err(diags.report_simple(
-                        "dot index is only allowed on port/wire interfaces",
-                        base.span,
-                        "got other expression here",
-                    ));
-                }
-            },
-            ExpressionKind::DotIntIndex(_, _) => {
-                return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
             }
             _ => return Err(build_err("other expression")),
         };
