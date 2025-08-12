@@ -3,7 +3,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::*;
 use crate::syntax::pos::{HasSpan, LineOffsets, Span};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::{Token, TokenType as TT, is_whitespace_or_empty, tokenize};
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT, is_whitespace_or_empty, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use itertools::{Either, enumerate};
@@ -91,13 +91,25 @@ pub fn format(
     tokens.retain(|t| t.ty != TT::WhiteSpace);
     let ast = parse_file_content(file, source_str).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
+    // TODO remove debug prints
+    let source_offsets = &source[file].offsets;
+    println!("Tokens:");
+    for token in &tokens {
+        println!(
+            "{:?} {:?} {:?}",
+            token.ty,
+            source_offsets.expand_span(token.span),
+            &source_str[token.span.range_bytes()]
+        );
+    }
+
     // format to string
     let mut result = String::new();
     let mut c = FormatContext {
         settings,
         source_file: file,
         source_str,
-        source_offsets: &source[file].offsets,
+        source_offsets,
         source_tokens: &tokens,
         source_expressions: &ast.arena_expressions,
         diags,
@@ -186,11 +198,15 @@ impl FormatContext<'_> {
         self.state = checkpoint.state;
     }
 
+    // TODO rename
     fn overflow_since(&self, check: CheckPoint) -> bool {
-        let curr = self.state;
-        curr.overflowing_lines > check.state.overflowing_lines
-            || curr.curr_line_length > self.settings.max_line_length
-            || curr.line_comment_count > check.state.line_comment_count
+        self.overflow_since_no_comment(check) || (self.state.line_comment_count > check.state.line_comment_count)
+    }
+
+    // TODO rename
+    fn overflow_since_no_comment(&self, check: CheckPoint) -> bool {
+        (self.state.overflowing_lines > check.state.overflowing_lines)
+            || (self.state.curr_line_length > self.settings.max_line_length)
     }
 
     fn anything_since(&self, check: CheckPoint) -> bool {
@@ -223,31 +239,57 @@ impl FormatContext<'_> {
         }
     }
 
-    fn push_comment(&mut self, span: Span, line_comment: bool, next: Option<TT>) {
+    fn prev_token(&self) -> Option<Token> {
+        if self.state.next_source_token > 0 {
+            Some(self.source_tokens[self.state.next_source_token - 1])
+        } else {
+            None
+        }
+    }
+
+    fn push_comment(&mut self, reason: &str) -> DiagResult {
         // TODO how exactly to format comments probably depends on:
         //   * the current indent level
         //   * the line of the previous token and the comment
+        // TODO remove next param
 
-        let curr_start = self.source_offsets.expand_pos(span.start());
+        // pick the comment token
+        let comment_token = self
+            .source_tokens
+            .get(self.state.next_source_token)
+            .ok_or_else(|| todo!("err"))?;
+        let line_comment = match comment_token.ty {
+            TT::LineComment => true,
+            TT::BlockComment => false,
+            _ => todo!("err"),
+        };
 
-        // push newline if the comment started on a new line
-        if self.state.next_source_token > 0 {
-            let prev_token = self.source_tokens[self.state.next_source_token - 1];
-            let prev_end = self.source_offsets.expand_pos(prev_token.span.end());
-            if curr_start.line_0 > prev_end.line_0 {
-                self.push_newline();
-            }
-        }
+        let comment_start = self.source_offsets.expand_pos(comment_token.span.start());
+        self.state.next_source_token += 1;
 
-        let comment_str = &self.source_str[span.range_bytes()];
+        // push newline if the comment started on a new line compared to previous token
+        // TODO maybe only do this for newlines?
+        // if let Some(prev_token) = self.prev_token() {
+        //     let prev_end = self.source_offsets.expand_pos(prev_token.span.end());
+        //     if comment_start.line_0 > prev_end.line_0 {
+        //         self.push_newline()?;
+        //     }
+        // }
+
+        let comment_str = &self.source_str[comment_token.span.range_bytes()];
+        println!("push comment due to {reason}: {comment_str:?}");
         self.push_raw_str(comment_str, true);
 
         if line_comment {
+            // TODO only do this if there was not already a newline
             self.state.line_comment_count += 1;
-            self.push_newline();
+            self.push_raw_str("\n", false);
         } else {
-            // TODO only push newline if next token is on a new line
+            // TODO only do this if there will actually be a next token on the same line
+            self.push_space();
         }
+
+        Ok(())
     }
 
     fn push(&mut self, ty: TT) -> DiagResult {
@@ -270,23 +312,23 @@ impl FormatContext<'_> {
                 let msg = format!("pushing token {ty:?} but no tokens left");
                 diags.report_internal_error(end_span, msg)
             })?;
-            self.state.next_source_token += 1;
 
             match source_token.ty {
-                // drop whitespace, the formatter creates its own
-                TT::WhiteSpace => continue,
+                TT::WhiteSpace => unreachable!("whitespace tokens have should been filtered out"),
                 // emit comments
                 TT::LineComment => {
-                    self.push_comment(source_token.span, true, Some(ty));
+                    self.push_comment("next token")?;
+                    // self.state.next_source_token += 1;
                     continue;
                 }
                 TT::BlockComment => {
-                    self.push_comment(source_token.span, false, Some(ty));
+                    self.push_comment("next token")?;
                     continue;
                 }
                 // everything else is a real token, fallthrough into matching the type
                 _ => {}
             }
+            self.state.next_source_token += 1;
 
             if source_token.ty == ty {
                 // found matching token, emit it
@@ -315,15 +357,34 @@ impl FormatContext<'_> {
     }
 
     fn push_space(&mut self) {
-        // TODO error if this is the first thing on the line
+        // TODO error if this is the first thing on the line?
         self.push_raw_str(" ", true);
     }
 
-    fn push_newline(&mut self) {
+    fn push_newline(&mut self) -> DiagResult {
+        // push any comments that are on the same line as the previous token, before the newline
+        if let Some(mut prev_token) = self.prev_token() {
+            while let Some(&next_token) = self.source_tokens.get(self.state.next_source_token) {
+                if next_token.ty.category() == TokenCategory::Comment {
+                    let prev_end = self.source_offsets.expand_pos(prev_token.span.end());
+                    let next_start = self.source_offsets.expand_pos(next_token.span.start());
+                    if next_start.line_0 == prev_end.line_0 {
+                        self.push_space();
+                        self.push_comment("newline")?;
+                        prev_token = next_token;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        // push the newline itself
         self.push_raw_str("\n", false);
+        Ok(())
     }
 
-    fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) {
+    fn preserve_blank_line(&mut self, curr_span: Span, next_span: Span) -> DiagResult {
         let curr_end = self.source_offsets.expand_pos(curr_span.end());
         let next_start = self.source_offsets.expand_pos(next_span.start());
 
@@ -333,29 +394,30 @@ impl FormatContext<'_> {
             is_whitespace_or_empty(line_str)
         });
         if any_blank_line {
-            self.push_newline();
+            self.push_newline()?;
         }
+        Ok(())
     }
 
-    fn indent_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+    fn indent_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> DiagResult<R>) -> DiagResult<R> {
         self.indent_impl(true, f)
     }
 
-    fn indent_no_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+    fn indent_no_newline<R>(&mut self, f: impl FnOnce(&mut Self) -> DiagResult<R>) -> DiagResult<R> {
         self.indent_impl(false, f)
     }
 
-    fn indent_impl<R>(&mut self, newline: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+    fn indent_impl<R>(&mut self, newline: bool, f: impl FnOnce(&mut Self) -> DiagResult<R>) -> DiagResult<R> {
         let before = self.state.indent;
         self.state.indent += 1;
 
         let check_before_line = self.checkpoint();
         if newline {
-            self.push_newline();
+            self.push_newline()?;
         }
 
         let check_before_f = self.checkpoint();
-        let result = f(self);
+        let result = f(self)?;
         if !self.anything_since(check_before_f) {
             self.restore(check_before_line);
         }
@@ -363,7 +425,7 @@ impl FormatContext<'_> {
         assert_eq!(self.state.indent, before + 1,);
         self.state.indent -= 1;
 
-        result
+        Ok(result)
     }
 }
 
@@ -381,7 +443,7 @@ impl FormatContext<'_> {
             if let Some(next) = items.get(i + 1)
                 && !(matches!(item, Item::Import(_)) && matches!(next, Item::Import(_)))
             {
-                self.preserve_blank_line(item.info().span_full, next.info().span_full);
+                self.preserve_blank_line(item.info().span_full, next.info().span_full)?;
             }
         }
 
@@ -476,7 +538,7 @@ impl FormatContext<'_> {
             self.push_space();
             self.format_block_general(body, Self::format_module_statement)?;
         }
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -530,17 +592,17 @@ impl FormatContext<'_> {
                     Ok(())
                 })?;
                 slf.push(TT::CloseC)?;
-                slf.push_newline();
+                slf.push_newline()?;
 
                 if let Some(next_view) = views.get(i + 1) {
-                    slf.preserve_blank_line(view.span, next_view.span);
+                    slf.preserve_blank_line(view.span, next_view.span)?;
                 }
             }
             Ok(())
         })?;
 
         self.push(TT::CloseC)?;
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -548,7 +610,7 @@ impl FormatContext<'_> {
         match &stmt.inner {
             ModuleStatementKind::Block(block) => {
                 self.format_block_general(block, Self::format_module_statement)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             ModuleStatementKind::If(if_) => {
                 self.format_if(if_, |slf, block| {
@@ -587,7 +649,7 @@ impl FormatContext<'_> {
                 self.push_space();
                 self.format_expr(init, true)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             ModuleStatementKind::WireDeclaration(decl) => {
                 let &WireDeclaration {
@@ -647,7 +709,7 @@ impl FormatContext<'_> {
                     }
                 }
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             ModuleStatementKind::RegOutPortMarker(marker) => {
                 let &RegOutPortMarker { id, init } = marker;
@@ -661,7 +723,7 @@ impl FormatContext<'_> {
                 self.push_space();
                 self.format_expr(init, true)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             ModuleStatementKind::CombinatorialBlock(block) => {
                 let CombinatorialBlock { span_keyword: _, block } = block;
@@ -732,7 +794,7 @@ impl FormatContext<'_> {
                                 slf.push(TT::Eq)?;
                                 slf.format_expr(expr, true)?;
                                 slf.push(TT::Comma)?;
-                                slf.push_newline();
+                                slf.push_newline()?;
                             }
                             Ok(())
                         })?;
@@ -741,7 +803,7 @@ impl FormatContext<'_> {
 
                 self.push(TT::CloseR)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
         }
         Ok(())
@@ -796,7 +858,7 @@ impl FormatContext<'_> {
                             // maybe overflow to next line
                             if slf.overflow_since(check_entry) {
                                 slf.restore(check_entry);
-                                slf.push_newline();
+                                slf.push_newline()?;
                                 slf.format_import_entry(entry)?;
                                 slf.push(TT::Comma)?;
                             }
@@ -807,13 +869,13 @@ impl FormatContext<'_> {
                         Ok(())
                     })?;
 
-                    self.push_newline();
+                    self.push_newline()?;
                     self.push(TT::CloseS)?;
                 }
             }
         }
         self.push(TT::Semi)?;
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -876,7 +938,7 @@ impl FormatContext<'_> {
                         })?;
 
                         self.push(TT::CloseC)?;
-                        self.push_newline();
+                        self.push_newline()?;
                     }
                     CommonDeclarationNamedKind::Enum(enum_decl) => {
                         let &EnumDeclaration {
@@ -906,7 +968,7 @@ impl FormatContext<'_> {
                         })?;
 
                         self.push(TT::CloseC)?;
-                        self.push_newline();
+                        self.push_newline()?;
                     }
                     CommonDeclarationNamedKind::Function(func_decl) => {
                         let &FunctionDeclaration {
@@ -938,7 +1000,7 @@ impl FormatContext<'_> {
                 self.push(TT::Const)?;
                 self.push_space();
                 self.format_block(block)?;
-                self.push_newline();
+                self.push_newline()?;
             }
         }
 
@@ -981,7 +1043,7 @@ impl FormatContext<'_> {
             self.checkpoint()
         };
         self.push(TT::Semi)?;
-        self.push_newline();
+        self.push_newline()?;
         if !self.overflow_since(check_before_ty) {
             return Ok(());
         }
@@ -991,9 +1053,9 @@ impl FormatContext<'_> {
             self.restore(check_before_value);
             self.format_expr(value, true)?;
             self.push(TT::Semi)?;
-            self.push_newline();
+            self.push_newline()?;
         }
-        if !self.overflow_since(check_before_ty) {
+        if !self.overflow_since_no_comment(check_before_ty) {
             return Ok(());
         }
 
@@ -1016,7 +1078,7 @@ impl FormatContext<'_> {
             })?;
         }
         self.push(TT::Semi)?;
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -1093,7 +1155,7 @@ impl FormatContext<'_> {
                     ExtraItem::Inner(param) => {
                         f(slf, param, true)?;
                         slf.push(TT::Comma)?;
-                        slf.push_newline();
+                        slf.push_newline()?;
                     }
                     ExtraItem::Declaration(decl) => {
                         slf.format_common_declaration(decl)?;
@@ -1109,7 +1171,7 @@ impl FormatContext<'_> {
                 }
 
                 if let Some(next) = items.get(i + 1) {
-                    slf.preserve_blank_line(item.span(), next.span());
+                    slf.preserve_blank_line(item.span(), next.span())?;
                 }
             }
             Ok(())
@@ -1149,7 +1211,7 @@ impl FormatContext<'_> {
             slf.format_condition(cond)?;
             slf.push_space();
             f(slf, block)?;
-            slf.push_newline();
+            slf.push_newline()?;
             Ok(())
         };
 
@@ -1169,7 +1231,7 @@ impl FormatContext<'_> {
             self.push(TT::Else)?;
             self.push_space();
             f(self, block)?;
-            self.push_newline();
+            self.push_newline()?;
         }
         Ok(())
     }
@@ -1193,7 +1255,7 @@ impl FormatContext<'_> {
         if overflow {
             self.restore(check);
             self.indent_newline(|slf| slf.format_expr(cond, true))?;
-            self.push_newline();
+            self.push_newline()?;
             self.push(TT::CloseR)?;
         }
 
@@ -1246,7 +1308,7 @@ impl FormatContext<'_> {
                     slf.push_space();
                     slf.format_expr(ty, true)?;
                 }
-                slf.push_newline();
+                slf.push_newline()?;
                 slf.push(TT::In)?;
                 slf.push_space();
                 slf.format_expr(iter, true)?;
@@ -1257,7 +1319,7 @@ impl FormatContext<'_> {
         }
 
         f(self, body)?;
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -1301,12 +1363,12 @@ impl FormatContext<'_> {
                 slf.push(TT::DoubleArrow)?;
                 slf.push_space();
                 f(slf, block)?;
-                slf.push_newline();
+                slf.push_newline()?;
             }
             Ok(())
         })?;
         self.push(TT::CloseC)?;
-        self.push_newline();
+        self.push_newline()?;
         Ok(())
     }
 
@@ -1402,9 +1464,9 @@ impl FormatContext<'_> {
                         self.indent_newline(|slf| {
                             slf.format_expr(clock, true)?;
                             slf.push(TT::Comma)?;
-                            slf.push_newline();
+                            slf.push_newline()?;
                             slf.format_expr(reset, true)?;
-                            slf.push_newline();
+                            slf.push_newline()?;
                             Ok(())
                         })?;
                         self.push(TT::CloseR)?;
@@ -1441,7 +1503,7 @@ impl FormatContext<'_> {
         for (i, stmt) in enumerate(statements) {
             f(self, stmt)?;
             if let Some(next) = statements.get(i + 1) {
-                self.preserve_blank_line(stmt.span(), next.span());
+                self.preserve_blank_line(stmt.span(), next.span())?;
             }
         }
         Ok(())
@@ -1479,7 +1541,7 @@ impl FormatContext<'_> {
                 self.push_space();
                 self.format_expr(value, true)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
 
                 // maybe fallback to multi-line
                 if self.overflow_since(check) {
@@ -1489,7 +1551,7 @@ impl FormatContext<'_> {
                         slf.push_space();
                         slf.format_expr(value, true)?;
                         slf.push(TT::Semi)?;
-                        slf.push_newline();
+                        slf.push_newline()?;
                         Ok(())
                     })?;
                 }
@@ -1497,7 +1559,7 @@ impl FormatContext<'_> {
             &BlockStatementKind::Expression(expr) => {
                 self.format_expr(expr, true)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             BlockStatementKind::Block(block) => {
                 self.format_block(block)?;
@@ -1533,7 +1595,7 @@ impl FormatContext<'_> {
                     self.restore(check);
                     self.indent_newline(|slf| {
                         slf.format_expr(cond, true)?;
-                        slf.push_newline();
+                        slf.push_newline()?;
                         Ok(())
                     })?;
                     self.push(TT::CloseR)?;
@@ -1541,7 +1603,7 @@ impl FormatContext<'_> {
                 }
 
                 self.format_block(body)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             BlockStatementKind::Return(stmt) => {
                 let &ReturnStatement { span_return: _, value } = stmt;
@@ -1551,17 +1613,17 @@ impl FormatContext<'_> {
                     self.format_expr(value, true)?;
                 }
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             &BlockStatementKind::Break(_span) => {
                 self.push(TT::Break)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
             &BlockStatementKind::Continue(_span) => {
                 self.push(TT::Continue)?;
                 self.push(TT::Semi)?;
-                self.push_newline();
+                self.push_newline()?;
             }
         }
         Ok(())
@@ -1587,7 +1649,7 @@ impl FormatContext<'_> {
                 self.indent_newline(|slf| {
                     slf.format_block_statements_general(statements, Self::format_block_statement)?;
                     slf.format_expr(expression, true)?;
-                    slf.push_newline();
+                    slf.push_newline()?;
                     Ok(())
                 })?;
                 self.push(TT::CloseC)?;
@@ -1631,7 +1693,7 @@ impl FormatContext<'_> {
                             &StringPiece::Substitute(expr) => {
                                 self.push(TT::StringSubStart)?;
                                 self.indent_newline(|slf| slf.format_expr(expr, true))?;
-                                self.push_newline();
+                                self.push_newline()?;
                                 self.push(TT::StringSubEnd)?;
                             }
                         }
@@ -1697,7 +1759,7 @@ impl FormatContext<'_> {
                     self.push(TT::OpenS)?;
                     self.indent_newline(|slf| {
                         slf.format_array_element(&body, true)?;
-                        slf.push_newline();
+                        slf.push_newline()?;
                         slf.push(TT::For)?;
                         slf.push_space();
                         slf.format_maybe_id(index)?;
@@ -1707,7 +1769,7 @@ impl FormatContext<'_> {
                         slf.format_expr(iter, true)?;
                         Ok(())
                     })?;
-                    self.push_newline();
+                    self.push_newline()?;
                     self.push(TT::CloseS)?;
                 }
             }
@@ -1757,7 +1819,7 @@ impl FormatContext<'_> {
                             slf.push(TT::Dot)?;
                             slf.format_dot_index_kind(index)?;
                             if !last {
-                                slf.push_newline();
+                                slf.push_newline()?;
                             }
                         }
                         Ok(())
@@ -1926,7 +1988,7 @@ impl FormatContext<'_> {
                 for item in list {
                     f(slf, item, true)?;
                     slf.push(TT::Comma)?;
-                    slf.push_newline();
+                    slf.push_newline()?;
                 }
                 Ok(())
             })?;

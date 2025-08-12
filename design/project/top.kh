@@ -250,6 +250,22 @@ module foo ports() {
 }
 
 const a = [
+    // test
+    4,
+    // test
+    6,
+];
+
+const a = [
     /* test */ 4,
     /* test */ 6,
 ];
+
+
+fn foo(
+    // the x value
+    x: uint,
+    y: bool, // the y value
+    // no z value
+) {
+}
