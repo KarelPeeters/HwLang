@@ -198,15 +198,19 @@ impl FormatContext<'_> {
         self.state = checkpoint.state;
     }
 
-    // TODO rename
-    fn overflow_since(&self, check: CheckPoint) -> bool {
-        self.overflow_since_no_comment(check) || (self.state.line_comment_count > check.state.line_comment_count)
-    }
-
-    // TODO rename
-    fn overflow_since_no_comment(&self, check: CheckPoint) -> bool {
+    // TODO rename back
+    fn overflow_since_new(&self, check: CheckPoint) -> bool {
         (self.state.overflowing_lines > check.state.overflowing_lines)
             || (self.state.curr_line_length > self.settings.max_line_length)
+    }
+
+    // TODO remove
+    fn overflow_since(&self, check: CheckPoint) -> bool {
+        return self.overflow_since_new(check);
+    }
+
+    fn line_comment_since(&self, check: CheckPoint) -> bool {
+        self.state.line_comment_count > check.state.line_comment_count
     }
 
     fn anything_since(&self, check: CheckPoint) -> bool {
@@ -294,11 +298,12 @@ impl FormatContext<'_> {
 
     fn push(&mut self, ty: TT) -> DiagResult {
         let diags = self.diags;
+        let end_span = Span::empty_at(self.source_offsets.full_span(self.source_file).end());
 
         if ty == TT::WhiteSpace {
             let curr_span = match self.source_tokens.get(self.state.next_source_token) {
                 Some(token) => Span::empty_at(token.span.start()),
-                None => self.source_offsets.end_span(self.source_file),
+                None => end_span,
             };
             return Err(self
                 .diags
@@ -308,7 +313,6 @@ impl FormatContext<'_> {
         let token_str = loop {
             // pop the next source token
             let source_token = self.source_tokens.get(self.state.next_source_token).ok_or_else(|| {
-                let end_span = self.source_offsets.end_span(self.source_file);
                 let msg = format!("pushing token {ty:?} but no tokens left");
                 diags.report_internal_error(end_span, msg)
             })?;
@@ -427,6 +431,32 @@ impl FormatContext<'_> {
 
         Ok(result)
     }
+
+    fn span_includes_line_comment(&self, span: Span) -> bool {
+        todo!()
+    }
+
+    // TODO document that single should include opening and closing parens, so this function knows the full span
+    fn branch(
+        &mut self,
+        single: impl FnOnce(&mut Self) -> DiagResult,
+        wrapped: impl FnOnce(&mut Self) -> DiagResult,
+    ) -> DiagResult<bool> {
+        // try single line
+        let check = self.checkpoint();
+        single(self)?;
+
+        if self.overflow_since_new(check) || self.line_comment_since(check) {
+            self.restore(check);
+        } else {
+            return Ok(false);
+        }
+
+        // fallback to wrapped
+        // TODO check that this works fine for empty blocks and parentheses
+        wrapped(self)?;
+        Ok(true)
+    }
 }
 
 impl FormatContext<'_> {
@@ -482,7 +512,7 @@ impl FormatContext<'_> {
                     ref ports,
                     ref body,
                 } = decl;
-                self.format_module(vis, false, id, params.as_ref(), &ports.inner, Some(body))?;
+                self.format_module_declaration(vis, false, id, params.as_ref(), &ports.inner, Some(body))?;
             }
             Item::ModuleExternal(decl) => {
                 let &ItemDefModuleExternal {
@@ -493,7 +523,7 @@ impl FormatContext<'_> {
                     ref params,
                     ref ports,
                 } = decl;
-                self.format_module(
+                self.format_module_declaration(
                     vis,
                     true,
                     MaybeIdentifier::Identifier(id),
@@ -507,7 +537,7 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_module(
+    fn format_module_declaration(
         &mut self,
         vis: Visibility,
         external: bool,
@@ -526,7 +556,7 @@ impl FormatContext<'_> {
         self.format_maybe_id(id)?;
         // TODO test line wrapping here
         if let Some(params) = params {
-            self.format_params(params)?;
+            self.format_parameters(params)?;
         }
         self.push_space();
         self.push(TT::Ports)?;
@@ -558,21 +588,19 @@ impl FormatContext<'_> {
         self.push_space();
         self.format_maybe_id(id)?;
         if let Some(params) = params {
-            self.format_params(params)?;
+            self.format_parameters(params)?;
         }
         self.push_space();
         self.push(TT::OpenC)?;
 
-        if !port_types.items.is_empty() {
-            self.format_extra_list_always_wrap(port_types, &|slf, port_type: &(Identifier, Expression)| {
-                let (id, expr) = port_type;
-                slf.format_id(*id)?;
-                slf.push(TT::Colon)?;
-                slf.push_space();
-                slf.format_expr(*expr, true)?;
-                Ok(())
-            })?;
-        }
+        self.format_extra_list_always_wrap(port_types, &|slf, port_type: &(Identifier, Expression)| {
+            let (id, expr) = port_type;
+            slf.format_id(*id)?;
+            slf.push(TT::Colon)?;
+            slf.push_space();
+            slf.format_expr(*expr, true)?;
+            Ok(())
+        })?;
 
         self.indent_newline(|slf| {
             for (i, view) in views.iter().enumerate() {
@@ -770,24 +798,27 @@ impl FormatContext<'_> {
                 self.format_expr(module, true)?;
                 self.push_space();
                 self.push(TT::Ports)?;
-                self.push(TT::OpenR)?;
 
-                if !port_connections.inner.is_empty() {
-                    let check = self.checkpoint();
-                    for (conn, last) in port_connections.inner.iter().with_last() {
-                        let &PortConnection { id, expr } = &conn.inner;
-                        self.format_id(id)?;
-                        self.push(TT::Eq)?;
-                        self.format_expr(expr, false)?;
-                        if !last {
-                            self.push(TT::Comma)?;
-                            self.push_space();
+                self.branch(
+                    |slf| {
+                        slf.push(TT::OpenR)?;
+                        for (conn, last) in port_connections.inner.iter().with_last() {
+                            let &PortConnection { id, expr } = &conn.inner;
+                            slf.format_id(id)?;
+                            slf.push(TT::Eq)?;
+                            slf.format_expr(expr, false)?;
+                            if !last {
+                                slf.push(TT::Comma)?;
+                                slf.push_space();
+                            }
                         }
-                    }
-
-                    if self.overflow_since(check) {
-                        self.restore(check);
-                        self.indent_newline(|slf| {
+                        slf.push(TT::CloseR)?;
+                        slf.push(TT::Semi)?;
+                        Ok(())
+                    },
+                    |slf| {
+                        slf.push(TT::OpenR)?;
+                        slf.indent_newline(|slf| {
                             for conn in &port_connections.inner {
                                 let &PortConnection { id, expr } = &conn.inner;
                                 slf.format_id(id)?;
@@ -798,11 +829,12 @@ impl FormatContext<'_> {
                             }
                             Ok(())
                         })?;
-                    }
-                }
+                        slf.push(TT::CloseR)?;
+                        slf.push(TT::Semi)?;
+                        Ok(())
+                    },
+                )?;
 
-                self.push(TT::CloseR)?;
-                self.push(TT::Semi)?;
                 self.push_newline()?;
             }
         }
@@ -841,7 +873,7 @@ impl FormatContext<'_> {
                 self.push(TT::CloseS)?;
 
                 // maybe fallback to multi-line, as many entries as possible per line
-                if self.overflow_since(check) && !entries.is_empty() {
+                if self.overflow_since_new(check) && !entries.is_empty() {
                     self.restore(check);
 
                     self.indent_newline(|slf| {
@@ -856,7 +888,7 @@ impl FormatContext<'_> {
                             slf.push(TT::Comma)?;
 
                             // maybe overflow to next line
-                            if slf.overflow_since(check_entry) {
+                            if slf.overflow_since_new(check_entry) {
                                 slf.restore(check_entry);
                                 slf.push_newline()?;
                                 slf.format_import_entry(entry)?;
@@ -923,7 +955,7 @@ impl FormatContext<'_> {
                         self.push_space();
                         self.format_maybe_id(id)?;
                         if let Some(params) = params {
-                            self.format_params(params)?;
+                            self.format_parameters(params)?;
                         }
                         self.push_space();
                         self.push(TT::OpenC)?;
@@ -951,7 +983,7 @@ impl FormatContext<'_> {
                         self.push_space();
                         self.format_maybe_id(id)?;
                         if let Some(params) = params {
-                            self.format_params(params)?;
+                            self.format_parameters(params)?;
                         }
                         self.push_space();
                         self.push(TT::OpenC)?;
@@ -981,7 +1013,7 @@ impl FormatContext<'_> {
                         self.push(TT::Function)?;
                         self.push_space();
                         self.format_maybe_id(id)?;
-                        self.format_params(params)?;
+                        self.format_parameters(params)?;
 
                         if let Some(ret_ty) = ret_ty {
                             self.push_space();
@@ -1022,7 +1054,7 @@ impl FormatContext<'_> {
         self.push_space();
         self.format_maybe_id(id)?;
         if let Some(params) = params {
-            self.format_params(params)?;
+            self.format_parameters(params)?;
         }
 
         // try single line
@@ -1049,13 +1081,14 @@ impl FormatContext<'_> {
         }
 
         // fallback, wrap value
+        // TODO think about how this 3-stage decision process should interact with comments
         if let Some(value) = value {
             self.restore(check_before_value);
             self.format_expr(value, true)?;
             self.push(TT::Semi)?;
             self.push_newline()?;
         }
-        if !self.overflow_since_no_comment(check_before_ty) {
+        if !self.overflow_since(check_before_ty) {
             return Ok(());
         }
 
@@ -1082,10 +1115,10 @@ impl FormatContext<'_> {
         Ok(())
     }
 
-    fn format_params(&mut self, params: &Parameters) -> DiagResult {
+    fn format_parameters(&mut self, params: &Parameters) -> DiagResult {
         let Parameters { span: _, items } = params;
         self.push(TT::OpenR)?;
-        self.format_extra_list_maybe_wrap(items, &Self::format_param)?;
+        self.format_extra_list_maybe_wrap(items, &Self::format_parameter)?;
         self.push(TT::CloseR)?;
         Ok(())
     }
@@ -1122,6 +1155,7 @@ impl FormatContext<'_> {
         let ExtraList { span: _, items } = extra_list;
 
         // prevent spurious empty newlines
+        // TODO what if there are line comments inside the params?
         if items.is_empty() {
             return Ok(());
         }
@@ -1154,8 +1188,11 @@ impl FormatContext<'_> {
                 match item {
                     ExtraItem::Inner(param) => {
                         f(slf, param, true)?;
+                        println!("  {i} comma");
                         slf.push(TT::Comma)?;
+                        println!("  {i} newline start");
                         slf.push_newline()?;
+                        println!("  {i} newline end");
                     }
                     ExtraItem::Declaration(decl) => {
                         slf.format_common_declaration(decl)?;
@@ -1178,7 +1215,7 @@ impl FormatContext<'_> {
         })
     }
 
-    fn format_param(&mut self, param: &Parameter, allow_wrap: bool) -> DiagResult {
+    fn format_parameter(&mut self, param: &Parameter, allow_wrap: bool) -> DiagResult {
         let &Parameter {
             span: _,
             id,

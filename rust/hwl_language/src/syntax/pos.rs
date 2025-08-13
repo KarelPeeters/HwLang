@@ -48,6 +48,7 @@ pub struct Spanned<T> {
     pub inner: T,
 }
 
+// TODO we can probably remove HasSpan again, but maybe it's fine for it to exist
 pub trait HasSpan {
     fn span(&self) -> Span;
 }
@@ -274,14 +275,6 @@ impl LineOffsets {
         Span {
             file,
             start_byte: 0,
-            end_byte: self.total_bytes,
-        }
-    }
-
-    pub fn end_span(&self, file: FileId) -> Span {
-        Span {
-            file,
-            start_byte: self.total_bytes,
             end_byte: self.total_bytes,
         }
     }

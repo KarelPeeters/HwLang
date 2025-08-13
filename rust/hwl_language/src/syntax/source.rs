@@ -61,10 +61,6 @@ impl SourceDatabase {
     pub fn full_span(&self, file: FileId) -> Span {
         self[file].offsets.full_span(file)
     }
-
-    pub fn end_span(&self, file: FileId) -> Span {
-        self[file].offsets.end_span(file)
-    }
 }
 
 impl std::ops::Index<FileId> for SourceDatabase {

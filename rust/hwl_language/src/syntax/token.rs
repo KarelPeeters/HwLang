@@ -533,6 +533,7 @@ impl TokenCategory {
     }
 }
 
+// TODO rename tokens to match the literal string better
 declare_tokens! {
     custom {
         // ignored
@@ -728,7 +729,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::WhiteSpace,
-                span: Span::new(file, 0, 1),
+                span: Span::new(file, 0, 1)
             }]),
             tokenize(file, "\n", false)
         );
@@ -742,7 +743,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span::new(file, 0, 4),
+                span: Span::new(file, 0, 4)
             }]),
             tokenize(file, "/**/", false)
         );
@@ -750,7 +751,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span::new(file, 0, 8),
+                span: Span::new(file, 0, 8)
             }]),
             tokenize(file, "/*/**/*/", false)
         );

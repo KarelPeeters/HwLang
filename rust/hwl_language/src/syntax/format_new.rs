@@ -1,0 +1,498 @@
+use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::syntax::ast::{
+    ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
+    CommonDeclarationNamedKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration,
+    GeneralIdentifier, Identifier, Item, MaybeIdentifier, Parameter, Parameters, Visibility,
+};
+use crate::syntax::format::FormatSettings;
+use crate::syntax::pos::{Pos, Span};
+use crate::syntax::source::{FileId, SourceDatabase};
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT, tokenize};
+use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
+use crate::util::iter::IterExt;
+use crate::util::{Never, ResultNeverExt};
+use itertools::Itertools;
+
+// Sketch of the formatter implementation:
+// * convert the AST to a tree of FNodes, which are just tokens with some extra structure
+// * cross-reference emitted formatting tokens with the original tokens to get span info
+// * bottom-up traverse the format tree to figure out which branches need to wrap due to line comments
+// * top-down traverse the format tree, printing the tokens to the final buffer
+//    * if any line overflows and we can still make additional wrapping choices, roll back and try
+//    * if blank lines between items: insert matching blank line
+
+// TODO add debug mode that slowly decreases the line width and saves every time the output changes
+
+pub fn format(
+    diags: &Diagnostics,
+    source: &SourceDatabase,
+    file: FileId,
+    settings: &FormatSettings,
+) -> DiagResult<String> {
+    // tokenize and parse
+    let source_str = &source[file].content;
+    let mut source_tokens = tokenize(file, source_str, false).map_err(|e| diags.report(e.to_diagnostic()))?;
+    // TODO remove whitespace tokens, everyone just filters them out anyway, we can always recover whitespace as "stuff between other tokens" if we really want to
+    source_tokens.retain(|t| t.ty != TT::WhiteSpace);
+    let source_ast = parse_file_content(file, source_str).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
+
+    println!("source tokens:");
+    for token in &source_tokens {
+        println!("  {token:?}");
+    }
+
+    // convert to formatting tree
+    let ctx = NodeBuilderContext {
+        arena_expressions: &source_ast.arena_expressions,
+    };
+    let node_root = ctx.fmt_file(&source_ast);
+
+    println!("tree tokens:");
+    node_root
+        .try_for_each_token(&mut |node_token_ty, node_token_fixed| {
+            println!("  {node_token_ty:?} (fixed: {node_token_fixed})");
+            Ok::<(), Never>(())
+        })
+        .remove_never();
+
+    // TODO remove print
+    // println!("{:#?}", node_root);
+
+    // cross-reference tokens and figure out which nodes contain newlines
+    let source_end_pos = source.full_span(file).end();
+    let fixed_token_map = match_tokens(diags, source_end_pos, &source_tokens, &node_root)?;
+
+    // convert to output string
+    let mut result_ctx = StringBuilderContext {
+        source_str,
+        source_tokens: &source_tokens,
+        node_token_to_source: &fixed_token_map,
+
+        next_node_token_index: 0,
+        result: String::with_capacity(source_str.len() * 2),
+    };
+    result_ctx.write_node(&node_root);
+    if result_ctx.next_node_token_index != fixed_token_map.len() {
+        return Err(todo!("err"));
+    }
+
+    Ok(result_ctx.result)
+}
+
+fn match_tokens(
+    diags: &Diagnostics,
+    source_end_pos: Pos,
+    source_tokens: &[Token],
+    node_root: &FNode,
+) -> DiagResult<Vec<Option<usize>>> {
+    let mut next_source_index = 0;
+    let mut map = vec![];
+
+    node_root.try_for_each_token(&mut |node_token_ty, node_token_fixed| {
+        let source_index = loop {
+            // find next real token
+            let source_index = next_source_index;
+            let Some(source_token) = source_tokens.get(next_source_index) else {
+                let e = diags.report_internal_error(
+                    Span::empty_at(source_end_pos),
+                    format!("failed to match token: node expects {node_token_ty:?} but reached end of source tokens"),
+                );
+                return Err(e);
+            };
+            if matches!(
+                source_token.ty.category(),
+                TokenCategory::WhiteSpace | TokenCategory::Comment
+            ) {
+                println!("skipping whitespace/comment");
+                next_source_index += 1;
+                continue;
+            }
+
+            // try to match it
+            break if source_token.ty == node_token_ty {
+                println!("matched token {node_token_ty:?}");
+                next_source_index += 1;
+                Some(source_index)
+            } else if !node_token_fixed {
+                println!("skipping non-fixed token {node_token_ty:?}");
+                None
+            } else {
+                // failed to find match
+                let e = diags.report_internal_error(
+                    source_token.span,
+                    format!(
+                        "failed to match token: node expects {:?} but source has {:?}",
+                        node_token_ty, source_token.ty
+                    ),
+                );
+                return Err(e);
+            };
+        };
+
+        map.push(source_index);
+        Ok(())
+    })?;
+
+    Ok(map)
+}
+
+#[derive(Debug)]
+#[must_use]
+enum FNode {
+    Space,
+    Token(TT),
+
+    /// Sequence of tokens that tries hard to stay on a single line.
+    /// It is only broken up if is is forced to by line comments between the tokens.
+    /// TODO if broken, indent the next line
+    /// TODO doc: child tokens are still allowed to individually wrap, it's just that they're joined in a single line
+    Horizontal(Vec<FNode>),
+
+    // TODO respect newlines, maybe configurable?
+    Vertical(Vec<FNode>),
+
+    // TODO variant of this that always wraps? or will wrapping be tracked outside completely,
+    //   in which case we can use a meta-node?
+    // TODO doc
+    // TODO respect newlines
+    // TODO rename to "maybewrappinglist"?
+    CommaList {
+        fill_lines: bool,
+        start: TT,
+        nodes: Vec<FNode>,
+        end: TT,
+    },
+}
+
+// TODO remove?
+fn token(ty: TT) -> FNode {
+    FNode::Token(ty)
+}
+
+struct StringBuilderContext<'a> {
+    source_str: &'a str,
+    source_tokens: &'a [Token],
+
+    node_token_to_source: &'a Vec<Option<usize>>,
+
+    next_node_token_index: usize,
+    result: String,
+}
+
+impl StringBuilderContext<'_> {
+    // TODO asser that this is called in exactly the same order as the first collection pass?
+    fn write_token_fixed(&mut self, ty: TT) {
+        // TODO replace asserts and unwraps with diag error?
+        let node_index = self.next_node_token_index;
+        self.next_node_token_index += 1;
+
+        let source_index = self.node_token_to_source.get(node_index).unwrap().unwrap();
+        let source_token = &self.source_tokens[source_index];
+        assert_eq!(ty, source_token.ty);
+
+        let token_str = &self.source_str[source_token.span.range_bytes()];
+        self.result.push_str(token_str);
+    }
+
+    // TODO this function a bit cursed
+    // TODO if this function is not called, we should still somehow increment the node token index
+    fn write_token_non_fixed(&mut self, ty: TT, s: &str) {
+        let node_index = self.next_node_token_index;
+        self.next_node_token_index += 1;
+
+        let source_index = self.node_token_to_source.get(node_index).unwrap();
+        if let &Some(source_index) = source_index {
+            let source_token = &self.source_tokens[source_index];
+            assert_eq!(ty, source_token.ty);
+
+            let token_str = &self.source_str[source_token.span.range_bytes()];
+            assert_eq!(s, token_str);
+        }
+
+        self.result.push_str(s);
+    }
+
+    fn write_node(&mut self, node: &FNode) {
+        // TODO indentation stuff?
+        match node {
+            FNode::Space => self.result.push(' '),
+            &FNode::Token(ty) => {
+                self.write_token_fixed(ty);
+            }
+            FNode::Horizontal(nodes) => {
+                for n in nodes {
+                    self.write_node(n);
+                }
+            }
+            FNode::Vertical(nodes) => {
+                for n in nodes {
+                    self.write_node(n);
+                    self.result.push('\n');
+                }
+            }
+            &FNode::CommaList {
+                fill_lines,
+                start,
+                ref nodes,
+                end,
+            } => {
+                // TODO try single line first, then wrap if overflow
+                // TODO respect fill_lines
+                // TODO indent
+                self.write_token_fixed(start);
+                self.result.push('\n');
+                for (n, last) in nodes.iter().with_last() {
+                    self.write_node(n);
+                    if last {
+                        self.write_token_non_fixed(TT::Comma, ",")
+                    } else {
+                        self.write_token_fixed(TT::Comma);
+                    }
+                    self.result.push('\n');
+                }
+                self.write_token_fixed(end);
+            }
+        }
+    }
+}
+
+impl FNode {
+    // TODO doc bool arg: "fixed"
+    fn try_for_each_token<E>(&self, f: &mut impl FnMut(TT, bool) -> Result<(), E>) -> Result<(), E> {
+        match self {
+            FNode::Space => {}
+            &FNode::Token(ty) => f(ty, true)?,
+            FNode::Horizontal(nodes) | FNode::Vertical(nodes) => {
+                for n in nodes {
+                    n.try_for_each_token(f)?;
+                }
+            }
+            &FNode::CommaList {
+                fill_lines: _,
+                start,
+                ref nodes,
+                end,
+            } => {
+                f(start, true)?;
+                for (n, last) in nodes.iter().with_last() {
+                    n.try_for_each_token(f)?;
+                    f(TT::Comma, !last)?;
+                }
+                f(end, true)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// TODO if this stays this single field, maybe we don't need this struct at all?
+struct NodeBuilderContext<'a> {
+    arena_expressions: &'a ArenaExpressions,
+}
+
+impl NodeBuilderContext<'_> {
+    fn fmt_file(&self, file: &FileContent) -> FNode {
+        let FileContent {
+            span,
+            items,
+            arena_expressions,
+        } = file;
+        let nodes = items
+            .iter()
+            .map(|item| match item {
+                Item::Import(_) => todo!(),
+                Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
+                Item::ModuleInternal(_) => todo!(),
+                Item::ModuleExternal(_) => todo!(),
+                Item::Interface(_) => todo!(),
+            })
+            .collect();
+        FNode::Vertical(nodes)
+    }
+
+    fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> FNode {
+        match decl {
+            CommonDeclaration::Named(decl) => {
+                let CommonDeclarationNamed { vis, kind } = decl;
+                let node_vis = vis.token();
+                let node_kind = match kind {
+                    CommonDeclarationNamedKind::Type(_) => todo!(),
+                    CommonDeclarationNamedKind::Const(_) => todo!(),
+                    CommonDeclarationNamedKind::Struct(_) => todo!(),
+                    CommonDeclarationNamedKind::Enum(_) => todo!(),
+                    CommonDeclarationNamedKind::Function(decl) => {
+                        let &FunctionDeclaration {
+                            span,
+                            id,
+                            ref params,
+                            ret_ty,
+                            ref body,
+                        } = decl;
+                        let mut nodes = vec![
+                            token(TT::Function),
+                            FNode::Space,
+                            self.fmt_maybe_id(id),
+                            self.fmt_parameters(params),
+                        ];
+                        if let Some(ret_ty) = ret_ty {
+                            nodes.push(FNode::Space);
+                            nodes.push(token(TT::Arrow));
+                            nodes.push(FNode::Space);
+                            nodes.push(self.fmt_expr(ret_ty));
+                        }
+                        nodes.push(FNode::Space);
+                        nodes.push(self.fmt_block(body));
+                        FNode::Horizontal(nodes)
+                    }
+                };
+
+                match node_vis {
+                    None => node_kind,
+                    Some(token_vis) => FNode::Horizontal(vec![token(token_vis), node_kind]),
+                }
+            }
+            CommonDeclaration::ConstBlock(_) => todo!(),
+        }
+    }
+
+    fn fmt_parameters(&self, params: &Parameters) -> FNode {
+        let Parameters { span, items } = params;
+        let items = fmt_extra_list(items, &|p| self.fmt_parameter(p));
+        FNode::CommaList {
+            fill_lines: false,
+            start: TT::OpenR,
+            nodes: items,
+            end: TT::CloseR,
+        }
+    }
+
+    fn fmt_parameter(&self, param: &Parameter) -> FNode {
+        let &Parameter {
+            span: _,
+            id,
+            ty,
+            default,
+        } = param;
+        let mut nodes = vec![self.fmt_id(id), token(TT::Colon), FNode::Space, self.fmt_expr(ty)];
+        if let Some(default) = default {
+            nodes.push(FNode::Space);
+            nodes.push(token(TT::Eq));
+            nodes.push(FNode::Space);
+            nodes.push(self.fmt_expr(default));
+        }
+        FNode::Horizontal(nodes)
+    }
+
+    fn fmt_block(&self, block: &Block<BlockStatement>) -> FNode {
+        // TODO for else-if blocks, force a newline to avoid infinite clutter
+        if !block.statements.is_empty() {
+            todo!()
+        }
+        FNode::Horizontal(vec![token(TT::OpenC), token(TT::CloseC)])
+    }
+
+    fn fmt_expr(&self, expr: Expression) -> FNode {
+        match &self.arena_expressions[expr.inner] {
+            ExpressionKind::Dummy => todo!(),
+            ExpressionKind::Undefined => todo!(),
+            ExpressionKind::Type => todo!(),
+            ExpressionKind::TypeFunction => todo!(),
+            ExpressionKind::Wrapped(_) => todo!(),
+            ExpressionKind::Block(_) => todo!(),
+            &ExpressionKind::Id(id) => self.fmt_general_id(id),
+            ExpressionKind::IntLiteral(_) => todo!(),
+            ExpressionKind::BoolLiteral(_) => todo!(),
+            ExpressionKind::StringLiteral(_) => todo!(),
+            ExpressionKind::ArrayLiteral(_) => todo!(),
+            ExpressionKind::TupleLiteral(_) => todo!(),
+            ExpressionKind::RangeLiteral(_) => todo!(),
+            ExpressionKind::ArrayComprehension(_) => todo!(),
+            ExpressionKind::UnaryOp(_, _) => todo!(),
+            ExpressionKind::BinaryOp(_, _, _) => todo!(),
+            ExpressionKind::ArrayType(_, _) => todo!(),
+            ExpressionKind::ArrayIndex(_, _) => todo!(),
+            ExpressionKind::DotIndex(_, _) => todo!(),
+            &ExpressionKind::Call(target, ref args) => {
+                let node_target = self.fmt_expr(target);
+
+                let Args { span: _, inner } = args;
+                let nodes_arg = inner
+                    .iter()
+                    .map(|arg| {
+                        let &Arg { span: _, name, value } = arg;
+                        let node_value = self.fmt_expr(value);
+                        if let Some(name) = name {
+                            FNode::Horizontal(vec![self.fmt_id(name), token(TT::Eq), node_value])
+                        } else {
+                            node_value
+                        }
+                    })
+                    .collect_vec();
+                let node_args = FNode::CommaList {
+                    fill_lines: false,
+                    start: TT::OpenR,
+                    nodes: nodes_arg,
+                    end: TT::CloseR,
+                };
+
+                FNode::Horizontal(vec![node_target, node_args])
+            }
+            ExpressionKind::Builtin(_) => todo!(),
+            ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
+            ExpressionKind::RegisterDelay(_) => todo!(),
+        }
+    }
+
+    fn fmt_general_id(&self, id: GeneralIdentifier) -> FNode {
+        match id {
+            GeneralIdentifier::Simple(id) => self.fmt_id(id),
+            GeneralIdentifier::FromString(_, _) => todo!(),
+        }
+    }
+
+    fn fmt_maybe_id(&self, id: MaybeIdentifier) -> FNode {
+        match id {
+            MaybeIdentifier::Dummy(_span) => token(TT::Underscore),
+            MaybeIdentifier::Identifier(id) => self.fmt_id(id),
+        }
+    }
+
+    fn fmt_id(&self, id: Identifier) -> FNode {
+        let _ = id;
+        token(TT::Identifier)
+    }
+}
+
+// TODO variant that always wraps, for eg. module ports? or not, maybe it's more elegant if we don't
+fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> FNode) -> Vec<FNode> {
+    // TODO if there are no-simple items, force the parent to wrap
+    //   or will that happen automatically once a Vertical is a child?
+    let ExtraList { span: _, items } = list;
+    items
+        .iter()
+        .map(|item| match item {
+            ExtraItem::Inner(inner) => f(inner),
+            ExtraItem::Declaration(decl) => todo!(),
+            ExtraItem::If(if_item) => todo!(),
+        })
+        .collect()
+}
+
+trait FormatVisibility: Copy {
+    fn token(self) -> Option<TT>;
+}
+
+impl FormatVisibility for Visibility {
+    fn token(self) -> Option<TT> {
+        match self {
+            Visibility::Private => None,
+            Visibility::Public(_span) => Some(TT::Public),
+        }
+    }
+}
+
+impl FormatVisibility for () {
+    fn token(self) -> Option<TT> {
+        None
+    }
+}

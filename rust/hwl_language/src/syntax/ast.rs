@@ -184,13 +184,13 @@ pub struct Parameter {
 
 // TODO maybe this is the same as Block?
 #[derive(Debug, Clone)]
-pub struct ExtraList<I: HasSpan> {
+pub struct ExtraList<I> {
     pub span: Span,
     pub items: Vec<ExtraItem<I>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ExtraItem<I: HasSpan> {
+pub enum ExtraItem<I> {
     Inner(I),
     Declaration(CommonDeclaration<()>),
     // TODO add `match`
@@ -595,6 +595,7 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub span_keyword: Span,
     pub module: Expression,
+    // TODO this should be an extra list
     pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
@@ -672,6 +673,7 @@ pub struct RegisterDelay {
 #[derive(Debug, Clone)]
 pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
+    // TODO this should be an ExtraList
     pub inner: Vec<Arg<N, T>>,
 }
 
