@@ -10,7 +10,7 @@ use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
-use crate::util::{Never, ResultNeverExt};
+use hwl_util::swrite;
 use itertools::Itertools;
 
 // Sketch of the formatter implementation:
@@ -46,15 +46,17 @@ pub fn format(
     let node_root = ctx.fmt_file(&source_ast);
 
     println!("Tree:");
-    println!("{:#?}", node_root);
+    let mut tree_str = String::new();
+    node_root.tree_to_string(&mut tree_str, 0);
+    println!("{tree_str}");
 
-    println!("Tree tokens:");
-    node_root
-        .try_for_each_token(&mut |node_token_ty, node_token_fixed| {
-            println!("    {node_token_ty:?} (fixed: {node_token_fixed})");
-            Ok::<(), Never>(())
-        })
-        .remove_never();
+    // println!("Tree tokens:");
+    // node_root
+    //     .try_for_each_token(&mut |node_token_ty, node_token_fixed| {
+    //         println!("    {node_token_ty:?} (fixed: {node_token_fixed})");
+    //         Ok::<(), Never>(())
+    //     })
+    //     .remove_never();
 
     // cross-reference tokens and figure out which nodes contain newlines
     let source_end_pos = source.full_span(file).end();
@@ -76,7 +78,7 @@ pub fn format(
             indent: 0,
         },
     };
-    result_ctx.write_node(&node_root);
+    result_ctx.write_node(&node_root, true).expect(EXPECT_WRAP);
 
     if result_ctx.state.next_node_token_index != fixed_token_map.len() {
         return Err(todo!("err"));
@@ -84,6 +86,8 @@ pub fn format(
 
     Ok(result_ctx.result)
 }
+
+const EXPECT_WRAP: &str = "wrapping is allowed";
 
 fn match_tokens(
     diags: &Diagnostics,
@@ -109,18 +113,18 @@ fn match_tokens(
                 source_token.ty.category(),
                 TokenCategory::WhiteSpace | TokenCategory::Comment
             ) {
-                println!("skipping whitespace/comment");
+                // println!("skipping whitespace/comment");
                 next_source_index += 1;
                 continue;
             }
 
             // try to match it
             break if source_token.ty == node_token_ty {
-                println!("matched token {node_token_ty:?}");
+                // println!("matched token {node_token_ty:?}");
                 next_source_index += 1;
                 Some(source_index)
             } else if !node_token_fixed {
-                println!("skipping non-fixed token {node_token_ty:?}");
+                // println!("skipping non-fixed token {node_token_ty:?}");
                 None
             } else {
                 // failed to find match
@@ -239,6 +243,9 @@ enum PreferWrap {
     Yes,
 }
 
+#[derive(Debug)]
+struct NeedsWrap;
+
 impl StringBuilderContext<'_> {
     fn checkpoint(&self) -> CheckPoint {
         CheckPoint {
@@ -278,7 +285,7 @@ impl StringBuilderContext<'_> {
             };
         };
 
-        println!("pushing token {ty:?}");
+        // println!("pushing token {ty:?}");
 
         // indent if first token on the line
         if self.state.curr_line_start == self.result.len() {
@@ -310,13 +317,14 @@ impl StringBuilderContext<'_> {
         line_len > self.settings.max_line_length
     }
 
-    fn indent(&mut self, f: impl FnOnce(&mut Self)) {
+    fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.state.indent += 1;
-        f(self);
+        let r = f(self);
         self.state.indent -= 1;
+        r
     }
 
-    fn write_comma_list(&mut self, list: &FCommaList, wrap: bool) {
+    fn write_comma_list(&mut self, list: &FCommaList, wrap: bool) -> Result<(), NeedsWrap> {
         let &FCommaList { compact, ref nodes } = list;
         if compact {
             todo!()
@@ -326,28 +334,31 @@ impl StringBuilderContext<'_> {
             self.indent(|slf| {
                 slf.write_newline();
                 for node in nodes {
-                    slf.write_node(node);
+                    slf.write_node(node, true).expect(EXPECT_WRAP);
                     slf.write_token(TT::Comma);
                     slf.write_newline();
                 }
             })
         } else {
             for (node, last) in nodes.iter().with_last() {
-                self.write_node(node);
+                self.write_node(node, false)?;
                 if !last {
                     self.write_token(TT::Comma);
                     self.write_space();
                 }
             }
         }
+
+        Ok(())
     }
 
-    fn write_node(&mut self, node: &FNode) {
+    fn write_node(&mut self, node: &FNode, allow_wrap: bool) -> Result<(), NeedsWrap> {
         // TODO indentation stuff?
         match node {
             FNode::NonH(node) => match node {
                 FNodeNonHor::NonWrap(non_wrap) => {
                     self.write_non_wrap(non_wrap);
+                    Ok(())
                 }
                 FNodeNonHor::CommaList(list) => {
                     // TODO can this even happen without being in a horizontal?
@@ -356,18 +367,8 @@ impl StringBuilderContext<'_> {
                 }
             },
             FNode::Horizontal(nodes) => {
-                // TODO try each non-wrapped first, including future stuff on the same line, then wrap left-to-right
-                // TODO we need to check for overflow on specific lines, not just in general, since otherwise we might wrap too much
-                // TODO maye we need to merge nested horizontals for this to fully work
-
-                // let mut checks = vec![self.checkpoint()];
-                // let mut i_uncommited = 0;
-                // let mut i_next = 0;
-                //
-                // while i_uncommited < nodes.len() {
-                //
-                // }
-                self.write_horizontal(nodes);
+                self.write_horizontal(nodes, allow_wrap)?;
+                Ok(())
             }
         }
     }
@@ -386,16 +387,16 @@ impl StringBuilderContext<'_> {
                     // TODO try single first, then go back to multiple? for vertical this feels weird, we don't actually care ourselves
                     // TODO respect blank lines between items
                     // within a vertical, nodes are always allowed to wrap
-                    let _ = self.write_node(n);
+                    let _ = self.write_node(n, true);
                     self.write_newline();
                 }
             }
         }
     }
 
-    fn write_horizontal(&mut self, nodes: &[FNodeNonHor]) {
+    fn write_horizontal(&mut self, nodes: &[FNodeNonHor], allow_wrap: bool) -> Result<(), NeedsWrap> {
         let (node, rest) = match nodes.split_first() {
-            None => return,
+            None => return Ok(()),
             Some(p) => p,
         };
 
@@ -403,28 +404,45 @@ impl StringBuilderContext<'_> {
             FNodeNonHor::NonWrap(node) => {
                 // simple non-wrapping node, no decisions to take here
                 self.write_non_wrap(node);
-                self.write_horizontal(rest);
+                self.write_horizontal(rest, allow_wrap)?;
+                Ok(())
             }
             FNodeNonHor::CommaList(list) => {
                 // comma list, we need to decide whether to wrap or not
 
                 // try without wrapping first
                 let check = self.checkpoint();
-                self.write_comma_list(list, false);
-                // TODO benchmark if this extra check helps a lot
-                // if there is no overflow yet, try writing the rest of the nodes
-                let mut overflow = self.line_overflows(check);
-                if !overflow {
-                    self.write_horizontal(rest);
-                    overflow = self.line_overflows(check)
+                let result_unwrapped = self.write_comma_list(list, false);
+
+                // check if the elements needs wrapping
+                let mut should_wrap = match result_unwrapped {
+                    Ok(()) => false,
+                    Err(NeedsWrap) => true,
+                };
+                // check if the line already overflows
+                if !should_wrap {
+                    should_wrap = self.line_overflows(check);
                 }
 
-                // there was overflow (which could not be fixed by wrapping future elements), try wrapping this one
-                if overflow {
-                    self.restore(check);
-                    self.write_comma_list(list, true);
-                    self.write_horizontal(rest);
+                // if no wrapping is needed yet, try writing the rest of the list
+                // TODO this is just a perf optimization, we could also always do this
+                //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
+                if !should_wrap {
+                    self.write_horizontal(rest, allow_wrap)?;
+                    should_wrap = self.line_overflows(check)
                 }
+
+                // if we need to wrap, roll back and re-writing everything with wrapping
+                if should_wrap {
+                    if !allow_wrap {
+                        return Err(NeedsWrap);
+                    }
+                    self.restore(check);
+                    self.write_comma_list(list, true).expect(EXPECT_WRAP);
+                    self.write_horizontal(rest, true).expect(EXPECT_WRAP);
+                }
+
+                Ok(())
             }
         }
     }
@@ -436,6 +454,19 @@ impl FNode {
         match self {
             FNode::NonH(slf) => slf.try_for_each_token(f),
             FNode::Horizontal(children) => children.iter().try_for_each(|c| c.try_for_each_token(f)),
+        }
+    }
+
+    fn tree_to_string(&self, f: &mut String, indent: usize) {
+        match self {
+            FNode::NonH(slf) => slf.tree_to_string(f, indent),
+            FNode::Horizontal(children) => {
+                tree_indent(f, indent);
+                swrite!(f, "Horizontal\n");
+                for c in children {
+                    c.tree_to_string(f, indent + 1);
+                }
+            }
         }
     }
 }
@@ -457,6 +488,35 @@ impl FNodeNonHor {
                 })
             }
         }
+    }
+
+    fn tree_to_string(&self, f: &mut String, indent: usize) {
+        tree_indent(f, indent);
+        match self {
+            FNodeNonHor::NonWrap(slf) => match slf {
+                FNodeNonWrap::Space => swrite!(f, "Space\n"),
+                &FNodeNonWrap::Token(ty) => swrite!(f, "Token({ty:?})\n"),
+                FNodeNonWrap::Vertical(nodes) => {
+                    swrite!(f, "Vertical\n");
+                    for n in nodes {
+                        n.tree_to_string(f, indent + 1);
+                    }
+                }
+            },
+            FNodeNonHor::CommaList(list) => {
+                swrite!(f, "CommaList\n");
+                for n in &list.nodes {
+                    n.tree_to_string(f, indent + 1);
+                }
+            }
+        }
+    }
+}
+
+fn tree_indent(f: &mut String, indent: usize) {
+    swrite!(f, "    ");
+    for _ in 0..indent {
+        swrite!(f, " |  ")
     }
 }
 
