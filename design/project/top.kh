@@ -1,4 +1,4 @@
-fn very_long_identifier(very_long_identifier: very_long_identifier) {}
+fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier) {}
 
 //module foo(
 //    very_long_identifier: very_long_identifier

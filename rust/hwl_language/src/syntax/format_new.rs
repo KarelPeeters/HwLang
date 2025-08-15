@@ -12,7 +12,6 @@ use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
 use itertools::Itertools;
-
 // Sketch of the formatter implementation:
 // * convert the AST to a tree of FNodes, which are just tokens with some extra structure
 // * cross-reference emitted formatting tokens with the original tokens to get span info
@@ -36,9 +35,9 @@ pub fn format(
     source_tokens.retain(|t| t.ty != TT::WhiteSpace);
     let source_ast = parse_file_content(file, source_str).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
-    println!("source tokens:");
+    println!("Source tokens:");
     for token in &source_tokens {
-        println!("  {token:?}");
+        println!("    {token:?}");
     }
 
     // convert to formatting tree
@@ -47,16 +46,16 @@ pub fn format(
     };
     let node_root = ctx.fmt_file(&source_ast);
 
-    println!("tree tokens:");
+    println!("Tree:");
+    println!("{:#?}", node_root);
+
+    println!("Tree tokens:");
     node_root
         .try_for_each_token(&mut |node_token_ty, node_token_fixed| {
-            println!("  {node_token_ty:?} (fixed: {node_token_fixed})");
+            println!("    {node_token_ty:?} (fixed: {node_token_fixed})");
             Ok::<(), Never>(())
         })
         .remove_never();
-
-    // TODO remove print
-    // println!("{:#?}", node_root);
 
     // cross-reference tokens and figure out which nodes contain newlines
     let source_end_pos = source.full_span(file).end();
@@ -75,6 +74,7 @@ pub fn format(
             next_node_token_index: 0,
             curr_line_index: 0,
             curr_line_start: 0,
+            indent: 0,
         },
     };
     let _ = result_ctx.write_node(&node_root, true);
@@ -163,7 +163,7 @@ enum FNode {
     // TODO respect newlines
     // TODO rename to "maybewrappinglist"?
     CommaList {
-        fill_lines: bool,
+        compact: bool,
         nodes: Vec<FNode>,
     },
 }
@@ -195,6 +195,7 @@ struct StringState {
     next_node_token_index: usize,
     curr_line_index: usize,
     curr_line_start: usize,
+    indent: usize,
 }
 
 #[must_use]
@@ -212,7 +213,9 @@ impl StringBuilderContext<'_> {
     }
 
     fn restore(&mut self, check: CheckPoint) {
-        todo!()
+        assert!(self.result.len() >= check.result_len);
+        self.result.truncate(check.result_len);
+        self.state = check.state;
     }
 
     // TODO asser that this is called in exactly the same order as the first collection pass?
@@ -242,6 +245,13 @@ impl StringBuilderContext<'_> {
 
         println!("pushing token {ty:?}");
 
+        // indent if first token on the line
+        if self.state.curr_line_start == self.result.len() {
+            for _ in 0..self.state.indent {
+                self.result.push_str(&self.settings.indent_str);
+            }
+        }
+
         // TODO count newlines (important for comments and multi-line string literals)
         // TODO dedicated, non-ugly multi-line string literals?
         self.result.push_str(token_str);
@@ -260,10 +270,17 @@ impl StringBuilderContext<'_> {
         line_len > self.settings.max_line_length
     }
 
+    fn indent(&mut self, f: impl FnOnce(&mut Self)) {
+        self.state.indent += 1;
+        f(self);
+        self.state.indent -= 1;
+    }
+
     fn write_node(&mut self, node: &FNode, force_wrap: bool) {
         // TODO indentation stuff?
         match node {
             FNode::Space => {
+                // TODO err if first thing on line?
                 self.result.push(' ');
             }
             &FNode::Token(ty) => {
@@ -291,19 +308,39 @@ impl StringBuilderContext<'_> {
                 //
                 // }
 
-                let check = self.checkpoint();
-                for i in 0..nodes.len() {
-                    self.write_node(&nodes[i], false);
-                    if self.line_overflows(check) {
-                        todo!("go back")
+                // TODO find a better way to do this, maybe during tree building?
+                fn f<'a>(ns: &'a [FNode], result: &mut Vec<&'a FNode>) {
+                    for n in ns {
+                        if let FNode::Horizontal(inner_ns) = n {
+                            f(inner_ns, result);
+                        } else {
+                            result.push(n);
+                        }
                     }
                 }
+                let mut nodes_clean = vec![];
+                f(nodes, &mut nodes_clean);
+
+                self.write_horizontal(&nodes_clean);
             }
-            &FNode::CommaList { fill_lines, ref nodes } => {
-                for (n, last) in nodes.iter().with_last() {
-                    self.write_node(n, false);
-                    if !last {
-                        self.write_token(TT::Comma);
+            // TODO if empty, maybe don't build this node in the first place, treat it exactly like horizontal (ie. never wrap)
+            //   or just add that extra behavior here
+            &FNode::CommaList { compact, ref nodes } => {
+                if force_wrap {
+                    self.write_newline();
+                    self.indent(|slf| {
+                        for n in nodes {
+                            slf.write_node(n, false);
+                            slf.write_token(TT::Comma);
+                            slf.write_newline();
+                        }
+                    });
+                } else {
+                    for (n, last) in nodes.iter().with_last() {
+                        self.write_node(n, false);
+                        if !last {
+                            self.write_token(TT::Comma);
+                        }
                     }
                 }
 
@@ -340,6 +377,30 @@ impl StringBuilderContext<'_> {
             }
         }
     }
+
+    fn write_horizontal(&mut self, nodes: &[&FNode]) {
+        let (node, rest) = match nodes.split_first() {
+            None => return,
+            Some(p) => p,
+        };
+
+        let check = self.checkpoint();
+        self.write_node(node, false);
+
+        // TODO benchmark if this extra check helps a lot
+        let mut overflow = self.line_overflows(check);
+        if !overflow {
+            self.write_horizontal(rest);
+            overflow = self.line_overflows(check)
+        }
+
+        // TODO skip rolling back trivial nodes?
+        if overflow {
+            self.restore(check);
+            self.write_node(node, true);
+            self.write_horizontal(rest);
+        }
+    }
 }
 
 impl FNode {
@@ -353,10 +414,7 @@ impl FNode {
                     n.try_for_each_token(f)?;
                 }
             }
-            &FNode::CommaList {
-                fill_lines: _,
-                ref nodes,
-            } => {
+            FNode::CommaList { compact: _, nodes } => {
                 for (n, last) in nodes.iter().with_last() {
                     n.try_for_each_token(f)?;
                     f(TT::Comma, !last)?;
@@ -442,7 +500,7 @@ impl NodeBuilderContext<'_> {
         let items = fmt_extra_list(items, &|p| self.fmt_parameter(p));
 
         let node_list = FNode::CommaList {
-            fill_lines: false,
+            compact: false,
             nodes: items,
         };
         FNode::Horizontal(vec![token(TT::OpenR), node_list, token(TT::CloseR)])
@@ -512,7 +570,7 @@ impl NodeBuilderContext<'_> {
                     .collect_vec();
 
                 let node_list = FNode::CommaList {
-                    fill_lines: false,
+                    compact: false,
                     nodes: nodes_arg,
                 };
                 let node_args = FNode::Horizontal(vec![token(TT::OpenR), node_list, token(TT::CloseR)]);
