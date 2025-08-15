@@ -1,5 +1,13 @@
 fn very_long_identifier(very_long_identifier: very_long_identifier) {}
 
+//module foo(
+//    very_long_identifier: very_long_identifier
+//) ports(
+//    very_long_identifier: very_long_identifier
+//) {
+//
+//}
+
 //fn very_long_identifier(very_long_identifier: very_long_identifier(very_long_identifier)) {}
 
 

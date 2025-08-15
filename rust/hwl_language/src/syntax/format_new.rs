@@ -68,11 +68,17 @@ pub fn format(
         source_tokens: &source_tokens,
         node_token_to_source: &fixed_token_map,
 
-        next_node_token_index: 0,
+        settings,
+
         result: String::with_capacity(source_str.len() * 2),
+        state: StringState {
+            next_node_token_index: 0,
+            curr_line_index: 0,
+            curr_line_start: 0,
+        },
     };
-    result_ctx.write_node(&node_root);
-    if result_ctx.next_node_token_index != fixed_token_map.len() {
+    let _ = result_ctx.write_node(&node_root, true);
+    if result_ctx.state.next_node_token_index != fixed_token_map.len() {
         return Err(todo!("err"));
     }
 
@@ -142,14 +148,14 @@ enum FNode {
     Space,
     Token(TT),
 
+    // TODO respect newlines, maybe configurable?
+    Vertical(Vec<FNode>),
+
     /// Sequence of tokens that tries hard to stay on a single line.
     /// It is only broken up if is is forced to by line comments between the tokens.
     /// TODO if broken, indent the next line
     /// TODO doc: child tokens are still allowed to individually wrap, it's just that they're joined in a single line
     Horizontal(Vec<FNode>),
-
-    // TODO respect newlines, maybe configurable?
-    Vertical(Vec<FNode>),
 
     // TODO variant of this that always wraps? or will wrapping be tracked outside completely,
     //   in which case we can use a meta-node?
@@ -158,9 +164,7 @@ enum FNode {
     // TODO rename to "maybewrappinglist"?
     CommaList {
         fill_lines: bool,
-        start: TT,
         nodes: Vec<FNode>,
-        end: TT,
     },
 }
 
@@ -172,85 +176,167 @@ fn token(ty: TT) -> FNode {
 struct StringBuilderContext<'a> {
     source_str: &'a str,
     source_tokens: &'a [Token],
-
     node_token_to_source: &'a Vec<Option<usize>>,
 
-    next_node_token_index: usize,
+    settings: &'a FormatSettings,
+
     result: String,
+    state: StringState,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct CheckPoint {
+    result_len: usize,
+    state: StringState,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct StringState {
+    next_node_token_index: usize,
+    curr_line_index: usize,
+    curr_line_start: usize,
+}
+
+#[must_use]
+enum PreferWrap {
+    No,
+    Yes,
 }
 
 impl StringBuilderContext<'_> {
+    fn checkpoint(&self) -> CheckPoint {
+        CheckPoint {
+            result_len: self.result.len(),
+            state: self.state,
+        }
+    }
+
+    fn restore(&mut self, check: CheckPoint) {
+        todo!()
+    }
+
     // TODO asser that this is called in exactly the same order as the first collection pass?
-    fn write_token_fixed(&mut self, ty: TT) {
-        // TODO replace asserts and unwraps with diag error?
-        let node_index = self.next_node_token_index;
-        self.next_node_token_index += 1;
+    fn write_token(&mut self, ty: TT) {
+        let token_str = loop {
+            // TODO replace asserts and unwraps with diag error?
+            let node_index = self.state.next_node_token_index;
+            self.state.next_node_token_index += 1;
+            let source_index = self.node_token_to_source.get(node_index).unwrap();
 
-        let source_index = self.node_token_to_source.get(node_index).unwrap().unwrap();
-        let source_token = &self.source_tokens[source_index];
-        assert_eq!(ty, source_token.ty);
+            // TODO this is slightly duplicate logic
+            break match source_index {
+                None => {
+                    if ty == TT::Comma {
+                        ","
+                    } else {
+                        continue;
+                    }
+                }
+                &Some(source_index) => {
+                    let source_token = &self.source_tokens[source_index];
+                    assert_eq!(source_token.ty, ty);
+                    &self.source_str[source_token.span.range_bytes()]
+                }
+            };
+        };
 
-        let token_str = &self.source_str[source_token.span.range_bytes()];
+        println!("pushing token {ty:?}");
+
+        // TODO count newlines (important for comments and multi-line string literals)
+        // TODO dedicated, non-ugly multi-line string literals?
         self.result.push_str(token_str);
     }
 
-    // TODO this function a bit cursed
-    // TODO if this function is not called, we should still somehow increment the node token index
-    fn write_token_non_fixed(&mut self, ty: TT, s: &str) {
-        let node_index = self.next_node_token_index;
-        self.next_node_token_index += 1;
-
-        let source_index = self.node_token_to_source.get(node_index).unwrap();
-        if let &Some(source_index) = source_index {
-            let source_token = &self.source_tokens[source_index];
-            assert_eq!(ty, source_token.ty);
-
-            let token_str = &self.source_str[source_token.span.range_bytes()];
-            assert_eq!(s, token_str);
-        }
-
-        self.result.push_str(s);
+    fn write_newline(&mut self) {
+        self.result.push('\n');
+        self.state.curr_line_index += 1;
+        self.state.curr_line_start = self.result.len();
     }
 
-    fn write_node(&mut self, node: &FNode) {
+    fn line_overflows(&self, check: CheckPoint) -> bool {
+        let line_start = check.state.curr_line_start;
+        let rest = &self.result[line_start..];
+        let line_len = rest.bytes().position(|c| c == b'\n').unwrap_or(rest.len());
+        line_len > self.settings.max_line_length
+    }
+
+    fn write_node(&mut self, node: &FNode, force_wrap: bool) {
         // TODO indentation stuff?
         match node {
-            FNode::Space => self.result.push(' '),
-            &FNode::Token(ty) => {
-                self.write_token_fixed(ty);
+            FNode::Space => {
+                self.result.push(' ');
             }
-            FNode::Horizontal(nodes) => {
-                for n in nodes {
-                    self.write_node(n);
-                }
+            &FNode::Token(ty) => {
+                self.write_token(ty);
             }
             FNode::Vertical(nodes) => {
                 for n in nodes {
-                    self.write_node(n);
-                    self.result.push('\n');
+                    // TODO try single first, then go back to multiple? for vertical this feels weird, we don't actually care ourselves
+                    // TODO respect blank lines between items
+                    // within a vertical, nodes are always allowed to wrap
+                    let _ = self.write_node(n, false);
+                    self.write_newline();
                 }
             }
-            &FNode::CommaList {
-                fill_lines,
-                start,
-                ref nodes,
-                end,
-            } => {
-                // TODO try single line first, then wrap if overflow
-                // TODO respect fill_lines
-                // TODO indent
-                self.write_token_fixed(start);
-                self.result.push('\n');
-                for (n, last) in nodes.iter().with_last() {
-                    self.write_node(n);
-                    if last {
-                        self.write_token_non_fixed(TT::Comma, ",")
-                    } else {
-                        self.write_token_fixed(TT::Comma);
+            FNode::Horizontal(nodes) => {
+                // TODO try each non-wrapped first, including future stuff on the same line, then wrap left-to-right
+                // TODO we need to check for overflow on specific lines, not just in general, since otherwise we might wrap too much
+                // TODO maye we need to merge nested horizontals for this to fully work
+
+                // let mut checks = vec![self.checkpoint()];
+                // let mut i_uncommited = 0;
+                // let mut i_next = 0;
+                //
+                // while i_uncommited < nodes.len() {
+                //
+                // }
+
+                let check = self.checkpoint();
+                for i in 0..nodes.len() {
+                    self.write_node(&nodes[i], false);
+                    if self.line_overflows(check) {
+                        todo!("go back")
                     }
-                    self.result.push('\n');
                 }
-                self.write_token_fixed(end);
+            }
+            &FNode::CommaList { fill_lines, ref nodes } => {
+                for (n, last) in nodes.iter().with_last() {
+                    self.write_node(n, false);
+                    if !last {
+                        self.write_token(TT::Comma);
+                    }
+                }
+
+                // TODO let the parent decide wrapping? the if we're part of a horizontal,
+                //   it can include the next stuff on the line as well
+                //   that's also the reason we can remove start and end tokens here, the parent will incorporate them
+                // if single {
+                //     for (n, last) in nodes.iter().with_last() {
+                //         self.write_node(n, true);
+                //         // TODO this fixed stuff it awkward, let the token push function figure it out
+                //         if last {
+                //             self.write_token_non_fixed(TT::Comma, ",")
+                //         } else {
+                //             self.write_token(TT::Comma);
+                //         }
+                //         self.result.push('\n');
+                //     }
+                // } else {
+                // self.result.push('\n');
+                // for (n, last) in nodes.iter().with_last() {
+                //     self.result.push_str("    ");
+                //
+                //     // TODO try single line (including comma) first, then roll back
+                //     let _ = self.write_node(n, false);
+                //     // TODO this fixed stuff it awkward, let the token push function figure it out
+                //     if last {
+                //         self.write_token_non_fixed(TT::Comma, ",")
+                //     } else {
+                //         self.write_token_fixed(TT::Comma);
+                //     }
+                //     self.write_newline()
+                // }
+                // // }
             }
         }
     }
@@ -269,16 +355,12 @@ impl FNode {
             }
             &FNode::CommaList {
                 fill_lines: _,
-                start,
                 ref nodes,
-                end,
             } => {
-                f(start, true)?;
                 for (n, last) in nodes.iter().with_last() {
                     n.try_for_each_token(f)?;
                     f(TT::Comma, !last)?;
                 }
-                f(end, true)?;
             }
         }
         Ok(())
@@ -358,12 +440,12 @@ impl NodeBuilderContext<'_> {
     fn fmt_parameters(&self, params: &Parameters) -> FNode {
         let Parameters { span, items } = params;
         let items = fmt_extra_list(items, &|p| self.fmt_parameter(p));
-        FNode::CommaList {
+
+        let node_list = FNode::CommaList {
             fill_lines: false,
-            start: TT::OpenR,
             nodes: items,
-            end: TT::CloseR,
-        }
+        };
+        FNode::Horizontal(vec![token(TT::OpenR), node_list, token(TT::CloseR)])
     }
 
     fn fmt_parameter(&self, param: &Parameter) -> FNode {
@@ -428,12 +510,12 @@ impl NodeBuilderContext<'_> {
                         }
                     })
                     .collect_vec();
-                let node_args = FNode::CommaList {
+
+                let node_list = FNode::CommaList {
                     fill_lines: false,
-                    start: TT::OpenR,
                     nodes: nodes_arg,
-                    end: TT::CloseR,
                 };
+                let node_args = FNode::Horizontal(vec![token(TT::OpenR), node_list, token(TT::CloseR)]);
 
                 FNode::Horizontal(vec![node_target, node_args])
             }
