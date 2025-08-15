@@ -322,18 +322,22 @@ impl StringBuilderContext<'_> {
             todo!()
         }
 
-        // TODO indent if wrap
         if wrap {
-            self.write_newline();
-        }
-        for (node, last) in nodes.iter().with_last() {
-            self.write_node(node);
-            if wrap {
-                self.write_token(TT::Comma);
-                self.write_newline();
-            } else if !last {
-                self.write_token(TT::Comma);
-                self.write_space();
+            self.indent(|slf| {
+                slf.write_newline();
+                for node in nodes {
+                    slf.write_node(node);
+                    slf.write_token(TT::Comma);
+                    slf.write_newline();
+                }
+            })
+        } else {
+            for (node, last) in nodes.iter().with_last() {
+                self.write_node(node);
+                if !last {
+                    self.write_token(TT::Comma);
+                    self.write_space();
+                }
             }
         }
     }
