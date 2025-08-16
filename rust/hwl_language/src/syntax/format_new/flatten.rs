@@ -1,0 +1,235 @@
+use crate::syntax::ast::{
+    ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
+    CommonDeclarationNamedKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration,
+    GeneralIdentifier, Identifier, Item, MaybeIdentifier, Parameter, Parameters, Visibility,
+};
+use crate::syntax::format_new::core::{FCommaList, FNode};
+use crate::syntax::token::TokenType as TT;
+use itertools::Itertools;
+
+pub fn ast_to_format_tree(file: &FileContent) -> FNode {
+    let FileContent {
+        span: _,
+        items,
+        arena_expressions,
+    } = file;
+    let ctx = Context { arena_expressions };
+    ctx.fmt_file_items(items)
+}
+
+// TODO if this stays this single field, maybe we don't need this struct at all?
+struct Context<'a> {
+    arena_expressions: &'a ArenaExpressions,
+}
+
+impl Context<'_> {
+    fn fmt_file_items(&self, items: &[Item]) -> FNode {
+        let nodes = items
+            .iter()
+            .map(|item| match item {
+                Item::Import(_) => todo!(),
+                Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
+                Item::ModuleInternal(_) => todo!(),
+                Item::ModuleExternal(_) => todo!(),
+                Item::Interface(_) => todo!(),
+            })
+            .collect();
+        FNode::Vertical(nodes)
+    }
+
+    fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> FNode {
+        match decl {
+            CommonDeclaration::Named(decl) => {
+                let CommonDeclarationNamed { vis, kind } = decl;
+                let node_vis = vis.token();
+                let node_kind = match kind {
+                    CommonDeclarationNamedKind::Type(_) => todo!(),
+                    CommonDeclarationNamedKind::Const(_) => todo!(),
+                    CommonDeclarationNamedKind::Struct(_) => todo!(),
+                    CommonDeclarationNamedKind::Enum(_) => todo!(),
+                    CommonDeclarationNamedKind::Function(decl) => {
+                        let &FunctionDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            ret_ty,
+                            ref body,
+                        } = decl;
+                        let mut nodes = vec![
+                            FNode::Token(TT::Function),
+                            FNode::Space,
+                            self.fmt_maybe_id(id),
+                            self.fmt_parameters(params),
+                        ];
+                        if let Some(ret_ty) = ret_ty {
+                            nodes.push(FNode::Space);
+                            nodes.push(FNode::Token(TT::Arrow));
+                            nodes.push(FNode::Space);
+                            nodes.push(self.fmt_expr(ret_ty));
+                        }
+                        nodes.push(FNode::Space);
+                        nodes.push(self.fmt_block(body));
+                        FNode::Horizontal(nodes)
+                    }
+                };
+
+                match node_vis {
+                    None => node_kind,
+                    Some(token_vis) => FNode::Horizontal(vec![FNode::Token(token_vis), node_kind]),
+                }
+            }
+            CommonDeclaration::ConstBlock(_) => todo!(),
+        }
+    }
+
+    fn fmt_parameters(&self, params: &Parameters) -> FNode {
+        let Parameters { span: _, items } = params;
+        let children = fmt_extra_list(items, &|p| self.fmt_parameter(p));
+
+        let list = FCommaList {
+            compact: false,
+            children,
+        };
+        let node_list = FNode::CommaList(list);
+        FNode::Horizontal(vec![FNode::Token(TT::OpenR), node_list, FNode::Token(TT::CloseR)])
+    }
+
+    fn fmt_parameter(&self, param: &Parameter) -> FNode {
+        let &Parameter {
+            span: _,
+            id,
+            ty,
+            default,
+        } = param;
+        let mut nodes = vec![
+            self.fmt_id(id),
+            FNode::Token(TT::Colon),
+            FNode::Space,
+            self.fmt_expr(ty),
+        ];
+        if let Some(default) = default {
+            nodes.push(FNode::Space);
+            nodes.push(FNode::Token(TT::Eq));
+            nodes.push(FNode::Space);
+            nodes.push(self.fmt_expr(default));
+        }
+        FNode::Horizontal(nodes)
+    }
+
+    fn fmt_block(&self, block: &Block<BlockStatement>) -> FNode {
+        // TODO for else-if blocks, force a newline to avoid infinite clutter
+        if !block.statements.is_empty() {
+            todo!()
+        }
+        FNode::Horizontal(vec![FNode::Token(TT::OpenC), FNode::Token(TT::CloseC)])
+    }
+
+    fn fmt_expr(&self, expr: Expression) -> FNode {
+        match &self.arena_expressions[expr.inner] {
+            ExpressionKind::Dummy => todo!(),
+            ExpressionKind::Undefined => todo!(),
+            ExpressionKind::Type => todo!(),
+            ExpressionKind::TypeFunction => todo!(),
+            ExpressionKind::Wrapped(_) => todo!(),
+            ExpressionKind::Block(_) => todo!(),
+            &ExpressionKind::Id(id) => self.fmt_general_id(id),
+            ExpressionKind::IntLiteral(_) => todo!(),
+            ExpressionKind::BoolLiteral(_) => todo!(),
+            ExpressionKind::StringLiteral(_) => todo!(),
+            ExpressionKind::ArrayLiteral(_) => todo!(),
+            ExpressionKind::TupleLiteral(_) => todo!(),
+            ExpressionKind::RangeLiteral(_) => todo!(),
+            ExpressionKind::ArrayComprehension(_) => todo!(),
+            ExpressionKind::UnaryOp(_, _) => todo!(),
+            ExpressionKind::BinaryOp(_, _, _) => todo!(),
+            ExpressionKind::ArrayType(_, _) => todo!(),
+            ExpressionKind::ArrayIndex(_, _) => todo!(),
+            ExpressionKind::DotIndex(_, _) => todo!(),
+            &ExpressionKind::Call(target, ref args) => {
+                let node_target = self.fmt_expr(target);
+
+                let Args { span: _, inner } = args;
+                let nodes_arg = inner
+                    .iter()
+                    .map(|arg| {
+                        let &Arg { span: _, name, value } = arg;
+                        let node_value = self.fmt_expr(value);
+                        if let Some(name) = name {
+                            FNode::Horizontal(vec![self.fmt_id(name), FNode::Token(TT::Eq), node_value])
+                        } else {
+                            node_value
+                        }
+                    })
+                    .collect_vec();
+
+                let node_list = FCommaList {
+                    compact: false,
+                    children: nodes_arg,
+                };
+                let node_args = FNode::Horizontal(vec![
+                    FNode::Token(TT::OpenR),
+                    FNode::CommaList(node_list),
+                    FNode::Token(TT::CloseR),
+                ]);
+
+                FNode::Horizontal(vec![node_target, node_args])
+            }
+            ExpressionKind::Builtin(_) => todo!(),
+            ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
+            ExpressionKind::RegisterDelay(_) => todo!(),
+        }
+    }
+
+    fn fmt_general_id(&self, id: GeneralIdentifier) -> FNode {
+        match id {
+            GeneralIdentifier::Simple(id) => self.fmt_id(id),
+            GeneralIdentifier::FromString(_, _) => todo!(),
+        }
+    }
+
+    fn fmt_maybe_id(&self, id: MaybeIdentifier) -> FNode {
+        match id {
+            MaybeIdentifier::Dummy(_span) => FNode::Token(TT::Underscore),
+            MaybeIdentifier::Identifier(id) => self.fmt_id(id),
+        }
+    }
+
+    fn fmt_id(&self, id: Identifier) -> FNode {
+        let _ = id;
+        FNode::Token(TT::Identifier)
+    }
+}
+
+// TODO variant that always wraps, for eg. module ports? or not, maybe it's more elegant if we don't
+fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> FNode) -> Vec<FNode> {
+    // TODO if there are no-simple items, force the parent to wrap
+    //   or will that happen automatically once a Vertical is a child?
+    let ExtraList { span: _, items } = list;
+    items
+        .iter()
+        .map(|item| match item {
+            ExtraItem::Inner(inner) => f(inner),
+            ExtraItem::Declaration(_) => todo!(),
+            ExtraItem::If(_) => todo!(),
+        })
+        .collect()
+}
+
+trait FormatVisibility: Copy {
+    fn token(self) -> Option<TT>;
+}
+
+impl FormatVisibility for Visibility {
+    fn token(self) -> Option<TT> {
+        match self {
+            Visibility::Private => None,
+            Visibility::Public(_span) => Some(TT::Public),
+        }
+    }
+}
+
+impl FormatVisibility for () {
+    fn token(self) -> Option<TT> {
+        None
+    }
+}
