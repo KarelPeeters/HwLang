@@ -66,7 +66,7 @@ pub fn format(
     let mut result_ctx = StringBuilderContext {
         source_str,
         source_tokens: &source_tokens,
-        node_token_to_source: &fixed_token_map,
+        node_token_to_source_token: &fixed_token_map,
 
         settings,
 
@@ -98,9 +98,9 @@ fn match_tokens(
     let mut next_source_index = 0;
     let mut map = vec![];
 
-    node_root.try_for_each_token(&mut |node_token_ty, node_token_fixed| {
+    node_root.try_for_each_token(&mut |node_token_ty| {
         let source_index = loop {
-            // find next real token
+            // find next real non-whitespace/comment token
             let source_index = next_source_index;
             let Some(source_token) = source_tokens.get(next_source_index) else {
                 let e = diags.report_internal_error(
@@ -119,12 +119,13 @@ fn match_tokens(
             }
 
             // try to match it
+            // TODO this this logic
             break if source_token.ty == node_token_ty {
                 // println!("matched token {node_token_ty:?}");
                 next_source_index += 1;
                 Some(source_index)
-            } else if !node_token_fixed {
-                // println!("skipping non-fixed token {node_token_ty:?}");
+            } else if node_token_ty == TT::Comma {
+                // skip over comma that was not present in source
                 None
             } else {
                 // failed to find match
@@ -215,7 +216,7 @@ fn comma_list(compact: bool, nodes: Vec<FNode>) -> FNode {
 struct StringBuilderContext<'a> {
     source_str: &'a str,
     source_tokens: &'a [Token],
-    node_token_to_source: &'a Vec<Option<usize>>,
+    node_token_to_source_token: &'a Vec<Option<usize>>,
 
     settings: &'a FormatSettings,
 
@@ -237,12 +238,6 @@ struct StringState {
     indent: usize,
 }
 
-#[must_use]
-enum PreferWrap {
-    No,
-    Yes,
-}
-
 #[derive(Debug)]
 struct NeedsWrap;
 
@@ -260,16 +255,17 @@ impl StringBuilderContext<'_> {
         self.state = check.state;
     }
 
-    // TODO asser that this is called in exactly the same order as the first collection pass?
     fn write_token(&mut self, ty: TT) {
         let token_str = loop {
-            // TODO replace asserts and unwraps with diag error?
             let node_index = self.state.next_node_token_index;
             self.state.next_node_token_index += 1;
-            let source_index = self.node_token_to_source.get(node_index).unwrap();
+
+            // TODO guard against out-of-bounds?
+            let source_token =
+                self.node_token_to_source_token[node_index].map(|source_index| &self.source_tokens[source_index]);
 
             // TODO this is slightly duplicate logic
-            break match source_index {
+            break match source_token {
                 None => {
                     if ty == TT::Comma {
                         ","
@@ -277,17 +273,19 @@ impl StringBuilderContext<'_> {
                         continue;
                     }
                 }
-                &Some(source_index) => {
-                    let source_token = &self.source_tokens[source_index];
-                    assert_eq!(source_token.ty, ty);
-                    &self.source_str[source_token.span.range_bytes()]
+                Some(source_token) => {
+                    if source_token.ty == ty {
+                        &self.source_str[source_token.span.range_bytes()]
+                    } else if source_token.ty == TT::Comma {
+                        continue;
+                    } else {
+                        todo!("source token {:?}, token {:?}", source_token.ty, ty);
+                    }
                 }
             };
         };
 
-        // println!("pushing token {ty:?}");
-
-        // indent if first token on the line
+        // indent if first token on current line
         if self.state.curr_line_start == self.result.len() {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
@@ -450,7 +448,7 @@ impl StringBuilderContext<'_> {
 
 impl FNode {
     // TODO doc bool arg: "fixed"
-    fn try_for_each_token<E>(&self, f: &mut impl FnMut(TT, bool) -> Result<(), E>) -> Result<(), E> {
+    fn try_for_each_token<E>(&self, f: &mut impl FnMut(TT) -> Result<(), E>) -> Result<(), E> {
         match self {
             FNode::NonH(slf) => slf.try_for_each_token(f),
             FNode::Horizontal(children) => children.iter().try_for_each(|c| c.try_for_each_token(f)),
@@ -472,21 +470,17 @@ impl FNode {
 }
 
 impl FNodeNonHor {
-    // TODO doc bool arg: "fixed"
-    fn try_for_each_token<E>(&self, f: &mut impl FnMut(TT, bool) -> Result<(), E>) -> Result<(), E> {
+    fn try_for_each_token<E>(&self, f: &mut impl FnMut(TT) -> Result<(), E>) -> Result<(), E> {
         match self {
             FNodeNonHor::NonWrap(slf) => match slf {
                 FNodeNonWrap::Space => Ok(()),
-                &FNodeNonWrap::Token(ty) => f(ty, true),
+                &FNodeNonWrap::Token(ty) => f(ty),
                 FNodeNonWrap::Vertical(children) => children.iter().try_for_each(|c| c.try_for_each_token(f)),
             },
-            FNodeNonHor::CommaList(FCommaList { compact: _, nodes }) => {
-                nodes.iter().with_last().try_for_each(|(n, last)| {
-                    n.try_for_each_token(f)?;
-                    f(TT::Comma, !last)?;
-                    Ok(())
-                })
-            }
+            FNodeNonHor::CommaList(FCommaList { compact: _, nodes }) => nodes.iter().try_for_each(|n| {
+                n.try_for_each_token(f)?;
+                f(TT::Comma)
+            }),
         }
     }
 
