@@ -1,5 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::format::FormatSettings;
+use crate::syntax::format_new::core::simplify_and_connect_nodes;
 use crate::syntax::format_new::flatten::ast_to_format_tree;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::tokenize;
@@ -23,7 +24,9 @@ pub fn format(
     settings: &FormatSettings,
 ) -> DiagResult<String> {
     // tokenize and parse
-    let source_str = &source[file].content;
+    let source_info = &source[file];
+    let source_str = &source_info.content;
+    let source_offsets = &source_info.offsets;
     let mut source_tokens = tokenize(file, source_str, false).map_err(|e| diags.report(e.to_diagnostic()))?;
     // TODO remove whitespace tokens, everyone just filters them out anyway, we can always recover whitespace as "stuff between other tokens" if we really want to
     source_tokens.retain(|t| t.ty != crate::syntax::token::TokenType::WhiteSpace);
@@ -34,10 +37,15 @@ pub fn format(
         println!("    {token:?}");
     }
 
-    let node_root = ast_to_format_tree(&source_ast);
+    let root_node = ast_to_format_tree(&source_ast);
 
-    println!("Tree:");
-    println!("{}", node_root.tree_string());
+    println!("Initial tree:");
+    println!("{}", root_node.tree_string());
+
+    let root_node = simplify_and_connect_nodes(source_offsets, &source_tokens, root_node).map_err(|_| todo!())?;
+
+    println!("Mapped tree:");
+    println!("{}", root_node.tree_string());
 
     todo!()
 

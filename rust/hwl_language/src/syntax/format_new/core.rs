@@ -1,32 +1,48 @@
 use crate::syntax::format::FormatSettings;
+use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{Token, TokenType as TT};
+use crate::util::iter::IterExt;
 use hwl_util::{swrite, swriteln};
+use itertools::Itertools;
 
 pub enum FNode {
     Space,
     Token(TT),
     Horizontal(Vec<FNode>),
     Vertical(Vec<FNode>),
-    CommaList(FCommaList<FNode>),
+    CommaList(FCommaList),
+}
+
+pub struct FCommaList {
+    pub compact: bool,
+    pub children: Vec<FNode>,
 }
 
 // TODO this could be turned into a single-pass algorithm,
 //   by building the tree and computing the mapping at the same time
 pub enum SNode {
     NonHorizontal(SNodeNonHorizontal),
-    Horizontal(Vec<SNode>),
+    Horizontal(Vec<SNodeNonHorizontal>),
 }
 
 pub enum SNodeNonHorizontal {
     Space,
     Token(TT, Option<usize>),
     Vertical(Vec<SNode>),
-    CommaList(FCommaList<SNode>),
+    CommaList(SCommaList),
 }
 
-pub struct FCommaList<N = FNode> {
+pub struct SCommaList {
     pub compact: bool,
-    pub children: Vec<N>,
+    pub force_wrap: bool,
+    pub children: Vec<SNode>,
+}
+
+fn swrite_indent(f: &mut String, indent: usize) {
+    swrite!(f, "    ");
+    for _ in 0..indent {
+        swrite!(f, " |  ")
+    }
 }
 
 impl FNode {
@@ -37,13 +53,7 @@ impl FNode {
     }
 
     fn tree_string_impl(&self, f: &mut String, indent: usize) {
-        // indent
-        swrite!(f, "    ");
-        for _ in 0..indent {
-            swrite!(f, " |  ")
-        }
-
-        // node
+        swrite_indent(f, indent);
         let swrite_children = |f: &mut String, cs: &[FNode]| {
             for c in cs {
                 c.tree_string_impl(f, indent + 1);
@@ -68,8 +78,174 @@ impl FNode {
     }
 }
 
-pub fn simplify_and_connect_nodes(root: FNode) -> SNode {
-    todo!()
+impl SNode {
+    pub fn tree_string(&self) -> String {
+        let mut f = String::new();
+        self.tree_string_impl(&mut f, 0);
+        f
+    }
+
+    fn tree_string_impl(&self, f: &mut String, indent: usize) {
+        match self {
+            SNode::NonHorizontal(non_hor) => non_hor.tree_string_impl(f, indent),
+            SNode::Horizontal(children) => {
+                swrite_indent(f, indent);
+                swriteln!(f, "Horizontal");
+                for c in children {
+                    c.tree_string_impl(f, indent + 1);
+                }
+            }
+        }
+    }
+}
+
+impl SNodeNonHorizontal {
+    fn tree_string_impl(&self, f: &mut String, indent: usize) {
+        swrite_indent(f, indent);
+        match self {
+            SNodeNonHorizontal::Space => swriteln!(f, "Space"),
+            SNodeNonHorizontal::Token(ty, token_index) => {
+                swriteln!(f, "Token({ty:?}, index={token_index:?})");
+            }
+            SNodeNonHorizontal::Vertical(children) => {
+                swriteln!(f, "Vertical");
+                for c in children {
+                    c.tree_string_impl(f, indent + 1);
+                }
+            }
+            SNodeNonHorizontal::CommaList(list) => {
+                swriteln!(f, "CommaList(compact={}, force_wrap={})", list.compact, list.force_wrap);
+                for c in &list.children {
+                    c.tree_string_impl(f, indent + 1);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TokenMismatch;
+
+pub fn simplify_and_connect_nodes(
+    offsets: &LineOffsets,
+    source_tokens: &[Token],
+    node: FNode,
+) -> Result<SNode, TokenMismatch> {
+    let mut ctx = MatchContext {
+        offsets,
+        source_tokens,
+        next_source_index: 0,
+    };
+    let (node, _) = simplify_and_connect_nodes_impl(&mut ctx, node)?;
+    Ok(node)
+}
+
+struct MatchContext<'a> {
+    offsets: &'a LineOffsets,
+    source_tokens: &'a [Token],
+    next_source_index: usize,
+}
+
+// TODO find a better name
+// TODO if we encounter any line comments, set force_wrap
+fn simplify_and_connect_nodes_impl<'t>(ctx: &mut MatchContext, node: FNode) -> Result<(SNode, bool), TokenMismatch> {
+    let result = match node {
+        FNode::Space => (SNode::NonHorizontal(SNodeNonHorizontal::Space), false),
+        FNode::Token(ty) => {
+            let mut wrap = false;
+
+            let token_index = loop {
+                let curr_index = ctx.next_source_index;
+                break match ctx.source_tokens.get(curr_index) {
+                    Some(token) => {
+                        // skip whitespace and comments, but take them into account for wrapping
+                        let skip = match token.ty {
+                            TT::WhiteSpace => true,
+                            TT::LineComment => {
+                                wrap = true;
+                                true
+                            }
+                            TT::BlockComment => {
+                                let span = ctx.offsets.expand_span(token.span);
+                                wrap |= span.end.line_0 > span.start.line_0;
+                                true
+                            }
+                            _ => false,
+                        };
+                        if skip {
+                            ctx.next_source_index += 1;
+                            continue;
+                        }
+
+                        if ty == token.ty {
+                            ctx.next_source_index += 1;
+                            Some(curr_index)
+                        } else if ty == TT::Comma {
+                            None
+                        } else {
+                            return Err(TokenMismatch);
+                        }
+                    }
+                    None => {
+                        if ty == TT::Comma {
+                            None
+                        } else {
+                            return Err(TokenMismatch);
+                        }
+                    }
+                };
+            };
+
+            // wrap if token spans multiple lines (eg. string literals or multiline comments)
+            if let Some(token_index) = token_index {
+                let token = &ctx.source_tokens[token_index];
+                let span = ctx.offsets.expand_span(token.span);
+                wrap |= span.end.line_0 > span.start.line_0;
+            };
+
+            (SNode::NonHorizontal(SNodeNonHorizontal::Token(ty, token_index)), wrap)
+        }
+        FNode::Horizontal(children) => {
+            let mut mapped = vec![];
+            let mut wrap = false;
+            for c in children {
+                let (c_mapped, c_wrap) = simplify_and_connect_nodes_impl(ctx, c)?;
+                match c_mapped {
+                    SNode::NonHorizontal(non_hor) => mapped.push(non_hor),
+                    SNode::Horizontal(hor) => mapped.extend(hor),
+                }
+                wrap |= c_wrap;
+            }
+            (SNode::Horizontal(mapped), wrap)
+        }
+        FNode::Vertical(children) => {
+            let mapped = children
+                .into_iter()
+                .map(|c| {
+                    let (c, _) = simplify_and_connect_nodes_impl(ctx, c)?;
+                    Ok(c)
+                })
+                .try_collect_vec()?;
+            (SNode::NonHorizontal(SNodeNonHorizontal::Vertical(mapped)), true)
+        }
+        FNode::CommaList(list) => {
+            let FCommaList { compact, children } = list;
+            let mut mapped = vec![];
+            let mut wrap = false;
+            for c in children {
+                let (c_mapped, c_wrap) = simplify_and_connect_nodes_impl(ctx, c)?;
+                mapped.push(c_mapped);
+                wrap |= c_wrap;
+            }
+            let list_mapped = SCommaList {
+                compact,
+                force_wrap: wrap,
+                children: mapped,
+            };
+            (SNode::NonHorizontal(SNodeNonHorizontal::CommaList(list_mapped)), wrap)
+        }
+    };
+    Ok(result)
 }
 
 // // TODO completely rework this into mapping from FNode into SNode
