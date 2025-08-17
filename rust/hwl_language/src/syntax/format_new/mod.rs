@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::core::{node_to_string, simplify_and_connect_nodes};
+use crate::syntax::format_new::core::{map_nodes, node_to_string};
 use crate::syntax::format_new::flatten::ast_to_format_tree;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::tokenize;
@@ -42,7 +42,7 @@ pub fn format(
     println!("Initial tree:");
     println!("{}", root_node.tree_string());
 
-    let root_node = simplify_and_connect_nodes(source_offsets, &source_tokens, root_node).map_err(|_| todo!())?;
+    let root_node = map_nodes(source_offsets, &source_tokens, root_node).map_err(|_| todo!())?;
 
     println!("Mapped tree:");
     println!("{}", root_node.tree_string());

@@ -35,23 +35,23 @@ pub enum SNodeKind {
     Horizontal(Vec<SNodeKindNonHorizontal>),
 }
 #[derive(Debug)]
-enum SNodeKindNonHorizontal {
+pub enum SNodeKindNonHorizontal {
     NonWrap(SNodeKindNonWrap),
     CommaList(SCommaList),
 }
 
 #[derive(Debug)]
-enum SNodeKindNonWrap {
+pub enum SNodeKindNonWrap {
     Space,
     Token(TT, Option<SourceTokenIndex>),
     Vertical(Vec<SNode>),
 }
 
 #[derive(Debug, Copy, Clone)]
-struct SourceTokenIndex(usize);
+pub struct SourceTokenIndex(usize);
 
 #[derive(Debug)]
-struct SCommaList {
+pub struct SCommaList {
     compact: bool,
     force_wrap: bool,
     children: Vec<(SNode, Option<SourceTokenIndex>)>,
@@ -148,13 +148,9 @@ impl SNodeKindNonHorizontal {
 #[derive(Debug)]
 pub struct TokenMismatch;
 
-// TODO find a better name
-pub fn simplify_and_connect_nodes(
-    offsets: &LineOffsets,
-    source_tokens: &[Token],
-    node: FNode,
-) -> Result<SNode, TokenMismatch> {
-    let mut ctx = MatchContext {
+// TODO find a better name (for this and for SNode)
+pub fn map_nodes(offsets: &LineOffsets, source_tokens: &[Token], node: FNode) -> Result<SNode, TokenMismatch> {
+    let mut ctx = MapContext {
         offsets,
         source_tokens,
         next_source_index: 0,
@@ -162,13 +158,13 @@ pub fn simplify_and_connect_nodes(
     ctx.map(node)
 }
 
-struct MatchContext<'a> {
+struct MapContext<'a> {
     offsets: &'a LineOffsets,
     source_tokens: &'a [Token],
     next_source_index: usize,
 }
 
-impl MatchContext<'_> {
+impl MapContext<'_> {
     fn map_token(&mut self, ty: TT) -> Result<(Option<SourceTokenIndex>, Option<Span>, bool), TokenMismatch> {
         let mut wrap = false;
 
@@ -379,6 +375,40 @@ struct NeedsWrap;
 // TODO convert this into a reportable internal compiler error?
 const MSG_WRAP: &str = "should succeed, wrapping is allowed";
 
+#[derive(Debug)]
+struct SliceExtra<'a, T> {
+    slice: &'a [T],
+    extra: Option<&'a T>,
+}
+
+impl<T> Copy for SliceExtra<'_, T> {}
+
+impl<T> Clone for SliceExtra<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> SliceExtra<'a, T> {
+    fn split_first(&self) -> Option<(&'a T, SliceExtra<'a, T>)> {
+        if let Some((first, rest)) = self.slice.split_first() {
+            let extra = SliceExtra {
+                slice: rest,
+                extra: self.extra,
+            };
+            Some((first, extra))
+        } else if let Some(first) = self.extra {
+            let extra = SliceExtra {
+                slice: &[],
+                extra: None,
+            };
+            Some((first, extra))
+        } else {
+            None
+        }
+    }
+}
+
 impl StringBuilderContext<'_> {
     fn checkpoint(&self) -> CheckPoint {
         CheckPoint {
@@ -468,16 +498,15 @@ impl StringBuilderContext<'_> {
             self.indent(|slf| {
                 slf.write_newline();
                 for (child_index, (child, comma_index)) in enumerate(children) {
-                    // TODO write any comments here
-                    slf.write_node(child, true).expect(MSG_WRAP);
-                    slf.write_token(TT::Comma, *comma_index);
-                    slf.write_newline();
+                    let comma_node = SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Token(TT::Comma, *comma_index));
+                    slf.write_node_with_extra_horizontal(child, Some(&comma_node), true)
+                        .expect(MSG_WRAP);
 
+                    slf.write_newline();
                     if let Some((next_child, _)) = children.get(child_index + 1) {
                         slf.write_matching_empty_line(child.span, next_child.span);
                     }
                 }
-                // TODO write any comments here
             })
         } else {
             for (&(ref child, comma_index), last) in children.iter().with_last() {
@@ -493,12 +522,37 @@ impl StringBuilderContext<'_> {
     }
 
     fn write_node(&mut self, node: &SNode, allow_wrap: bool) -> Result<(), NeedsWrap> {
+        self.write_node_with_extra_horizontal(node, None, allow_wrap)
+    }
+
+    fn write_node_with_extra_horizontal(
+        &mut self,
+        node: &SNode,
+        extra_horizontal: Option<&SNodeKindNonHorizontal>,
+        allow_wrap: bool,
+    ) -> Result<(), NeedsWrap> {
         match &node.kind {
-            SNodeKind::NonHorizontal(node) => match node {
-                SNodeKindNonHorizontal::NonWrap(node) => self.write_node_non_wrap(node),
-                SNodeKindNonHorizontal::CommaList(_) => todo!("is this even possible?"),
-            },
-            SNodeKind::Horizontal(children) => self.write_horizontal(children, allow_wrap)?,
+            SNodeKind::NonHorizontal(node) => {
+                if let Some(extra_horizontal) = extra_horizontal {
+                    let slice_extra = SliceExtra {
+                        slice: std::slice::from_ref(node),
+                        extra: Some(extra_horizontal),
+                    };
+                    self.write_horizontal(slice_extra, allow_wrap)?;
+                } else {
+                    match node {
+                        SNodeKindNonHorizontal::NonWrap(node) => self.write_node_non_wrap(node),
+                        SNodeKindNonHorizontal::CommaList(_) => todo!("is this even possible?"),
+                    }
+                }
+            }
+            SNodeKind::Horizontal(children) => {
+                let slice_extra = SliceExtra {
+                    slice: children,
+                    extra: extra_horizontal,
+                };
+                self.write_horizontal(slice_extra, allow_wrap)?
+            }
         }
         Ok(())
     }
@@ -540,12 +594,18 @@ impl StringBuilderContext<'_> {
         }
     }
 
-    fn write_horizontal(&mut self, nodes: &[SNodeKindNonHorizontal], allow_wrap: bool) -> Result<(), NeedsWrap> {
+    fn write_horizontal(
+        &mut self,
+        nodes: SliceExtra<SNodeKindNonHorizontal>,
+        allow_wrap: bool,
+    ) -> Result<(), NeedsWrap> {
+        // pop the next node
         let (node, rest) = match nodes.split_first() {
+            Some((node, rest)) => (node, rest),
             None => return Ok(()),
-            Some(p) => p,
         };
 
+        // write the node
         match node {
             SNodeKindNonHorizontal::NonWrap(node) => {
                 // simple non-wrapping node, no decisions to take here
