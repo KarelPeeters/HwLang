@@ -47,7 +47,7 @@ pub fn format(
     println!("Mapped tree:");
     println!("{}", root_node.tree_string());
 
-    let result = node_to_string(settings, source_str, &source_tokens, &root_node);
+    let result = node_to_string(settings, source_str, source_offsets, &source_tokens, &root_node);
 
     Ok(result)
 }
