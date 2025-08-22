@@ -509,7 +509,7 @@ macro_rules! declare_tokens {
             pub fn diagnostic_string(&self) -> &str {
                 match self {
                     $(TokenType::$c_token => stringify!($c_token),)*
-                    $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
+                    $(TokenType::$f_token => $f_string,)*
                 }
             }
         }

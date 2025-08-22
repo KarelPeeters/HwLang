@@ -2,6 +2,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::core::{map_nodes, node_to_string};
 use crate::syntax::format_new::flatten::ast_to_format_tree;
+use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::tokenize;
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
@@ -42,10 +43,23 @@ pub fn format(
     println!("Initial tree:");
     println!("{}", root_node.tree_string());
 
-    let root_node = map_nodes(source_offsets, &source_tokens, root_node).map_err(|_| todo!())?;
+    let root_node = map_nodes(source_offsets, &source_tokens, root_node).map_err(|e| {
+        let (span, got) = match e.index {
+            None => (Span::empty_at(source.full_span(file).end()), "end of file"),
+            Some(index) => {
+                let source_token = &source_tokens[index.0];
+                (source_token.span, source_token.ty.diagnostic_string())
+            }
+        };
+        let reason = format!(
+            "token mismatch, expected `{}` got `{got}`",
+            e.expected.diagnostic_string()
+        );
+        diags.report_internal_error(span, reason)
+    })?;
 
     println!("Mapped tree:");
-    println!("{}", root_node.tree_string());
+    println!("{}", root_node.debug_str());
 
     let result = node_to_string(settings, source_str, source_offsets, &source_tokens, &root_node);
 

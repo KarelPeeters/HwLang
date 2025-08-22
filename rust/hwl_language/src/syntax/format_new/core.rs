@@ -1,9 +1,9 @@
 use crate::syntax::format::FormatSettings;
-use crate::syntax::pos::{LineOffsets, Span};
-use crate::syntax::token::{Token, TokenType as TT, is_whitespace_or_empty};
+use crate::syntax::pos::LineOffsets;
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
 use crate::util::iter::IterExt;
 use hwl_util::{swrite, swriteln};
-use itertools::{Itertools, enumerate};
+use itertools::Itertools;
 
 #[derive(Debug)]
 pub enum FNode {
@@ -20,42 +20,26 @@ pub struct FCommaList {
     pub children: Vec<FNode>,
 }
 
-// TODO this could be turned into a single-pass algorithm,
-//   by building the tree and computing the mapping at the same time
-#[derive(Debug)]
-pub struct SNode<K = SNodeKind> {
-    span: Option<Span>,
-    force_wrap: bool,
-    kind: K,
+pub enum PNode {
+    Literal(&'static str),
+    Token(SourceTokenIndex),
+
+    // TODO make all of these just variants of literal
+    NewLine,
+    IfWrap(Box<PNode>),
+
+    Indent(Box<PNode>),
+    Sequence(Vec<PNode>),
+    CommaGroup(PCommaGroup),
 }
 
-#[derive(Debug)]
-pub enum SNodeKind {
-    NonHorizontal(SNodeKindNonHorizontal),
-    Horizontal(Vec<SNodeKindNonHorizontal>),
-}
-#[derive(Debug)]
-pub enum SNodeKindNonHorizontal {
-    NonWrap(SNodeKindNonWrap),
-    CommaList(SCommaList),
-}
-
-#[derive(Debug)]
-pub enum SNodeKindNonWrap {
-    Space,
-    Token(TT, Option<SourceTokenIndex>),
-    Vertical(Vec<SNode>),
+struct PCommaGroup {
+    compact: bool,
+    children: Vec<PNode>,
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct SourceTokenIndex(usize);
-
-#[derive(Debug)]
-pub struct SCommaList {
-    compact: bool,
-    force_wrap: bool,
-    children: Vec<(SNode, Option<SourceTokenIndex>)>,
-}
+pub struct SourceTokenIndex(pub usize);
 
 // TODO move down
 fn swrite_indent(f: &mut String, indent: usize) {
@@ -98,58 +82,67 @@ impl FNode {
     }
 }
 
-impl SNode {
-    pub fn tree_string(&self) -> String {
+impl PNode {
+    pub fn debug_str(&self) -> String {
         let mut f = String::new();
-        self.tree_string_impl(&mut f, 0);
+        self.debug_str_impl(&mut f, 0);
         f
     }
 
-    fn tree_string_impl(&self, f: &mut String, indent: usize) {
-        match &self.kind {
-            SNodeKind::NonHorizontal(kind) => kind.tree_string_impl(f, indent),
-            SNodeKind::Horizontal(children) => {
-                swrite_indent(f, indent);
-                swriteln!(f, "Horizontal");
-                for c in children {
-                    c.tree_string_impl(f, indent + 1);
+    fn debug_str_impl(&self, f: &mut String, indent: usize) {
+        swrite_indent(f, indent);
+        match self {
+            PNode::Literal(s) => swriteln!(f, "Literal({s:?})"),
+            PNode::Token(index) => swriteln!(f, "Token({index:?})"),
+            PNode::NewLine => swriteln!(f, "NewLine"),
+            PNode::IfWrap(child) => {
+                swriteln!(f, "IfWrap");
+                child.debug_str_impl(f, indent + 1);
+            }
+            PNode::Indent(child) => {
+                swriteln!(f, "Indent");
+                child.debug_str_impl(f, indent + 1);
+            }
+            PNode::Sequence(children) => {
+                swriteln!(f, "Sequence");
+                for child in children {
+                    child.debug_str_impl(f, indent + 1);
+                }
+            }
+            PNode::CommaGroup(PCommaGroup { compact, children }) => {
+                swriteln!(f, "CommaGroup(compact={compact})");
+                for child in children {
+                    child.debug_str_impl(f, indent + 1);
+                    swrite_indent(f, indent + 1);
                 }
             }
         }
     }
-}
 
-impl SNodeKindNonHorizontal {
-    fn tree_string_impl(&self, f: &mut String, indent: usize) {
-        swrite_indent(f, indent);
+    // TODO calculate this in a single pass instead of repeatedly
+    fn contains_forced_newline(&self) -> bool {
         match self {
-            SNodeKindNonHorizontal::NonWrap(node) => match node {
-                SNodeKindNonWrap::Space => swriteln!(f, "Space"),
-                SNodeKindNonWrap::Token(ty, index) => swriteln!(f, "Token({ty:?}, {index:?})"),
-                SNodeKindNonWrap::Vertical(children) => {
-                    swriteln!(f, "Vertical");
-                    for c in children {
-                        c.tree_string_impl(f, indent + 1);
-                    }
-                }
-            },
-            SNodeKindNonHorizontal::CommaList(list) => {
-                swriteln!(f, "CommaList(compact={}, force_wrap={})", list.compact, list.force_wrap);
-                for (c, comma_index) in &list.children {
-                    c.tree_string_impl(f, indent + 1);
-                    swrite_indent(f, indent + 1);
-                    swriteln!(f, "{comma_index:?}");
-                }
+            // TODO if str contains newline?
+            PNode::Literal(_) => false,
+            // TODO if str contains newline?
+            PNode::Token(_) => false,
+            PNode::NewLine => true,
+            PNode::IfWrap(child) | PNode::Indent(child) => child.contains_forced_newline(),
+            PNode::Sequence(children) | PNode::CommaGroup(PCommaGroup { compact: _, children }) => {
+                children.iter().any(PNode::contains_forced_newline)
             }
         }
     }
 }
 
 #[derive(Debug)]
-pub struct TokenMismatch;
+pub struct TokenMismatch {
+    pub index: Option<SourceTokenIndex>,
+    pub expected: TT,
+}
 
 // TODO find a better name (for this and for SNode)
-pub fn map_nodes(offsets: &LineOffsets, source_tokens: &[Token], node: FNode) -> Result<SNode, TokenMismatch> {
+pub fn map_nodes(offsets: &LineOffsets, source_tokens: &[Token], node: FNode) -> Result<PNode, TokenMismatch> {
     let mut ctx = MapContext {
         offsets,
         source_tokens,
@@ -164,158 +157,204 @@ struct MapContext<'a> {
     next_source_index: usize,
 }
 
-impl MapContext<'_> {
-    fn map_token(&mut self, ty: TT) -> Result<(Option<SourceTokenIndex>, Option<Span>, bool), TokenMismatch> {
-        let mut wrap = false;
-
-        let token_index = loop {
-            let curr_index = self.next_source_index;
-            break match self.source_tokens.get(curr_index) {
-                Some(source_token) => {
-                    // skip whitespace and comments, but take them into account for wrapping
-                    let skip = match source_token.ty {
-                        TT::WhiteSpace => true,
-                        TT::LineComment => {
-                            wrap = true;
-                            true
-                        }
-                        TT::BlockComment => {
-                            let span = self.offsets.expand_span(source_token.span);
-                            wrap |= span.end.line_0 > span.start.line_0;
-                            true
-                        }
-                        _ => false,
-                    };
-                    if skip {
-                        self.next_source_index += 1;
-                        continue;
-                    }
-
-                    if ty == source_token.ty {
-                        self.next_source_index += 1;
-                        Some(SourceTokenIndex(curr_index))
-                    } else if ty == TT::Comma {
-                        None
-                    } else {
-                        return Err(TokenMismatch);
-                    }
-                }
-                None => {
-                    if ty == TT::Comma {
-                        None
-                    } else {
-                        return Err(TokenMismatch);
-                    }
-                }
-            };
-        };
-
-        // wrap if token spans multiple lines (eg. string literals or multiline comments)
-        if let Some(token_index) = token_index {
-            let token = &self.source_tokens[token_index.0];
-            let span = self.offsets.expand_span(token.span);
-            wrap |= span.end.line_0 > span.start.line_0;
-        };
-
-        let token_span = token_index.map(|i| self.source_tokens[i.0].span);
-        Ok((token_index, token_span, wrap))
-    }
-
-    fn map(&mut self, node: FNode) -> Result<SNode, TokenMismatch> {
-        let result = match node {
-            FNode::Space => {
-                let kind = SNodeKind::NonHorizontal(SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Space));
-                SNode {
-                    span: None,
-                    force_wrap: false,
-                    kind,
-                }
-            }
-            FNode::Token(ty) => {
-                let (index, span, force_wrap) = self.map_token(ty)?;
-                let kind =
-                    SNodeKind::NonHorizontal(SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Token(ty, index)));
-                SNode { span, force_wrap, kind }
-            }
-            FNode::Horizontal(children) => {
-                let mut span = None;
-                let mut force_wrap = false;
-                let mut children_mapped = vec![];
-                for child in children {
-                    let child_mapped = self.map(child)?;
-                    span = join_maybe_span(span, child_mapped.span);
-                    force_wrap |= child_mapped.force_wrap;
-                    match child_mapped.kind {
-                        SNodeKind::NonHorizontal(non_hor) => children_mapped.push(non_hor),
-                        SNodeKind::Horizontal(hor) => children_mapped.extend(hor),
-                    }
-                }
-                let kind_mapped = SNodeKind::Horizontal(children_mapped);
-                SNode {
-                    span,
-                    force_wrap,
-                    kind: kind_mapped,
-                }
-            }
-            FNode::Vertical(children) => {
-                let mut span = None;
-                let children_mapped = children
-                    .into_iter()
-                    .map(|child| {
-                        let child_mapped = self.map(child)?;
-                        span = join_maybe_span(span, child_mapped.span);
-                        Ok(child_mapped)
-                    })
-                    .try_collect_vec()?;
-                let mapped = SNodeKind::NonHorizontal(SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Vertical(
-                    children_mapped,
-                )));
-                SNode {
-                    span,
-                    force_wrap: true,
-                    kind: mapped,
-                }
-            }
-            FNode::CommaList(list) => {
-                let FCommaList { compact, children } = list;
-
-                let mut span = None;
-                let mut force_wrap = false;
-                let mut children_mapped = vec![];
-                for child in children {
-                    let child_mapped = self.map(child)?;
-                    let (comma_index, comma_span, comma_force_wrap) = self.map_token(TT::Comma)?;
-
-                    span = join_maybe_span(span, child_mapped.span);
-                    span = join_maybe_span(span, comma_span);
-
-                    force_wrap |= child_mapped.force_wrap | comma_force_wrap;
-                    children_mapped.push((child_mapped, comma_index));
-                }
-
-                let list_mapped = SCommaList {
-                    compact,
-                    force_wrap,
-                    children: children_mapped,
-                };
-                let kind_mapped = SNodeKind::NonHorizontal(SNodeKindNonHorizontal::CommaList(list_mapped));
-                SNode {
-                    span,
-                    force_wrap,
-                    kind: kind_mapped,
-                }
-            }
-        };
-        Ok(result)
+// TODO can we express this in the type system?
+fn push_to_sequence(seq: &mut Vec<PNode>, node: PNode) {
+    match node {
+        PNode::Sequence(children) => seq.extend(children),
+        _ => seq.push(node),
     }
 }
 
-fn join_maybe_span(a: Option<Span>, b: Option<Span>) -> Option<Span> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (Some(a), Some(b)) => Some(a.join(b)),
+impl MapContext<'_> {
+    // fn map_token(&mut self, ty: TT) -> Result<Option<SourceTokenIndex>, TokenMismatch> {
+    //     let token_index = SourceTokenIndex(self.next_source_index);
+    //     let token = self.source_tokens.get(token_index.0).ok_or(TokenMismatch)?;
+    //     self.next_source_index += 1;
+    //
+    //     if token.ty == ty {
+    //         Ok(Some(token_index))
+    //     } else if ty == TT::Comma {
+    //         Ok(None)
+    //     } else {
+    //         Err(TokenMismatch)
+    //     }
+    // }
+
+    fn capture_comments(&mut self) -> Vec<SourceTokenIndex> {
+        let mut result = vec![];
+        while let Some(token) = self.source_tokens.get(self.next_source_index)
+            && token.ty.category() == TokenCategory::Comment
+        {
+            result.push(SourceTokenIndex(self.next_source_index));
+            self.next_source_index += 1;
+        }
+        result
+    }
+
+    fn peek_token(&self) -> Option<&Token> {
+        self.source_tokens.get(self.next_source_index)
+    }
+
+    fn prev_token(&self) -> Option<&Token> {
+        if self.next_source_index == 0 {
+            None
+        } else {
+            self.source_tokens.get(self.next_source_index - 1)
+        }
+    }
+
+    fn pop_token(&mut self, ty: TT) -> Result<SourceTokenIndex, TokenMismatch> {
+        let token = self.source_tokens.get(self.next_source_index).ok_or({
+            TokenMismatch {
+                index: None,
+                expected: ty,
+            }
+        })?;
+
+        let token_index = SourceTokenIndex(self.next_source_index);
+        self.next_source_index += 1;
+
+        if token.ty == ty {
+            Ok(token_index)
+        } else {
+            Err(TokenMismatch {
+                index: Some(token_index),
+                expected: ty,
+            })
+        }
+    }
+
+    fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
+        for i in self.next_source_index..self.source_tokens.len() {
+            if self.source_tokens[i].ty.category() != TokenCategory::Comment {
+                return Some(SourceTokenIndex(i));
+            }
+        }
+        None
+    }
+
+    fn collect_vertical_comments_and_blank_lines(&mut self, result: &mut Vec<PNode>) -> Result<(), TokenMismatch> {
+        // TODO preserve blank lines
+        let non_comment_start = self
+            .find_next_non_comment_token()
+            .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
+
+        while let Some(token) = self.peek_token() {
+            if let Some(real_token_start) = non_comment_start
+                && self.offsets.expand_pos(token.span.end()).line_0 == real_token_start.line_0
+            {
+                break;
+            }
+
+            if let Some(prev_token) = self.prev_token() {
+                let prev_end = self.offsets.expand_pos(prev_token.span.end());
+                let curr_start = self.offsets.expand_pos(token.span.start());
+                if prev_end.line_0 < curr_start.line_0 {
+                    result.push(PNode::NewLine);
+                }
+            }
+
+            match token.ty {
+                TT::LineComment => {
+                    // TODO space before?
+                    result.push(PNode::Token(self.pop_token(token.ty)?));
+                    result.push(PNode::NewLine);
+                }
+                TT::BlockComment => {
+                    // TODO spaces before/after?
+                    result.push(PNode::Token(self.pop_token(token.ty)?));
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_horizontal_comments(&mut self, result: &mut Vec<PNode>) -> Result<(), TokenMismatch> {
+        while let Some(token) = self.peek_token() {
+            match token.ty {
+                TT::LineComment => {
+                    // TODO space before?
+                    result.push(PNode::Token(self.pop_token(token.ty)?));
+                    result.push(PNode::NewLine);
+                }
+                TT::BlockComment => {
+                    // TODO space before/after?
+                    result.push(PNode::Token(self.pop_token(token.ty)?));
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
+    fn map(&mut self, node: FNode) -> Result<PNode, TokenMismatch> {
+        let result = match node {
+            FNode::Space => PNode::Literal(" "),
+            FNode::Token(ty) => {
+                let mut comments = vec![];
+                self.collect_horizontal_comments(&mut comments)?;
+
+                let node = PNode::Token(self.pop_token(ty)?);
+
+                if comments.is_empty() {
+                    node
+                } else {
+                    comments.push(node);
+                    PNode::Sequence(comments)
+                }
+            }
+            FNode::Horizontal(children) => {
+                // TODO capture comments between nodes
+                // TODO remember blank lines
+
+                let mut children_mapped = vec![];
+                for c in children {
+                    let c_mapped = self.map(c)?;
+                    push_to_sequence(&mut children_mapped, c_mapped);
+                }
+                PNode::Sequence(children_mapped)
+            }
+            FNode::Vertical(children) => {
+                // TODO capture comments between nodes
+                // TODO remember blank lines between both items and comments
+                let mut children_mapped = vec![];
+                for c in children {
+                    self.collect_vertical_comments_and_blank_lines(&mut children_mapped)?;
+                    let c_mapped = self.map(c)?;
+                    push_to_sequence(&mut children_mapped, c_mapped);
+                    children_mapped.push(PNode::NewLine);
+                }
+                self.collect_vertical_comments_and_blank_lines(&mut children_mapped)?;
+                PNode::Sequence(children_mapped)
+            }
+            FNode::CommaList(list) => {
+                // TODO capture comments between nodes
+                // TODO here we also want to capture before/after to match indent?
+                // TODO remember blank lines
+                let FCommaList { compact, children } = list;
+                let mut children_mapped = vec![];
+
+                for child in children {
+                    let child_mapped = self.map(child)?;
+                    // TODO fix formatting for this
+                    if let Some(t) = self.peek_token()
+                        && t.ty == TT::Comma
+                    {
+                        let _ = self.pop_token(TT::Comma)?;
+                    }
+
+                    children_mapped.push(child_mapped);
+                }
+
+                PNode::CommaGroup(PCommaGroup {
+                    compact,
+                    children: children_mapped,
+                })
+            }
+        };
+        Ok(result)
     }
 }
 
@@ -325,7 +364,7 @@ pub fn node_to_string(
     source_str: &str,
     source_offsets: &LineOffsets,
     source_tokens: &[Token],
-    root: &SNode,
+    root: &PNode,
 ) -> String {
     let mut ctx = StringBuilderContext {
         settings,
@@ -371,6 +410,8 @@ struct StringState {
 
 #[derive(Debug)]
 struct NeedsWrap;
+
+type WrapResult = Result<(), NeedsWrap>;
 
 // TODO convert this into a reportable internal compiler error?
 const MSG_WRAP: &str = "should succeed, wrapping is allowed";
@@ -451,204 +492,209 @@ impl StringBuilderContext<'_> {
         r
     }
 
-    fn write_token(&mut self, ty: TT, index: Option<SourceTokenIndex>) {
+    fn ensure_indent(&mut self) {
         // indent if first token on current line
         if self.state.curr_line_start == self.result.len() {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
             }
         }
-
-        // TODO write any leftover comments here, to make sure they're emitted
-        // TODO how do we determine what the comments are if there is no index corresponding to this token?
-        //   is it fine if we handle the comments afterwards?
-        // TODO should comments after lines be allowed?
-
-        // figure out the token string
-        let token_str = if let Some(index) = index {
-            let token = &self.source_tokens[index.0];
-            assert_eq!(ty, token.ty);
-            &self.source_str[token.span.range_bytes()]
-        } else {
-            assert_eq!(ty, TT::Comma);
-            ","
-        };
-
-        // write to the result
-        // TODO update line and overflow counters, especially if this contains newlines
-        self.result.push_str(token_str);
     }
 
-    fn write_comma_list(&mut self, list: &SCommaList, wrap: bool) -> Result<(), NeedsWrap> {
-        let &SCommaList {
-            compact,
-            force_wrap,
-            ref children,
-        } = list;
-        if compact {
-            todo!()
-        }
+    // fn write_comment(&mut self, index: SourceTokenIndex) {
+    //     let token = &self.source_tokens[index.0];
+    //     let token_str = &self.source_str[token.span.range_bytes()];
+    //
+    //     let line = match token.ty {
+    //         TT::LineComment => true,
+    //         TT::BlockComment => false,
+    //         _ => todo!("err"),
+    //     };
+    //
+    //     self.ensure_indent();
+    //     self.result.push_str(token_str);
+    //     if line {
+    //         self.write_newline();
+    //     }
+    // }
 
-        if force_wrap && !wrap {
-            // TODO this is really an error condition, the parent should already know that they need to wrap
-            return Err(NeedsWrap);
-        }
+    // fn write_token(&mut self, ty: TT, index: Option<SourceTokenIndex>) {
+    //     self.ensure_indent();
+    //
+    //     // TODO write any leftover comments here, to make sure they're emitted
+    //     // TODO how do we determine what the comments are if there is no index corresponding to this token?
+    //     //   is it fine if we handle the comments afterwards?
+    //     // TODO should comments after lines be allowed?
+    //
+    //     // figure out the token string
+    //     let token_str = if let Some(index) = index {
+    //         let token = &self.source_tokens[index.0];
+    //         assert_eq!(ty, token.ty);
+    //         &self.source_str[token.span.range_bytes()]
+    //     } else {
+    //         assert_eq!(ty, TT::Comma);
+    //         ","
+    //     };
+    //
+    //     // write to the result
+    //     // TODO update line and overflow counters, especially if this contains newlines
+    //     self.result.push_str(token_str);
+    // }
 
-        if wrap {
-            self.indent(|slf| {
-                slf.write_newline();
-                for (child_index, (child, comma_index)) in enumerate(children) {
-                    let comma_node = SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Token(TT::Comma, *comma_index));
-                    slf.write_node_with_extra_horizontal(child, Some(&comma_node), true)
-                        .expect(MSG_WRAP);
+    // fn write_comma_list(&mut self, list: &SCommaList, wrap: bool) -> WrapResult {
+    //     let &SCommaList {
+    //         compact,
+    //         force_wrap,
+    //         ref children,
+    //     } = list;
+    //     if compact {
+    //         todo!()
+    //     }
+    //
+    //     if force_wrap && !wrap {
+    //         // TODO this is really an error condition, the parent should already know that they need to wrap
+    //         return Err(NeedsWrap);
+    //     }
+    //
+    //     if wrap {
+    //         self.indent(|slf| {
+    //             slf.write_newline();
+    //             for (child_index, child) in enumerate(children) {
+    //                 match child {
+    //                     &SCommaListChild::Comment(child) => {
+    //                         slf.write_comment(child);
+    //                     }
+    //                     SCommaListChild::Child(child, comma_index) => {
+    //                         let comma_node =
+    //                             SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Token(TT::Comma, *comma_index));
+    //                         slf.write_node_with_extra_horizontal(child, Some(&comma_node), true)
+    //                             .expect(MSG_WRAP);
+    //
+    //                         slf.write_newline();
+    //                         if let Some(next_child) = children.get(child_index + 1) {
+    //                             let next_span = match next_child {
+    //                                 SCommaListChild::Comment(index) => Some(self.source_tokens[index.0].span),
+    //                                 SCommaListChild::Child(next_child, _) => next_child.span,
+    //                             };
+    //                             slf.write_matching_empty_line(child.span, next_span);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         })
+    //     } else {
+    //         for (child, last) in children.iter().with_last() {
+    //             match child {
+    //                 SCommaListChild::Comment(child) => {
+    //                     // TODO error if line comment
+    //                     self.write_comment(*child);
+    //                 }
+    //                 SCommaListChild::Child(child, comma_index) => {
+    //                     self.write_node(child, false)?;
+    //                     if !last {
+    //                         self.write_token(TT::Comma, *comma_index);
+    //                         self.write_space();
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //
+    //     Ok(())
+    // }
 
-                    slf.write_newline();
-                    if let Some((next_child, _)) = children.get(child_index + 1) {
-                        slf.write_matching_empty_line(child.span, next_child.span);
-                    }
-                }
-            })
-        } else {
-            for (&(ref child, comma_index), last) in children.iter().with_last() {
-                self.write_node(child, false)?;
-                if !last {
-                    self.write_token(TT::Comma, comma_index);
-                    self.write_space();
-                }
-            }
-        }
-
+    fn write_str(&mut self, s: &str) -> WrapResult {
+        // TODO if multiline, require wrap?
+        // TODO if multiline, increment line state
+        self.ensure_indent();
+        self.result.push_str(s);
         Ok(())
     }
 
-    fn write_node(&mut self, node: &SNode, allow_wrap: bool) -> Result<(), NeedsWrap> {
-        self.write_node_with_extra_horizontal(node, None, allow_wrap)
-    }
-
-    fn write_node_with_extra_horizontal(
-        &mut self,
-        node: &SNode,
-        extra_horizontal: Option<&SNodeKindNonHorizontal>,
-        allow_wrap: bool,
-    ) -> Result<(), NeedsWrap> {
-        match &node.kind {
-            SNodeKind::NonHorizontal(node) => {
-                if let Some(extra_horizontal) = extra_horizontal {
-                    let slice_extra = SliceExtra {
-                        slice: std::slice::from_ref(node),
-                        extra: Some(extra_horizontal),
-                    };
-                    self.write_horizontal(slice_extra, allow_wrap)?;
-                } else {
-                    match node {
-                        SNodeKindNonHorizontal::NonWrap(node) => self.write_node_non_wrap(node),
-                        SNodeKindNonHorizontal::CommaList(_) => todo!("is this even possible?"),
-                    }
-                }
+    fn write_node(&mut self, node: &PNode, allow_wrap: bool) -> WrapResult {
+        match node {
+            PNode::Literal(literal_str) => {
+                self.write_str(literal_str)?;
             }
-            SNodeKind::Horizontal(children) => {
-                let slice_extra = SliceExtra {
-                    slice: children,
-                    extra: extra_horizontal,
-                };
-                self.write_horizontal(slice_extra, allow_wrap)?
+            PNode::Token(index) => {
+                let token_span = self.source_tokens[index.0].span;
+                let token_str = &self.source_str[token_span.range_bytes()];
+                self.write_str(token_str)?;
             }
-        }
-        Ok(())
-    }
-
-    fn write_matching_empty_line(&mut self, span: Option<Span>, next_span: Option<Span>) {
-        // TODO comments should stick to the correct item (eg. stick to previous should be possible)
-        if let Some(child_span) = span
-            && let Some(next_span) = next_span
-        {
-            let child_span = self.source_offsets.expand_span(child_span);
-            let next_span = self.source_offsets.expand_span(next_span);
-
-            let any_blank_line = ((child_span.end.line_0 + 1)..next_span.start.line_0).any(|line_0| {
-                let line_range = self.source_offsets.line_range(line_0, false);
-                let line_str = &self.source_str[line_range];
-                is_whitespace_or_empty(line_str)
-            });
-            if any_blank_line {
+            PNode::NewLine => {
                 self.write_newline();
             }
-        }
-    }
-
-    fn write_node_non_wrap(&mut self, node: &SNodeKindNonWrap) {
-        match node {
-            SNodeKindNonWrap::Space => self.write_space(),
-            &SNodeKindNonWrap::Token(ty, index) => self.write_token(ty, index),
-            SNodeKindNonWrap::Vertical(children) => {
-                for (child_index, child) in enumerate(children) {
-                    // within a vertical, nodes are always allowed to wrap
-                    let _ = self.write_node(child, true);
-                    self.write_newline();
-
-                    if let Some(next_child) = children.get(child_index + 1) {
-                        self.write_matching_empty_line(child.span, next_child.span);
-                    }
+            PNode::IfWrap(_) => todo!(),
+            PNode::Indent(_) => todo!(),
+            PNode::Sequence(children) => {
+                // TODO rollback if overflow etc
+                for c in children {
+                    self.write_node(c, false)?;
                 }
             }
-        }
-    }
+            PNode::CommaGroup(PCommaGroup { compact, children }) => {
+                if *compact {
+                    todo!()
+                }
 
-    fn write_horizontal(
-        &mut self,
-        nodes: SliceExtra<SNodeKindNonHorizontal>,
-        allow_wrap: bool,
-    ) -> Result<(), NeedsWrap> {
-        // pop the next node
-        let (node, rest) = match nodes.split_first() {
-            Some((node, rest)) => (node, rest),
-            None => return Ok(()),
-        };
-
-        // write the node
-        match node {
-            SNodeKindNonHorizontal::NonWrap(node) => {
-                // simple non-wrapping node, no decisions to take here
-                self.write_node_non_wrap(node);
-                self.write_horizontal(rest, allow_wrap)?;
-                Ok(())
-            }
-            SNodeKindNonHorizontal::CommaList(list) => {
-                // comma list, we need to decide whether to wrap or not
-                // try without wrapping first
+                // try without wrapping
                 let check = self.checkpoint();
-                let result_unwrapped = self.write_comma_list(list, false);
+                let mut needs_wrap = false;
 
-                // check if the elements needs wrapping
-                let mut should_wrap = match result_unwrapped {
-                    Ok(()) => false,
-                    Err(NeedsWrap) => true,
-                };
-                // check if the line already overflows
-                if !should_wrap {
-                    should_wrap = self.line_overflows(check);
-                }
-
-                // if no wrapping is needed yet, try writing the rest of the list
-                // TODO this is just a perf optimization, we could also always do this
-                //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
-                if !should_wrap {
-                    self.write_horizontal(rest, allow_wrap)?;
-                    should_wrap = self.line_overflows(check)
-                }
-
-                // if we need to wrap, roll back and re-writing everything with wrapping
-                if should_wrap {
-                    if !allow_wrap {
-                        return Err(NeedsWrap);
+                for (child, last) in children.iter().with_last() {
+                    match self.write_node(child, false) {
+                        Ok(_) => {}
+                        Err(_) => {}
                     }
-                    self.restore(check);
-                    self.write_comma_list(list, true).expect(MSG_WRAP);
-                    self.write_horizontal(rest, true).expect(MSG_WRAP);
-                }
+                    // TODO if the child is a sequence, merge the comma into that sequence
 
-                Ok(())
+                    if !last {
+                        self.write_str(", ")?;
+                    }
+                }
             }
         }
+        Ok(())
     }
+
+    fn write_comma_group(
+        &mut self,
+        compact: bool,
+        children: &[(PNode, Option<SourceTokenIndex>)],
+        wrap: bool,
+    ) -> WrapResult {
+        todo!()
+    }
+
+    // fn write_node_with_extra_horizontal(
+    //     &mut self,
+    //     node: &SNode,
+    //     extra_horizontal: Option<&SNodeKindNonHorizontal>,
+    //     allow_wrap: bool,
+    // ) -> WrapResult {
+    //     match &node.kind {
+    //         SNodeKind::NonHorizontal(node) => {
+    //             if let Some(extra_horizontal) = extra_horizontal {
+    //                 let slice_extra = SliceExtra {
+    //                     slice: std::slice::from_ref(node),
+    //                     extra: Some(extra_horizontal),
+    //                 };
+    //                 self.write_horizontal(slice_extra, allow_wrap)?;
+    //             } else {
+    //                 match node {
+    //                     SNodeKindNonHorizontal::NonWrap(node) => self.write_node_non_wrap(node),
+    //                     SNodeKindNonHorizontal::CommaList(_) => todo!("is this even possible?"),
+    //                 }
+    //             }
+    //         }
+    //         SNodeKind::Horizontal(children) => {
+    //             let slice_extra = SliceExtra {
+    //                 slice: children,
+    //                 extra: extra_horizontal,
+    //             };
+    //             self.write_horizontal(slice_extra, allow_wrap)?
+    //         }
+    //     }
+    //     Ok(())
+    // }
 }

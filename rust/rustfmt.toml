@@ -1,4 +1,5 @@
 max_width = 120
 # TODO start using this, saves 2k LOC
 #struct_lit_width = 80
+#chain_width = 80
 use_field_init_shorthand = true

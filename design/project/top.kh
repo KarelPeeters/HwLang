@@ -1,4 +1,24 @@
-fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier) {}
+fn foo(x: very_long_identifiervery_long_identiong_identifiervery_long_identifierr, y: very_long_identifiervery_long_identiong_identifiervery_long_identifierr) {}
+
+
+
+/*
+//fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr)) {}
+/*test*/
+/*pub*/ fn short_func(
+
+    a: uint,
+    b: uint,
+) {}
+
+// test
+// test
+//fn tiny(
+//    very_long_identifiervery_long_identifiervery_long_identifiervery_long_identifiervery_long_identifier: uint,
+//    b: uint,
+//) {}
+
+/*
 
 //module foo(
 //    very_long_identifier: very_long_identifier
@@ -282,3 +302,5 @@ fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_l
 //    // no z value
 //) {
 //}
+*/
+*/
