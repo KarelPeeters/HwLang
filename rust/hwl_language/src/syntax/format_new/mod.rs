@@ -1,14 +1,17 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::core::{map_nodes, node_to_string};
-use crate::syntax::format_new::flatten::ast_to_format_tree;
+use crate::syntax::format_new::flatten::ast_to_node;
+use crate::syntax::format_new::high::lower_nodes;
+use crate::syntax::format_new::low::node_to_string;
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::tokenize;
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
 
-mod core;
+mod common;
 mod flatten;
+mod high;
+mod low;
 
 // Sketch of the formatter implementation:
 // * convert the AST to a tree of FNodes, which are just tokens with some extra structure
@@ -38,12 +41,12 @@ pub fn format(
         println!("    {token:?}");
     }
 
-    let root_node = ast_to_format_tree(&source_ast);
+    let root_node = ast_to_node(&source_ast);
 
     println!("Initial tree:");
     println!("{}", root_node.tree_string());
 
-    let root_node = map_nodes(source_offsets, &source_tokens, root_node).map_err(|e| {
+    let root_node = lower_nodes(source_offsets, &source_tokens, root_node).map_err(|e| {
         let (span, got) = match e.index {
             None => (Span::empty_at(source.full_span(file).end()), "end of file"),
             Some(index) => {
