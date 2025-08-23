@@ -1,4 +1,7 @@
-fn foo(x: very_long_identifiervery_long_identiong_identifiervery_long_identifierr, y: very_long_identifiervery_long_identiong_identifiervery_long_identifierr) {}
+fn foo(
+    x: very_long_identifiervery_long_identiong_identifiervery_long_identifierrrrrrrrrrrrrrrrrrrrrrrrr(something_medium),
+    y: very_long_identifiervery_long_identiong_identifiervery_long_identifierr,
+) {}
 
 
 

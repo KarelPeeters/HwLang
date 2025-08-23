@@ -27,6 +27,7 @@ pub trait ResultNeverExt<T> {
 }
 
 impl<T> ResultNeverExt<T> for Result<T, Never> {
+    // TODO find a better name
     fn remove_never(self) -> T {
         match self {
             Ok(v) => v,

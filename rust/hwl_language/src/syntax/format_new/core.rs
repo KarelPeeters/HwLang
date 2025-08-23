@@ -2,6 +2,7 @@ use crate::syntax::format::FormatSettings;
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
 use crate::util::iter::IterExt;
+use crate::util::{Never, ResultNeverExt};
 use hwl_util::{swrite, swriteln};
 use itertools::Itertools;
 
@@ -33,7 +34,7 @@ pub enum PNode {
     CommaGroup(PCommaGroup),
 }
 
-struct PCommaGroup {
+pub struct PCommaGroup {
     compact: bool,
     children: Vec<PNode>,
 }
@@ -379,7 +380,7 @@ pub fn node_to_string(
             indent: 0,
         },
     };
-    ctx.write_node(root, true).expect(MSG_WRAP);
+    ctx.write_node::<AllowWrap>(root).remove_never();
     ctx.result
 }
 
@@ -450,6 +451,34 @@ impl<'a, T> SliceExtra<'a, T> {
     }
 }
 
+trait MaybeWrap {
+    type E;
+    fn allow_wrap() -> bool;
+    fn require_wrap() -> Result<(), Self::E>;
+}
+
+struct NoWrap {}
+impl MaybeWrap for NoWrap {
+    type E = NeedsWrap;
+    fn allow_wrap() -> bool {
+        false
+    }
+    fn require_wrap() -> Result<(), NeedsWrap> {
+        Err(NeedsWrap)
+    }
+}
+
+struct AllowWrap {}
+impl MaybeWrap for AllowWrap {
+    type E = Never;
+    fn allow_wrap() -> bool {
+        true
+    }
+    fn require_wrap() -> Result<(), Never> {
+        Ok(())
+    }
+}
+
 impl StringBuilderContext<'_> {
     fn checkpoint(&self) -> CheckPoint {
         CheckPoint {
@@ -479,6 +508,8 @@ impl StringBuilderContext<'_> {
 
     fn line_overflows(&self, check: CheckPoint) -> bool {
         // TODO optimize this?
+        // TODO rename to clarify whether this checks the first or last line, or maybe this should check all lines?
+        //   but not comment lines >:(
         let line_start = check.state.curr_line_start;
         let rest = &self.result[line_start..];
         let line_len = rest.bytes().position(|c| c == b'\n').unwrap_or(rest.len());
@@ -501,109 +532,7 @@ impl StringBuilderContext<'_> {
         }
     }
 
-    // fn write_comment(&mut self, index: SourceTokenIndex) {
-    //     let token = &self.source_tokens[index.0];
-    //     let token_str = &self.source_str[token.span.range_bytes()];
-    //
-    //     let line = match token.ty {
-    //         TT::LineComment => true,
-    //         TT::BlockComment => false,
-    //         _ => todo!("err"),
-    //     };
-    //
-    //     self.ensure_indent();
-    //     self.result.push_str(token_str);
-    //     if line {
-    //         self.write_newline();
-    //     }
-    // }
-
-    // fn write_token(&mut self, ty: TT, index: Option<SourceTokenIndex>) {
-    //     self.ensure_indent();
-    //
-    //     // TODO write any leftover comments here, to make sure they're emitted
-    //     // TODO how do we determine what the comments are if there is no index corresponding to this token?
-    //     //   is it fine if we handle the comments afterwards?
-    //     // TODO should comments after lines be allowed?
-    //
-    //     // figure out the token string
-    //     let token_str = if let Some(index) = index {
-    //         let token = &self.source_tokens[index.0];
-    //         assert_eq!(ty, token.ty);
-    //         &self.source_str[token.span.range_bytes()]
-    //     } else {
-    //         assert_eq!(ty, TT::Comma);
-    //         ","
-    //     };
-    //
-    //     // write to the result
-    //     // TODO update line and overflow counters, especially if this contains newlines
-    //     self.result.push_str(token_str);
-    // }
-
-    // fn write_comma_list(&mut self, list: &SCommaList, wrap: bool) -> WrapResult {
-    //     let &SCommaList {
-    //         compact,
-    //         force_wrap,
-    //         ref children,
-    //     } = list;
-    //     if compact {
-    //         todo!()
-    //     }
-    //
-    //     if force_wrap && !wrap {
-    //         // TODO this is really an error condition, the parent should already know that they need to wrap
-    //         return Err(NeedsWrap);
-    //     }
-    //
-    //     if wrap {
-    //         self.indent(|slf| {
-    //             slf.write_newline();
-    //             for (child_index, child) in enumerate(children) {
-    //                 match child {
-    //                     &SCommaListChild::Comment(child) => {
-    //                         slf.write_comment(child);
-    //                     }
-    //                     SCommaListChild::Child(child, comma_index) => {
-    //                         let comma_node =
-    //                             SNodeKindNonHorizontal::NonWrap(SNodeKindNonWrap::Token(TT::Comma, *comma_index));
-    //                         slf.write_node_with_extra_horizontal(child, Some(&comma_node), true)
-    //                             .expect(MSG_WRAP);
-    //
-    //                         slf.write_newline();
-    //                         if let Some(next_child) = children.get(child_index + 1) {
-    //                             let next_span = match next_child {
-    //                                 SCommaListChild::Comment(index) => Some(self.source_tokens[index.0].span),
-    //                                 SCommaListChild::Child(next_child, _) => next_child.span,
-    //                             };
-    //                             slf.write_matching_empty_line(child.span, next_span);
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         })
-    //     } else {
-    //         for (child, last) in children.iter().with_last() {
-    //             match child {
-    //                 SCommaListChild::Comment(child) => {
-    //                     // TODO error if line comment
-    //                     self.write_comment(*child);
-    //                 }
-    //                 SCommaListChild::Child(child, comma_index) => {
-    //                     self.write_node(child, false)?;
-    //                     if !last {
-    //                         self.write_token(TT::Comma, *comma_index);
-    //                         self.write_space();
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    //
-    //     Ok(())
-    // }
-
-    fn write_str(&mut self, s: &str) -> WrapResult {
+    fn write_str<W: MaybeWrap>(&mut self, s: &str) -> Result<(), W::E> {
         // TODO if multiline, require wrap?
         // TODO if multiline, increment line state
         self.ensure_indent();
@@ -611,15 +540,25 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_node(&mut self, node: &PNode, allow_wrap: bool) -> WrapResult {
+    fn write_node_extra<W: MaybeWrap>(&mut self, node: &PNode, extra: Option<&PNode>) -> Result<(), W::E> {
+        if let PNode::Sequence(children) = node {
+            self.write_sequence::<W>(children.iter().chain(extra.into_iter()))
+        } else if let Some(extra) = extra {
+            self.write_sequence::<W>([node, extra].into_iter())
+        } else {
+            self.write_node::<W>(node)
+        }
+    }
+
+    fn write_node<W: MaybeWrap>(&mut self, node: &PNode) -> Result<(), W::E> {
         match node {
             PNode::Literal(literal_str) => {
-                self.write_str(literal_str)?;
+                self.write_str::<W>(literal_str)?;
             }
             PNode::Token(index) => {
                 let token_span = self.source_tokens[index.0].span;
                 let token_str = &self.source_str[token_span.range_bytes()];
-                self.write_str(token_str)?;
+                self.write_str::<W>(token_str)?;
             }
             PNode::NewLine => {
                 self.write_newline();
@@ -627,10 +566,7 @@ impl StringBuilderContext<'_> {
             PNode::IfWrap(_) => todo!(),
             PNode::Indent(_) => todo!(),
             PNode::Sequence(children) => {
-                // TODO rollback if overflow etc
-                for c in children {
-                    self.write_node(c, false)?;
-                }
+                self.write_sequence::<W>(children.iter())?;
             }
             PNode::CommaGroup(PCommaGroup { compact, children }) => {
                 if *compact {
@@ -640,61 +576,125 @@ impl StringBuilderContext<'_> {
                 // try without wrapping
                 let check = self.checkpoint();
                 let mut needs_wrap = false;
-
                 for (child, last) in children.iter().with_last() {
-                    match self.write_node(child, false) {
+                    let extra = if last { None } else { Some(&PNode::Literal(", ")) };
+                    match self.write_node_extra::<NoWrap>(child, extra) {
                         Ok(_) => {}
-                        Err(_) => {}
+                        Err(NeedsWrap) => {
+                            needs_wrap = true;
+                            break;
+                        }
                     }
-                    // TODO if the child is a sequence, merge the comma into that sequence
+                    if self.line_overflows(check) {
+                        needs_wrap = true;
+                        break;
+                    }
+                }
 
-                    if !last {
-                        self.write_str(", ")?;
-                    }
+                // maybe fallback to wrapping
+                if needs_wrap {
+                    self.restore(check);
+                    W::require_wrap()?;
+                    self.indent(|slf| {
+                        slf.write_newline();
+                        for child in children {
+                            let extra = Some(&PNode::Literal(","));
+                            slf.write_node_extra::<AllowWrap>(child, extra).remove_never();
+                            slf.write_newline();
+                        }
+                    })
                 }
             }
         }
         Ok(())
     }
 
-    fn write_comma_group(
+    fn write_sequence<'c, W: MaybeWrap>(
         &mut self,
-        compact: bool,
-        children: &[(PNode, Option<SourceTokenIndex>)],
-        wrap: bool,
-    ) -> WrapResult {
-        todo!()
+        mut children: impl Iterator<Item = &'c PNode> + Clone,
+    ) -> Result<(), W::E> {
+        let Some(child) = children.next() else {
+            return Ok(());
+        };
+        let rest = children;
+
+        match child {
+            PNode::Sequence(_) => todo!("err, should be flattened"),
+            PNode::Literal(_) | PNode::Token(_) | PNode::NewLine | PNode::IfWrap(_) | PNode::Indent(_) => {
+                // simple nodes without a wrapping decision, just write them
+                let check = self.checkpoint();
+                self.write_node::<W>(child)?;
+                self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
+                Ok(())
+            }
+            PNode::CommaGroup(group) => {
+                // for groups we have to make a choice
+
+                // try without wrapping
+                let check = self.checkpoint();
+                let result_no_wrap = self.write_comma_group::<NoWrap>(group);
+
+                // check check if children need wrapping
+                let mut should_wrap = match result_no_wrap {
+                    Ok(()) => false,
+                    Err(NeedsWrap) => true,
+                };
+
+                // check if line overflows
+                if !should_wrap {
+                    should_wrap |= self.line_overflows(check);
+                }
+
+                // if no wrapping is needed yet, try writing the rest of the list
+                // TODO this is just a perf optimization, we could also always do this
+                //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
+                if !should_wrap {
+                    self.write_sequence::<W>(rest.clone())
+                        .inspect_err(|_| self.restore(check))?;
+                    should_wrap |= self.line_overflows(check);
+                }
+
+                // if we need to wrap, roll back and re-writing everything with wrapping
+                if should_wrap {
+                    self.restore(check);
+                    W::require_wrap()?;
+
+                    self.write_comma_group::<AllowWrap>(group).remove_never();
+                    self.write_sequence::<AllowWrap>(rest).remove_never();
+                }
+
+                Ok(())
+            }
+        }
     }
 
-    // fn write_node_with_extra_horizontal(
-    //     &mut self,
-    //     node: &SNode,
-    //     extra_horizontal: Option<&SNodeKindNonHorizontal>,
-    //     allow_wrap: bool,
-    // ) -> WrapResult {
-    //     match &node.kind {
-    //         SNodeKind::NonHorizontal(node) => {
-    //             if let Some(extra_horizontal) = extra_horizontal {
-    //                 let slice_extra = SliceExtra {
-    //                     slice: std::slice::from_ref(node),
-    //                     extra: Some(extra_horizontal),
-    //                 };
-    //                 self.write_horizontal(slice_extra, allow_wrap)?;
-    //             } else {
-    //                 match node {
-    //                     SNodeKindNonHorizontal::NonWrap(node) => self.write_node_non_wrap(node),
-    //                     SNodeKindNonHorizontal::CommaList(_) => todo!("is this even possible?"),
-    //                 }
-    //             }
-    //         }
-    //         SNodeKind::Horizontal(children) => {
-    //             let slice_extra = SliceExtra {
-    //                 slice: children,
-    //                 extra: extra_horizontal,
-    //             };
-    //             self.write_horizontal(slice_extra, allow_wrap)?
-    //         }
-    //     }
-    //     Ok(())
-    // }
+    fn write_comma_group<W: MaybeWrap>(&mut self, group: &PCommaGroup) -> Result<(), W::E> {
+        let PCommaGroup { compact, children } = group;
+        if *compact {
+            todo!()
+        }
+
+        // TODO here we interpret W as "wrap", not "allow wrap"
+        if W::allow_wrap() {
+            self.indent(|slf| {
+                slf.write_newline();
+                for child in children {
+                    slf.write_node_extra::<AllowWrap>(child, Some(&PNode::Literal(",")))
+                        .remove_never();
+                    slf.write_newline();
+                }
+            });
+        } else {
+            let check = self.checkpoint();
+            for (child, last) in children.iter().with_last() {
+                self.write_node::<W>(child).inspect_err(|_| self.restore(check))?;
+                if !last {
+                    self.write_str::<W>(",").inspect_err(|_| self.restore(check))?;
+                    self.write_space();
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

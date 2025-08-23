@@ -45,6 +45,9 @@ use itertools::{Either, enumerate};
 //   * checkpointing can be exponential
 //   * improve and double-check comma explanation: (dis)appear, unambiguous
 
+// TODO improvements:
+//   * force wrap if there is a trailing comma
+
 #[derive(Debug)]
 pub struct FormatSettings {
     pub indent_str: String,
