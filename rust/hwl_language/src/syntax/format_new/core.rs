@@ -417,40 +417,6 @@ type WrapResult = Result<(), NeedsWrap>;
 // TODO convert this into a reportable internal compiler error?
 const MSG_WRAP: &str = "should succeed, wrapping is allowed";
 
-#[derive(Debug)]
-struct SliceExtra<'a, T> {
-    slice: &'a [T],
-    extra: Option<&'a T>,
-}
-
-impl<T> Copy for SliceExtra<'_, T> {}
-
-impl<T> Clone for SliceExtra<'_, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, T> SliceExtra<'a, T> {
-    fn split_first(&self) -> Option<(&'a T, SliceExtra<'a, T>)> {
-        if let Some((first, rest)) = self.slice.split_first() {
-            let extra = SliceExtra {
-                slice: rest,
-                extra: self.extra,
-            };
-            Some((first, extra))
-        } else if let Some(first) = self.extra {
-            let extra = SliceExtra {
-                slice: &[],
-                extra: None,
-            };
-            Some((first, extra))
-        } else {
-            None
-        }
-    }
-}
-
 trait MaybeWrap {
     type E;
     fn allow_wrap() -> bool;
