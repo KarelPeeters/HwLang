@@ -12,7 +12,6 @@ pub enum LNode {
 
     // TODO make all of these just variants of literal
     NewLine,
-    IfWrap(Box<LNode>),
 
     Indent(Box<LNode>),
     Sequence(Vec<LNode>),
@@ -22,6 +21,7 @@ pub enum LNode {
 pub struct LCommaList {
     pub compact: bool,
     pub children: Vec<LNode>,
+    pub suffix: Option<Box<LNode>>,
 }
 
 // TODO move to separate file?
@@ -119,10 +119,6 @@ impl LNode {
             LNode::Literal(s) => swriteln!(f, "Literal({s:?})"),
             LNode::Token(index) => swriteln!(f, "Token({index:?})"),
             LNode::NewLine => swriteln!(f, "NewLine"),
-            LNode::IfWrap(child) => {
-                swriteln!(f, "IfWrap");
-                child.debug_str_impl(f, indent + 1);
-            }
             LNode::Indent(child) => {
                 swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
@@ -133,10 +129,19 @@ impl LNode {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
-            LNode::CommaGroup(LCommaList { compact, children }) => {
+            LNode::CommaGroup(LCommaList {
+                compact,
+                children,
+                suffix,
+            }) => {
                 swriteln!(f, "CommaGroup(compact={compact})");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
+                }
+                if let Some(suffix) = suffix {
+                    swrite_indent(f, indent + 1);
+                    swriteln!(f, "suffix");
+                    suffix.debug_str_impl(f, indent + 2);
                 }
             }
         }
@@ -228,12 +233,15 @@ impl StringBuilderContext<'_> {
                 W::require_wrap()?;
                 self.write_newline();
             }
-            LNode::IfWrap(_) => todo!(),
             LNode::Indent(_) => todo!(),
             LNode::Sequence(children) => {
                 self.write_sequence::<W>(children.iter())?;
             }
-            LNode::CommaGroup(LCommaList { compact, children }) => {
+            LNode::CommaGroup(LCommaList {
+                compact,
+                children,
+                suffix,
+            }) => {
                 todo!("is this even reachable?")
             }
         }
@@ -251,7 +259,7 @@ impl StringBuilderContext<'_> {
 
         match child {
             LNode::Sequence(_) => todo!("err, should be flattened"),
-            LNode::Literal(_) | LNode::Token(_) | LNode::NewLine | LNode::IfWrap(_) | LNode::Indent(_) => {
+            LNode::Literal(_) | LNode::Token(_) | LNode::NewLine | LNode::Indent(_) => {
                 // simple nodes without a wrapping decision, just write them
                 let check = self.checkpoint();
                 self.write_node::<W>(child)?;
@@ -300,8 +308,15 @@ impl StringBuilderContext<'_> {
     }
 
     fn write_comma_group<W: MaybeWrap>(&mut self, group: &LCommaList) -> Result<(), W::E> {
-        let LCommaList { compact, children } = group;
+        let LCommaList {
+            compact,
+            children,
+            suffix,
+        } = group;
         if *compact {
+            todo!()
+        }
+        if let Some(suffix) = suffix {
             todo!()
         }
 
@@ -317,10 +332,13 @@ impl StringBuilderContext<'_> {
                     self.write_space();
                 }
             }
+            // if let Some(suffix) = suffix {
+            //     self.write_node::<W>(suffix).inspect_err(|_| self.restore(check))?;
+            // }
         } else {
             self.indent(|slf| {
                 slf.write_newline();
-                for child in children {
+                for (child, last) in children.iter().with_last() {
                     slf.write_node_extra::<AllowWrap>(child, Some(&LNode::Literal(",")))
                         .remove_never();
                     slf.write_newline();

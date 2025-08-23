@@ -701,7 +701,7 @@ impl CompileItemContext<'_, '_> {
         // check arg is single non-named value
         // TODO use new common arg-matching machinery
         let value = match args.inner.single() {
-            Some(Arg { span: _, name, value }) => {
+            Ok(Arg { span: _, name, value }) => {
                 if let Some(name) = name {
                     return Err(diags.report_simple(
                         "this function expects a single unnamed parameter",
@@ -711,7 +711,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 value
             }
-            None => {
+            Err(_) => {
                 return Err(diags.report_simple(
                     "this function expects a single parameter",
                     args.span,

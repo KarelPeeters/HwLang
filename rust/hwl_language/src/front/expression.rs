@@ -1816,7 +1816,7 @@ fn eval_int_ty_call(
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
 ) -> DiagResult<IncRange<BigInt>> {
     // ensure single unnamed compile-time arg
-    let arg = args.inner.single().ok_or_else(|| {
+    let arg = args.inner.single().map_err(|_| {
         diags.report_simple(
             "expected single argument for int type",
             args.span,

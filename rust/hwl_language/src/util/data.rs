@@ -26,17 +26,17 @@ where
 }
 
 pub trait VecExt<T> {
-    fn single(self) -> Option<T>;
+    fn single(self) -> Result<T, Vec<T>>;
 
     fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
 }
 
 impl<T> VecExt<T> for Vec<T> {
-    fn single(mut self) -> Option<T> {
+    fn single(mut self) -> Result<T, Vec<T>> {
         if self.len() == 1 {
-            Some(self.pop().unwrap())
+            Ok(self.pop().unwrap())
         } else {
-            None
+            Err(self)
         }
     }
 
