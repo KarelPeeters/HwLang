@@ -114,7 +114,6 @@ impl PNode {
                 swriteln!(f, "CommaGroup(compact={compact})");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
-                    swrite_indent(f, indent + 1);
                 }
             }
         }
@@ -527,6 +526,7 @@ impl StringBuilderContext<'_> {
                 self.write_str::<W>(token_str)?;
             }
             PNode::NewLine => {
+                W::require_wrap()?;
                 self.write_newline();
             }
             PNode::IfWrap(_) => todo!(),
