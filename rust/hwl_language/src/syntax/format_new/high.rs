@@ -1,8 +1,9 @@
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
-use crate::syntax::format_new::low::{LCommaList, LNode};
+use crate::syntax::format_new::low::{LGroup, LNode};
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
 use crate::util::data::VecExt;
+use crate::util::iter::IterExt;
 use hwl_util::swriteln;
 
 #[derive(Debug)]
@@ -244,34 +245,39 @@ impl LowerContext<'_> {
                 let HCommaList { compact, children } = list;
                 let mut mapped = vec![];
 
-                for (i, child) in children.into_iter().enumerate() {
-                    let child_mapped = self.map(child)?;
+                for (child, last) in children.into_iter().with_last() {
+                    let mut seq = SequenceBuilder::new();
+                    seq.push(self.map(child)?);
 
-                    // TODO capture comments here
+                    // TODO capture comments before comma
 
-                    // TODO fix formatting for this
-                    if let Some(t) = self.peek_token()
-                        && t.ty == TT::Comma
-                    {
-                        let _ = self.pop_token(TT::Comma)?;
+                    // handle comma
+                    // TODO get this to format more nicely
+                    if last {
+                        if let Some(t) = self.peek_token()
+                            && t.ty == TT::Comma
+                        {
+                            self.pop_token(TT::Comma)?;
+                        }
+                        seq.push(LNode::BranchWrap { no_wrap: "", wrap: "," });
+                    } else {
+                        self.pop_token(TT::Comma)?;
+                        seq.push(LNode::BranchWrap {
+                            no_wrap: ", ",
+                            wrap: ",",
+                        });
                     }
 
-                    mapped.push(child_mapped);
+                    // TODO capture comments after comma
+
+                    mapped.push(seq.build());
                 }
 
-                // let mut suffix = vec![];
-                // // TODO drop trailing newlines
-                // self.collect_comments_on_lines_before_real_token(&mut suffix)?;
-                // let suffix = if suffix.is_empty() {
-                //     None
-                // } else {
-                //     Some(Box::new(LNode::Sequence(suffix)))
-                // };
+                // TODO capture comments
 
-                LNode::CommaGroup(LCommaList {
+                LNode::Group(LGroup {
                     compact,
                     children: mapped,
-                    suffix: None,
                 })
             }
         };

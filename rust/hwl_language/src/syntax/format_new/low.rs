@@ -2,7 +2,6 @@ use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::Token;
-use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 
@@ -15,13 +14,14 @@ pub enum LNode {
 
     Indent(Box<LNode>),
     Sequence(Vec<LNode>),
-    CommaGroup(LCommaList),
+
+    Group(LGroup),
+    BranchWrap { no_wrap: &'static str, wrap: &'static str },
 }
 
-pub struct LCommaList {
+pub struct LGroup {
     pub compact: bool,
     pub children: Vec<LNode>,
-    pub suffix: Option<Box<LNode>>,
 }
 
 // TODO move to separate file?
@@ -129,20 +129,15 @@ impl LNode {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
-            LNode::CommaGroup(LCommaList {
-                compact,
-                children,
-                suffix,
-            }) => {
-                swriteln!(f, "CommaGroup(compact={compact})");
+            LNode::Group(group) => {
+                let LGroup { compact, children } = group;
+                swriteln!(f, "Group(compact={compact})");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
                 }
-                if let Some(suffix) = suffix {
-                    swrite_indent(f, indent + 1);
-                    swriteln!(f, "suffix");
-                    suffix.debug_str_impl(f, indent + 2);
-                }
+            }
+            LNode::BranchWrap { no_wrap, wrap } => {
+                swriteln!(f, "BranchWrap(no_wrap={no_wrap:?}, wrap={wrap:?})");
             }
         }
     }
@@ -209,16 +204,6 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_node_extra<W: MaybeWrap>(&mut self, node: &LNode, extra: Option<&LNode>) -> Result<(), W::E> {
-        if let LNode::Sequence(children) = node {
-            self.write_sequence::<W>(children.iter().chain(extra.into_iter()))
-        } else if let Some(extra) = extra {
-            self.write_sequence::<W>([node, extra].into_iter())
-        } else {
-            self.write_node::<W>(node)
-        }
-    }
-
     fn write_node<W: MaybeWrap>(&mut self, node: &LNode) -> Result<(), W::E> {
         match node {
             LNode::Literal(literal_str) => {
@@ -235,40 +220,39 @@ impl StringBuilderContext<'_> {
             }
             LNode::Indent(_) => todo!(),
             LNode::Sequence(children) => {
-                self.write_sequence::<W>(children.iter())?;
+                self.write_sequence::<W>(children)?;
             }
-            LNode::CommaGroup(LCommaList {
-                compact,
-                children,
-                suffix,
-            }) => {
+            LNode::Group(_) => {
                 todo!("is this even reachable?")
+            }
+            LNode::BranchWrap { no_wrap, wrap } => {
+                // TODO is this condition correct, or should we pass this as a separate param from above?
+                if !W::allow_wrap() {
+                    self.write_str::<W>(no_wrap)?;
+                } else {
+                    self.write_str::<W>(wrap)?;
+                }
             }
         }
         Ok(())
     }
 
-    fn write_sequence<'c, W: MaybeWrap>(
-        &mut self,
-        mut children: impl Iterator<Item = &'c LNode> + Clone,
-    ) -> Result<(), W::E> {
-        let Some(child) = children.next() else {
+    fn write_sequence<W: MaybeWrap>(&mut self, children: &[LNode]) -> Result<(), W::E> {
+        let Some((child, rest)) = children.split_first() else {
             return Ok(());
         };
-        let rest = children;
 
         match child {
             LNode::Sequence(_) => todo!("err, should be flattened"),
-            LNode::Literal(_) | LNode::Token(_) | LNode::NewLine | LNode::Indent(_) => {
-                // simple nodes without a wrapping decision, just write them
+            // simple nodes without a wrapping decision, just write them
+            LNode::Literal(_) | LNode::Token(_) | LNode::NewLine | LNode::Indent(_) | LNode::BranchWrap { .. } => {
                 let check = self.checkpoint();
                 self.write_node::<W>(child)?;
                 self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
                 Ok(())
             }
-            LNode::CommaGroup(group) => {
-                // for groups we have to make a choice
-
+            // for groups we have to make a choice
+            LNode::Group(group) => {
                 // try without wrapping
                 let check = self.checkpoint();
                 let result_no_wrap = self.write_comma_group::<NoWrap>(group);
@@ -293,7 +277,7 @@ impl StringBuilderContext<'_> {
                     should_wrap |= self.line_overflows(check);
                 }
 
-                // if we need to wrap, roll back and re-writing everything with wrapping
+                // if we need to wrap, roll back and re-write everything with wrapping
                 if should_wrap {
                     self.restore(check);
                     W::require_wrap()?;
@@ -307,16 +291,9 @@ impl StringBuilderContext<'_> {
         }
     }
 
-    fn write_comma_group<W: MaybeWrap>(&mut self, group: &LCommaList) -> Result<(), W::E> {
-        let LCommaList {
-            compact,
-            children,
-            suffix,
-        } = group;
+    fn write_comma_group<W: MaybeWrap>(&mut self, group: &LGroup) -> Result<(), W::E> {
+        let LGroup { compact, children } = group;
         if *compact {
-            todo!()
-        }
-        if let Some(suffix) = suffix {
             todo!()
         }
 
@@ -325,22 +302,14 @@ impl StringBuilderContext<'_> {
 
         if !wrap {
             let check = self.checkpoint();
-            for (child, last) in children.iter().with_last() {
+            for child in children {
                 self.write_node::<W>(child).inspect_err(|_| self.restore(check))?;
-                if !last {
-                    self.write_str::<W>(",").inspect_err(|_| self.restore(check))?;
-                    self.write_space();
-                }
             }
-            // if let Some(suffix) = suffix {
-            //     self.write_node::<W>(suffix).inspect_err(|_| self.restore(check))?;
-            // }
         } else {
             self.indent(|slf| {
                 slf.write_newline();
-                for (child, last) in children.iter().with_last() {
-                    slf.write_node_extra::<AllowWrap>(child, Some(&LNode::Literal(",")))
-                        .remove_never();
+                for child in children {
+                    slf.write_node::<AllowWrap>(child).remove_never();
                     slf.write_newline();
                 }
             });
