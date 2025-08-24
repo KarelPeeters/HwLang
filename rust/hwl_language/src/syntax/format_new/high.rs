@@ -132,36 +132,35 @@ impl LowerContext<'_> {
     }
 
     fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut SequenceBuilder) -> Result<(), TokenMismatch> {
-        // TODO preserve blank lines
         let non_comment_start = self
             .find_next_non_comment_token()
             .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
 
         while let Some(token) = self.peek_token() {
+            let token_end_pos = self.offsets.expand_pos(token.span.end());
             if let Some(real_token_start) = non_comment_start
-                && self.offsets.expand_pos(token.span.end()).line_0 == real_token_start.line_0
+                && token_end_pos.line_0 == real_token_start.line_0
             {
                 break;
-            }
-
-            if let Some(prev_token) = self.prev_token() {
-                let prev_end = self.offsets.expand_pos(prev_token.span.end());
-                let curr_start = self.offsets.expand_pos(token.span.start());
-
-                if curr_start.line_0 - prev_end.line_0 > 1 {
-                    seq.push(LNode::NewLine);
-                }
             }
 
             match token.ty {
                 TT::LineComment => {
                     // TODO space before?
+                    self.preserve_blank_lines(seq);
                     seq.push(LNode::Token(self.pop_token(token.ty)?));
                     seq.push(LNode::NewLine);
                 }
                 TT::BlockComment => {
                     // TODO spaces before/after?
+                    self.preserve_blank_lines(seq);
                     seq.push(LNode::Token(self.pop_token(token.ty)?));
+
+                    if let Some(next_token) = self.peek_token()
+                        && self.offsets.expand_pos(next_token.span.start()).line_0 > token_end_pos.line_0
+                    {
+                        seq.push(LNode::NewLine);
+                    }
                 }
                 _ => break,
             }
@@ -170,11 +169,13 @@ impl LowerContext<'_> {
     }
 
     fn collect_comments_all(&mut self, seq: &mut SequenceBuilder) {
-        // TODO preserve blank lines between comments
+        // TODO preserve blank lines between comments?
+        // TODO what exactly are the use cases and semantics for this function?
+        // TODO combine all comment collection functions into a single one, with a predicate lambda
         while let Some(token) = self.peek_token() {
             match token.ty {
                 TT::LineComment => {
-                    // TODO space before?
+                    seq.push(LNode::IfNotFirstOnLine(" "));
                     seq.push(LNode::Token(self.pop_token(token.ty).unwrap()));
                     seq.push(LNode::NewLine);
                 }
@@ -197,12 +198,12 @@ impl LowerContext<'_> {
                 }
                 match token.ty {
                     TT::LineComment => {
-                        // TODO space before?
+                        seq.push(LNode::Literal(" "));
                         seq.push(LNode::Token(self.pop_token(token.ty).unwrap()));
                         seq.push(LNode::NewLine);
                     }
                     TT::BlockComment => {
-                        // TODO space before/after?
+                        seq.push(LNode::Literal(" "));
                         seq.push(LNode::Token(self.pop_token(token.ty).unwrap()));
                     }
                     _ => break,
@@ -251,9 +252,7 @@ impl LowerContext<'_> {
                 seq.build()
             }
             HNode::CommaList(list) => {
-                // TODO capture comments between nodes
-                // TODO here we also want to capture before/after to match indent?
-                // TODO remember blank lines
+                // TODO remember blank lines between items?
                 let HCommaList { compact, children } = list;
                 let mut mapped = vec![];
 
@@ -261,10 +260,9 @@ impl LowerContext<'_> {
                     let mut seq = SequenceBuilder::new();
                     seq.push(self.map(child)?);
 
-                    // TODO capture comments before comma
+                    self.collect_comments_all(&mut seq);
 
                     // handle comma
-                    // TODO get this to format more nicely
                     if last {
                         if let Some(t) = self.peek_token()
                             && t.ty == TT::Comma
@@ -280,8 +278,7 @@ impl LowerContext<'_> {
                         });
                     }
 
-                    // TODO capture comments after comma
-
+                    self.collect_comments_on_prev_line(&mut seq);
                     mapped.push(seq.build());
                 }
 

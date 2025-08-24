@@ -17,6 +17,7 @@ pub enum LNode {
 
     Group(LGroup),
     BranchWrap { no_wrap: &'static str, wrap: &'static str },
+    IfNotFirstOnLine(&'static str),
 }
 
 pub struct LGroup {
@@ -139,6 +140,9 @@ impl LNode {
             LNode::BranchWrap { no_wrap, wrap } => {
                 swriteln!(f, "BranchWrap(no_wrap={no_wrap:?}, wrap={wrap:?})");
             }
+            LNode::IfNotFirstOnLine(s) => {
+                swriteln!(f, "IfNotFirstOnLine({s:?})");
+            }
         }
     }
 }
@@ -233,6 +237,11 @@ impl StringBuilderContext<'_> {
                     self.write_str::<W>(wrap)?;
                 }
             }
+            LNode::IfNotFirstOnLine(s) => {
+                if self.state.curr_line_start != self.result.len() {
+                    self.write_str::<W>(s)?;
+                }
+            }
         }
         Ok(())
     }
@@ -245,7 +254,12 @@ impl StringBuilderContext<'_> {
         match child {
             LNode::Sequence(_) => todo!("err, should be flattened"),
             // simple nodes without a wrapping decision, just write them
-            LNode::Literal(_) | LNode::Token(_) | LNode::NewLine | LNode::Indent(_) | LNode::BranchWrap { .. } => {
+            LNode::Literal(_)
+            | LNode::Token(_)
+            | LNode::NewLine
+            | LNode::Indent(_)
+            | LNode::BranchWrap { .. }
+            | LNode::IfNotFirstOnLine(_) => {
                 let check = self.checkpoint();
                 self.write_node::<W>(child)?;
                 self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
