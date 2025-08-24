@@ -121,6 +121,16 @@ impl LowerContext<'_> {
         None
     }
 
+    fn preserve_blank_lines(&self, seq: &mut SequenceBuilder) {
+        if let (Some(prev_token), Some(next_token)) = (self.prev_token(), self.peek_token()) {
+            let prev_end = self.offsets.expand_pos(prev_token.span.end());
+            let next_start = self.offsets.expand_pos(next_token.span.start());
+            if next_start.line_0 > prev_end.line_0 + 1 {
+                seq.push(LNode::NewLine);
+            }
+        }
+    }
+
     fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut SequenceBuilder) -> Result<(), TokenMismatch> {
         // TODO preserve blank lines
         let non_comment_start = self
@@ -137,7 +147,8 @@ impl LowerContext<'_> {
             if let Some(prev_token) = self.prev_token() {
                 let prev_end = self.offsets.expand_pos(prev_token.span.end());
                 let curr_start = self.offsets.expand_pos(token.span.start());
-                if prev_end.line_0 < curr_start.line_0 {
+
+                if curr_start.line_0 - prev_end.line_0 > 1 {
                     seq.push(LNode::NewLine);
                 }
             }
@@ -232,6 +243,7 @@ impl LowerContext<'_> {
                 let mut seq = SequenceBuilder::new();
                 self.collect_comments_on_lines_before_real_token(&mut seq)?;
                 for child in children {
+                    self.preserve_blank_lines(&mut seq);
                     seq.push(self.map(child)?);
                     seq.push(LNode::NewLine);
                     self.collect_comments_on_lines_before_real_token(&mut seq)?;
