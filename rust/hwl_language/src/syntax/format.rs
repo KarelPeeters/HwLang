@@ -58,7 +58,8 @@ pub struct FormatSettings {
     pub max_line_length: usize,
     // TODO add option to sort imports, tricky because tokens won't match and we might lose even more comments
     // pub sort_imports: bool,
-    // pub newline_str: String,
+    // TODO use \r\n on Windows?
+    pub newline_str: String,
 }
 
 impl Default for FormatSettings {
@@ -67,6 +68,7 @@ impl Default for FormatSettings {
             indent_str: "    ".to_string(),
             tab_size: 4,
             max_line_length: 120,
+            newline_str: "\n".to_string(),
         }
     }
 }

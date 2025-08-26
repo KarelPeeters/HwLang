@@ -29,13 +29,8 @@ pub enum LNode {
     WrapIndent(Box<LNode>),
 
     Sequence(Vec<LNode>),
-    Group(LGroup),
-}
-
-pub struct LGroup {
-    // TODO add force_wrap option?
-    pub compact: bool,
-    pub children: Vec<LNode>,
+    Group(Box<LNode>),
+    Fill(Vec<LNode>),
 }
 
 // TODO move to separate file?
@@ -53,8 +48,6 @@ pub fn node_to_string(
         source_tokens,
         result: String::with_capacity(source_str.len() * 2),
         state: StringState {
-            next_node_token_index: 0,
-            curr_line_index: 0,
             curr_line_start: 0,
             indent: 0,
             emit_space: false,
@@ -81,11 +74,8 @@ struct CheckPoint {
     state: StringState,
 }
 
-// TODO remove useless state
 #[derive(Debug, Copy, Clone)]
 struct StringState {
-    next_node_token_index: usize,
-    curr_line_index: usize,
     curr_line_start: usize,
     indent: usize,
     emit_space: bool,
@@ -154,9 +144,12 @@ impl LNode {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
-            LNode::Group(group) => {
-                let LGroup { compact, children } = group;
-                swriteln!(f, "Group(compact={compact})");
+            LNode::Group(child) => {
+                swriteln!(f, "Group");
+                child.debug_str_impl(f, indent + 1);
+            }
+            LNode::Fill(children) => {
+                swriteln!(f, "Fill");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
                 }
@@ -179,14 +172,6 @@ impl StringBuilderContext<'_> {
         self.state = check.state;
     }
 
-    fn write_newline(&mut self) {
-        // TODO write comments that are on the same line as the previous token?
-        // TODO remove this and make write_str powerful enough to handle this
-        self.result.push('\n');
-        self.state.curr_line_index += 1;
-        self.state.curr_line_start = self.result.len();
-    }
-
     fn line_overflows(&self, check: CheckPoint) -> bool {
         // TODO optimize this?
         // TODO rename to clarify whether this checks the first or last line, or maybe this should check all lines?
@@ -204,15 +189,26 @@ impl StringBuilderContext<'_> {
         r
     }
 
+    fn write_newline<W: MaybeWrap>(&mut self) -> Result<(), W::E> {
+        self.write_str::<W>(&self.settings.newline_str)
+    }
+
     fn write_str<W: MaybeWrap>(&mut self, s: &str) -> Result<(), W::E> {
-        // emit indent if this is the text on the line
-        if self.state.curr_line_start == self.result.len() {
+        // strings containing newlines need the parent to wrap
+        let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
+        if last_line_end.is_some() {
+            W::require_wrap()?;
+        }
+
+        // emit indent if this is the first text on the line
+        let at_line_start = self.state.curr_line_start == self.result.len();
+        if at_line_start && !is_whitespace_or_empty(s) {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
             }
         }
 
-        // emit space if both the previous and next charactor are not whitespace
+        // emit space if asked and both the previous and next charactor are not whitespace
         if self.state.emit_space
             && self.state.curr_line_start != self.result.len()
             && let Some(prev_char) = self.result.chars().last()
@@ -230,6 +226,11 @@ impl StringBuilderContext<'_> {
         // TODO if multiline, require wrap?
         // TODO if multiline, increment line state
         self.result.push_str(s);
+
+        // update line state
+        if let Some(last_line_end) = last_line_end {
+            self.state.curr_line_start = self.result.len() - s.len() + last_line_end + 1;
+        }
 
         Ok(())
     }
@@ -253,20 +254,30 @@ impl StringBuilderContext<'_> {
                 }
             }
             LNode::AlwaysNewline => {
-                W::require_wrap()?;
-                self.write_newline();
+                self.write_newline::<W>()?;
             }
             LNode::WrapNewline => {
                 if W::allow_wrap() {
-                    self.write_newline();
+                    self.write_newline::<W>()?;
                 }
             }
-            LNode::AlwaysIndent(_) => todo!(),
-            LNode::WrapIndent(_) => todo!(),
+            LNode::AlwaysIndent(child) => {
+                self.indent(|ctx| ctx.write_node::<W>(child))?;
+            }
+            LNode::WrapIndent(child) => {
+                if W::allow_wrap() {
+                    self.indent(|ctx| ctx.write_node::<W>(child))?;
+                } else {
+                    self.write_node::<W>(child)?;
+                }
+            }
             LNode::Sequence(children) => {
                 self.write_sequence::<W>(children)?;
             }
             LNode::Group(_) => {
+                todo!("is this even reachable?")
+            }
+            LNode::Fill(_) => {
                 todo!("is this even reachable?")
             }
         }
@@ -280,10 +291,12 @@ impl StringBuilderContext<'_> {
 
         match child {
             // for groups we have to make a choice
-            LNode::Group(group) => {
+            // TODO it's strange that we're doing the group wrapping here instead of in group itself,
+            //   is there a way to improve that?
+            LNode::Group(child) => {
                 // try without wrapping
                 let check = self.checkpoint();
-                let result_no_wrap = self.write_group::<NoWrap>(group);
+                let result_no_wrap = self.write_node::<NoWrap>(child);
 
                 // check check if children need wrapping
                 let mut should_wrap = match result_no_wrap {
@@ -310,7 +323,7 @@ impl StringBuilderContext<'_> {
                     self.restore(check);
                     W::require_wrap()?;
 
-                    self.write_group::<AllowWrap>(group).remove_never();
+                    self.write_node::<AllowWrap>(child).remove_never();
                     self.write_sequence::<AllowWrap>(rest).remove_never();
                 }
 
@@ -326,32 +339,6 @@ impl StringBuilderContext<'_> {
                 Ok(())
             }
         }
-    }
-
-    fn write_group<W: MaybeWrap>(&mut self, group: &LGroup) -> Result<(), W::E> {
-        let LGroup { compact, children } = group;
-        if *compact {
-            todo!()
-        }
-
-        // TODO remove once renamed
-        // here we interpret W as "wrap", not "allow wrap"
-        let wrap = W::allow_wrap();
-
-        if !wrap {
-            let check = self.checkpoint();
-            for child in children {
-                self.write_node::<W>(child).inspect_err(|_| self.restore(check))?;
-            }
-        } else {
-            self.indent(|slf| {
-                for child in children {
-                    slf.write_node::<AllowWrap>(child).remove_never();
-                }
-            });
-        }
-
-        Ok(())
     }
 }
 

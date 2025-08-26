@@ -43,7 +43,7 @@ pub fn format(
 
     let root_node = ast_to_node(&source_ast);
 
-    println!("Initial tree:");
+    println!("HNode tree:");
     println!("{}", root_node.tree_string());
 
     let root_node = lower_nodes(source_offsets, &source_tokens, root_node).map_err(|e| {
@@ -61,7 +61,7 @@ pub fn format(
         diags.report_internal_error(span, reason)
     })?;
 
-    println!("Mapped tree:");
+    println!("LNode tree:");
     println!("{}", root_node.debug_str());
 
     let result = node_to_string(settings, source_str, source_offsets, &source_tokens, &root_node);

@@ -1,5 +1,5 @@
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
-use crate::syntax::format_new::low::{LGroup, LNode};
+use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
 use crate::util::data::VecExt;
@@ -230,14 +230,13 @@ impl LowerContext<'_> {
                 seq.build()
             }
             HNode::CommaList(list) => {
-                // TODO remember blank lines between items?
+                // TODO remember blank lines between (but not before) items, and if there are any then force wrap
                 let HCommaList { compact, children } = list;
 
-                let mut mapped = vec![];
-                mapped.push(LNode::WrapNewline);
+                let mut seq = SequenceBuilder::new();
+                seq.push(LNode::WrapNewline);
 
                 for (child, last) in children.into_iter().with_last() {
-                    let mut seq = SequenceBuilder::new();
                     seq.push(self.map(child)?);
 
                     self.collect_comments_all(&mut seq);
@@ -259,15 +258,10 @@ impl LowerContext<'_> {
                     self.collect_comments_on_prev_line(&mut seq);
 
                     seq.push(LNode::WrapNewline);
-                    mapped.push(seq.build());
                 }
 
                 // TODO capture comments
-
-                LNode::Group(LGroup {
-                    compact,
-                    children: mapped,
-                })
+                LNode::Group(Box::new(LNode::WrapIndent(Box::new(seq.build()))))
             }
         };
         Ok(result)
