@@ -203,6 +203,7 @@ impl FormatContext<'_> {
 
     // TODO rename back
     fn overflow_since_new(&self, check: CheckPoint) -> bool {
+        // TODO this is weird, should we not be checking on the first line?
         (self.state.overflowing_lines > check.state.overflowing_lines)
             || (self.state.curr_line_length > self.settings.max_line_length)
     }

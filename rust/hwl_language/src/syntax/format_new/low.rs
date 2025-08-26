@@ -1,26 +1,39 @@
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::pos::LineOffsets;
-use crate::syntax::token::Token;
+use crate::syntax::token::{Token, is_whitespace_or_empty};
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 
+// TODO more docs
 pub enum LNode {
-    Literal(&'static str),
     Token(SourceTokenIndex),
 
-    // TODO make all of these just variants of literal
-    NewLine,
+    // TODO rename this to either "space", "hardspace" or "space if touching"
+    //   is this actually used?
+    Space,
 
-    Indent(Box<LNode>),
+    AlwaysStr(&'static str),
+    WrapStr(&'static str),
+
+    /// Always emit a newline, this forces any containing groups to wrap.
+    AlwaysNewline,
+    /// If the containing group is wrapping, emit a newline. If not, emit a space.
+    WrapNewline,
+
+    // TODO does this make sense?
+    // TODO maybe we don't need separate indents
+    /// Always indent the inner node.
+    AlwaysIndent(Box<LNode>),
+    /// If the containing group is wrapping, indent the inner node.
+    WrapIndent(Box<LNode>),
+
     Sequence(Vec<LNode>),
-
     Group(LGroup),
-    BranchWrap { no_wrap: &'static str, wrap: &'static str },
-    IfNotFirstOnLine(&'static str),
 }
 
 pub struct LGroup {
+    // TODO add force_wrap option?
     pub compact: bool,
     pub children: Vec<LNode>,
 }
@@ -44,6 +57,7 @@ pub fn node_to_string(
             curr_line_index: 0,
             curr_line_start: 0,
             indent: 0,
+            emit_space: false,
         },
     };
     ctx.write_node::<AllowWrap>(root).remove_never();
@@ -67,14 +81,17 @@ struct CheckPoint {
     state: StringState,
 }
 
+// TODO remove useless state
 #[derive(Debug, Copy, Clone)]
 struct StringState {
     next_node_token_index: usize,
     curr_line_index: usize,
     curr_line_start: usize,
     indent: usize,
+    emit_space: bool,
 }
 
+// TODO rename all of these to be more in the spirit of "is the parent wrapping"
 #[derive(Debug)]
 struct NeedsWrap;
 type WrapResult = Result<(), NeedsWrap>;
@@ -117,11 +134,18 @@ impl LNode {
     fn debug_str_impl(&self, f: &mut String, indent: usize) {
         swrite_indent(f, indent);
         match self {
-            LNode::Literal(s) => swriteln!(f, "Literal({s:?})"),
             LNode::Token(index) => swriteln!(f, "Token({index:?})"),
-            LNode::NewLine => swriteln!(f, "NewLine"),
-            LNode::Indent(child) => {
-                swriteln!(f, "Indent");
+            LNode::Space => swriteln!(f, "Space"),
+            LNode::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
+            LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
+            LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
+            LNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNode::AlwaysIndent(child) => {
+                swriteln!(f, "AlwaysIndent");
+                child.debug_str_impl(f, indent + 1);
+            }
+            LNode::WrapIndent(child) => {
+                swriteln!(f, "WrapIndent");
                 child.debug_str_impl(f, indent + 1);
             }
             LNode::Sequence(children) => {
@@ -136,12 +160,6 @@ impl LNode {
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
                 }
-            }
-            LNode::BranchWrap { no_wrap, wrap } => {
-                swriteln!(f, "BranchWrap(no_wrap={no_wrap:?}, wrap={wrap:?})");
-            }
-            LNode::IfNotFirstOnLine(s) => {
-                swriteln!(f, "IfNotFirstOnLine({s:?})");
             }
         }
     }
@@ -161,14 +179,9 @@ impl StringBuilderContext<'_> {
         self.state = check.state;
     }
 
-    fn write_space(&mut self) {
-        // TODO err if first thing on line?
-        // TODO should we write comments here?
-        self.result.push(' ');
-    }
-
     fn write_newline(&mut self) {
         // TODO write comments that are on the same line as the previous token?
+        // TODO remove this and make write_str powerful enough to handle this
         self.result.push('\n');
         self.state.curr_line_index += 1;
         self.state.curr_line_start = self.result.len();
@@ -191,56 +204,70 @@ impl StringBuilderContext<'_> {
         r
     }
 
-    fn ensure_indent(&mut self) {
-        // indent if first token on current line
+    fn write_str<W: MaybeWrap>(&mut self, s: &str) -> Result<(), W::E> {
+        // emit indent if this is the text on the line
         if self.state.curr_line_start == self.result.len() {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
             }
         }
-    }
 
-    fn write_str<W: MaybeWrap>(&mut self, s: &str) -> Result<(), W::E> {
+        // emit space if both the previous and next charactor are not whitespace
+        if self.state.emit_space
+            && self.state.curr_line_start != self.result.len()
+            && let Some(prev_char) = self.result.chars().last()
+            && !char_is_whitespace(prev_char)
+            && let Some(next_char) = s.chars().next()
+            && !char_is_whitespace(next_char)
+        {
+            self.result.push(' ');
+        }
+        if !s.is_empty() {
+            self.state.emit_space = false;
+        }
+
+        // emit str itself
         // TODO if multiline, require wrap?
         // TODO if multiline, increment line state
-        self.ensure_indent();
         self.result.push_str(s);
+
         Ok(())
     }
 
     fn write_node<W: MaybeWrap>(&mut self, node: &LNode) -> Result<(), W::E> {
         match node {
-            LNode::Literal(literal_str) => {
-                self.write_str::<W>(literal_str)?;
-            }
             LNode::Token(index) => {
                 let token_span = self.source_tokens[index.0].span;
                 let token_str = &self.source_str[token_span.range_bytes()];
                 self.write_str::<W>(token_str)?;
             }
-            LNode::NewLine => {
+            LNode::Space => {
+                self.state.emit_space = true;
+            }
+            LNode::AlwaysStr(s) => {
+                self.write_str::<W>(s)?;
+            }
+            LNode::WrapStr(s) => {
+                if W::allow_wrap() {
+                    self.write_str::<W>(s)?;
+                }
+            }
+            LNode::AlwaysNewline => {
                 W::require_wrap()?;
                 self.write_newline();
             }
-            LNode::Indent(_) => todo!(),
+            LNode::WrapNewline => {
+                if W::allow_wrap() {
+                    self.write_newline();
+                }
+            }
+            LNode::AlwaysIndent(_) => todo!(),
+            LNode::WrapIndent(_) => todo!(),
             LNode::Sequence(children) => {
                 self.write_sequence::<W>(children)?;
             }
             LNode::Group(_) => {
                 todo!("is this even reachable?")
-            }
-            LNode::BranchWrap { no_wrap, wrap } => {
-                // TODO is this condition correct, or should we pass this as a separate param from above?
-                if !W::allow_wrap() {
-                    self.write_str::<W>(no_wrap)?;
-                } else {
-                    self.write_str::<W>(wrap)?;
-                }
-            }
-            LNode::IfNotFirstOnLine(s) => {
-                if self.state.curr_line_start != self.result.len() {
-                    self.write_str::<W>(s)?;
-                }
             }
         }
         Ok(())
@@ -252,24 +279,11 @@ impl StringBuilderContext<'_> {
         };
 
         match child {
-            LNode::Sequence(_) => todo!("err, should be flattened"),
-            // simple nodes without a wrapping decision, just write them
-            LNode::Literal(_)
-            | LNode::Token(_)
-            | LNode::NewLine
-            | LNode::Indent(_)
-            | LNode::BranchWrap { .. }
-            | LNode::IfNotFirstOnLine(_) => {
-                let check = self.checkpoint();
-                self.write_node::<W>(child)?;
-                self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
-                Ok(())
-            }
             // for groups we have to make a choice
             LNode::Group(group) => {
                 // try without wrapping
                 let check = self.checkpoint();
-                let result_no_wrap = self.write_comma_group::<NoWrap>(group);
+                let result_no_wrap = self.write_group::<NoWrap>(group);
 
                 // check check if children need wrapping
                 let mut should_wrap = match result_no_wrap {
@@ -296,21 +310,31 @@ impl StringBuilderContext<'_> {
                     self.restore(check);
                     W::require_wrap()?;
 
-                    self.write_comma_group::<AllowWrap>(group).remove_never();
+                    self.write_group::<AllowWrap>(group).remove_never();
                     self.write_sequence::<AllowWrap>(rest).remove_never();
                 }
 
                 Ok(())
             }
+            // nested sequences should have been flattened already
+            LNode::Sequence(_) => todo!("err, should be flattened"),
+            // simple nodes without a wrapping decision, just write them
+            _ => {
+                let check = self.checkpoint();
+                self.write_node::<W>(child)?;
+                self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
+                Ok(())
+            }
         }
     }
 
-    fn write_comma_group<W: MaybeWrap>(&mut self, group: &LGroup) -> Result<(), W::E> {
+    fn write_group<W: MaybeWrap>(&mut self, group: &LGroup) -> Result<(), W::E> {
         let LGroup { compact, children } = group;
         if *compact {
             todo!()
         }
 
+        // TODO remove once renamed
         // here we interpret W as "wrap", not "allow wrap"
         let wrap = W::allow_wrap();
 
@@ -321,14 +345,17 @@ impl StringBuilderContext<'_> {
             }
         } else {
             self.indent(|slf| {
-                slf.write_newline();
                 for child in children {
                     slf.write_node::<AllowWrap>(child).remove_never();
-                    slf.write_newline();
                 }
             });
         }
 
         Ok(())
     }
+}
+
+fn char_is_whitespace(c: char) -> bool {
+    let mut buffer = [0; 4];
+    is_whitespace_or_empty(c.encode_utf8(&mut buffer))
 }

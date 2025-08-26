@@ -5,11 +5,9 @@ fn foo(
 
 
 
-/*
 //fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr)) {}
 /*test*/
 /*pub*/ fn short_func(
-
     a: uint,
     b: uint,
 ) {}
@@ -305,5 +303,4 @@ fn foo(
 //    // no z value
 //) {
 //}
-*/
 */
