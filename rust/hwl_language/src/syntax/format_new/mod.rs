@@ -64,7 +64,11 @@ pub fn format(
     println!("LNode tree:");
     println!("{}", root_node.debug_str());
 
-    let result = node_to_string(settings, source_str, source_offsets, &source_tokens, &root_node);
+    println!("LNode tree simplified:");
+    let root_node = root_node.simplify();
+    println!("{}", root_node.debug_str());
+
+    let result = node_to_string(settings, source_str, &source_tokens, &root_node);
 
     Ok(result)
 }

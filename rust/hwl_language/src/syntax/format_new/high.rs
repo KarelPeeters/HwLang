@@ -2,7 +2,6 @@ use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
-use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use hwl_util::swriteln;
 
@@ -121,7 +120,7 @@ impl LowerContext<'_> {
         None
     }
 
-    fn preserve_blank_lines(&self, seq: &mut SequenceBuilder) {
+    fn preserve_blank_lines(&self, seq: &mut Vec<LNode>) {
         if let (Some(prev_token), Some(next_token)) = (self.prev_token(), self.peek_token()) {
             let prev_end = self.offsets.expand_pos(prev_token.span.end());
             let next_start = self.offsets.expand_pos(next_token.span.start());
@@ -132,7 +131,7 @@ impl LowerContext<'_> {
         }
     }
 
-    fn collect_comments(&mut self, seq: &mut SequenceBuilder, filter: impl Fn(SpanFull) -> bool) {
+    fn collect_comments(&mut self, seq: &mut Vec<LNode>, filter: impl Fn(SpanFull) -> bool) {
         while let Some(token) = self.peek_token()
             && filter(self.offsets.expand_span(token.span))
         {
@@ -167,7 +166,7 @@ impl LowerContext<'_> {
         }
     }
 
-    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut SequenceBuilder) {
+    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode>) {
         let non_comment_start = self
             .find_next_non_comment_token()
             .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
@@ -177,13 +176,13 @@ impl LowerContext<'_> {
         })
     }
 
-    fn collect_comments_all(&mut self, seq: &mut SequenceBuilder) {
+    fn collect_comments_all(&mut self, seq: &mut Vec<LNode>) {
         // TODO make newline recording configurable? eg. for comma lists, the first newline doesn't count
         //   but if there are multiple (_between items_) then force wrap
         self.collect_comments(seq, |_| true);
     }
 
-    fn collect_comments_on_prev_line(&mut self, seq: &mut SequenceBuilder) {
+    fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode>) {
         if let Some(prev_token) = self.prev_token() {
             let prev_end = self.offsets.expand_pos(prev_token.span.end());
             self.collect_comments(seq, |span| span.end.line_0 == prev_end.line_0);
@@ -194,32 +193,32 @@ impl LowerContext<'_> {
     fn map(&mut self, node: HNode) -> Result<LNode, TokenMismatch> {
         let result = match node {
             HNode::Space => {
-                let mut seq = SequenceBuilder::new();
+                let mut seq = vec![];
                 self.collect_comments_all(&mut seq);
                 seq.push(LNode::Space);
                 self.collect_comments_on_prev_line(&mut seq);
-                seq.build()
+                LNode::Sequence(seq)
             }
             HNode::Token(ty) => {
-                let mut seq = SequenceBuilder::new();
+                let mut seq = vec![];
                 self.collect_comments_all(&mut seq);
                 seq.push(LNode::Token(self.pop_token(ty)?));
                 self.collect_comments_on_prev_line(&mut seq);
-                seq.build()
+                LNode::Sequence(seq)
             }
             HNode::Horizontal(children) => {
-                let mut seq = SequenceBuilder::new();
+                let mut seq = vec![];
                 self.collect_comments_all(&mut seq);
                 for child in children {
                     seq.push(self.map(child)?);
                     self.collect_comments_on_prev_line(&mut seq);
                 }
-                seq.build()
+                LNode::Sequence(seq)
             }
             HNode::Vertical(children) => {
                 // TODO capture comments between nodes
                 // TODO remember blank lines between both items and comments
-                let mut seq = SequenceBuilder::new();
+                let mut seq = vec![];
                 self.collect_comments_on_lines_before_real_token(&mut seq);
                 for child in children {
                     self.preserve_blank_lines(&mut seq);
@@ -227,14 +226,14 @@ impl LowerContext<'_> {
                     seq.push(LNode::AlwaysNewline);
                     self.collect_comments_on_lines_before_real_token(&mut seq);
                 }
-                seq.build()
+                LNode::Sequence(seq)
             }
             HNode::CommaList(list) => {
                 // TODO remember blank lines between (but not before) items, and if there are any then force wrap
                 let HCommaList { compact, children } = list;
 
-                let mut seq = SequenceBuilder::new();
-                seq.push(LNode::WrapNewline);
+                let mut seq = vec![];
+                seq.push(LNode::WrapNewlineElseSpace);
 
                 for (child, last) in children.into_iter().with_last() {
                     seq.push(self.map(child)?);
@@ -257,34 +256,13 @@ impl LowerContext<'_> {
 
                     self.collect_comments_on_prev_line(&mut seq);
 
-                    seq.push(LNode::WrapNewline);
+                    seq.push(LNode::WrapNewlineElseSpace);
                 }
 
                 // TODO capture comments
-                LNode::Group(Box::new(LNode::WrapIndent(Box::new(seq.build()))))
+                LNode::Group(Box::new(LNode::WrapIndent(Box::new(LNode::Sequence(seq)))))
             }
         };
         Ok(result)
-    }
-}
-
-struct SequenceBuilder {
-    nodes: Vec<LNode>,
-}
-impl SequenceBuilder {
-    fn new() -> Self {
-        Self { nodes: vec![] }
-    }
-
-    fn push(&mut self, node: LNode) {
-        match node {
-            LNode::Sequence(children) => self.nodes.extend(children),
-            _ => self.nodes.push(node),
-        }
-    }
-
-    fn build(self) -> LNode {
-        // TODO should we special-case single or not? we risk creating extra edge cases either way
-        self.nodes.single().unwrap_or_else(LNode::Sequence)
     }
 }

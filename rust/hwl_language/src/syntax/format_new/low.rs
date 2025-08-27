@@ -2,49 +2,50 @@ use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{Token, is_whitespace_or_empty};
+use crate::util::data::VecExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 
-// TODO more docs
+/// Low-level formatting nodes.
+/// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
 pub enum LNode {
+    /// Emit a token exactly as it appeared in the input source.
     Token(SourceTokenIndex),
-
-    // TODO rename this to either "space", "hardspace" or "space if touching"
-    //   is this actually used?
+    /// Emit a space if the previous and next characters on the same line exist and are not whitespace.
     Space,
 
+    /// Emit the given string.
     AlwaysStr(&'static str),
+    /// Emit the given string if the containing group is wrapping.
     WrapStr(&'static str),
 
-    /// Always emit a newline, this forces any containing groups to wrap.
+    /// Emit a newline. This forces any containing groups to wrap.
     AlwaysNewline,
-    /// If the containing group is wrapping, emit a newline. If not, emit a space.
-    WrapNewline,
+    /// Emit a newline if the containing group is wrapping, if not emit a space.
+    WrapNewlineElseSpace,
 
-    // TODO does this make sense?
-    // TODO maybe we don't need separate indents
-    /// Always indent the inner node.
+    /// Indent the inner node.
     AlwaysIndent(Box<LNode>),
-    /// If the containing group is wrapping, indent the inner node.
+    /// Indent the inner node if the containing group is wrapping, if not do nothing.
     WrapIndent(Box<LNode>),
 
+    /// A sequence of nodes to be emitted in order.
+    /// Children can each individually decide to wrap or not,
+    /// based on whether their contants overflow the start or end line.
+    /// Any child wrapping forces the parent groups to wrap too.
     Sequence(Vec<LNode>),
+
+    // TODO doc
     Group(Box<LNode>),
+
+    // TODO doc: after evey child there's an implicit `WrapNewlineElseSpace`
     Fill(Vec<LNode>),
 }
 
-// TODO move to separate file?
-pub fn node_to_string(
-    settings: &FormatSettings,
-    source_str: &str,
-    source_offsets: &LineOffsets,
-    source_tokens: &[Token],
-    root: &LNode,
-) -> String {
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens: &[Token], root: &LNode) -> String {
     let mut ctx = StringBuilderContext {
         settings,
         source_str,
-        source_offsets,
         source_tokens,
         result: String::with_capacity(source_str.len() * 2),
         state: StringState {
@@ -61,7 +62,6 @@ struct StringBuilderContext<'a> {
     settings: &'a FormatSettings,
 
     source_str: &'a str,
-    source_offsets: &'a LineOffsets,
     source_tokens: &'a [Token],
 
     result: String,
@@ -129,7 +129,7 @@ impl LNode {
             LNode::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
             LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
             LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
-            LNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNode::WrapNewlineElseSpace => swriteln!(f, "WrapNewline"),
             LNode::AlwaysIndent(child) => {
                 swriteln!(f, "AlwaysIndent");
                 child.debug_str_impl(f, indent + 1);
@@ -154,6 +154,34 @@ impl LNode {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
+        }
+    }
+
+    pub fn simplify(self) -> LNode {
+        match self {
+            // actual simplification+
+            LNode::Sequence(children) => {
+                let mut result = Vec::with_capacity(children.len());
+                for c in children {
+                    match c.simplify() {
+                        LNode::Sequence(inner) => result.extend(inner),
+                        c_simple => result.push(c_simple),
+                    }
+                }
+                result.single().unwrap_or_else(LNode::Sequence)
+            }
+            // just simplify children
+            LNode::AlwaysIndent(child) => LNode::AlwaysIndent(Box::new(child.simplify())),
+            LNode::WrapIndent(child) => LNode::WrapIndent(Box::new(child.simplify())),
+            LNode::Group(child) => LNode::Group(Box::new(child.simplify())),
+            LNode::Fill(children) => LNode::Fill(children.into_iter().map(LNode::simplify).collect()),
+            // trivial cases
+            LNode::Token(t) => LNode::Token(t),
+            LNode::Space => LNode::Space,
+            LNode::AlwaysStr(s) => LNode::AlwaysStr(s),
+            LNode::WrapStr(s) => LNode::WrapStr(s),
+            LNode::AlwaysNewline => LNode::AlwaysNewline,
+            LNode::WrapNewlineElseSpace => LNode::WrapNewlineElseSpace,
         }
     }
 }
@@ -256,7 +284,7 @@ impl StringBuilderContext<'_> {
             LNode::AlwaysNewline => {
                 self.write_newline::<W>()?;
             }
-            LNode::WrapNewline => {
+            LNode::WrapNewlineElseSpace => {
                 if W::allow_wrap() {
                     self.write_newline::<W>()?;
                 }
@@ -274,19 +302,44 @@ impl StringBuilderContext<'_> {
             LNode::Sequence(children) => {
                 self.write_sequence::<W>(children)?;
             }
-            LNode::Group(_) => {
-                todo!("is this even reachable?")
-            }
-            LNode::Fill(_) => {
-                todo!("is this even reachable?")
+            LNode::Group(_) | LNode::Fill(_) => {
+                self.write_sequence::<W>(std::slice::from_ref(node))?;
             }
         }
         Ok(())
     }
 
     fn write_sequence<W: MaybeWrap>(&mut self, children: &[LNode]) -> Result<(), W::E> {
-        let Some((child, rest)) = children.split_first() else {
-            return Ok(());
+        // flatten if necessary
+        if children.iter().all(|c| !matches!(c, LNode::Sequence(_))) {
+            self.write_sequence_impl::<W>(children.iter())
+        } else {
+            fn f<'c>(flat: &mut Vec<&'c LNode>, node: &'c LNode) {
+                match node {
+                    LNode::Sequence(children) => {
+                        for child in children {
+                            f(flat, child);
+                        }
+                    }
+                    _ => flat.push(node),
+                }
+            }
+
+            let mut flat = vec![];
+            for c in children {
+                f(&mut flat, c);
+            }
+            self.write_sequence_impl::<W>(flat.iter().copied())
+        }
+    }
+
+    fn write_sequence_impl<'c, W: MaybeWrap>(
+        &mut self,
+        mut children: impl Iterator<Item = &'c LNode> + Clone,
+    ) -> Result<(), W::E> {
+        let (child, rest) = match children.next() {
+            None => return Ok(()),
+            Some(child) => (child, children),
         };
 
         match child {
@@ -313,7 +366,7 @@ impl StringBuilderContext<'_> {
                 // TODO this is just a perf optimization, we could also always do this
                 //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
                 if !should_wrap {
-                    self.write_sequence::<W>(rest.clone())
+                    self.write_sequence_impl::<W>(rest.clone())
                         .inspect_err(|_| self.restore(check))?;
                     should_wrap |= self.line_overflows(check);
                 }
@@ -324,18 +377,20 @@ impl StringBuilderContext<'_> {
                     W::require_wrap()?;
 
                     self.write_node::<AllowWrap>(child).remove_never();
-                    self.write_sequence::<AllowWrap>(rest).remove_never();
+                    self.write_sequence_impl::<AllowWrap>(rest).remove_never();
                 }
 
                 Ok(())
             }
+            LNode::Fill(_) => todo!("todo, similar to group"),
             // nested sequences should have been flattened already
-            LNode::Sequence(_) => todo!("err, should be flattened"),
+            LNode::Sequence(_) => unreachable!(),
             // simple nodes without a wrapping decision, just write them
             _ => {
                 let check = self.checkpoint();
                 self.write_node::<W>(child)?;
-                self.write_sequence::<W>(rest).inspect_err(|_| self.restore(check))?;
+                self.write_sequence_impl::<W>(rest)
+                    .inspect_err(|_| self.restore(check))?;
                 Ok(())
             }
         }
