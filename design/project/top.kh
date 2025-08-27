@@ -1,7 +1,15 @@
+import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name];
+import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_na];
+import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_nae];
+import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name];
+
+
 fn foo(
     x: very_long_identifiervery_long_identiong_identifiervery_long_identifierrrrrrrrrrrrrrrrrrrrrrrrr(something_medium),
     y: very_long_identifiervery_long_identiong_identifiervery_long_identifierr,
 ) {}
+
+fn foo(x: uint, y: uint) {}
 
 
 

@@ -1,7 +1,8 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration,
-    GeneralIdentifier, Identifier, Item, MaybeIdentifier, Parameter, Parameters, Visibility,
+    GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, Item, ItemImport, MaybeIdentifier, Parameter,
+    Parameters, Visibility,
 };
 use crate::syntax::format_new::high::HCommaList;
 use crate::syntax::format_new::high::HNode;
@@ -28,7 +29,7 @@ impl Context<'_> {
         let nodes = items
             .iter()
             .map(|item| match item {
-                Item::Import(_) => todo!(),
+                Item::Import(import) => self.fmt_import(import),
                 Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
                 Item::ModuleInternal(_) => todo!(),
                 Item::ModuleExternal(_) => todo!(),
@@ -36,6 +37,53 @@ impl Context<'_> {
             })
             .collect();
         HNode::Vertical(nodes)
+    }
+
+    fn fmt_import(&self, import: &ItemImport) -> HNode {
+        let ItemImport {
+            span: _,
+            parents,
+            entry,
+        } = import;
+
+        let mut nodes = vec![];
+        nodes.push(HNode::Token(TT::Import));
+        nodes.push(HNode::Space);
+
+        for &parent in &parents.inner {
+            nodes.push(self.fmt_id(parent));
+            nodes.push(HNode::Token(TT::Dot));
+        }
+
+        match &entry.inner {
+            ImportFinalKind::Single(entry) => {
+                nodes.push(self.fmt_import_entry(entry));
+            }
+            ImportFinalKind::Multi(entries) => {
+                let children = entries.iter().map(|e| self.fmt_import_entry(e)).collect();
+                let list = HCommaList { fill: true, children };
+
+                nodes.push(HNode::Token(TT::OpenS));
+                nodes.push(HNode::CommaList(list));
+                nodes.push(HNode::Token(TT::CloseS));
+            }
+        }
+
+        nodes.push(HNode::Token(TT::Semi));
+        HNode::Horizontal(nodes)
+    }
+
+    fn fmt_import_entry(&self, entry: &ImportEntry) -> HNode {
+        let &ImportEntry { span: _, id, as_ } = entry;
+        let mut nodes = vec![];
+        nodes.push(self.fmt_id(id));
+        if let Some(as_) = as_ {
+            nodes.push(HNode::Space);
+            nodes.push(HNode::Token(TT::As));
+            nodes.push(HNode::Space);
+            nodes.push(self.fmt_maybe_id(as_));
+        }
+        HNode::Horizontal(nodes)
     }
 
     fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
@@ -87,10 +135,7 @@ impl Context<'_> {
         let Parameters { span: _, items } = params;
         let children = fmt_extra_list(items, &|p| self.fmt_parameter(p));
 
-        let list = HCommaList {
-            compact: false,
-            children,
-        };
+        let list = HCommaList { fill: false, children };
         let node_list = HNode::CommaList(list);
         HNode::Horizontal(vec![HNode::Token(TT::OpenR), node_list, HNode::Token(TT::CloseR)])
     }
@@ -164,7 +209,7 @@ impl Context<'_> {
                     .collect_vec();
 
                 let node_list = HCommaList {
-                    compact: false,
+                    fill: false,
                     children: nodes_arg,
                 };
                 let node_args = HNode::Horizontal(vec![

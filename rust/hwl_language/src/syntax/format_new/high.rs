@@ -16,7 +16,7 @@ pub enum HNode {
 
 #[derive(Debug)]
 pub struct HCommaList {
-    pub compact: bool,
+    pub fill: bool,
     pub children: Vec<HNode>,
 }
 
@@ -61,8 +61,8 @@ impl HNode {
                 swriteln!(f, "Vertical");
                 swrite_children(f, children);
             }
-            HNode::CommaList(HCommaList { compact, children }) => {
-                swriteln!(f, "CommaList(compact={compact})");
+            HNode::CommaList(HCommaList { fill, children }) => {
+                swriteln!(f, "CommaList(fill={fill})");
                 swrite_children(f, children);
             }
         }
@@ -103,7 +103,7 @@ impl LowerContext<'_> {
         if token.ty == ty {
             Ok(token_index)
         } else {
-            panic!("expected {ty:?} at {token_index:?}, got {:?}", token.ty);
+            todo!("expected {ty:?} at {token_index:?}, got {:?}", token.ty);
             Err(TokenMismatch {
                 index: Some(token_index),
                 expected: ty,
@@ -230,10 +230,10 @@ impl LowerContext<'_> {
             }
             HNode::CommaList(list) => {
                 // TODO remember blank lines between (but not before) items, and if there are any then force wrap
-                let HCommaList { compact, children } = list;
+                let HCommaList { fill, children } = list;
 
                 let mut seq = vec![];
-                seq.push(LNode::WrapNewlineElseSpace);
+                seq.push(LNode::WrapNewline);
 
                 for (child, last) in children.into_iter().with_last() {
                     seq.push(self.map(child)?);
@@ -256,11 +256,18 @@ impl LowerContext<'_> {
 
                     self.collect_comments_on_prev_line(&mut seq);
 
-                    seq.push(LNode::WrapNewlineElseSpace);
+                    if !fill {
+                        seq.push(LNode::WrapNewline);
+                    }
                 }
 
                 // TODO capture comments
-                LNode::Group(Box::new(LNode::WrapIndent(Box::new(LNode::Sequence(seq)))))
+
+                if fill {
+                    LNode::Fill(seq)
+                } else {
+                    LNode::Group(Box::new(LNode::WrapIndent(Box::new(LNode::Sequence(seq)))))
+                }
             }
         };
         Ok(result)

@@ -21,8 +21,8 @@ pub enum LNode {
 
     /// Emit a newline. This forces any containing groups to wrap.
     AlwaysNewline,
-    /// Emit a newline if the containing group is wrapping, if not emit a space.
-    WrapNewlineElseSpace,
+    /// Emit a newline if the containing group is wrapping.
+    WrapNewline,
 
     /// Indent the inner node.
     AlwaysIndent(Box<LNode>),
@@ -38,7 +38,8 @@ pub enum LNode {
     // TODO doc
     Group(Box<LNode>),
 
-    // TODO doc: after evey child there's an implicit `WrapNewlineElseSpace`
+    // TODO doc: there is an implicit "WrapIndent" surrounding the children,
+    //   and before/between/after each child there's an implicit `WrapNewlineElseSpace`
     Fill(Vec<LNode>),
 }
 
@@ -129,7 +130,7 @@ impl LNode {
             LNode::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
             LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
             LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
-            LNode::WrapNewlineElseSpace => swriteln!(f, "WrapNewline"),
+            LNode::WrapNewline => swriteln!(f, "WrapNewline"),
             LNode::AlwaysIndent(child) => {
                 swriteln!(f, "AlwaysIndent");
                 child.debug_str_impl(f, indent + 1);
@@ -181,7 +182,7 @@ impl LNode {
             LNode::AlwaysStr(s) => LNode::AlwaysStr(s),
             LNode::WrapStr(s) => LNode::WrapStr(s),
             LNode::AlwaysNewline => LNode::AlwaysNewline,
-            LNode::WrapNewlineElseSpace => LNode::WrapNewlineElseSpace,
+            LNode::WrapNewline => LNode::WrapNewline,
         }
     }
 }
@@ -204,6 +205,7 @@ impl StringBuilderContext<'_> {
         // TODO optimize this?
         // TODO rename to clarify whether this checks the first or last line, or maybe this should check all lines?
         //   but not comment lines >:(
+        // TODO use proper LineOffsets line-ending logic
         let line_start = check.state.curr_line_start;
         let rest = &self.result[line_start..];
         let line_len = rest.bytes().position(|c| c == b'\n').unwrap_or(rest.len());
@@ -284,7 +286,7 @@ impl StringBuilderContext<'_> {
             LNode::AlwaysNewline => {
                 self.write_newline::<W>()?;
             }
-            LNode::WrapNewlineElseSpace => {
+            LNode::WrapNewline => {
                 if W::allow_wrap() {
                     self.write_newline::<W>()?;
                 }
@@ -303,6 +305,8 @@ impl StringBuilderContext<'_> {
                 self.write_sequence::<W>(children)?;
             }
             LNode::Group(_) | LNode::Fill(_) => {
+                // If we meet a top-level group we just pretend it's a single-item sequence
+                //   and delegate to the existing sequence logic for group wrapping.
                 self.write_sequence::<W>(std::slice::from_ref(node))?;
             }
         }
@@ -342,47 +346,41 @@ impl StringBuilderContext<'_> {
             Some(child) => (child, children),
         };
 
+        // wrapping logic is here instead of inside the group nodes,
+        //   so we can take items that follow the group on the same line into account to check for line overflow
         match child {
-            // for groups we have to make a choice
-            // TODO it's strange that we're doing the group wrapping here instead of in group itself,
-            //   is there a way to improve that?
             LNode::Group(child) => {
-                // try without wrapping
-                let check = self.checkpoint();
-                let result_no_wrap = self.write_node::<NoWrap>(child);
-
-                // check check if children need wrapping
-                let mut should_wrap = match result_no_wrap {
-                    Ok(()) => false,
-                    Err(NeedsWrap) => true,
-                };
-
-                // check if line overflows
-                if !should_wrap {
-                    should_wrap |= self.line_overflows(check);
-                }
-
-                // if no wrapping is needed yet, try writing the rest of the list
-                // TODO this is just a perf optimization, we could also always do this
-                //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
-                if !should_wrap {
-                    self.write_sequence_impl::<W>(rest.clone())
-                        .inspect_err(|_| self.restore(check))?;
-                    should_wrap |= self.line_overflows(check);
-                }
-
-                // if we need to wrap, roll back and re-write everything with wrapping
-                if should_wrap {
-                    self.restore(check);
-                    W::require_wrap()?;
-
-                    self.write_node::<AllowWrap>(child).remove_never();
-                    self.write_sequence_impl::<AllowWrap>(rest).remove_never();
-                }
-
-                Ok(())
+                self.write_sequence_branch::<W>(
+                    rest,
+                    |slf| slf.write_node::<NoWrap>(child),
+                    |slf| slf.write_node::<AllowWrap>(child).remove_never(),
+                )?;
             }
-            LNode::Fill(_) => todo!("todo, similar to group"),
+            LNode::Fill(children) => {
+                self.write_sequence_branch::<W>(
+                    rest,
+                    |slf| {
+                        for c in children {
+                            slf.write_node::<NoWrap>(c)?;
+                        }
+                        Ok(())
+                    },
+                    |slf| {
+                        slf.indent(|slf| {
+                            for c in children {
+                                let check = slf.checkpoint();
+                                slf.write_node::<AllowWrap>(c).remove_never();
+                                if slf.line_overflows(check) {
+                                    slf.restore(check);
+                                    slf.write_newline::<AllowWrap>().remove_never();
+                                    slf.write_node::<AllowWrap>(c).remove_never();
+                                }
+                            }
+                        });
+                        slf.write_newline::<AllowWrap>().remove_never();
+                    },
+                )?;
+            }
             // nested sequences should have been flattened already
             LNode::Sequence(_) => unreachable!(),
             // simple nodes without a wrapping decision, just write them
@@ -391,9 +389,51 @@ impl StringBuilderContext<'_> {
                 self.write_node::<W>(child)?;
                 self.write_sequence_impl::<W>(rest)
                     .inspect_err(|_| self.restore(check))?;
-                Ok(())
             }
         }
+        Ok(())
+    }
+
+    fn write_sequence_branch<'c, W: MaybeWrap>(
+        &mut self,
+        rest: impl Iterator<Item = &'c LNode> + Clone,
+        f_single: impl FnOnce(&mut Self) -> Result<(), NeedsWrap>,
+        f_wrap: impl FnOnce(&mut Self),
+    ) -> Result<(), W::E> {
+        // try without wrapping
+        let check = self.checkpoint();
+        let result_no_wrap = f_single(self);
+
+        // check check if children need wrapping
+        let mut should_wrap = match result_no_wrap {
+            Ok(()) => false,
+            Err(NeedsWrap) => true,
+        };
+
+        // check if line overflows
+        if !should_wrap {
+            should_wrap |= self.line_overflows(check);
+        }
+
+        // if no wrapping is needed yet, try writing the rest of the list
+        // TODO this is just a perf optimization, we could also always do this
+        //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
+        if !should_wrap {
+            self.write_sequence_impl::<W>(rest.clone())
+                .inspect_err(|_| self.restore(check))?;
+            should_wrap |= self.line_overflows(check);
+        }
+
+        // if we need to wrap, roll back and re-write everything with wrapping
+        if should_wrap {
+            self.restore(check);
+            W::require_wrap()?;
+
+            f_wrap(self);
+            self.write_sequence_impl::<AllowWrap>(rest).remove_never();
+        }
+
+        Ok(())
     }
 }
 
