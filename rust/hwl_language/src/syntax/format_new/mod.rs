@@ -46,7 +46,7 @@ pub fn format(
     println!("HNode tree:");
     println!("{}", root_node.tree_string());
 
-    let root_node = lower_nodes(source_offsets, &source_tokens, root_node).map_err(|e| {
+    let root_node = lower_nodes(source_str, source_offsets, &source_tokens, root_node).map_err(|e| {
         let (span, got) = match e.index {
             None => (Span::empty_at(source.full_span(file).end()), "end of file"),
             Some(index) => {

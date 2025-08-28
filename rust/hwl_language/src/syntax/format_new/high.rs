@@ -31,8 +31,14 @@ pub struct TokenMismatch {
 }
 
 // TODO find a better name
-pub fn lower_nodes(offsets: &LineOffsets, source_tokens: &[Token], node: HNode) -> Result<LNode, TokenMismatch> {
+pub fn lower_nodes<'s>(
+    source: &'s str,
+    offsets: &LineOffsets,
+    source_tokens: &[Token],
+    node: HNode,
+) -> Result<LNode<'s>, TokenMismatch> {
     let mut ctx = LowerContext {
+        source,
         offsets,
         source_tokens,
         next_source_index: 0,
@@ -82,14 +88,15 @@ impl HNode {
     }
 }
 
-struct LowerContext<'a> {
-    offsets: &'a LineOffsets,
-    source_tokens: &'a [Token],
+struct LowerContext<'s, 'r> {
+    source: &'s str,
+    offsets: &'r LineOffsets,
+    source_tokens: &'r [Token],
     next_source_index: usize,
 }
 
 // TODO reverse order of functions
-impl LowerContext<'_> {
+impl<'s> LowerContext<'s, '_> {
     fn prev_token(&self) -> Option<&Token> {
         if self.next_source_index == 0 {
             None
@@ -133,7 +140,7 @@ impl LowerContext<'_> {
         None
     }
 
-    fn preserve_blank_lines(&self, seq: &mut Vec<LNode>) {
+    fn preserve_blank_lines(&self, seq: &mut Vec<LNode<'s>>) {
         if let (Some(prev_token), Some(next_token)) = (self.prev_token(), self.peek_token()) {
             let prev_end = self.offsets.expand_pos(prev_token.span.end());
             let next_start = self.offsets.expand_pos(next_token.span.start());
@@ -144,7 +151,7 @@ impl LowerContext<'_> {
         }
     }
 
-    fn collect_comments(&mut self, seq: &mut Vec<LNode>, filter: impl Fn(SpanFull) -> bool) {
+    fn collect_comments(&mut self, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
         while let Some(token) = self.peek_token()
             && filter(self.offsets.expand_span(token.span))
         {
@@ -154,7 +161,11 @@ impl LowerContext<'_> {
                     // TODO preserve - 1?
                     // self.preserve_blank_lines(seq);
                     seq.push(LNode::Space);
-                    seq.push(LNode::Token(self.pop_token(token.ty).unwrap()));
+
+                    let token_index = self.pop_token(token.ty).unwrap();
+                    let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
+                    seq.push(LNode::AlwaysStr(token_str));
+
                     seq.push(LNode::AlwaysNewline);
                 }
                 TT::BlockComment => {
@@ -162,7 +173,11 @@ impl LowerContext<'_> {
                     // TODO spaces before/after?
                     // self.preserve_blank_lines(seq);
                     seq.push(LNode::Space);
-                    seq.push(LNode::Token(self.pop_token(token.ty).unwrap()));
+
+                    let token_index = self.pop_token(token.ty).unwrap();
+                    let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
+                    seq.push(LNode::AlwaysStr(token_str));
+
                     seq.push(LNode::Space);
 
                     // TODO should preserving happen before or after tokens?
@@ -179,7 +194,7 @@ impl LowerContext<'_> {
         }
     }
 
-    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode>) {
+    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode<'s>>) {
         let non_comment_start = self
             .find_next_non_comment_token()
             .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
@@ -189,13 +204,13 @@ impl LowerContext<'_> {
         })
     }
 
-    fn collect_comments_all(&mut self, seq: &mut Vec<LNode>) {
+    fn collect_comments_all(&mut self, seq: &mut Vec<LNode<'s>>) {
         // TODO make newline recording configurable? eg. for comma lists, the first newline doesn't count
         //   but if there are multiple (_between items_) then force wrap
         self.collect_comments(seq, |_| true);
     }
 
-    fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode>) {
+    fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode<'s>>) {
         if let Some(prev_token) = self.prev_token() {
             let prev_end = self.offsets.expand_pos(prev_token.span.end());
             self.collect_comments(seq, |span| span.end.line_0 == prev_end.line_0);
@@ -203,7 +218,7 @@ impl LowerContext<'_> {
     }
 
     // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
-    fn map(&mut self, node: HNode) -> Result<LNode, TokenMismatch> {
+    fn map(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
         let result = match node {
             HNode::Space => {
                 let mut seq = vec![];
@@ -215,7 +230,11 @@ impl LowerContext<'_> {
             HNode::Token(ty) => {
                 let mut seq = vec![];
                 self.collect_comments_all(&mut seq);
-                seq.push(LNode::Token(self.pop_token(ty)?));
+
+                let token_index = self.pop_token(ty)?;
+                let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
+                seq.push(LNode::AlwaysStr(token_str));
+
                 self.collect_comments_on_prev_line(&mut seq);
                 LNode::Sequence(seq)
             }

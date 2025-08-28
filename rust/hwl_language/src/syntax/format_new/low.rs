@@ -1,5 +1,5 @@
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
+use crate::syntax::format_new::common::swrite_indent;
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{Token, is_whitespace_or_empty};
 use crate::util::data::VecExt;
@@ -8,16 +8,14 @@ use hwl_util::swriteln;
 
 /// Low-level formatting nodes.
 /// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
-pub enum LNode {
-    /// Emit a token exactly as it appeared in the input source.
-    Token(SourceTokenIndex),
+pub enum LNode<'s> {
     /// Emit a space if the previous and next characters on the same line exist and are not whitespace.
     Space,
 
     /// Emit the given string.
-    AlwaysStr(&'static str),
+    AlwaysStr(&'s str),
     /// Emit the given string if the containing group is wrapping.
-    WrapStr(&'static str),
+    WrapStr(&'s str),
 
     /// Emit a newline. This forces any containing groups to wrap.
     AlwaysNewline,
@@ -25,28 +23,28 @@ pub enum LNode {
     WrapNewline,
 
     /// Indent the inner node.
-    AlwaysIndent(Box<LNode>),
+    AlwaysIndent(Box<LNode<'s>>),
     /// Indent the inner node if the containing group is wrapping, if not do nothing.
-    WrapIndent(Box<LNode>),
+    WrapIndent(Box<LNode<'s>>),
 
     /// A sequence of nodes to be emitted in order.
     /// Children can each individually decide to wrap or not,
     /// based on whether their contants overflow the start or end line.
     /// Any child wrapping forces the parent groups to wrap too.
-    Sequence(Vec<LNode>),
+    Sequence(Vec<LNode<'s>>),
 
     /// Groups are the mechanism to control wrapping.
     /// A group either wraps or does not wrap, which recursively affects all child nodes.
     /// Groups can be nested, in which case inner groups can only wrap if the outer group is wrapping,
     ///   but inner groups are allowed to not wrap even if the outer group is wrapping.
-    Group(Box<LNode>),
+    Group(Box<LNode<'s>>),
 
     /// Similar to [LNode::Group], except that as many children as possible are placed on each line,
     /// instead of a single global wrapping decision for the entire group.
     ///
     /// After each child there's an implicit [LNode::WrapNewLine] after each child
     /// and an implicit [LNode::Indent] around all children.
-    Fill(Vec<LNode>),
+    Fill(Vec<LNode<'s>>),
 }
 
 pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens: &[Token], root: &LNode) -> String {
@@ -65,6 +63,7 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens
     ctx.result
 }
 
+// TODO remove unused fields
 struct StringBuilderContext<'a> {
     settings: &'a FormatSettings,
 
@@ -120,7 +119,7 @@ impl MaybeWrap for AllowWrap {
     }
 }
 
-impl LNode {
+impl<'s> LNode<'s> {
     pub fn debug_str(&self) -> String {
         let mut f = String::new();
         self.debug_str_impl(&mut f, 0);
@@ -130,7 +129,6 @@ impl LNode {
     fn debug_str_impl(&self, f: &mut String, indent: usize) {
         swrite_indent(f, indent);
         match self {
-            LNode::Token(index) => swriteln!(f, "Token({index:?})"),
             LNode::Space => swriteln!(f, "Space"),
             LNode::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
             LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
@@ -163,7 +161,7 @@ impl LNode {
         }
     }
 
-    pub fn simplify(self) -> LNode {
+    pub fn simplify(self) -> LNode<'s> {
         match self {
             // actual simplification+
             LNode::Sequence(children) => {
@@ -182,7 +180,6 @@ impl LNode {
             LNode::Group(child) => LNode::Group(Box::new(child.simplify())),
             LNode::Fill(children) => LNode::Fill(children.into_iter().map(LNode::simplify).collect()),
             // trivial cases
-            LNode::Token(t) => LNode::Token(t),
             LNode::Space => LNode::Space,
             LNode::AlwaysStr(s) => LNode::AlwaysStr(s),
             LNode::WrapStr(s) => LNode::WrapStr(s),
@@ -267,11 +264,6 @@ impl StringBuilderContext<'_> {
 
     fn write_node<W: MaybeWrap>(&mut self, node: &LNode) -> Result<(), W::E> {
         match node {
-            LNode::Token(index) => {
-                let token_span = self.source_tokens[index.0].span;
-                let token_str = &self.source_str[token_span.range_bytes()];
-                self.write_str::<W>(token_str)?;
-            }
             LNode::Space => {
                 self.state.emit_space = true;
             }
@@ -313,12 +305,12 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_sequence<W: MaybeWrap>(&mut self, children: &[LNode]) -> Result<(), W::E> {
+    fn write_sequence<'s, W: MaybeWrap>(&mut self, children: &[LNode<'s>]) -> Result<(), W::E> {
         // flatten if necessary
         if children.iter().all(|c| !matches!(c, LNode::Sequence(_))) {
             self.write_sequence_impl::<W>(children.iter())
         } else {
-            fn f<'c>(flat: &mut Vec<&'c LNode>, node: &'c LNode) {
+            fn f<'s, 'c>(flat: &mut Vec<&'c LNode<'s>>, node: &'c LNode<'s>) {
                 match node {
                     LNode::Sequence(children) => {
                         for child in children {
@@ -337,9 +329,9 @@ impl StringBuilderContext<'_> {
         }
     }
 
-    fn write_sequence_impl<'c, W: MaybeWrap>(
+    fn write_sequence_impl<'c, 's: 'c, W: MaybeWrap>(
         &mut self,
-        mut children: impl Iterator<Item = &'c LNode> + Clone,
+        mut children: impl Iterator<Item = &'c LNode<'s>> + Clone,
     ) -> Result<(), W::E> {
         let (child, rest) = match children.next() {
             None => return Ok(()),
@@ -394,9 +386,9 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_sequence_branch<'c, W: MaybeWrap>(
+    fn write_sequence_branch<'c, 's: 'c, W: MaybeWrap>(
         &mut self,
-        rest: impl Iterator<Item = &'c LNode> + Clone,
+        rest: impl Iterator<Item = &'c LNode<'s>> + Clone,
         f_single: impl FnOnce(&mut Self) -> Result<(), NeedsWrap>,
         f_wrap: impl FnOnce(&mut Self),
     ) -> Result<(), W::E> {

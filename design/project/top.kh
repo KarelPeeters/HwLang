@@ -3,6 +3,9 @@ const some_long_constant = a + b + c;
 const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
 const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr * very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
 
+
+/**/ const /**/ some_long_constant /**/ = /**/ a /**/ + /**/ b /**/; /**/
+
 //fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr)) {}
 /*test*/
 /*pub*/ fn short_func(
