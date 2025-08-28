@@ -305,3 +305,18 @@ const some_long_constant = very_long_identifiervery_long_identiong_identifierver
 //) {
 //}
 */
+
+
+//import a.b;
+//import a.b.d;
+//import a.b.d.[a as e, c, d as e];
+//import test.test;
+//import test.test.[very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifier];
+//import test.test.[very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifierv];
+//import test.test.[
+//    very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifier,
+//    very_long_identifiervery_long_identiong_identifier,
+//    very_long_identifiervery_long_identiong_identifier,
+//    very_long_identifiervery_long_identiong_identifier,
+//    very_long_identifiervery_long_identiong_identifier,
+//];

@@ -4,10 +4,9 @@ use crate::syntax::ast::{
     FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, Item, ItemImport,
     MaybeIdentifier, Parameter, Parameters, Visibility,
 };
-use crate::syntax::format_new::high::HCommaList;
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
-use itertools::Itertools;
+use crate::util::iter::IterExt;
 
 pub fn ast_to_node(file: &FileContent) -> HNode {
     let FileContent {
@@ -36,7 +35,7 @@ impl Context<'_> {
                 Item::Interface(_) => todo!(),
             })
             .collect();
-        HNode::Vertical(nodes)
+        HNode::Sequence(nodes)
     }
 
     fn fmt_import(&self, import: &ItemImport) -> HNode {
@@ -47,12 +46,12 @@ impl Context<'_> {
         } = import;
 
         let mut nodes = vec![];
-        nodes.push(HNode::Token(TT::Import));
+        nodes.push(HNode::AlwaysToken(TT::Import));
         nodes.push(HNode::Space);
 
         for &parent in &parents.inner {
             nodes.push(self.fmt_id(parent));
-            nodes.push(HNode::Token(TT::Dot));
+            nodes.push(HNode::AlwaysToken(TT::Dot));
         }
 
         match &entry.inner {
@@ -60,17 +59,23 @@ impl Context<'_> {
                 nodes.push(self.fmt_import_entry(entry));
             }
             ImportFinalKind::Multi(entries) => {
-                let children = entries.iter().map(|e| self.fmt_import_entry(e)).collect();
-                let list = HCommaList { fill: true, children };
+                nodes.push(HNode::AlwaysToken(TT::OpenS));
 
-                nodes.push(HNode::Token(TT::OpenS));
-                nodes.push(HNode::CommaList(list));
-                nodes.push(HNode::Token(TT::CloseS));
+                let mut nodes_fill = vec![];
+                for (entry, last) in entries.iter().with_last() {
+                    let mut seq = vec![self.fmt_import_entry(entry)];
+                    push_comma_nodes(last, &mut seq);
+                    nodes_fill.push(HNode::Sequence(seq));
+                }
+
+                nodes.push(HNode::Fill(nodes_fill));
+                nodes.push(HNode::AlwaysToken(TT::CloseS));
             }
         }
 
-        nodes.push(HNode::Token(TT::Semi));
-        HNode::Horizontal(nodes)
+        nodes.push(HNode::AlwaysToken(TT::Semi));
+        nodes.push(HNode::AlwaysNewline);
+        HNode::Sequence(nodes)
     }
 
     fn fmt_import_entry(&self, entry: &ImportEntry) -> HNode {
@@ -78,12 +83,13 @@ impl Context<'_> {
         let mut nodes = vec![];
         nodes.push(self.fmt_id(id));
         if let Some(as_) = as_ {
+            // TODO allow wrapping here?
             nodes.push(HNode::Space);
-            nodes.push(HNode::Token(TT::As));
+            nodes.push(HNode::AlwaysToken(TT::As));
             nodes.push(HNode::Space);
             nodes.push(self.fmt_maybe_id(as_));
         }
-        HNode::Horizontal(nodes)
+        HNode::Sequence(nodes)
     }
 
     fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
@@ -97,20 +103,21 @@ impl Context<'_> {
                         // TODO add some wrapping points?
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
                         let mut seq = vec![];
-                        seq.push(HNode::Token(TT::Const));
+                        seq.push(HNode::AlwaysToken(TT::Const));
                         seq.push(HNode::Space);
                         seq.push(self.fmt_maybe_id(id));
                         if let Some(ty) = ty {
                             seq.push(HNode::Space);
-                            seq.push(HNode::Token(TT::Colon));
+                            seq.push(HNode::AlwaysToken(TT::Colon));
                             seq.push(self.fmt_expr(ty));
                         }
                         seq.push(HNode::Space);
-                        seq.push(HNode::Token(TT::Eq));
+                        seq.push(HNode::AlwaysToken(TT::Eq));
                         seq.push(HNode::Space);
                         seq.push(self.fmt_expr(value));
-                        seq.push(HNode::Token(TT::Semi));
-                        HNode::Horizontal(seq)
+                        seq.push(HNode::AlwaysToken(TT::Semi));
+                        seq.push(HNode::AlwaysNewline);
+                        HNode::Sequence(seq)
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -123,26 +130,27 @@ impl Context<'_> {
                             ref body,
                         } = decl;
                         let mut nodes = vec![
-                            HNode::Token(TT::Function),
+                            HNode::AlwaysToken(TT::Function),
                             HNode::Space,
                             self.fmt_maybe_id(id),
                             self.fmt_parameters(params),
                         ];
                         if let Some(ret_ty) = ret_ty {
                             nodes.push(HNode::Space);
-                            nodes.push(HNode::Token(TT::Arrow));
+                            nodes.push(HNode::AlwaysToken(TT::Arrow));
                             nodes.push(HNode::Space);
                             nodes.push(self.fmt_expr(ret_ty));
                         }
                         nodes.push(HNode::Space);
                         nodes.push(self.fmt_block(body));
-                        HNode::Horizontal(nodes)
+                        nodes.push(HNode::AlwaysNewline);
+                        HNode::Sequence(nodes)
                     }
                 };
 
                 match node_vis {
                     None => node_kind,
-                    Some(token_vis) => HNode::Horizontal(vec![HNode::Token(token_vis), node_kind]),
+                    Some(token_vis) => HNode::Sequence(vec![HNode::AlwaysToken(token_vis), node_kind]),
                 }
             }
             CommonDeclaration::ConstBlock(_) => todo!(),
@@ -151,11 +159,11 @@ impl Context<'_> {
 
     fn fmt_parameters(&self, params: &Parameters) -> HNode {
         let Parameters { span: _, items } = params;
-        let children = fmt_extra_list(items, &|p| self.fmt_parameter(p));
-
-        let list = HCommaList { fill: false, children };
-        let node_list = HNode::CommaList(list);
-        HNode::Horizontal(vec![HNode::Token(TT::OpenR), node_list, HNode::Token(TT::CloseR)])
+        HNode::Sequence(vec![
+            HNode::AlwaysToken(TT::OpenR),
+            fmt_extra_list(items, &|p| self.fmt_parameter(p)),
+            HNode::AlwaysToken(TT::CloseR),
+        ])
     }
 
     fn fmt_parameter(&self, param: &Parameter) -> HNode {
@@ -167,25 +175,25 @@ impl Context<'_> {
         } = param;
         let mut nodes = vec![
             self.fmt_id(id),
-            HNode::Token(TT::Colon),
+            HNode::AlwaysToken(TT::Colon),
             HNode::Space,
             self.fmt_expr(ty),
         ];
         if let Some(default) = default {
             nodes.push(HNode::Space);
-            nodes.push(HNode::Token(TT::Eq));
+            nodes.push(HNode::AlwaysToken(TT::Eq));
             nodes.push(HNode::Space);
             nodes.push(self.fmt_expr(default));
         }
-        HNode::Horizontal(nodes)
+        HNode::Sequence(nodes)
     }
 
     fn fmt_block(&self, block: &Block<BlockStatement>) -> HNode {
-        // TODO for else-if blocks, force a newline to avoid infinite clutter
+        // TODO for else-if blocks, force a newline inside the block to avoid infinite clutter?
         if !block.statements.is_empty() {
             todo!()
         }
-        HNode::Horizontal(vec![HNode::Token(TT::OpenC), HNode::Token(TT::CloseC)])
+        HNode::Sequence(vec![HNode::AlwaysToken(TT::OpenC), HNode::AlwaysToken(TT::CloseC)])
     }
 
     fn fmt_expr(&self, expr: Expression) -> HNode {
@@ -210,13 +218,13 @@ impl Context<'_> {
                     self.fmt_expr(left),
                     HNode::Space,
                     HNode::WrapNewline,
-                    HNode::WrapIndent(Box::new(HNode::Horizontal(vec![
-                        HNode::Token(op.inner.token()),
+                    HNode::WrapIndent(Box::new(HNode::Sequence(vec![
+                        HNode::AlwaysToken(op.inner.token()),
                         HNode::Space,
                         self.fmt_expr(right),
                     ]))),
                 ];
-                HNode::Group(Box::new(HNode::Horizontal(seq)))
+                HNode::Group(Box::new(HNode::Sequence(seq)))
             }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
@@ -225,30 +233,22 @@ impl Context<'_> {
                 let node_target = self.fmt_expr(target);
 
                 let Args { span: _, inner } = args;
-                let nodes_arg = inner
-                    .iter()
-                    .map(|arg| {
-                        let &Arg { span: _, name, value } = arg;
-                        let node_value = self.fmt_expr(value);
-                        if let Some(name) = name {
-                            HNode::Horizontal(vec![self.fmt_id(name), HNode::Token(TT::Eq), node_value])
-                        } else {
-                            node_value
-                        }
-                    })
-                    .collect_vec();
-
-                let node_list = HCommaList {
-                    fill: false,
-                    children: nodes_arg,
-                };
-                let node_args = HNode::Horizontal(vec![
-                    HNode::Token(TT::OpenR),
-                    HNode::CommaList(node_list),
-                    HNode::Token(TT::CloseR),
+                let node_arg_list = fmt_comma_list(inner, |arg| {
+                    let &Arg { span: _, name, value } = arg;
+                    let node_value = self.fmt_expr(value);
+                    if let Some(name) = name {
+                        HNode::Sequence(vec![self.fmt_id(name), HNode::AlwaysToken(TT::Eq), node_value])
+                    } else {
+                        node_value
+                    }
+                });
+                let node_args = HNode::Sequence(vec![
+                    HNode::AlwaysToken(TT::OpenR),
+                    node_arg_list,
+                    HNode::AlwaysToken(TT::CloseR),
                 ]);
 
-                HNode::Horizontal(vec![node_target, node_args])
+                HNode::Sequence(vec![node_target, node_args])
             }
             ExpressionKind::Builtin(_) => todo!(),
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
@@ -265,30 +265,58 @@ impl Context<'_> {
 
     fn fmt_maybe_id(&self, id: MaybeIdentifier) -> HNode {
         match id {
-            MaybeIdentifier::Dummy(_span) => HNode::Token(TT::Underscore),
+            MaybeIdentifier::Dummy(_span) => HNode::AlwaysToken(TT::Underscore),
             MaybeIdentifier::Identifier(id) => self.fmt_id(id),
         }
     }
 
     fn fmt_id(&self, id: Identifier) -> HNode {
         let _ = id;
-        HNode::Token(TT::Identifier)
+        HNode::AlwaysToken(TT::Identifier)
     }
 }
 
-// TODO variant that always wraps, for eg. module ports? or not, maybe it's more elegant if we don't
-fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> Vec<HNode> {
-    // TODO if there are no-simple items, force the parent to wrap
-    //   or will that happen automatically once a Vertical is a child?
+fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
+    // TODO variant that always wraps, for eg. module ports? or not, maybe it's more elegant if we don't
     let ExtraList { span: _, items } = list;
-    items
-        .iter()
-        .map(|item| match item {
-            ExtraItem::Inner(inner) => f(inner),
+
+    let mut nodes = vec![];
+    nodes.push(HNode::WrapNewline);
+
+    for (item, last) in items.iter().with_last() {
+        match item {
+            ExtraItem::Inner(item) => {
+                nodes.push(f(item));
+                push_comma_nodes(last, &mut nodes);
+                nodes.push(HNode::Space);
+                nodes.push(HNode::WrapNewline);
+            }
             ExtraItem::Declaration(_) => todo!(),
             ExtraItem::If(_) => todo!(),
-        })
-        .collect()
+        }
+    }
+    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+}
+
+fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
+    let mut nodes = vec![];
+    for (item, last) in items.iter().with_last() {
+        nodes.push(f(item));
+        push_comma_nodes(last, &mut nodes);
+        if !last {
+            nodes.push(HNode::Space);
+        }
+    }
+    HNode::Group(Box::new(HNode::Sequence(nodes)))
+}
+
+fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
+    if !last {
+        seq.push(HNode::AlwaysToken(TT::Comma));
+        seq.push(HNode::Space);
+    } else {
+        seq.push(HNode::WrapComma);
+    }
 }
 
 trait FormatVisibility: Copy {

@@ -2,20 +2,28 @@ use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
-use crate::util::iter::IterExt;
 use hwl_util::swriteln;
+use itertools::Itertools;
 
+// TODO doc
+// TODO rename "always" variants to just their base name, it's pretty verbose
+// TODO add special "preserve blank lines" node?
 #[derive(Debug)]
 pub enum HNode {
     Space,
-    Token(TT),
-    Horizontal(Vec<HNode>),
-    Vertical(Vec<HNode>),
-    CommaList(HCommaList),
 
+    AlwaysToken(TT),
+    WrapComma,
+
+    AlwaysNewline,
     WrapNewline,
+
+    AlwaysIndent(Box<HNode>),
     WrapIndent(Box<HNode>),
+
+    Sequence(Vec<HNode>),
     Group(Box<HNode>),
+    Fill(Vec<HNode>),
 }
 
 #[derive(Debug)]
@@ -62,27 +70,29 @@ impl HNode {
         };
         match self {
             HNode::Space => swriteln!(f, "Space"),
-            HNode::Token(ty) => swriteln!(f, "Token({ty:?})"),
-            HNode::Horizontal(children) => {
-                swriteln!(f, "Horizontal");
-                swrite_children(f, children);
-            }
-            HNode::Vertical(children) => {
-                swriteln!(f, "Vertical");
-                swrite_children(f, children);
-            }
-            HNode::CommaList(HCommaList { fill, children }) => {
-                swriteln!(f, "CommaList(fill={fill})");
-                swrite_children(f, children);
+            HNode::AlwaysToken(ty) => swriteln!(f, "AlwaysToken({ty:?})"),
+            HNode::WrapComma => swriteln!(f, "WrapComma"),
+            HNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
+            HNode::AlwaysIndent(child) => {
+                swriteln!(f, "AlwaysIndent");
+                child.tree_string_impl(f, indent + 1);
             }
             HNode::WrapNewline => swriteln!(f, "WrapNewline"),
             HNode::WrapIndent(child) => {
                 swriteln!(f, "WrapIndent");
                 child.tree_string_impl(f, indent + 1);
             }
+            HNode::Sequence(children) => {
+                swriteln!(f, "Sequence");
+                swrite_children(f, children);
+            }
             HNode::Group(child) => {
                 swriteln!(f, "Group");
                 child.tree_string_impl(f, indent + 1);
+            }
+            HNode::Fill(children) => {
+                swriteln!(f, "Fill");
+                swrite_children(f, children);
             }
         }
     }
@@ -219,91 +229,31 @@ impl<'s> LowerContext<'s, '_> {
 
     // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
     fn map(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
+        // TODO collect comments before/after
         let result = match node {
-            HNode::Space => {
-                let mut seq = vec![];
-                self.collect_comments_all(&mut seq);
-                seq.push(LNode::Space);
-                self.collect_comments_on_prev_line(&mut seq);
-                LNode::Sequence(seq)
-            }
-            HNode::Token(ty) => {
-                let mut seq = vec![];
-                self.collect_comments_all(&mut seq);
-
-                let token_index = self.pop_token(ty)?;
+            HNode::Space => LNode::Space,
+            HNode::AlwaysToken(tt) => {
+                let token_index = self.pop_token(tt)?;
                 let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
-                seq.push(LNode::AlwaysStr(token_str));
-
-                self.collect_comments_on_prev_line(&mut seq);
-                LNode::Sequence(seq)
+                LNode::AlwaysStr(token_str)
             }
-            HNode::Horizontal(children) => {
-                let mut seq = vec![];
-                self.collect_comments_all(&mut seq);
-                for child in children {
-                    seq.push(self.map(child)?);
-                    self.collect_comments_on_prev_line(&mut seq);
+            HNode::WrapComma => {
+                if let Some(token) = self.peek_token()
+                    && token.ty == TT::Comma
+                {
+                    self.pop_token(TT::Comma).unwrap();
                 }
-                LNode::Sequence(seq)
+                LNode::WrapStr(",")
             }
-            HNode::Vertical(children) => {
-                // TODO capture comments between nodes
-                // TODO remember blank lines between both items and comments
-                let mut seq = vec![];
-                self.collect_comments_on_lines_before_real_token(&mut seq);
-                for child in children {
-                    self.preserve_blank_lines(&mut seq);
-                    seq.push(self.map(child)?);
-                    seq.push(LNode::AlwaysNewline);
-                    self.collect_comments_on_lines_before_real_token(&mut seq);
-                }
-                LNode::Sequence(seq)
-            }
-            HNode::CommaList(list) => {
-                // TODO remember blank lines between (but not before) items, and if there are any then force wrap
-                let HCommaList { fill, children } = list;
-
-                let mut seq = vec![];
-                seq.push(LNode::WrapNewline);
-
-                for (child, last) in children.into_iter().with_last() {
-                    seq.push(self.map(child)?);
-
-                    self.collect_comments_all(&mut seq);
-
-                    // handle comma
-                    if last {
-                        if let Some(t) = self.peek_token()
-                            && t.ty == TT::Comma
-                        {
-                            self.pop_token(TT::Comma)?;
-                        }
-                        seq.push(LNode::WrapStr(","));
-                    } else {
-                        self.pop_token(TT::Comma)?;
-                        seq.push(LNode::AlwaysStr(","));
-                        seq.push(LNode::Space);
-                    }
-
-                    self.collect_comments_on_prev_line(&mut seq);
-
-                    if !fill {
-                        seq.push(LNode::WrapNewline);
-                    }
-                }
-
-                // TODO capture comments
-
-                if fill {
-                    LNode::Fill(seq)
-                } else {
-                    LNode::Group(Box::new(LNode::WrapIndent(Box::new(LNode::Sequence(seq)))))
-                }
-            }
+            HNode::AlwaysNewline => LNode::AlwaysNewline,
             HNode::WrapNewline => LNode::WrapNewline,
-            HNode::WrapIndent(child) => LNode::WrapIndent(Box::new(self.map(*child)?)),
-            HNode::Group(child) => LNode::Group(Box::new(self.map(*child)?)),
+            HNode::AlwaysIndent(inner) => LNode::AlwaysIndent(Box::new(self.map(*inner)?)),
+            HNode::WrapIndent(inner) => LNode::WrapIndent(Box::new(self.map(*inner)?)),
+            HNode::Sequence(children) => {
+                LNode::Sequence(children.into_iter().map(|child| self.map(child)).try_collect()?)
+            }
+            HNode::Group(inner) => LNode::Group(Box::new(self.map(*inner)?)),
+            HNode::Fill(children) => LNode::Fill(children.into_iter().map(|child| self.map(child)).try_collect()?),
         };
         Ok(result)
     }

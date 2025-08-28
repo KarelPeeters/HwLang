@@ -6,6 +6,7 @@ use crate::util::data::VecExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 
+// TODO rename "always" variants to just their base name, it's pretty verbose
 /// Low-level formatting nodes.
 /// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
 pub enum LNode<'s> {
@@ -19,6 +20,7 @@ pub enum LNode<'s> {
 
     /// Emit a newline. This forces any containing groups to wrap.
     AlwaysNewline,
+    // TODO make this emit a space if not wrapping? or let callers add space nodes themselves?
     /// Emit a newline if the containing group is wrapping.
     WrapNewline,
 
@@ -359,13 +361,18 @@ impl StringBuilderContext<'_> {
                     },
                     |slf| {
                         slf.indent(|slf| {
+                            slf.write_newline::<AllowWrap>().remove_never();
+                            let mut first_after_break = true;
                             for c in children {
                                 let check = slf.checkpoint();
                                 slf.write_node::<AllowWrap>(c).remove_never();
-                                if slf.line_overflows(check) {
+                                if slf.line_overflows(check) && !first_after_break {
                                     slf.restore(check);
                                     slf.write_newline::<AllowWrap>().remove_never();
                                     slf.write_node::<AllowWrap>(c).remove_never();
+                                    first_after_break = true;
+                                } else {
+                                    first_after_break = false;
                                 }
                             }
                         });
