@@ -12,6 +12,10 @@ pub enum HNode {
     Horizontal(Vec<HNode>),
     Vertical(Vec<HNode>),
     CommaList(HCommaList),
+
+    WrapNewline,
+    WrapIndent(Box<HNode>),
+    Group(Box<HNode>),
 }
 
 #[derive(Debug)]
@@ -64,6 +68,15 @@ impl HNode {
             HNode::CommaList(HCommaList { fill, children }) => {
                 swriteln!(f, "CommaList(fill={fill})");
                 swrite_children(f, children);
+            }
+            HNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            HNode::WrapIndent(child) => {
+                swriteln!(f, "WrapIndent");
+                child.tree_string_impl(f, indent + 1);
+            }
+            HNode::Group(child) => {
+                swriteln!(f, "Group");
+                child.tree_string_impl(f, indent + 1);
             }
         }
     }
@@ -269,6 +282,9 @@ impl LowerContext<'_> {
                     LNode::Group(Box::new(LNode::WrapIndent(Box::new(LNode::Sequence(seq)))))
                 }
             }
+            HNode::WrapNewline => LNode::WrapNewline,
+            HNode::WrapIndent(child) => LNode::WrapIndent(Box::new(self.map(*child)?)),
+            HNode::Group(child) => LNode::Group(Box::new(self.map(*child)?)),
         };
         Ok(result)
     }

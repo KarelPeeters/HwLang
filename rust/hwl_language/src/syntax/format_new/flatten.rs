@@ -1,8 +1,8 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
-    CommonDeclarationNamedKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration,
-    GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, Item, ItemImport, MaybeIdentifier, Parameter,
-    Parameters, Visibility,
+    CommonDeclarationNamedKind, ConstDeclaration, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
+    FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, Item, ItemImport,
+    MaybeIdentifier, Parameter, Parameters, Visibility,
 };
 use crate::syntax::format_new::high::HCommaList;
 use crate::syntax::format_new::high::HNode;
@@ -93,7 +93,25 @@ impl Context<'_> {
                 let node_vis = vis.token();
                 let node_kind = match kind {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
-                    CommonDeclarationNamedKind::Const(_) => todo!(),
+                    CommonDeclarationNamedKind::Const(decl) => {
+                        // TODO add some wrapping points?
+                        let &ConstDeclaration { span: _, id, ty, value } = decl;
+                        let mut seq = vec![];
+                        seq.push(HNode::Token(TT::Const));
+                        seq.push(HNode::Space);
+                        seq.push(self.fmt_maybe_id(id));
+                        if let Some(ty) = ty {
+                            seq.push(HNode::Space);
+                            seq.push(HNode::Token(TT::Colon));
+                            seq.push(self.fmt_expr(ty));
+                        }
+                        seq.push(HNode::Space);
+                        seq.push(HNode::Token(TT::Eq));
+                        seq.push(HNode::Space);
+                        seq.push(self.fmt_expr(value));
+                        seq.push(HNode::Token(TT::Semi));
+                        HNode::Horizontal(seq)
+                    }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
                     CommonDeclarationNamedKind::Function(decl) => {
@@ -187,7 +205,19 @@ impl Context<'_> {
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
             ExpressionKind::UnaryOp(_, _) => todo!(),
-            ExpressionKind::BinaryOp(_, _, _) => todo!(),
+            &ExpressionKind::BinaryOp(op, left, right) => {
+                let seq = vec![
+                    self.fmt_expr(left),
+                    HNode::Space,
+                    HNode::WrapNewline,
+                    HNode::WrapIndent(Box::new(HNode::Horizontal(vec![
+                        HNode::Token(op.inner.token()),
+                        HNode::Space,
+                        self.fmt_expr(right),
+                    ]))),
+                ];
+                HNode::Group(Box::new(HNode::Horizontal(seq)))
+            }
             ExpressionKind::ArrayType(_, _) => todo!(),
             ExpressionKind::ArrayIndex(_, _) => todo!(),
             ExpressionKind::DotIndex(_, _) => todo!(),

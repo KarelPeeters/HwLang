@@ -1,17 +1,7 @@
-import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name];
-import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_na];
-import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_nae];
-import some_long_import_name.[some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name, some_long_import_name];
-
-
-fn foo(
-    x: very_long_identifiervery_long_identiong_identifiervery_long_identifierrrrrrrrrrrrrrrrrrrrrrrrr(something_medium),
-    y: very_long_identifiervery_long_identiong_identifiervery_long_identifierr,
-) {}
-
-fn foo(x: uint, y: uint) {}
-
-
+const some_long_constant = a + b;
+const some_long_constant = a + b + c;
+const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
+const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr * very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
 
 //fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr)) {}
 /*test*/
