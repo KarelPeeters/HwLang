@@ -35,11 +35,17 @@ pub enum LNode {
     /// Any child wrapping forces the parent groups to wrap too.
     Sequence(Vec<LNode>),
 
-    // TODO doc
+    /// Groups are the mechanism to control wrapping.
+    /// A group either wraps or does not wrap, which recursively affects all child nodes.
+    /// Groups can be nested, in which case inner groups can only wrap if the outer group is wrapping,
+    ///   but inner groups are allowed to not wrap even if the outer group is wrapping.
     Group(Box<LNode>),
 
-    // TODO doc: there is an implicit "WrapIndent" surrounding the children,
-    //   and before/between/after each child there's an implicit `WrapNewlineElseSpace`
+    /// Similar to [LNode::Group], except that as many children as possible are placed on each line,
+    /// instead of a single global wrapping decision for the entire group.
+    ///
+    /// After each child there's an implicit [LNode::WrapNewLine] after each child
+    /// and an implicit [LNode::Indent] around all children.
     Fill(Vec<LNode>),
 }
 
@@ -85,21 +91,20 @@ struct StringState {
 // TODO rename all of these to be more in the spirit of "is the parent wrapping"
 #[derive(Debug)]
 struct NeedsWrap;
-type WrapResult = Result<(), NeedsWrap>;
 
 trait MaybeWrap {
     type E;
-    fn allow_wrap() -> bool;
-    fn require_wrap() -> Result<(), Self::E>;
+    fn is_wrapping() -> bool;
+    fn require_wrapping() -> Result<(), Self::E>;
 }
 
 struct NoWrap {}
 impl MaybeWrap for NoWrap {
     type E = NeedsWrap;
-    fn allow_wrap() -> bool {
+    fn is_wrapping() -> bool {
         false
     }
-    fn require_wrap() -> Result<(), NeedsWrap> {
+    fn require_wrapping() -> Result<(), NeedsWrap> {
         Err(NeedsWrap)
     }
 }
@@ -107,10 +112,10 @@ impl MaybeWrap for NoWrap {
 struct AllowWrap {}
 impl MaybeWrap for AllowWrap {
     type E = Never;
-    fn allow_wrap() -> bool {
+    fn is_wrapping() -> bool {
         true
     }
-    fn require_wrap() -> Result<(), Never> {
+    fn require_wrapping() -> Result<(), Never> {
         Ok(())
     }
 }
@@ -202,13 +207,10 @@ impl StringBuilderContext<'_> {
     }
 
     fn line_overflows(&self, check: CheckPoint) -> bool {
-        // TODO optimize this?
-        // TODO rename to clarify whether this checks the first or last line, or maybe this should check all lines?
-        //   but not comment lines >:(
         // TODO use proper LineOffsets line-ending logic
         let line_start = check.state.curr_line_start;
         let rest = &self.result[line_start..];
-        let line_len = rest.bytes().position(|c| c == b'\n').unwrap_or(rest.len());
+        let line_len = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
         line_len > self.settings.max_line_length
     }
 
@@ -227,7 +229,7 @@ impl StringBuilderContext<'_> {
         // strings containing newlines need the parent to wrap
         let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
         if last_line_end.is_some() {
-            W::require_wrap()?;
+            W::require_wrapping()?;
         }
 
         // emit indent if this is the first text on the line
@@ -253,8 +255,6 @@ impl StringBuilderContext<'_> {
         }
 
         // emit str itself
-        // TODO if multiline, require wrap?
-        // TODO if multiline, increment line state
         self.result.push_str(s);
 
         // update line state
@@ -279,7 +279,7 @@ impl StringBuilderContext<'_> {
                 self.write_str::<W>(s)?;
             }
             LNode::WrapStr(s) => {
-                if W::allow_wrap() {
+                if W::is_wrapping() {
                     self.write_str::<W>(s)?;
                 }
             }
@@ -287,7 +287,7 @@ impl StringBuilderContext<'_> {
                 self.write_newline::<W>()?;
             }
             LNode::WrapNewline => {
-                if W::allow_wrap() {
+                if W::is_wrapping() {
                     self.write_newline::<W>()?;
                 }
             }
@@ -295,7 +295,7 @@ impl StringBuilderContext<'_> {
                 self.indent(|ctx| ctx.write_node::<W>(child))?;
             }
             LNode::WrapIndent(child) => {
-                if W::allow_wrap() {
+                if W::is_wrapping() {
                     self.indent(|ctx| ctx.write_node::<W>(child))?;
                 } else {
                     self.write_node::<W>(child)?;
@@ -416,8 +416,7 @@ impl StringBuilderContext<'_> {
         }
 
         // if no wrapping is needed yet, try writing the rest of the list
-        // TODO this is just a perf optimization, we could also always do this
-        //    and this can also be optimized more, as soon as we overflow deeper we know that we should bail
+        // TODO this can also be optimized more, as soon as we overflow deeper we know that we should bail
         if !should_wrap {
             self.write_sequence_impl::<W>(rest.clone())
                 .inspect_err(|_| self.restore(check))?;
@@ -427,7 +426,7 @@ impl StringBuilderContext<'_> {
         // if we need to wrap, roll back and re-write everything with wrapping
         if should_wrap {
             self.restore(check);
-            W::require_wrap()?;
+            W::require_wrapping()?;
 
             f_wrap(self);
             self.write_sequence_impl::<AllowWrap>(rest).remove_never();
