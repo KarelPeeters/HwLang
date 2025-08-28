@@ -320,3 +320,7 @@ const some_long_constant = very_long_identifiervery_long_identiong_identifierver
 //    very_long_identifiervery_long_identiong_identifier,
 //    very_long_identifiervery_long_identiong_identifier,
 //];
+
+//fn foo(a: uint, b: uint) {}
+//fn foo(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint, very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint,) {}
+//fn foo(a: very_long_identifiervery_long_identiong_identifiervery_long_identifierr(very_long_identifiervery_long_identiong_identifiervery_long_identifierr, very_long_identifiervery_long_identiong_identifiervery_long_identifierr), b: uint) {}

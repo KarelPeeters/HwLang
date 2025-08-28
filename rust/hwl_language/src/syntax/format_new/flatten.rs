@@ -237,6 +237,7 @@ impl Context<'_> {
                     let &Arg { span: _, name, value } = arg;
                     let node_value = self.fmt_expr(value);
                     if let Some(name) = name {
+                        // TODO allow wrapping before/after "="
                         HNode::Sequence(vec![self.fmt_id(name), HNode::AlwaysToken(TT::Eq), node_value])
                     } else {
                         node_value
@@ -288,7 +289,6 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
             ExtraItem::Inner(item) => {
                 nodes.push(f(item));
                 push_comma_nodes(last, &mut nodes);
-                nodes.push(HNode::Space);
                 nodes.push(HNode::WrapNewline);
             }
             ExtraItem::Declaration(_) => todo!(),
@@ -300,14 +300,13 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
 
 fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
     let mut nodes = vec![];
+    nodes.push(HNode::WrapNewline);
     for (item, last) in items.iter().with_last() {
         nodes.push(f(item));
         push_comma_nodes(last, &mut nodes);
-        if !last {
-            nodes.push(HNode::Space);
-        }
+        nodes.push(HNode::WrapNewline);
     }
-    HNode::Group(Box::new(HNode::Sequence(nodes)))
+    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
 }
 
 fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
