@@ -6,7 +6,6 @@ use crate::util::data::VecExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 
-// TODO rename "always" variants to just their base name, it's pretty verbose
 /// Low-level formatting nodes.
 /// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
 pub enum LNode<'s> {
@@ -20,7 +19,6 @@ pub enum LNode<'s> {
 
     /// Emit a newline. This forces any containing groups to wrap.
     AlwaysNewline,
-    // TODO make this emit a space if not wrapping? or let callers add space nodes themselves?
     /// Emit a newline if the containing group is wrapping.
     WrapNewline,
 
@@ -52,7 +50,6 @@ pub enum LNode<'s> {
 pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens: &[Token], root: &LNode) -> String {
     let mut ctx = StringBuilderContext {
         settings,
-        source_str,
         source_tokens,
         result: String::with_capacity(source_str.len() * 2),
         state: StringState {
@@ -67,20 +64,14 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens
             check_overflow: 0,
         },
     };
-    ctx.write_node::<AllowWrap>(root).remove_never();
-
-    // TODO remove
-    println!("final output length: {}", ctx.result.len());
-    println!("{:#?}", ctx.stats);
+    ctx.write_node::<WrapYes>(root).remove_never();
 
     ctx.result
 }
 
-// TODO remove unused fields
 struct StringBuilderContext<'a> {
     settings: &'a FormatSettings,
 
-    source_str: &'a str,
     source_tokens: &'a [Token],
 
     result: String,
@@ -102,7 +93,6 @@ struct CheckPoint {
     state: StringState,
 }
 
-// TODO remove useless properties, maybe ident doesn't belong here (since the call stack already restores it)
 #[derive(Debug, Copy, Clone)]
 struct StringState {
     curr_line_start: usize,
@@ -110,18 +100,17 @@ struct StringState {
     emit_space: bool,
 }
 
-// TODO rename all of these to be more in the spirit of "is the parent wrapping"
 #[derive(Debug)]
 struct NeedsWrap;
 
-trait MaybeWrap {
+trait WrapMaybe {
     type E;
     fn is_wrapping() -> bool;
     fn require_wrapping() -> Result<(), Self::E>;
 }
 
-struct NoWrap {}
-impl MaybeWrap for NoWrap {
+struct WrapNo {}
+impl WrapMaybe for WrapNo {
     type E = NeedsWrap;
     fn is_wrapping() -> bool {
         false
@@ -131,8 +120,8 @@ impl MaybeWrap for NoWrap {
     }
 }
 
-struct AllowWrap {}
-impl MaybeWrap for AllowWrap {
+struct WrapYes {}
+impl WrapMaybe for WrapYes {
     type E = Never;
     fn is_wrapping() -> bool {
         true
@@ -143,8 +132,6 @@ impl MaybeWrap for AllowWrap {
 }
 
 impl<'s> LNode<'s> {
-    pub const EMPTY: LNode<'static> = LNode::Sequence(vec![]);
-
     pub fn debug_str(&self) -> String {
         let mut f = String::new();
         self.debug_str_impl(&mut f, 0);
@@ -215,15 +202,16 @@ impl<'s> LNode<'s> {
 }
 
 impl StringBuilderContext<'_> {
+    /// Save the current state into a checkpoint that can later be used to roll back to the current state.
     fn checkpoint(&mut self) -> CheckPoint {
         self.stats.checkpoint += 1;
-
         CheckPoint {
             result_len: self.result.len(),
             state: self.state,
         }
     }
 
+    /// Roll back the state to a previous checkpoint.
     fn restore(&mut self, check: CheckPoint) {
         assert!(self.result.len() >= check.result_len);
 
@@ -234,10 +222,10 @@ impl StringBuilderContext<'_> {
         self.state = check.state;
     }
 
+    /// Check if the line at which the checkpoint was taken overflows the max line length.
     fn line_overflows(&mut self, check: CheckPoint) -> bool {
         self.stats.check_overflow += 1;
 
-        // TODO use proper LineOffsets line-ending logic
         let line_start = check.state.curr_line_start;
         let rest = &self.result[line_start..];
         let line_len = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
@@ -251,11 +239,11 @@ impl StringBuilderContext<'_> {
         r
     }
 
-    fn write_newline<W: MaybeWrap>(&mut self) -> Result<(), W::E> {
+    fn write_newline<W: WrapMaybe>(&mut self) -> Result<(), W::E> {
         self.write_str::<W>(&self.settings.newline_str)
     }
 
-    fn write_str<W: MaybeWrap>(&mut self, s: &str) -> Result<(), W::E> {
+    fn write_str<W: WrapMaybe>(&mut self, s: &str) -> Result<(), W::E> {
         // strings containing newlines need the parent to wrap
         let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
         if last_line_end.is_some() {
@@ -295,7 +283,7 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_node<W: MaybeWrap>(&mut self, node: &LNode) -> Result<(), W::E> {
+    fn write_node<W: WrapMaybe>(&mut self, node: &LNode) -> Result<(), W::E> {
         match node {
             LNode::Space => {
                 self.state.emit_space = true;
@@ -338,7 +326,7 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_sequence<'s, W: MaybeWrap>(&mut self, children: &[LNode<'s>]) -> Result<(), W::E> {
+    fn write_sequence<'s, W: WrapMaybe>(&mut self, children: &[LNode<'s>]) -> Result<(), W::E> {
         // flatten if necessary
         if children.iter().all(|c| !matches!(c, LNode::Sequence(_))) {
             self.write_sequence_impl::<W>(children.iter())
@@ -362,7 +350,7 @@ impl StringBuilderContext<'_> {
         }
     }
 
-    fn write_sequence_impl<'c, 's: 'c, W: MaybeWrap>(
+    fn write_sequence_impl<'c, 's: 'c, W: WrapMaybe>(
         &mut self,
         mut children: impl Iterator<Item = &'c LNode<'s>> + Clone,
     ) -> Result<(), W::E> {
@@ -377,8 +365,8 @@ impl StringBuilderContext<'_> {
             LNode::Group(child) => {
                 self.write_sequence_branch::<W>(
                     rest,
-                    |slf| slf.write_node::<NoWrap>(child),
-                    |slf| slf.write_node::<AllowWrap>(child).remove_never(),
+                    |slf| slf.write_node::<WrapNo>(child),
+                    |slf| slf.write_node::<WrapYes>(child).remove_never(),
                 )?;
             }
             LNode::Fill(children) => {
@@ -386,28 +374,28 @@ impl StringBuilderContext<'_> {
                     rest,
                     |slf| {
                         for c in children {
-                            slf.write_node::<NoWrap>(c)?;
+                            slf.write_node::<WrapNo>(c)?;
                         }
                         Ok(())
                     },
                     |slf| {
                         slf.indent(|slf| {
-                            slf.write_newline::<AllowWrap>().remove_never();
+                            slf.write_newline::<WrapYes>().remove_never();
                             let mut first_after_break = true;
                             for c in children {
                                 let check = slf.checkpoint();
-                                slf.write_node::<AllowWrap>(c).remove_never();
+                                slf.write_node::<WrapYes>(c).remove_never();
                                 if slf.line_overflows(check) && !first_after_break {
                                     slf.restore(check);
-                                    slf.write_newline::<AllowWrap>().remove_never();
-                                    slf.write_node::<AllowWrap>(c).remove_never();
+                                    slf.write_newline::<WrapYes>().remove_never();
+                                    slf.write_node::<WrapYes>(c).remove_never();
                                     first_after_break = true;
                                 } else {
                                     first_after_break = false;
                                 }
                             }
                         });
-                        slf.write_newline::<AllowWrap>().remove_never();
+                        slf.write_newline::<WrapYes>().remove_never();
                     },
                 )?;
             }
@@ -424,7 +412,7 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_sequence_branch<'c, 's: 'c, W: MaybeWrap>(
+    fn write_sequence_branch<'c, 's: 'c, W: WrapMaybe>(
         &mut self,
         rest: impl Iterator<Item = &'c LNode<'s>> + Clone,
         f_single: impl FnOnce(&mut Self) -> Result<(), NeedsWrap>,
@@ -459,7 +447,7 @@ impl StringBuilderContext<'_> {
             W::require_wrapping()?;
 
             f_wrap(self);
-            self.write_sequence_impl::<AllowWrap>(rest).remove_never();
+            self.write_sequence_impl::<WrapYes>(rest).remove_never();
         }
 
         Ok(())
