@@ -324,3 +324,11 @@ const some_long_constant = very_long_identifiervery_long_identiong_identifierver
 //fn foo(a: uint, b: uint) {}
 //fn foo(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint, very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint,) {}
 //fn foo(a: very_long_identifiervery_long_identiong_identifiervery_long_identifierr(very_long_identifiervery_long_identiong_identifiervery_long_identifierr, very_long_identifiervery_long_identiong_identifiervery_long_identifierr), b: uint) {}
+
+
+//const a: b = c;
+//const aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
+//
+//const aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: foo(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) = cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
+//
+//const a: b = foo(cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc, cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc);

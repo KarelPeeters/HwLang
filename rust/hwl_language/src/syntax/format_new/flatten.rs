@@ -100,23 +100,33 @@ impl Context<'_> {
                 let node_kind = match kind {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
                     CommonDeclarationNamedKind::Const(decl) => {
-                        // TODO add some wrapping points?
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
                         let mut seq = vec![];
+
                         seq.push(HNode::AlwaysToken(TT::Const));
                         seq.push(HNode::Space);
                         seq.push(self.fmt_maybe_id(id));
+
                         if let Some(ty) = ty {
-                            seq.push(HNode::Space);
-                            seq.push(HNode::AlwaysToken(TT::Colon));
+                            seq.push(group_indent_sequence(vec![
+                                HNode::WrapNewline,
+                                HNode::AlwaysToken(TT::Colon),
+                                HNode::Space,
+                            ]));
                             seq.push(self.fmt_expr(ty));
                         }
-                        seq.push(HNode::Space);
-                        seq.push(HNode::AlwaysToken(TT::Eq));
-                        seq.push(HNode::Space);
+
+                        seq.push(group_indent_sequence(vec![
+                            HNode::WrapNewline,
+                            HNode::Space,
+                            HNode::AlwaysToken(TT::Eq),
+                            HNode::Space,
+                        ]));
                         seq.push(self.fmt_expr(value));
+
                         seq.push(HNode::AlwaysToken(TT::Semi));
                         seq.push(HNode::AlwaysNewline);
+
                         HNode::Sequence(seq)
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
@@ -295,7 +305,7 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
             ExtraItem::If(_) => todo!(),
         }
     }
-    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+    group_indent_sequence(nodes)
 }
 
 fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
@@ -306,7 +316,7 @@ fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
         push_comma_nodes(last, &mut nodes);
         nodes.push(HNode::WrapNewline);
     }
-    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+    group_indent_sequence(nodes)
 }
 
 fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
@@ -316,6 +326,10 @@ fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
     } else {
         seq.push(HNode::WrapComma);
     }
+}
+
+fn group_indent_sequence(nodes: Vec<HNode>) -> HNode {
+    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
 }
 
 trait FormatVisibility: Copy {
