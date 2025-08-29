@@ -136,19 +136,10 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         None
     }
 
-    // fn preserve_blank_lines(&self, seq: &mut Vec<LNode<'s>>) {
-    //     if let (Some(prev_token), Some(next_token)) = (self.prev_token(), self.peek_token()) {
-    //         let prev_end = self.offsets.expand_pos(prev_token.span.end());
-    //         let next_start = self.offsets.expand_pos(next_token.span.start());
-    //         // TODO why +1 here and not in other places?
-    //         if next_start.line_0 > prev_end.line_0 + 1 {
-    //             seq.push(LNode::AlwaysNewline);
-    //         }
-    //     }
-    // }
-
     fn collect_comments(&mut self, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
         // TODO preserve blank lines before/after/between comments?
+        let mut first_comment = true;
+
         while let Some(token) = self.peek_token() {
             if token.ty.category() != TokenCategory::Comment {
                 break;
@@ -157,6 +148,11 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             if !filter(token_span) {
                 break;
             }
+
+            if !first_comment {
+                self.preserve_blank_lines(seq);
+            }
+            first_comment = false;
 
             let _ = self.pop_token().unwrap();
             let token_str = &self.source[token.span.range_bytes()];
@@ -168,7 +164,6 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     seq.push(LNode::AlwaysNewline);
                 }
                 TT::BlockComment => {
-                    // TODO newlines?
                     seq.push(LNode::Space);
                     seq.push(LNode::AlwaysStr(token_str));
                     seq.push(LNode::Space);
@@ -178,11 +173,9 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         }
     }
 
-    // fn collect_comments_all(&mut self, seq: &mut Vec<LNode<'s>>) {
-    //     // TODO make newline recording configurable? eg. for comma lists, the first newline doesn't count
-    //     //   but if there are multiple (_between items_) then force wrap
-    //     self.collect_comments(seq, |_| true);
-    // }
+    fn collect_comments_all(&mut self, seq: &mut Vec<LNode<'s>>) {
+        self.collect_comments(seq, |_| true);
+    }
 
     fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode<'s>>) {
         let prev_end = self
@@ -203,6 +196,19 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         })
     }
 
+    fn preserve_blank_lines(&self, seq: &mut Vec<LNode<'s>>) {
+        if let Some(prev) = self.prev_token()
+            && let Some(next) = self.peek_token()
+        {
+            let prev_end = self.offsets.expand_pos(prev.span.end());
+            let next_start = self.offsets.expand_pos(next.span.start());
+
+            if next_start.line_0 > prev_end.line_0 + 1 {
+                seq.push(LNode::AlwaysNewline);
+            }
+        }
+    }
+
     fn map_root(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
         let mut seq = vec![self.map(node)?];
         self.collect_comments_on_lines_before_real_token(&mut seq);
@@ -216,7 +222,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             HNode::Space => LNode::Space,
             HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
-                self.collect_comments(&mut seq, |_| true);
+                self.collect_comments_all(&mut seq);
 
                 let token_index = match self.pop_token() {
                     Some(index) => index,
@@ -278,22 +284,15 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::Group(inner) => LNode::Group(Box::new(self.map(*inner)?)),
             HNode::Fill(children) => LNode::Fill(children.into_iter().map(|child| self.map(child)).try_collect()?),
-            // TODO here we need to be careful to check whether we should capture comments before or after the blank line, or maybe even inbetween
             HNode::PreserveBlankLines => {
-                if let Some(prev) = self.prev_token()
-                    && let Some(next) = self.peek_token()
-                {
-                    let prev_end = self.offsets.expand_pos(prev.span.end());
-                    let next_start = self.offsets.expand_pos(next.span.start());
-
-                    if next_start.line_0 > prev_end.line_0 + 1 {
-                        LNode::AlwaysNewline
-                    } else {
-                        LNode::EMPTY
-                    }
-                } else {
-                    LNode::EMPTY
+                let mut seq = vec![];
+                self.preserve_blank_lines(&mut seq);
+                let len_before = seq.len();
+                self.collect_comments_all(&mut seq);
+                if seq.len() > len_before {
+                    self.preserve_blank_lines(&mut seq);
                 }
+                LNode::Sequence(seq)
             }
         };
         Ok(result)
