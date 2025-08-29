@@ -60,8 +60,19 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens
             indent: 0,
             emit_space: false,
         },
+        stats: StringsStats {
+            checkpoint: 0,
+            restore: 0,
+            restore_chars: 0,
+            check_overflow: 0,
+        },
     };
     ctx.write_node::<AllowWrap>(root).remove_never();
+
+    // TODO remove
+    println!("final output length: {}", ctx.result.len());
+    println!("{:#?}", ctx.stats);
+
     ctx.result
 }
 
@@ -74,6 +85,15 @@ struct StringBuilderContext<'a> {
 
     result: String,
     state: StringState,
+    stats: StringsStats,
+}
+
+#[derive(Debug)]
+struct StringsStats {
+    checkpoint: usize,
+    restore: usize,
+    restore_chars: usize,
+    check_overflow: usize,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -82,6 +102,7 @@ struct CheckPoint {
     state: StringState,
 }
 
+// TODO remove useless properties, maybe ident doesn't belong here (since the call stack already restores it)
 #[derive(Debug, Copy, Clone)]
 struct StringState {
     curr_line_start: usize,
@@ -192,7 +213,9 @@ impl<'s> LNode<'s> {
 }
 
 impl StringBuilderContext<'_> {
-    fn checkpoint(&self) -> CheckPoint {
+    fn checkpoint(&mut self) -> CheckPoint {
+        self.stats.checkpoint += 1;
+
         CheckPoint {
             result_len: self.result.len(),
             state: self.state,
@@ -201,11 +224,17 @@ impl StringBuilderContext<'_> {
 
     fn restore(&mut self, check: CheckPoint) {
         assert!(self.result.len() >= check.result_len);
+
+        self.stats.restore += 1;
+        self.stats.restore_chars += self.result.len() - check.result_len;
+
         self.result.truncate(check.result_len);
         self.state = check.state;
     }
 
-    fn line_overflows(&self, check: CheckPoint) -> bool {
+    fn line_overflows(&mut self, check: CheckPoint) -> bool {
+        self.stats.check_overflow += 1;
+
         // TODO use proper LineOffsets line-ending logic
         let line_start = check.state.curr_line_start;
         let rest = &self.result[line_start..];
