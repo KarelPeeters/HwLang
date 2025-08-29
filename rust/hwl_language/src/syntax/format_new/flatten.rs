@@ -1,5 +1,5 @@
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
+    ArenaExpressions, Arg, Args, ArrayLiteralElement, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstDeclaration, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
     FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport,
     MaybeIdentifier, Parameter, Parameters, Visibility,
@@ -230,7 +230,17 @@ impl Context<'_> {
             }
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
-            ExpressionKind::ArrayLiteral(_) => todo!(),
+            ExpressionKind::ArrayLiteral(elements) => {
+                let node_elements = fmt_comma_list(elements, |elem| match elem {
+                    &ArrayLiteralElement::Single(elem) => self.fmt_expr(elem),
+                    ArrayLiteralElement::Spread(_, _) => todo!(),
+                });
+                HNode::Sequence(vec![
+                    HNode::AlwaysToken(TT::OpenS),
+                    node_elements,
+                    HNode::AlwaysToken(TT::CloseS),
+                ])
+            }
             ExpressionKind::TupleLiteral(_) => todo!(),
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),

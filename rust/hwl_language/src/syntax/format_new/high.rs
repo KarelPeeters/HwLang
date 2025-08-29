@@ -18,6 +18,7 @@ pub enum HNode {
     AlwaysNewline,
     WrapNewline,
 
+    // TODO we don't really need a distinction between these, right?
     AlwaysIndent(Box<HNode>),
     WrapIndent(Box<HNode>),
 
@@ -207,12 +208,14 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     //     self.collect_comments(seq, |_| true);
     // }
 
-    // fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode<'s>>) {
-    //     if let Some(prev_token) = self.prev_token() {
-    //         let prev_end = self.offsets.expand_pos(prev_token.span.end());
-    //         self.collect_comments(seq, |span| span.end.line_0 == prev_end.line_0);
-    //     }
-    // }
+    fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode<'s>>) {
+        let prev_end = self
+            .prev_token()
+            .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
+        self.collect_comments(seq, |span| {
+            prev_end.is_none_or(|prev_end| span.end.line_0 == prev_end.line_0)
+        });
+    }
 
     // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
     // TODO collect comments before/after
@@ -252,24 +255,21 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::WrapStr(",")
             }
             HNode::AlwaysNewline => {
-                // collect comments that are on the same line as the previous token to keep them before this newline
-                let prev_end = self
-                    .prev_token()
-                    .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
-
                 let mut seq = vec![];
-                self.collect_comments(&mut seq, |comment_span| {
-                    prev_end.is_none_or(|prev_end| prev_end.line_0 == comment_span.start.line_0)
-                });
-
-                // map the newline itself, avoiding duplicates
+                self.collect_comments_on_prev_line(&mut seq);
                 if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
                     seq.push(LNode::AlwaysNewline);
                 }
                 LNode::Sequence(seq)
             }
-            // TODO do the same "same line" comment capturing here as above?
-            HNode::WrapNewline => LNode::WrapNewline,
+            HNode::WrapNewline => {
+                let mut seq = vec![];
+                self.collect_comments_on_prev_line(&mut seq);
+                if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
+                    seq.push(LNode::WrapNewline);
+                }
+                LNode::Sequence(seq)
+            }
 
             // TODO for these nodes, greedily capture indent tokens that are not on the same line as the closing token,
             //   to ensure comments stay indented
