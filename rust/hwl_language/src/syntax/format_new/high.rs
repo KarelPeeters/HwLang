@@ -116,27 +116,10 @@ impl<'s> LowerContext<'s, '_> {
         self.source_tokens.get(self.next_source_index)
     }
 
-    // TODO capture comments!
-    fn pop_token(&mut self, ty: TT) -> Result<SourceTokenIndex, TokenMismatch> {
-        let token = self.source_tokens.get(self.next_source_index).ok_or({
-            TokenMismatch {
-                index: None,
-                expected: ty,
-            }
-        })?;
-
+    fn pop_token(&mut self) -> SourceTokenIndex {
         let token_index = SourceTokenIndex(self.next_source_index);
         self.next_source_index += 1;
-
-        if token.ty == ty {
-            Ok(token_index)
-        } else {
-            todo!("expected {ty:?} at {token_index:?}, got {:?}", token.ty);
-            Err(TokenMismatch {
-                index: Some(token_index),
-                expected: ty,
-            })
-        }
+        token_index
     }
 
     // fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
@@ -231,21 +214,55 @@ impl<'s> LowerContext<'s, '_> {
         let result = match node {
             HNode::Space => LNode::Space,
             HNode::AlwaysToken(tt) => {
-                let token_index = self.pop_token(tt)?;
-                let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
-                LNode::AlwaysStr(token_str)
+                let mut seq = vec![];
+
+                let token_node = loop {
+                    let token_index = self.pop_token();
+                    let token = &self.source_tokens[token_index.0];
+                    let token_str = &self.source[token.span.range_bytes()];
+
+                    // TODO preserve newlines between comments?
+                    match token.ty {
+                        TT::LineComment => {
+                            seq.push(LNode::AlwaysStr(token_str));
+                            seq.push(LNode::AlwaysNewline);
+                        }
+                        TT::BlockComment => {
+                            todo!()
+                        }
+                        _ => {
+                            if token.ty == tt {
+                                break LNode::AlwaysStr(token_str);
+                            } else {
+                                return Err(TokenMismatch {
+                                    index: Some(token_index),
+                                    expected: tt,
+                                });
+                            }
+                        }
+                    }
+                };
+
+                if seq.is_empty() {
+                    token_node
+                } else {
+                    seq.push(token_node);
+                    LNode::Sequence(seq)
+                }
             }
             HNode::WrapComma => {
+                // TODO skip comments (_if_ the next non-comment token is a comma?)
                 if let Some(token) = self.peek_token()
                     && token.ty == TT::Comma
                 {
-                    self.pop_token(TT::Comma)
-                        .expect("type should match, we already checked");
+                    let _ = self.pop_token();
                 }
                 LNode::WrapStr(",")
             }
             HNode::AlwaysNewline => LNode::AlwaysNewline,
             HNode::WrapNewline => LNode::WrapNewline,
+            // TODO for these nodes, greedily capture indent tokens that are not on the same line as the closing token,
+            //   to ensure comments stay indented
             HNode::AlwaysIndent(inner) => LNode::AlwaysIndent(Box::new(self.map(*inner)?)),
             HNode::WrapIndent(inner) => LNode::WrapIndent(Box::new(self.map(*inner)?)),
             HNode::Sequence(children) => {
@@ -253,6 +270,7 @@ impl<'s> LowerContext<'s, '_> {
             }
             HNode::Group(inner) => LNode::Group(Box::new(self.map(*inner)?)),
             HNode::Fill(children) => LNode::Fill(children.into_iter().map(|child| self.map(child)).try_collect()?),
+            // TODO here we need to be careful to check whether we should capture comments before or after the blank line, or maybe even inbetween
             HNode::PreserveBlankLines => {
                 if let Some(prev) = self.prev_token()
                     && let Some(next) = self.peek_token()
