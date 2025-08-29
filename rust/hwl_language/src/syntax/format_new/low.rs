@@ -143,6 +143,8 @@ impl MaybeWrap for AllowWrap {
 }
 
 impl<'s> LNode<'s> {
+    pub const EMPTY: LNode<'static> = LNode::Sequence(vec![]);
+
     pub fn debug_str(&self) -> String {
         let mut f = String::new();
         self.debug_str_impl(&mut f, 0);
@@ -186,7 +188,7 @@ impl<'s> LNode<'s> {
 
     pub fn simplify(self) -> LNode<'s> {
         match self {
-            // actual simplification+
+            // actual simplification
             LNode::Sequence(children) => {
                 let mut result = Vec::with_capacity(children.len());
                 for c in children {

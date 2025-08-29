@@ -1,7 +1,7 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, Block, BlockStatement, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstDeclaration, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
-    FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, Item, ItemImport,
+    FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport,
     MaybeIdentifier, Parameter, Parameters, Visibility,
 };
 use crate::syntax::format_new::high::HNode;
@@ -25,16 +25,21 @@ struct Context<'a> {
 
 impl Context<'_> {
     fn fmt_file_items(&self, items: &[Item]) -> HNode {
-        let nodes = items
-            .iter()
-            .map(|item| match item {
+        let mut nodes = vec![];
+        for (item, last) in items.iter().with_last() {
+            let item_node = match item {
                 Item::Import(import) => self.fmt_import(import),
                 Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
                 Item::ModuleInternal(_) => todo!(),
                 Item::ModuleExternal(_) => todo!(),
                 Item::Interface(_) => todo!(),
-            })
-            .collect();
+            };
+            nodes.push(item_node);
+
+            if !last {
+                nodes.push(HNode::PreserveBlankLines)
+            }
+        }
         HNode::Sequence(nodes)
     }
 
@@ -215,7 +220,14 @@ impl Context<'_> {
             ExpressionKind::Wrapped(_) => todo!(),
             ExpressionKind::Block(_) => todo!(),
             &ExpressionKind::Id(id) => self.fmt_general_id(id),
-            ExpressionKind::IntLiteral(_) => todo!(),
+            ExpressionKind::IntLiteral(literal) => {
+                let tt = match literal {
+                    IntLiteral::Binary(_span) => TT::IntLiteralBinary,
+                    IntLiteral::Decimal(_span) => TT::IntLiteralDecimal,
+                    IntLiteral::Hexadecimal(_span) => TT::IntLiteralHexadecimal,
+                };
+                HNode::AlwaysToken(tt)
+            }
             ExpressionKind::BoolLiteral(_) => todo!(),
             ExpressionKind::StringLiteral(_) => todo!(),
             ExpressionKind::ArrayLiteral(_) => todo!(),
@@ -304,6 +316,9 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
             ExtraItem::Declaration(_) => todo!(),
             ExtraItem::If(_) => todo!(),
         }
+        if !last {
+            nodes.push(HNode::PreserveBlankLines);
+        }
     }
     group_indent_sequence(nodes)
 }
@@ -315,6 +330,9 @@ fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
         nodes.push(f(item));
         push_comma_nodes(last, &mut nodes);
         nodes.push(HNode::WrapNewline);
+        if !last {
+            nodes.push(HNode::PreserveBlankLines);
+        }
     }
     group_indent_sequence(nodes)
 }
