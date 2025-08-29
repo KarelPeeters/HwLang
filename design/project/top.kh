@@ -1,334 +1,37 @@
-const some_long_constant = a + b;
-const some_long_constant = a + b + c;
-const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
-const some_long_constant = very_long_identifiervery_long_identiong_identifiervery_long_identifierr + very_long_identifiervery_long_identiong_identifiervery_long_identifierr * very_long_identifiervery_long_identiong_identifiervery_long_identifierr;
+// before
+const a = 4;
+const b = 6;
+
+const a = 4; // after same line
+const b = 6;
+
+const a = 4;
+// after next line
+const b = 6;
 
 
-/**/ const /**/ some_long_constant /**/ = /**/ a /**/ + /**/ b /**/; /**/
+const a = [
+    // before
+    1,
+    2,
+    3,
+];
+const a = [
+    1, // after same line
+    2,
+    3,
+];
+const a = [
+    1,
+    // after next line
+    2,
+    3,
+];
+const a = [
+    1,
+    2,
+    3,
+    // at end
+];
 
-//fn very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: very_long_identifier(very_long_identifiervery_long_identiong_identifiervery_long_identifierr)) {}
-/*test*/
-/*pub*/ fn short_func(
-    a: uint,
-    b: uint,
-) {}
-
-// test
-// test
-//fn tiny(
-//    very_long_identifiervery_long_identifiervery_long_identifiervery_long_identifiervery_long_identifier: uint,
-//    b: uint,
-//) {}
-
-/*
-
-//module foo(
-//    very_long_identifier: very_long_identifier
-//) ports(
-//    very_long_identifier: very_long_identifier
-//) {
-//
-//}
-
-//fn very_long_identifier(very_long_identifier: very_long_identifier(very_long_identifier)) {}
-
-
-//// TODO extract some formatting tests from this, maybe just as one huge file for simplicity
-//
-//import std.types.[bool, int, uint, natural, any];
-//import std.math.[gcd, min, max];
-//import std.util.[print, assert];
-//import examples.axi_gearbox.axi_gearbox;
-//import examples.axi_stream.[axi_stream, axi_passthrough, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _, axi_passthrough as _];
-//
-//const input_width = [
-//    very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
-//    [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier],
-//    [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, 4],
-//    f(very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, f(4, a=5))
-//];
-//
-//
-//const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//        * very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//        * very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//
-//
-//const something = ();
-//const something = (5,);
-//const something = (5,6,7,8);
-//const something = (very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,7,8);
-//
-//const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//const a: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: a = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//const very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier = a;
-//
-//const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier______________;
-//const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier_______________;
-//const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier________________;
-//const output_width = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier_________________;
-//
-//struct Point{x:int,y:int,}
-//struct GenericStruct(T:type,N:uint){data:T,size:uint(N),if(N>4){extra_field:bool,}}
-//enum Color{Red,Green,Blue(int),}
-//enum Result(T:type,E:type){Ok(T),Err(E),if(false){None,}}
-//fn add(a:int,b:int)->int{return a+b;}
-//fn generic_func(T:type,x:T,y:T)->T{if(true){return x;}else{return y;}}
-//
-//const range_tests = [1..5, 0..=10, ..20, 15.., 2+..8];
-//const long_range_tests = [very_long_identifier_very_long_identifier_very_long_identifier..very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier..=very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier+..very_long_identifier_very_long_identifier_very_long_identifier];
-//
-//type x = very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier + very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//type x(n: uint) = 2**n;
-//type x(very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: uint, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier: bool) = false;
-//
-//type x(type v = uint;type v = uint;if(false) {type v = uint;} n: v, c: d) = bool;
-//type x(type v = uint;type v = uint;if(false) {type v = uint;}else if(true) {} else {} n: v, c: d) = bool;
-//
-//const { if(false) { const a = false; } }
-//
-//const {
-//    if (very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier && very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier) {}
-//
-//    very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier += very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier;
-//
-//    {
-//        [true, false];
-//    }
-//
-//    match (false) {
-//        _ => {}
-//    }
-//
-//    for (x in [1, 2, 3]) {}
-//    for (x: uint in [1, 2, 3]) {}
-//    for (
-//        x: uint
-//        in [very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier, 3]) {}
-//
-//    while (true) {}
-//    while (
-//        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//            == very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    ) {}
-//}
-//
-//
-//external module foo(T: type) ports(x: in async T, y: out async T, if(false) { z: in async bool }
-//    d: in sync(
-//        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
-//        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-//    ) bool,
-//    d: interface async something,
-//    sync(clk, rst) {
-//        x: in bool,
-//        y: out bool,
-//
-//        d: interface something,
-//    }
-//)
-//
-//// TODO respect newline
-////    also for extra list
-//interface my_interface {
-//    const WIDTH = 8;
-//    type data_type = uint(WIDTH);
-//    data: data_type,
-//    valid: bool,
-//    ready: bool,
-//    if (WIDTH > 4) {
-//        extra_signal: bool,
-//    }
-//    interface master {
-//        data: out,
-//        valid: out,
-//        ready: in,
-//        if (WIDTH > 4) {
-//            extra_signal: out,
-//        }
-//    }
-//    interface slave {
-//        data: in,
-//        valid: in,
-//        ready: out,
-//        if (WIDTH > 4) {
-//            extra_signal: in,
-//        }
-//    }
-//}
-//
-//pub interface bus_interface(WIDTH: uint, very_long_parameter_name_that_will_cause_wrapping: bool) {
-//    const ADDR_WIDTH = WIDTH;
-//    type addr_type = uint(ADDR_WIDTH);
-//    addr: addr_type,
-//    data: uint(32),
-//    enable: bool,
-//    if (very_long_parameter_name_that_will_cause_wrapping) {
-//        debug_signal: bool,
-//    }
-//    interface master {
-//        addr: out,
-//        data: out,
-//        enable: out,
-//        if (very_long_parameter_name_that_will_cause_wrapping) {
-//            debug_signal: out,
-//        }
-//    }
-//}
-//
-//interface foo {
-////    interface master {}
-////    interface slave {}
-//}
-//
-//module test_module(WIDTH: uint) ports(
-//    clk: in clock,
-//    rst: in async bool,
-//    data_in: in sync(clk, rst) uint(WIDTH),
-//    data_out: out sync(clk, rst) uint(WIDTH),
-//
-//    derp: in async bool,
-//    test: out async bool,
-//) {
-//    reg out test_marker=42;
-//    wire intermediate: sync(clk, rst) uint(WIDTH);
-//    reg counter: sync(clk, rst) uint = 0;
-//
-//    if (WIDTH > 8) {
-//        wire extra_signal: sync(clk, rst) bool;
-//    }
-//
-//    for (i in [0, 1, 2]) {
-//        wire data_bit: sync(clk, rst) bool;
-//    }
-//
-//    comb {
-//        intermediate = data_in + 1;
-//        print(1);
-//
-//        print(2);
-//    }
-//
-//    clocked(clk, async rst) {
-//        counter += 1;
-//        if (counter > 10) {
-//            counter = 0;
-//        }
-//        data_out = intermediate;
-//    }
-//
-//    instance some_sub_module ports(data=intermediate, enable=true);
-//}
-//
-//const a = {
-//    val b = 3;
-//    b
-//};
-//
-//const {
-//    print("test");
-//    print("test {sub} test {sub}");
-//    print("test {sub} test");
-//
-//    print(
-//        "test {
-//            SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
-//        } test"
-//    );
-//
-//    val d = [[i] for i in 0..8];
-//    val d = [[SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName] for i in 0..8];
-//    val d = [[SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName] for i in 0..8];
-//    val d = [[i] for i in 0..];
-//    val d = [[i] for i in 0..SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName];
-//
-//    val SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName;
-//
-//    val SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
-//        : SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName
-//        = SomeVeryLongName;
-//
-//    val foo: bool = SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName;
-//}
-//
-//const {
-//    val a: [8, 3, 4]bool;
-//    val b = a[2, 3][7, 8];
-//    val c = a.foo.bar.baz.SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName.derp;
-//}
-//
-//const {
-//    reg(derp, 5);
-//    __builtin("something", 5, 6, 7, 8);
-//    unsafe_value_with_domain(x, sync(clk));
-//
-//    if (SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName & SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName) {
-//        print("test");
-//    }
-//
-//    match (SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName & SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName) {
-//        0 => {}
-//        SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName + SomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongNameSomeVeryLongName => {}
-//    }
-//}
-//
-//module foo ports() {
-//    // comment in module
-//    wire id_from_str("derp") = 5;
-//}
-//
-//const a = [
-//    // test
-//    4,
-//    // test
-//    6,
-//];
-//
-//const a = [
-//    /* test */ 4,
-//    /* test */ 6,
-//];
-//
-//
-//fn foo(
-//    // the x value
-//    x: uint,
-//    y: bool, // the y value
-//    // no z value
-//) {
-//}
-*/
-
-
-//import a.b;
-//import a.b.d;
-//import a.b.d.[a as e, c, d as e];
-//import test.test;
-//import test.test.[very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifier];
-//import test.test.[very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifierv];
-//import test.test.[
-//    very_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifiervery_long_identifiervery_long_identiong_identifier,
-//    very_long_identifiervery_long_identiong_identifier,
-//    very_long_identifiervery_long_identiong_identifier,
-//    very_long_identifiervery_long_identiong_identifier,
-//    very_long_identifiervery_long_identiong_identifier,
-//];
-
-//fn foo(a: uint, b: uint) {}
-//fn foo(very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint, very_long_identifiervery_long_identiong_identifiervery_long_identifierr: uint,) {}
-//fn foo(a: very_long_identifiervery_long_identiong_identifiervery_long_identifierr(very_long_identifiervery_long_identiong_identifiervery_long_identifierr, very_long_identifiervery_long_identiong_identifiervery_long_identifierr), b: uint) {}
-
-
-//const a: b = c;
-//const aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
-//
-//const aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: foo(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) = cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
-//
-//const a: b = foo(cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc, cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc);
+// derp

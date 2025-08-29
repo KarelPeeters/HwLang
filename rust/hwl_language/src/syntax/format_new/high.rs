@@ -48,7 +48,7 @@ pub fn lower_nodes<'s>(
         source_tokens,
         next_source_index: 0,
     };
-    ctx.map(node)
+    ctx.map_root(node)
 }
 
 impl HNode {
@@ -127,14 +127,14 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         }
     }
 
-    // fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
-    //     for i in self.next_source_index..self.source_tokens.len() {
-    //         if self.source_tokens[i].ty.category() != TokenCategory::Comment {
-    //             return Some(SourceTokenIndex(i));
-    //         }
-    //     }
-    //     None
-    // }
+    fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
+        for i in self.next_source_index..self.source_tokens.len() {
+            if self.source_tokens[i].ty.category() != TokenCategory::Comment {
+                return Some(SourceTokenIndex(i));
+            }
+        }
+        None
+    }
 
     // fn preserve_blank_lines(&self, seq: &mut Vec<LNode<'s>>) {
     //     if let (Some(prev_token), Some(next_token)) = (self.prev_token(), self.peek_token()) {
@@ -168,39 +168,15 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     seq.push(LNode::AlwaysNewline);
                 }
                 TT::BlockComment => {
-                    todo!()
-
-                    // seq.push(LNode::Space);
-                    //
-                    // let token_index = self.pop_token(token.ty).unwrap();
-                    // let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
-                    // seq.push(LNode::AlwaysStr(token_str));
-                    //
-                    // seq.push(LNode::Space);
-                    //
-                    // // TODO should preserving happen before or after tokens?
-                    // if let Some(next_token) = self.peek_token() {
-                    //     let token_end_pos = self.offsets.expand_pos(token_span.end());
-                    //     let next_start_pos = self.offsets.expand_pos(next_token.span.start());
-                    //     if next_start_pos.line_0 > token_end_pos.line_0 {
-                    //         seq.push(LNode::AlwaysNewline);
-                    //     }
-                    // }
+                    // TODO newlines?
+                    seq.push(LNode::Space);
+                    seq.push(LNode::AlwaysStr(token_str));
+                    seq.push(LNode::Space);
                 }
                 _ => break,
             }
         }
     }
-
-    // fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode<'s>>) {
-    //     let non_comment_start = self
-    //         .find_next_non_comment_token()
-    //         .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
-    //     self.collect_comments(seq, |span| match non_comment_start {
-    //         Some(non_comment_start) => span.end.line_0 < non_comment_start.line_0,
-    //         None => true,
-    //     })
-    // }
 
     // fn collect_comments_all(&mut self, seq: &mut Vec<LNode<'s>>) {
     //     // TODO make newline recording configurable? eg. for comma lists, the first newline doesn't count
@@ -215,6 +191,22 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         self.collect_comments(seq, |span| {
             prev_end.is_none_or(|prev_end| span.end.line_0 == prev_end.line_0)
         });
+    }
+
+    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode<'s>>) {
+        let non_comment_start = self
+            .find_next_non_comment_token()
+            .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
+        self.collect_comments(seq, |span| match non_comment_start {
+            Some(non_comment_start) => span.end.line_0 < non_comment_start.line_0,
+            None => true,
+        })
+    }
+
+    fn map_root(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
+        let mut seq = vec![self.map(node)?];
+        self.collect_comments_on_lines_before_real_token(&mut seq);
+        Ok(LNode::Sequence(seq))
     }
 
     // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
@@ -271,10 +263,16 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::Sequence(seq)
             }
 
-            // TODO for these nodes, greedily capture indent tokens that are not on the same line as the closing token,
-            //   to ensure comments stay indented
-            HNode::AlwaysIndent(inner) => LNode::AlwaysIndent(Box::new(self.map(*inner)?)),
-            HNode::WrapIndent(inner) => LNode::WrapIndent(Box::new(self.map(*inner)?)),
+            HNode::AlwaysIndent(inner) => {
+                let mut seq = vec![self.map(*inner)?];
+                self.collect_comments_on_lines_before_real_token(&mut seq);
+                LNode::AlwaysIndent(Box::new(LNode::Sequence(seq)))
+            }
+            HNode::WrapIndent(inner) => {
+                let mut seq = vec![self.map(*inner)?];
+                self.collect_comments_on_lines_before_real_token(&mut seq);
+                LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
+            }
             HNode::Sequence(children) => {
                 LNode::Sequence(children.into_iter().map(|child| self.map(child)).try_collect()?)
             }
