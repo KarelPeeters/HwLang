@@ -1,7 +1,7 @@
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::format_new::low::LNode;
-use crate::syntax::pos::LineOffsets;
-use crate::syntax::token::{Token, TokenType as TT};
+use crate::syntax::pos::{LineOffsets, SpanFull};
+use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
 use hwl_util::swriteln;
 use itertools::Itertools;
 
@@ -103,7 +103,7 @@ struct LowerContext<'s, 'r> {
 }
 
 // TODO reverse order of functions
-impl<'s> LowerContext<'s, '_> {
+impl<'s, 'r> LowerContext<'s, 'r> {
     fn prev_token(&self) -> Option<&Token> {
         if self.next_source_index == 0 {
             None
@@ -112,14 +112,18 @@ impl<'s> LowerContext<'s, '_> {
         }
     }
 
-    fn peek_token(&self) -> Option<&Token> {
+    fn peek_token(&self) -> Option<&'r Token> {
         self.source_tokens.get(self.next_source_index)
     }
 
-    fn pop_token(&mut self) -> SourceTokenIndex {
-        let token_index = SourceTokenIndex(self.next_source_index);
-        self.next_source_index += 1;
-        token_index
+    fn pop_token(&mut self) -> Option<SourceTokenIndex> {
+        if self.next_source_index <= self.source_tokens.len() {
+            let token_index = SourceTokenIndex(self.next_source_index);
+            self.next_source_index += 1;
+            Some(token_index)
+        } else {
+            None
+        }
     }
 
     // fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
@@ -142,48 +146,50 @@ impl<'s> LowerContext<'s, '_> {
     //     }
     // }
 
-    // fn collect_comments(&mut self, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
-    //     while let Some(token) = self.peek_token()
-    //         && filter(self.offsets.expand_span(token.span))
-    //     {
-    //         let token_span = token.span;
-    //         match token.ty {
-    //             TT::LineComment => {
-    //                 // TODO preserve - 1?
-    //                 // self.preserve_blank_lines(seq);
-    //                 seq.push(LNode::Space);
-    //
-    //                 let token_index = self.pop_token(token.ty).unwrap();
-    //                 let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
-    //                 seq.push(LNode::AlwaysStr(token_str));
-    //
-    //                 seq.push(LNode::AlwaysNewline);
-    //             }
-    //             TT::BlockComment => {
-    //                 // TODO preserve - 1?
-    //                 // TODO spaces before/after?
-    //                 // self.preserve_blank_lines(seq);
-    //                 seq.push(LNode::Space);
-    //
-    //                 let token_index = self.pop_token(token.ty).unwrap();
-    //                 let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
-    //                 seq.push(LNode::AlwaysStr(token_str));
-    //
-    //                 seq.push(LNode::Space);
-    //
-    //                 // TODO should preserving happen before or after tokens?
-    //                 if let Some(next_token) = self.peek_token() {
-    //                     let token_end_pos = self.offsets.expand_pos(token_span.end());
-    //                     let next_start_pos = self.offsets.expand_pos(next_token.span.start());
-    //                     if next_start_pos.line_0 > token_end_pos.line_0 {
-    //                         seq.push(LNode::AlwaysNewline);
-    //                     }
-    //                 }
-    //             }
-    //             _ => break,
-    //         }
-    //     }
-    // }
+    fn collect_comments(&mut self, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
+        // TODO preserve blank lines before/after/between comments?
+        while let Some(token) = self.peek_token() {
+            if token.ty.category() != TokenCategory::Comment {
+                break;
+            }
+            let token_span = self.offsets.expand_span(token.span);
+            if !filter(token_span) {
+                break;
+            }
+
+            let _ = self.pop_token().unwrap();
+            let token_str = &self.source[token.span.range_bytes()];
+
+            match token.ty {
+                TT::LineComment => {
+                    seq.push(LNode::Space);
+                    seq.push(LNode::AlwaysStr(token_str));
+                    seq.push(LNode::AlwaysNewline);
+                }
+                TT::BlockComment => {
+                    todo!()
+
+                    // seq.push(LNode::Space);
+                    //
+                    // let token_index = self.pop_token(token.ty).unwrap();
+                    // let token_str = &self.source[self.source_tokens[token_index.0].span.range_bytes()];
+                    // seq.push(LNode::AlwaysStr(token_str));
+                    //
+                    // seq.push(LNode::Space);
+                    //
+                    // // TODO should preserving happen before or after tokens?
+                    // if let Some(next_token) = self.peek_token() {
+                    //     let token_end_pos = self.offsets.expand_pos(token_span.end());
+                    //     let next_start_pos = self.offsets.expand_pos(next_token.span.start());
+                    //     if next_start_pos.line_0 > token_end_pos.line_0 {
+                    //         seq.push(LNode::AlwaysNewline);
+                    //     }
+                    // }
+                }
+                _ => break,
+            }
+        }
+    }
 
     // fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode<'s>>) {
     //     let non_comment_start = self
@@ -209,46 +215,32 @@ impl<'s> LowerContext<'s, '_> {
     // }
 
     // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
+    // TODO collect comments before/after
     fn map(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
-        // TODO collect comments before/after
         let result = match node {
             HNode::Space => LNode::Space,
-            HNode::AlwaysToken(tt) => {
+            HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
+                self.collect_comments(&mut seq, |_| true);
 
-                let token_node = loop {
-                    let token_index = self.pop_token();
-                    let token = &self.source_tokens[token_index.0];
-                    let token_str = &self.source[token.span.range_bytes()];
-
-                    // TODO preserve newlines between comments?
-                    match token.ty {
-                        TT::LineComment => {
-                            seq.push(LNode::AlwaysStr(token_str));
-                            seq.push(LNode::AlwaysNewline);
-                        }
-                        TT::BlockComment => {
-                            todo!()
-                        }
-                        _ => {
-                            if token.ty == tt {
-                                break LNode::AlwaysStr(token_str);
-                            } else {
-                                return Err(TokenMismatch {
-                                    index: Some(token_index),
-                                    expected: tt,
-                                });
-                            }
-                        }
+                let token_index = match self.pop_token() {
+                    Some(index) => index,
+                    None => {
+                        return Err(TokenMismatch { index: None, expected });
                     }
                 };
 
-                if seq.is_empty() {
-                    token_node
-                } else {
-                    seq.push(token_node);
-                    LNode::Sequence(seq)
+                let token = &self.source_tokens[token_index.0];
+                if token.ty != expected {
+                    return Err(TokenMismatch {
+                        index: Some(token_index),
+                        expected,
+                    });
                 }
+
+                let token_str = &self.source[token.span.range_bytes()];
+                seq.push(LNode::AlwaysStr(token_str));
+                LNode::Sequence(seq)
             }
             HNode::WrapComma => {
                 // TODO skip comments (_if_ the next non-comment token is a comma?)
@@ -259,8 +251,26 @@ impl<'s> LowerContext<'s, '_> {
                 }
                 LNode::WrapStr(",")
             }
-            HNode::AlwaysNewline => LNode::AlwaysNewline,
+            HNode::AlwaysNewline => {
+                // collect comments that are on the same line as the previous token to keep them before this newline
+                let prev_end = self
+                    .prev_token()
+                    .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
+
+                let mut seq = vec![];
+                self.collect_comments(&mut seq, |comment_span| {
+                    prev_end.is_none_or(|prev_end| prev_end.line_0 == comment_span.start.line_0)
+                });
+
+                // map the newline itself, avoiding duplicates
+                if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
+                    seq.push(LNode::AlwaysNewline);
+                }
+                LNode::Sequence(seq)
+            }
+            // TODO do the same "same line" comment capturing here as above?
             HNode::WrapNewline => LNode::WrapNewline,
+
             // TODO for these nodes, greedily capture indent tokens that are not on the same line as the closing token,
             //   to ensure comments stay indented
             HNode::AlwaysIndent(inner) => LNode::AlwaysIndent(Box::new(self.map(*inner)?)),
