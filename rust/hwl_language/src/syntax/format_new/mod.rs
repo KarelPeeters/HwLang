@@ -54,10 +54,8 @@ pub fn format(
                 (source_token.span, source_token.ty.diagnostic_string())
             }
         };
-        let reason = format!(
-            "token mismatch, expected `{}` got `{got}`",
-            e.expected.diagnostic_string()
-        );
+        let expected_str = e.expected.diagnostic_string();
+        let reason = format!("formatter token mismatch, expected `{expected_str}` got `{got}`");
         diags.report_internal_error(span, reason)
     })?;
 

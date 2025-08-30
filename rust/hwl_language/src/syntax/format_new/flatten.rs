@@ -3,10 +3,10 @@ use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
     Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
     GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
-    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeIdentifier, ModulePortBlock, ModulePortInBlock,
-    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortSingleKindInner, RangeLiteral, RegisterDelay, SyncDomain,
-    Visibility,
+    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModulePortBlock,
+    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker,
+    RegisterDelay, SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -139,32 +139,17 @@ impl Context<'_> {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-                        let mut seq = vec![];
 
+                        let mut seq = vec![];
                         seq.push(token(TT::Const));
                         seq.push(HNode::Space);
                         seq.push(self.fmt_maybe_id(id));
-
                         if let Some(ty) = ty {
-                            seq.push(group_indent_seq(vec![
-                                HNode::WrapNewline,
-                                token(TT::Colon),
-                                HNode::Space,
-                            ]));
-                            seq.push(self.fmt_expr(ty));
+                            push_wrapping_type(&mut seq, self.fmt_expr(ty));
                         }
-
-                        seq.push(group_indent_seq(vec![
-                            HNode::WrapNewline,
-                            HNode::Space,
-                            token(TT::Eq),
-                            HNode::Space,
-                        ]));
-                        seq.push(self.fmt_expr(value));
-
+                        push_wrapping_assign(&mut seq, self.fmt_expr(value));
                         seq.push(token(TT::Semi));
                         seq.push(HNode::AlwaysNewline);
-
                         HNode::Sequence(seq)
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
@@ -272,14 +257,13 @@ impl Context<'_> {
             ty,
             default,
         } = param;
-        let mut nodes = vec![self.fmt_id(id), token(TT::Colon), HNode::Space, self.fmt_expr(ty)];
+
+        let mut seq = vec![self.fmt_id(id)];
+        push_wrapping_type(&mut seq, self.fmt_expr(ty));
         if let Some(default) = default {
-            nodes.push(HNode::Space);
-            nodes.push(token(TT::Eq));
-            nodes.push(HNode::Space);
-            nodes.push(self.fmt_expr(default));
+            push_wrapping_assign(&mut seq, self.fmt_expr(default));
         }
-        HNode::Sequence(nodes)
+        HNode::Sequence(seq)
     }
 
     fn fmt_module_port_item(&self, item: &ModulePortItem) -> HNode {
@@ -313,7 +297,9 @@ impl Context<'_> {
                     ]),
                 };
 
-                HNode::Sequence(vec![self.fmt_id(id), token(TT::Colon), HNode::Space, node_kind])
+                let mut seq = vec![self.fmt_id(id)];
+                push_wrapping_type(&mut seq, node_kind);
+                HNode::Sequence(seq)
             }
             ModulePortItem::Block(block) => {
                 let ModulePortBlock { span: _, domain, ports } = block;
@@ -330,7 +316,9 @@ impl Context<'_> {
                             interface,
                         } => HNode::Sequence(vec![token(TT::Interface), HNode::Space, self.fmt_expr(interface)]),
                     };
-                    HNode::Sequence(vec![self.fmt_id(id), token(TT::Colon), HNode::Space, node_kind])
+                    let mut seq = vec![self.fmt_id(id)];
+                    push_wrapping_type(&mut seq, node_kind);
+                    HNode::Sequence(seq)
                 });
 
                 HNode::Sequence(vec![
@@ -374,9 +362,112 @@ impl Context<'_> {
             ModuleStatementKind::If(stmt) => self.fmt_if(stmt, |b| self.fmt_module_block(b, true)),
             ModuleStatementKind::For(stmt) => self.fmt_for(stmt, |b| self.fmt_module_block(b, false)),
             ModuleStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
-            ModuleStatementKind::RegDeclaration(_) => todo!(),
-            ModuleStatementKind::WireDeclaration(_) => todo!(),
-            ModuleStatementKind::RegOutPortMarker(_) => todo!(),
+            ModuleStatementKind::RegDeclaration(decl) => {
+                let &RegDeclaration {
+                    vis,
+                    id,
+                    sync,
+                    ty,
+                    init,
+                } = decl;
+
+                let mut seq = vec![];
+                if let Some(vis) = vis.token() {
+                    seq.push(token(vis));
+                }
+
+                seq.push(token(TT::Reg));
+                seq.push(HNode::Space);
+                seq.push(self.fmt_maybe_general_id(id));
+
+                let mut sync_ty_seq = vec![];
+                if let Some(sync) = sync {
+                    sync_ty_seq.push(self.fmt_domain(DomainKind::Sync(sync.inner)));
+                    sync_ty_seq.push(HNode::Space);
+                }
+                sync_ty_seq.push(self.fmt_expr(ty));
+                push_wrapping_type(&mut seq, HNode::Sequence(sync_ty_seq));
+
+                push_wrapping_assign(&mut seq, self.fmt_expr(init));
+
+                seq.push(token(TT::Semi));
+                seq.push(HNode::AlwaysNewline);
+                HNode::Sequence(seq)
+            }
+            ModuleStatementKind::WireDeclaration(decl) => {
+                let &WireDeclaration {
+                    vis,
+                    span_keyword: _,
+                    id,
+                    kind,
+                } = decl;
+
+                let mut seq = vec![];
+                if let Some(vis) = vis.token() {
+                    seq.push(token(vis));
+                    seq.push(HNode::Space);
+                }
+
+                seq.push(token(TT::Wire));
+                seq.push(HNode::Space);
+                seq.push(self.fmt_maybe_general_id(id));
+
+                match kind {
+                    WireDeclarationKind::Normal {
+                        domain_ty,
+                        assign_span_and_value,
+                    } => {
+                        // TODO wrapping, similar to the type of constants or variables
+                        let domain_ty_node = match domain_ty {
+                            WireDeclarationDomainTyKind::Clock { span_clock: _ } => Some(token(TT::Clock)),
+                            WireDeclarationDomainTyKind::Normal { domain, ty } => {
+                                if domain.is_some() || ty.is_some() {
+                                    let mut domain_ty_seq = vec![];
+                                    if let Some(domain) = domain {
+                                        domain_ty_seq.push(HNode::Space);
+                                        domain_ty_seq.push(self.fmt_domain(domain.inner));
+                                    }
+                                    if let Some(ty) = ty {
+                                        domain_ty_seq.push(HNode::Space);
+                                        domain_ty_seq.push(self.fmt_expr(ty));
+                                    }
+                                    Some(HNode::Sequence(domain_ty_seq))
+                                } else {
+                                    None
+                                }
+                            }
+                        };
+
+                        if let Some(domain_ty_node) = domain_ty_node {
+                            push_wrapping_type(&mut seq, domain_ty_node);
+                        }
+                        if let Some((_span, value)) = assign_span_and_value {
+                            push_wrapping_assign(&mut seq, self.fmt_expr(value));
+                        }
+                    }
+                    WireDeclarationKind::Interface { .. } => todo!(),
+                };
+
+                seq.push(token(TT::Semi));
+                seq.push(HNode::AlwaysNewline);
+                HNode::Sequence(seq)
+            }
+            ModuleStatementKind::RegOutPortMarker(marker) => {
+                let &RegOutPortMarker { id, init } = marker;
+                HNode::Sequence(vec![
+                    token(TT::Reg),
+                    HNode::Space,
+                    token(TT::Out),
+                    HNode::Space,
+                    self.fmt_id(id),
+                    HNode::Space,
+                    token(TT::Eq),
+                    HNode::Space,
+                    self.fmt_expr(init),
+                    token(TT::Semi),
+                    HNode::AlwaysNewline,
+                ])
+            }
             ModuleStatementKind::CombinatorialBlock(_) => todo!(),
             ModuleStatementKind::ClockedBlock(_) => todo!(),
             ModuleStatementKind::Instance(_) => todo!(),
@@ -446,12 +537,7 @@ impl Context<'_> {
 
         let mut seq = vec![self.fmt_maybe_id(index)];
         if let Some(index_ty) = index_ty {
-            seq.push(group_indent_seq(vec![
-                HNode::WrapNewline,
-                token(TT::Colon),
-                HNode::Space,
-                self.fmt_expr(index_ty),
-            ]))
+            push_wrapping_type(&mut seq, self.fmt_expr(index_ty));
         }
 
         seq.push(group_indent_seq(vec![
@@ -685,6 +771,13 @@ impl Context<'_> {
         }
     }
 
+    fn fmt_maybe_general_id(&self, id: MaybeGeneralIdentifier) -> HNode {
+        match id {
+            MaybeGeneralIdentifier::Dummy(_span) => token(TT::Underscore),
+            MaybeGeneralIdentifier::Identifier(id) => self.fmt_general_id(id),
+        }
+    }
+
     fn fmt_general_id(&self, id: GeneralIdentifier) -> HNode {
         match id {
             GeneralIdentifier::Simple(id) => self.fmt_id(id),
@@ -783,6 +876,25 @@ fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
     } else {
         seq.push(HNode::WrapComma);
     }
+}
+
+fn push_wrapping_type(seq: &mut Vec<HNode>, ty: HNode) {
+    seq.push(group_indent_seq(vec![
+        HNode::WrapNewline,
+        token(TT::Colon),
+        HNode::Space,
+    ]));
+    seq.push(ty);
+}
+
+fn push_wrapping_assign(seq: &mut Vec<HNode>, value: HNode) {
+    seq.push(group_indent_seq(vec![
+        HNode::WrapNewline,
+        HNode::Space,
+        token(TT::Eq),
+        HNode::Space,
+    ]));
+    seq.push(value);
 }
 
 fn wrapping_binary_op(left: HNode, right: HNode) -> HNode {
