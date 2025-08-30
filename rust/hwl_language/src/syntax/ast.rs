@@ -237,7 +237,7 @@ pub enum ModulePortSingleKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum PortSingleKindInner {
     Clock {
         span_clock: Span,
@@ -248,7 +248,7 @@ pub enum PortSingleKindInner {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum ModulePortInBlockKind {
     Port {
         direction: Spanned<PortDirection>,

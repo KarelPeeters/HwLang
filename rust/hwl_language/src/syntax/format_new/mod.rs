@@ -70,5 +70,7 @@ pub fn format(
 
     let result = node_to_string(settings, source_str, &source_tokens, &root_node);
 
+    // TODO re-parse and check that tokens match
+
     Ok(result)
 }

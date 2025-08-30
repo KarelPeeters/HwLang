@@ -1,4 +1,20 @@
-const a = unsafe_value_with_domain(some_expression, async);
+module foo(T: type) ports(
+    x: in async T,
+    y: out async T,
+    /*if(false) { z: in async bool }*/
+    d: in sync(
+        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
+        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
+    ) bool,
+    d: interface async something,
+    sync(clk, rst) {
+        x: in bool,
+        y: out bool,
 
-const b = (1, 2, 3 //test
-);
+        d: interface something,
+    }
+) {
+    {
+        const a = 5;
+    }
+}

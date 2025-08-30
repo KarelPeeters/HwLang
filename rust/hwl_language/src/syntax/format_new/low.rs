@@ -173,6 +173,8 @@ impl<'s> LNode<'s> {
         }
     }
 
+    // TODO instead of creating a messy tree and then simplifying it,
+    //   avoid creating it in the first place by adding some convenient sequence builder
     pub fn simplify(self) -> LNode<'s> {
         match self {
             // actual simplification

@@ -2,8 +2,10 @@ use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, Block, BlockExpression, BlockStatement,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
     Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration, GeneralIdentifier, Identifier,
-    ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, Parameter, Parameters, RangeLiteral,
-    RegisterDelay, SyncDomain, Visibility,
+    IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemDefModuleExternal, ItemDefModuleInternal,
+    ItemImport, MaybeIdentifier, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters,
+    PortSingleKindInner, RangeLiteral, RegisterDelay, SyncDomain, Visibility,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -27,13 +29,40 @@ struct Context<'a> {
 
 impl Context<'_> {
     fn fmt_file_items(&self, items: &[Item]) -> HNode {
-        let mut nodes = vec![];
+        let mut nodes = vec![HNode::PreserveBlankLines];
         for (item, last) in items.iter().with_last() {
             let item_node = match item {
                 Item::Import(import) => self.fmt_import(import),
                 Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
-                Item::ModuleInternal(_) => todo!(),
-                Item::ModuleExternal(_) => todo!(),
+                Item::ModuleInternal(decl) => {
+                    let &ItemDefModuleInternal {
+                        span: _,
+                        vis,
+                        id,
+                        ref params,
+                        ref ports,
+                        ref body,
+                    } = decl;
+                    self.fmt_module_decl(vis, false, id, params.as_ref(), &ports.inner, Some(body))
+                }
+                Item::ModuleExternal(decl) => {
+                    let &ItemDefModuleExternal {
+                        span,
+                        vis,
+                        span_ext,
+                        id,
+                        ref params,
+                        ref ports,
+                    } = decl;
+                    self.fmt_module_decl(
+                        vis,
+                        true,
+                        MaybeIdentifier::Identifier(id),
+                        params.as_ref(),
+                        &ports.inner,
+                        None,
+                    )
+                }
                 Item::Interface(_) => todo!(),
             };
             nodes.push(item_node);
@@ -42,6 +71,7 @@ impl Context<'_> {
                 nodes.push(HNode::PreserveBlankLines)
             }
         }
+
         HNode::Sequence(nodes)
     }
 
@@ -179,6 +209,53 @@ impl Context<'_> {
         }
     }
 
+    fn fmt_module_decl(
+        &self,
+        vis: Visibility,
+        external: bool,
+        id: MaybeIdentifier,
+        params: Option<&Parameters>,
+        ports: &ExtraList<ModulePortItem>,
+        body: Option<&Block<ModuleStatement>>,
+    ) -> HNode {
+        let mut seq = vec![];
+
+        if let Some(vis) = vis.token() {
+            seq.push(token(vis));
+            seq.push(HNode::Space);
+        }
+
+        if external {
+            seq.push(token(TT::External));
+            seq.push(HNode::Space);
+        }
+
+        seq.push(token(TT::Module));
+        seq.push(HNode::Space);
+        seq.push(self.fmt_maybe_id(id));
+
+        if let Some(params) = params {
+            seq.push(self.fmt_parameters(params));
+        }
+
+        seq.push(HNode::Space);
+        seq.push(token(TT::Ports));
+        seq.push(token(TT::OpenR));
+        seq.push(fmt_extra_list(ports, &|port| self.fmt_module_port_item(port)));
+        seq.push(token(TT::CloseR));
+
+        if let Some(body) = body {
+            let Block { span: _, statements } = body;
+            let node_block = fmt_block_impl(statements, None, false, |stmt| self.fmt_module_statement(stmt));
+
+            seq.push(HNode::Space);
+            seq.push(node_block);
+        }
+
+        seq.push(HNode::AlwaysNewline);
+        HNode::Sequence(seq)
+    }
+
     fn fmt_parameters(&self, params: &Parameters) -> HNode {
         let Parameters { span: _, items } = params;
         HNode::Sequence(vec![
@@ -205,23 +282,105 @@ impl Context<'_> {
         HNode::Sequence(nodes)
     }
 
+    fn fmt_module_port_item(&self, item: &ModulePortItem) -> HNode {
+        match item {
+            ModulePortItem::Single(single) => {
+                let &ModulePortSingle { span: _, id, ref kind } = single;
+
+                let node_kind = match kind {
+                    ModulePortSingleKind::Port {
+                        direction,
+                        kind: kind_inner,
+                    } => {
+                        let node_kind_inner = match kind_inner {
+                            PortSingleKindInner::Clock { span_clock: _ } => token(TT::Clock),
+                            &PortSingleKindInner::Normal { domain, ty } => {
+                                HNode::Sequence(vec![self.fmt_domain(domain.inner), HNode::Space, self.fmt_expr(ty)])
+                            }
+                        };
+                        HNode::Sequence(vec![token(direction.inner.token()), HNode::Space, node_kind_inner])
+                    }
+                    &ModulePortSingleKind::Interface {
+                        span_keyword: _,
+                        domain,
+                        interface,
+                    } => HNode::Sequence(vec![
+                        token(TT::Interface),
+                        HNode::Space,
+                        self.fmt_domain(domain.inner),
+                        HNode::Space,
+                        self.fmt_expr(interface),
+                    ]),
+                };
+
+                HNode::Sequence(vec![self.fmt_id(id), token(TT::Colon), HNode::Space, node_kind])
+            }
+            ModulePortItem::Block(block) => {
+                let ModulePortBlock { span: _, domain, ports } = block;
+
+                let node_domain = self.fmt_domain(domain.inner);
+                let node_ports = fmt_extra_list(ports, &|port| {
+                    let &ModulePortInBlock { span: _, id, kind } = port;
+                    let node_kind = match kind {
+                        ModulePortInBlockKind::Port { direction, ty } => {
+                            HNode::Sequence(vec![token(direction.inner.token()), HNode::Space, self.fmt_expr(ty)])
+                        }
+                        ModulePortInBlockKind::Interface {
+                            span_keyword: _,
+                            interface,
+                        } => HNode::Sequence(vec![token(TT::Interface), HNode::Space, self.fmt_expr(interface)]),
+                    };
+                    HNode::Sequence(vec![self.fmt_id(id), token(TT::Colon), HNode::Space, node_kind])
+                });
+
+                HNode::Sequence(vec![
+                    node_domain,
+                    HNode::Space,
+                    token(TT::OpenC),
+                    node_ports,
+                    token(TT::CloseC),
+                ])
+            }
+        }
+    }
+
+    fn fmt_module_block(&self, block: &Block<ModuleStatement>, force_wrap: bool) -> HNode {
+        let Block { span: _, statements } = block;
+        fmt_block_impl(statements, None, force_wrap, |stmt| self.fmt_module_statement(stmt))
+    }
+
     fn fmt_block(
         &self,
         statements: &[BlockStatement],
         final_expression: Option<Expression>,
         force_wrap: bool,
     ) -> HNode {
-        // TODO for else-if blocks, force a newline inside the block to avoid infinite clutter?
-        if !statements.is_empty() {
-            todo!()
+        let node_final_expression = final_expression.map(|expr| self.fmt_expr(expr));
+        fmt_block_impl(statements, node_final_expression, force_wrap, |stmt| {
+            self.fmt_block_statement(stmt)
+        })
+    }
+
+    fn fmt_module_statement(&self, stmt: &ModuleStatement) -> HNode {
+        match &stmt.inner {
+            ModuleStatementKind::Block(block) => {
+                let node_block = self.fmt_module_block(block, false);
+                HNode::Sequence(vec![node_block, HNode::AlwaysNewline])
+            }
+            ModuleStatementKind::If(stmt) => fmt_if(stmt, |b, force_wrap| self.fmt_module_block(b, force_wrap)),
+            ModuleStatementKind::For(_) => todo!(),
+            ModuleStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
+            ModuleStatementKind::RegDeclaration(_) => todo!(),
+            ModuleStatementKind::WireDeclaration(_) => todo!(),
+            ModuleStatementKind::RegOutPortMarker(_) => todo!(),
+            ModuleStatementKind::CombinatorialBlock(_) => todo!(),
+            ModuleStatementKind::ClockedBlock(_) => todo!(),
+            ModuleStatementKind::Instance(_) => todo!(),
         }
-        if final_expression.is_some() {
-            todo!()
-        }
-        if force_wrap {
-            todo!()
-        }
-        HNode::Sequence(vec![token(TT::OpenC), token(TT::CloseC)])
+    }
+
+    fn fmt_block_statement(&self, stmt: &BlockStatement) -> HNode {
+        todo!()
     }
 
     fn fmt_domain(&self, domain: DomainKind<Expression>) -> HNode {
@@ -460,8 +619,37 @@ impl Context<'_> {
     }
 }
 
+fn fmt_block_impl<T>(
+    statements: &[T],
+    final_expression: Option<HNode>,
+    force_wrap: bool,
+    f: impl Fn(&T) -> HNode,
+) -> HNode {
+    let mut seq = vec![HNode::WrapNewline];
+    if force_wrap {
+        todo!()
+    }
+
+    for (stmt, last) in statements.iter().with_last() {
+        seq.push(f(stmt));
+        if !last || final_expression.is_some() {
+            seq.push(HNode::PreserveBlankLines);
+        }
+    }
+
+    if let Some(final_expression) = final_expression {
+        todo!()
+    }
+
+    HNode::Group(Box::new(HNode::Sequence(vec![
+        token(TT::OpenC),
+        HNode::WrapIndent(Box::new(HNode::Sequence(seq))),
+        token(TT::CloseC),
+    ])))
+}
+
 fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
-    // TODO variant that always wraps, for eg. module ports? or not, maybe it's more elegant if we don't
+    // TODO variant that always wraps if there is any item, for eg. module ports? or not, maybe it's more elegant if we don't
     let ExtraList { span: _, items } = list;
 
     let mut nodes = vec![];
@@ -483,6 +671,10 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
     }
 
     group_indent_seq(nodes)
+}
+
+fn fmt_if<B>(stmt: &IfStatement<B>, f: impl Fn(&B, bool) -> HNode) -> HNode {
+    todo!()
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
