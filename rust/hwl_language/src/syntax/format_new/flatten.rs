@@ -493,9 +493,15 @@ fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
 }
 
 fn surrounded_group_indent(before: TT, inner: HNode, after: TT) -> HNode {
-    // TODO should group include the opening and closing tokens or not? does it ever matter?
-    let seq = group_indent_seq(vec![HNode::WrapNewline, inner, HNode::WrapNewline]);
-    HNode::Sequence(vec![token(before), seq, token(after)])
+    HNode::Group(Box::new(HNode::Sequence(vec![
+        token(before),
+        HNode::WrapIndent(Box::new(HNode::Sequence(vec![
+            HNode::WrapNewline,
+            inner,
+            HNode::WrapNewline,
+        ]))),
+        token(after),
+    ])))
 }
 
 fn token(tt: TT) -> HNode {
