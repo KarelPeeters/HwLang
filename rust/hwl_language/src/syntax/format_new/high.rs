@@ -1,9 +1,8 @@
 use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
 use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
-use crate::syntax::token::{Token, TokenCategory, TokenType as TT};
+use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
 use hwl_util::swriteln;
-use itertools::Itertools;
 
 // TODO doc
 // TODO rename "always" variants to just their base name, it's pretty verbose
@@ -129,19 +128,19 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
     fn find_next_non_comment_token(&self) -> Option<SourceTokenIndex> {
         for i in self.next_source_index..self.source_tokens.len() {
-            if self.source_tokens[i].ty.category() != TokenCategory::Comment {
+            if self.source_tokens[i].ty.category() != TC::Comment {
                 return Some(SourceTokenIndex(i));
             }
         }
         None
     }
 
-    fn collect_comments(&mut self, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
-        // TODO preserve blank lines before/after/between comments?
+    fn collect_comments(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
+        let prev_space = seq_ends_with_space(seq).unwrap_or(prev_space);
         let mut first_comment = true;
 
         while let Some(token) = self.peek_token() {
-            if token.ty.category() != TokenCategory::Comment {
+            if token.ty.category() != TC::Comment {
                 break;
             }
             let token_span = self.offsets.expand_span(token.span);
@@ -166,31 +165,34 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 TT::BlockComment => {
                     seq.push(LNode::Space);
                     seq.push(LNode::AlwaysStr(token_str));
-                    seq.push(LNode::Space);
+
+                    if prev_space {
+                        seq.push(LNode::Space);
+                    }
                 }
                 _ => break,
             }
         }
     }
 
-    fn collect_comments_all(&mut self, seq: &mut Vec<LNode<'s>>) {
-        self.collect_comments(seq, |_| true);
+    fn collect_comments_all(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
+        self.collect_comments(prev_space, seq, |_| true);
     }
 
-    fn collect_comments_on_prev_line(&mut self, seq: &mut Vec<LNode<'s>>) {
+    fn collect_comments_on_prev_line(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
         let prev_end = self
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
-        self.collect_comments(seq, |span| {
+        self.collect_comments(prev_space, seq, |span| {
             prev_end.is_none_or(|prev_end| span.end.line_0 == prev_end.line_0)
         });
     }
 
-    fn collect_comments_on_lines_before_real_token(&mut self, seq: &mut Vec<LNode<'s>>) {
+    fn collect_comments_on_lines_before_real_token(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
         let non_comment_start = self
             .find_next_non_comment_token()
             .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
-        self.collect_comments(seq, |span| match non_comment_start {
+        self.collect_comments(prev_space, seq, |span| match non_comment_start {
             Some(non_comment_start) => span.end.line_0 < non_comment_start.line_0,
             None => true,
         })
@@ -210,19 +212,17 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     }
 
     fn map_root(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
-        let mut seq = vec![self.map(node)?];
-        self.collect_comments_on_lines_before_real_token(&mut seq);
+        let mut seq = vec![self.map(false, node)?];
+        self.collect_comments_on_lines_before_real_token(false, &mut seq);
         Ok(LNode::Sequence(seq))
     }
 
-    // TODO doc: comments inside this node are captures, before/after are the responsibility of the caller
-    // TODO collect comments before/after
-    fn map(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
+    fn map(&mut self, prev_space: bool, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
         let result = match node {
             HNode::Space => LNode::Space,
             HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
-                self.collect_comments_all(&mut seq);
+                self.collect_comments_all(prev_space, &mut seq);
 
                 let token_index = match self.pop_token() {
                     Some(index) => index,
@@ -254,7 +254,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::AlwaysNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(&mut seq);
+                self.collect_comments_on_prev_line(prev_space, &mut seq);
                 if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
                     seq.push(LNode::AlwaysNewline);
                 }
@@ -262,7 +262,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::WrapNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(&mut seq);
+                self.collect_comments_on_prev_line(prev_space, &mut seq);
                 if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
                     seq.push(LNode::WrapNewline);
                 }
@@ -270,31 +270,68 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
 
             HNode::AlwaysIndent(inner) => {
-                let mut seq = vec![self.map(*inner)?];
-                self.collect_comments_on_lines_before_real_token(&mut seq);
+                let mut seq = vec![self.map(prev_space, *inner)?];
+                self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
                 LNode::AlwaysIndent(Box::new(LNode::Sequence(seq)))
             }
             HNode::WrapIndent(inner) => {
-                let mut seq = vec![self.map(*inner)?];
-                self.collect_comments_on_lines_before_real_token(&mut seq);
+                let mut seq = vec![self.map(prev_space, *inner)?];
+                self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
                 LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
             }
             HNode::Sequence(children) => {
-                LNode::Sequence(children.into_iter().map(|child| self.map(child)).try_collect()?)
+                let mut seq = vec![];
+                for child in children {
+                    let child_prev_space = seq_ends_with_space(&seq).unwrap_or(prev_space);
+                    seq.push(self.map(child_prev_space, child)?);
+                }
+                LNode::Sequence(seq)
             }
-            HNode::Group(inner) => LNode::Group(Box::new(self.map(*inner)?)),
-            HNode::Fill(children) => LNode::Fill(children.into_iter().map(|child| self.map(child)).try_collect()?),
+            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, *inner)?)),
+            HNode::Fill(children) => {
+                let mut mapped = vec![];
+                for child in children {
+                    let child_prev_space = fill_ends_with_space(&mapped).unwrap_or(prev_space);
+                    mapped.push(self.map(child_prev_space, child)?);
+                }
+                LNode::Fill(mapped)
+            }
             HNode::PreserveBlankLines => {
                 let mut seq = vec![];
+
                 self.preserve_blank_lines(&mut seq);
                 let len_before = seq.len();
-                self.collect_comments_all(&mut seq);
+
+                self.collect_comments_all(prev_space, &mut seq);
+
                 if seq.len() > len_before {
                     self.preserve_blank_lines(&mut seq);
                 }
+
                 LNode::Sequence(seq)
             }
         };
         Ok(result)
     }
+}
+
+fn node_ends_with_space(node: &LNode) -> Option<bool> {
+    match node {
+        LNode::Space => Some(true),
+        LNode::AlwaysStr(_) | LNode::WrapStr(_) | LNode::AlwaysNewline | LNode::WrapNewline => Some(false),
+        LNode::AlwaysIndent(inner) => node_ends_with_space(inner),
+        LNode::WrapIndent(inner) => node_ends_with_space(inner),
+        LNode::Sequence(seq) => seq_ends_with_space(seq),
+        LNode::Group(inner) => node_ends_with_space(inner),
+        LNode::Fill(children) => fill_ends_with_space(children),
+    }
+}
+
+fn seq_ends_with_space(seq: &[LNode]) -> Option<bool> {
+    seq.iter().rev().find_map(node_ends_with_space)
+}
+
+fn fill_ends_with_space(children: &[LNode]) -> Option<bool> {
+    // there is an implicit [LNode::WrapNewLine] after each child, which counts as "not a space"
+    if children.is_empty() { None } else { Some(false) }
 }

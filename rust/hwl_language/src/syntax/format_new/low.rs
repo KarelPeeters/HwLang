@@ -42,7 +42,7 @@ pub enum LNode<'s> {
     /// Similar to [LNode::Group], except that as many children as possible are placed on each line,
     /// instead of a single global wrapping decision for the entire group.
     ///
-    /// After each child there's an implicit [LNode::WrapNewLine] after each child
+    /// There's an implicit [LNode::WrapNewLine] after each child
     /// and an implicit [LNode::Indent] around all children.
     Fill(Vec<LNode<'s>>),
 }
