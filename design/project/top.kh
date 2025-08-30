@@ -1,8 +1,4 @@
-const a = [i for i in 0..10];
+const a = unsafe_value_with_domain(some_expression, async);
 
-const a: [4, very_long_variable_name_which_makes_this_line_exceed_the_typical_length_limitvery_long_variable_name_which_makes_this_line_exceed_the_typical_length_limit]bool = [
-    x
-    for i in [very_long_variable_name_which_makes_this_line_exceed_the_typical_length_limit, very_long_variable_name_which_makes_this_line_exceed_the_typical_length_limit]
-];
-
-const a = very_long_variable_name_which_makes_this_line_exceed_the_typical_length_limit_very_long_variable_name_which_a.b.c.d;
+const b = (1, 2, 3 //test
+);

@@ -1,12 +1,14 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, Block, BlockExpression, BlockStatement,
-    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DotIndexKind, Expression,
-    ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration, GeneralIdentifier, Identifier, ImportEntry,
-    ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, Parameter, Parameters, RangeLiteral, Visibility,
+    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
+    Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration, GeneralIdentifier, Identifier,
+    ImportEntry, ImportFinalKind, IntLiteral, Item, ItemImport, MaybeIdentifier, Parameter, Parameters, RangeLiteral,
+    RegisterDelay, SyncDomain, Visibility,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
+use itertools::Either;
 
 pub fn ast_to_node(file: &FileContent) -> HNode {
     let FileContent {
@@ -222,6 +224,21 @@ impl Context<'_> {
         HNode::Sequence(vec![token(TT::OpenC), token(TT::CloseC)])
     }
 
+    fn fmt_domain(&self, domain: DomainKind<Expression>) -> HNode {
+        match domain {
+            DomainKind::Const => token(TT::Const),
+            DomainKind::Async => token(TT::Async),
+            DomainKind::Sync(domain) => {
+                let SyncDomain { clock, reset } = domain;
+                let args: &[Expression] = match reset {
+                    None => &[clock],
+                    Some(reset) => &[clock, reset],
+                };
+                fmt_call(token(TT::Sync), args, |&expr| self.fmt_expr(expr))
+            }
+        }
+    }
+
     fn fmt_expr(&self, expr: Expression) -> HNode {
         match &self.arena_expressions[expr.inner] {
             ExpressionKind::Dummy => token(TT::Underscore),
@@ -258,7 +275,7 @@ impl Context<'_> {
                 HNode::Sequence(vec![token(TT::OpenS), node_elements, token(TT::CloseS)])
             }
             ExpressionKind::TupleLiteral(elements) => {
-                let seq = match elements.as_slice() {
+                match elements.as_slice() {
                     // don't allow breaking for empty tuple
                     [] => HNode::Sequence(vec![token(TT::OpenR), token(TT::CloseR)]),
                     // force trailing comma for single-element tuple
@@ -269,10 +286,10 @@ impl Context<'_> {
                     ),
                     // general case
                     elements => {
-                        todo!()
+                        let node_elements = fmt_comma_list(elements, |&elem| self.fmt_expr(elem));
+                        HNode::Sequence(vec![token(TT::OpenR), node_elements, token(TT::CloseR)])
                     }
-                };
-                (seq)
+                }
             }
             &ExpressionKind::RangeLiteral(expr) => {
                 let mut seq = vec![];
@@ -383,10 +400,8 @@ impl Context<'_> {
                 wrapping_binary_op(node_base, node_indices)
             }
             &ExpressionKind::Call(target, ref args) => {
-                let node_target = self.fmt_expr(target);
-
-                let Args { span: _, inner } = args;
-                let node_arg_list = fmt_comma_list(inner, |arg| {
+                let Args { span: _, inner: args } = args;
+                fmt_call(self.fmt_expr(target), args, |arg| {
                     let &Arg { span: _, name, value } = arg;
                     let node_value = self.fmt_expr(value);
                     if let Some(name) = name {
@@ -395,13 +410,24 @@ impl Context<'_> {
                     } else {
                         node_value
                     }
-                });
-                let node_args = HNode::Sequence(vec![token(TT::OpenR), node_arg_list, token(TT::CloseR)]);
-
-                HNode::Sequence(vec![node_target, node_args])
+                })
             }
-            ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
-            ExpressionKind::RegisterDelay(_) => todo!(),
+            &ExpressionKind::UnsafeValueWithDomain(value, domain) => fmt_call(
+                token(TT::UnsafeValueWithDomain),
+                &[Either::Left(value), Either::Right(domain)],
+                |&either| match either {
+                    Either::Left(value) => self.fmt_expr(value),
+                    Either::Right(domain) => self.fmt_domain(domain.inner),
+                },
+            ),
+            ExpressionKind::RegisterDelay(expr) => {
+                let &RegisterDelay {
+                    span_keyword: _,
+                    value,
+                    init,
+                } = expr;
+                fmt_call(token(TT::Reg), &[value, init], |&expr| self.fmt_expr(expr))
+            }
         }
     }
 
@@ -415,7 +441,9 @@ impl Context<'_> {
     fn fmt_general_id(&self, id: GeneralIdentifier) -> HNode {
         match id {
             GeneralIdentifier::Simple(id) => self.fmt_id(id),
-            GeneralIdentifier::FromString(_, _) => todo!(),
+            GeneralIdentifier::FromString(_span, expr) => {
+                fmt_call(token(TT::IdFromStr), &[expr], |&expr| self.fmt_expr(expr))
+            }
         }
     }
 
@@ -455,6 +483,12 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
     }
 
     group_indent_seq(nodes)
+}
+
+fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
+    let node_arg_list = fmt_comma_list(args, f);
+    let node_args = HNode::Sequence(vec![token(TT::OpenR), node_arg_list, token(TT::CloseR)]);
+    HNode::Sequence(vec![target, node_args])
 }
 
 fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
