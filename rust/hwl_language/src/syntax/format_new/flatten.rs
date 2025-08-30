@@ -30,7 +30,9 @@ struct Context<'a> {
 
 impl Context<'_> {
     fn fmt_file_items(&self, items: &[Item]) -> HNode {
-        let mut nodes = vec![HNode::PreserveBlankLines];
+        // special case to deal with empty files
+        let mut nodes = vec![HNode::PreserveBlankLines { last: items.is_empty() }];
+
         for (item, last) in items.iter().with_last() {
             let item_node = match item {
                 Item::Import(import) => self.fmt_import(import),
@@ -68,9 +70,7 @@ impl Context<'_> {
             };
             nodes.push(item_node);
 
-            if !last {
-                nodes.push(HNode::PreserveBlankLines)
-            }
+            nodes.push(HNode::PreserveBlankLines { last })
         }
 
         HNode::Sequence(nodes)
@@ -686,11 +686,10 @@ fn fmt_block_impl<T>(
         seq.push(HNode::ForceWrap);
     }
 
-    for (stmt, last) in statements.iter().with_last() {
+    for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
-        if !last || final_expression.is_some() {
-            seq.push(HNode::PreserveBlankLines);
-        }
+        let last = last_stmt && final_expression.is_none();
+        seq.push(HNode::PreserveBlankLines { last });
     }
 
     if let Some(final_expression) = final_expression {
@@ -721,9 +720,7 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
             ExtraItem::Declaration(_) => todo!(),
             ExtraItem::If(_) => todo!(),
         }
-        if !last {
-            nodes.push(HNode::PreserveBlankLines);
-        }
+        nodes.push(HNode::PreserveBlankLines { last });
     }
 
     group_indent_seq(nodes)
@@ -742,9 +739,7 @@ fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
         nodes.push(f(item));
         push_comma_nodes(last, &mut nodes);
         nodes.push(HNode::WrapNewline);
-        if !last {
-            nodes.push(HNode::PreserveBlankLines);
-        }
+        nodes.push(HNode::PreserveBlankLines { last });
     }
     group_indent_seq(nodes)
 }

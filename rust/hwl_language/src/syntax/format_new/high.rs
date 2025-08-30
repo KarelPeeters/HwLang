@@ -21,7 +21,7 @@ pub enum HNode {
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     Fill(Vec<HNode>),
-    PreserveBlankLines,
+    PreserveBlankLines { last: bool },
 }
 
 #[derive(Debug)]
@@ -87,7 +87,7 @@ impl HNode {
                 swriteln!(f, "Fill");
                 swrite_children(f, children);
             }
-            HNode::PreserveBlankLines => swriteln!(f, "PreserveBlankLines"),
+            HNode::PreserveBlankLines { last: end } => swriteln!(f, "PreserveBlankLines(end={end})"),
         }
     }
 }
@@ -293,16 +293,20 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
                 LNode::Fill(mapped)
             }
-            HNode::PreserveBlankLines => {
+            HNode::PreserveBlankLines { last: end } => {
                 let mut seq = vec![];
 
-                self.preserve_blank_lines(&mut seq);
-                let len_before = seq.len();
+                let next_token_is_comment = self.peek_token().is_some_and(|t| t.ty.category() == TC::Comment);
 
-                self.collect_comments_all(prev_space, &mut seq);
-
-                if seq.len() > len_before {
+                if !end || next_token_is_comment {
                     self.preserve_blank_lines(&mut seq);
+
+                    let len_before = seq.len();
+                    self.collect_comments_all(prev_space, &mut seq);
+
+                    if !end && seq.len() > len_before {
+                        self.preserve_blank_lines(&mut seq);
+                    }
                 }
 
                 LNode::Sequence(seq)

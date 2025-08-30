@@ -1,11 +1,7 @@
 module test_module ports() {
-    if (WIDTH > 8) {
-//        wire extra_signal: sync(clk, rst) bool;
-    }
+    const a = false;
 
     // test
     if (false) {
     }
-
-    // derp
 }
