@@ -330,9 +330,9 @@ impl<'s> Tokenizer<'s> {
             }
 
             // trigram
-            ['.', '.', '='] => skip_fixed(3, TokenType::DotsEq),
-            ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDots),
-            ['.', '.', _] => skip_fixed(2, TokenType::Dots),
+            ['.', '.', '='] => skip_fixed(3, TokenType::DotDotEq),
+            ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDotDot),
+            ['.', '.', _] => skip_fixed(2, TokenType::DotDot),
 
             // simple fixed
             ['=', '=', _] => skip_fixed(2, TokenType::EqEq),
@@ -562,8 +562,8 @@ declare_tokens! {
         Module("module", TC::Keyword),
         Interface("interface", TC::Keyword),
         Instance("instance", TC::Keyword),
-        Function("fn", TC::Keyword),
-        Combinatorial("comb", TC::Keyword),
+        Fn("fn", TC::Keyword),
+        Comb("comb", TC::Keyword),
         Clock("clock", TC::Keyword),
         Clocked("clocked", TC::Keyword),
         Const("const", TC::Keyword),
@@ -580,14 +580,14 @@ declare_tokens! {
         Continue("continue", TC::Keyword),
         True("true", TC::IntegerLiteral),
         False("false", TC::IntegerLiteral),
-        Undefined("undef", TC::IntegerLiteral),
+        Undef("undef", TC::IntegerLiteral),
         If("if", TC::Keyword),
         Else("else", TC::Keyword),
         Loop("loop", TC::Keyword),
         Match("match", TC::Keyword),
         For("for", TC::Keyword),
         While("while", TC::Keyword),
-        Public("pub", TC::Keyword),
+        Pub("pub", TC::Keyword),
         As("as", TC::Keyword),
         External("external", TC::Keyword),
 
@@ -616,9 +616,9 @@ declare_tokens! {
 
         // operators
         Dot(".", TC::Symbol),
-        Dots("..", TC::Symbol),
-        DotsEq("..=", TC::Symbol),
-        PlusDots("+..", TC::Symbol),
+        DotDot("..", TC::Symbol),
+        DotDotEq("..=", TC::Symbol),
+        PlusDotDot("+..", TC::Symbol),
         AmperAmper("&&", TC::Symbol),
         PipePipe("||", TC::Symbol),
         CaretCaret("^^", TC::Symbol),

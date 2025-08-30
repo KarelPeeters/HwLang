@@ -646,6 +646,7 @@ pub enum ExpressionKind {
 
     // Calls
     Call(Expression, Args),
+    // TODO make this just use the call ast node, this causes redundancy everywhere
     Builtin(Spanned<Vec<Expression>>),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
@@ -736,7 +737,7 @@ pub struct StructLiteralField {
     pub value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum RangeLiteral {
     ExclusiveEnd {
         op_span: Span,

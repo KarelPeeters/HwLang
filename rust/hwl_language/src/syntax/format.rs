@@ -761,7 +761,7 @@ impl FormatContext<'_> {
             }
             ModuleStatementKind::CombinatorialBlock(block) => {
                 let CombinatorialBlock { span_keyword: _, block } = block;
-                self.push(TT::Combinatorial)?;
+                self.push(TT::Comb)?;
                 self.push_space();
                 self.format_block(block)?;
             }
@@ -1016,7 +1016,7 @@ impl FormatContext<'_> {
                             ret_ty,
                             ref body,
                         } = func_decl;
-                        self.push(TT::Function)?;
+                        self.push(TT::Fn)?;
                         self.push_space();
                         self.format_maybe_id(id)?;
                         self.format_parameters(params)?;
@@ -1675,9 +1675,9 @@ impl FormatContext<'_> {
     fn format_expr(&mut self, expr: Expression, allow_wrap: bool) -> DiagResult {
         match &self.source_expressions[expr.inner] {
             ExpressionKind::Dummy => self.push(TT::Underscore)?,
-            ExpressionKind::Undefined => self.push(TT::Undefined)?,
+            ExpressionKind::Undefined => self.push(TT::Undef)?,
             ExpressionKind::Type => self.push(TT::Type)?,
-            ExpressionKind::TypeFunction => self.push(TT::Function)?,
+            ExpressionKind::TypeFunction => self.push(TT::Fn)?,
             ExpressionKind::Wrapped(inner) => {
                 self.push(TT::OpenR)?;
                 self.format_expr(*inner, allow_wrap)?;
@@ -1765,13 +1765,13 @@ impl FormatContext<'_> {
             }
             ExpressionKind::RangeLiteral(range) => match *range {
                 RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
-                    self.format_maybe_binary_op(TT::Dots, false, start, end, allow_wrap)?;
+                    self.format_maybe_binary_op(TT::DotDot, false, start, end, allow_wrap)?;
                 }
                 RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
-                    self.format_maybe_binary_op(TT::DotsEq, false, start, Some(end), allow_wrap)?;
+                    self.format_maybe_binary_op(TT::DotDotEq, false, start, Some(end), allow_wrap)?;
                 }
                 RangeLiteral::Length { op_span: _, start, len } => {
-                    self.format_binary_op(TT::PlusDots, false, start, len, allow_wrap)?;
+                    self.format_binary_op(TT::PlusDotDot, false, start, len, allow_wrap)?;
                 }
             },
             ExpressionKind::ArrayComprehension(expr) => {
@@ -2095,7 +2095,7 @@ impl FormatVisibility for Visibility {
     fn format_visibility(c: &mut FormatContext, vis: &Visibility) -> DiagResult {
         match *vis {
             Visibility::Public(_span) => {
-                c.push(TT::Public)?;
+                c.push(TT::Pub)?;
                 c.push_space();
             }
             Visibility::Private => {
