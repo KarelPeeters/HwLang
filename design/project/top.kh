@@ -1,20 +1,11 @@
-module foo(T: type) ports(
-    x: in async T,
-    y: out async T,
-    /*if(false) { z: in async bool }*/
-    d: in sync(
-        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier,
-        very_long_identifier_very_long_identifier_very_long_identifier_very_long_identifier
-    ) bool,
-    d: interface async something,
-    sync(clk, rst) {
-        x: in bool,
-        y: out bool,
+module test_module ports() {
+    if (WIDTH > 8) {
+//        wire extra_signal: sync(clk, rst) bool;
+    }
 
-        d: interface something,
+    // test
+    if (false) {
     }
-) {
-    {
-        const a = 5;
-    }
+
+    // derp
 }

@@ -22,6 +22,9 @@ pub enum LNode<'s> {
     /// Emit a newline if the containing group is wrapping.
     WrapNewline,
 
+    /// Force the enclosing group to wrap, without emitting anything itself.
+    ForceWrap,
+
     /// Indent the inner node.
     AlwaysIndent(Box<LNode<'s>>),
     /// Indent the inner node if the containing group is wrapping, if not do nothing.
@@ -146,6 +149,7 @@ impl<'s> LNode<'s> {
             LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
             LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
             LNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNode::ForceWrap => swriteln!(f, "ForceWrap"),
             LNode::AlwaysIndent(child) => {
                 swriteln!(f, "AlwaysIndent");
                 child.debug_str_impl(f, indent + 1);
@@ -199,6 +203,7 @@ impl<'s> LNode<'s> {
             LNode::WrapStr(s) => LNode::WrapStr(s),
             LNode::AlwaysNewline => LNode::AlwaysNewline,
             LNode::WrapNewline => LNode::WrapNewline,
+            LNode::ForceWrap => LNode::ForceWrap,
         }
     }
 }
@@ -305,6 +310,9 @@ impl StringBuilderContext<'_> {
                 if W::is_wrapping() {
                     self.write_newline::<W>()?;
                 }
+            }
+            LNode::ForceWrap => {
+                W::require_wrapping()?;
             }
             LNode::AlwaysIndent(child) => {
                 self.indent(|ctx| ctx.write_node::<W>(child))?;

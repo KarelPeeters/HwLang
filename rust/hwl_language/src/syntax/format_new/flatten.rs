@@ -1,11 +1,12 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, Block, BlockExpression, BlockStatement,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
-    Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, FunctionDeclaration, GeneralIdentifier, Identifier,
-    IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item, ItemDefModuleExternal, ItemDefModuleInternal,
-    ItemImport, MaybeIdentifier, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
-    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters,
-    PortSingleKindInner, RangeLiteral, RegisterDelay, SyncDomain, Visibility,
+    Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
+    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
+    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeIdentifier, ModulePortBlock, ModulePortInBlock,
+    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortSingleKindInner, RangeLiteral, RegisterDelay, SyncDomain,
+    Visibility,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -192,8 +193,7 @@ impl Context<'_> {
                         }
 
                         nodes.push(HNode::Space);
-                        let Block { span: _, statements } = body;
-                        nodes.push(self.fmt_block(statements, None, false));
+                        nodes.push(self.fmt_block(body, false));
                         nodes.push(HNode::AlwaysNewline);
 
                         HNode::Sequence(nodes)
@@ -349,16 +349,20 @@ impl Context<'_> {
         fmt_block_impl(statements, None, force_wrap, |stmt| self.fmt_module_statement(stmt))
     }
 
-    fn fmt_block(
+    fn fmt_block(&self, block: &Block<BlockStatement>, force_wrap: bool) -> HNode {
+        let Block { span: _, statements } = block;
+        self.fmt_block_ext(statements, None, force_wrap)
+    }
+
+    fn fmt_block_ext(
         &self,
         statements: &[BlockStatement],
         final_expression: Option<Expression>,
         force_wrap: bool,
     ) -> HNode {
         let node_final_expression = final_expression.map(|expr| self.fmt_expr(expr));
-        fmt_block_impl(statements, node_final_expression, force_wrap, |stmt| {
-            self.fmt_block_statement(stmt)
-        })
+        let f = |stmt: &BlockStatement| self.fmt_block_statement(stmt);
+        fmt_block_impl(statements, node_final_expression, force_wrap, f)
     }
 
     fn fmt_module_statement(&self, stmt: &ModuleStatement) -> HNode {
@@ -367,8 +371,8 @@ impl Context<'_> {
                 let node_block = self.fmt_module_block(block, false);
                 HNode::Sequence(vec![node_block, HNode::AlwaysNewline])
             }
-            ModuleStatementKind::If(stmt) => fmt_if(stmt, |b, force_wrap| self.fmt_module_block(b, force_wrap)),
-            ModuleStatementKind::For(_) => todo!(),
+            ModuleStatementKind::If(stmt) => self.fmt_if(stmt, |b| self.fmt_module_block(b, true)),
+            ModuleStatementKind::For(stmt) => self.fmt_for(stmt, |b| self.fmt_module_block(b, false)),
             ModuleStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
             ModuleStatementKind::RegDeclaration(_) => todo!(),
             ModuleStatementKind::WireDeclaration(_) => todo!(),
@@ -380,6 +384,58 @@ impl Context<'_> {
     }
 
     fn fmt_block_statement(&self, stmt: &BlockStatement) -> HNode {
+        todo!()
+    }
+
+    fn fmt_if<B>(&self, stmt: &IfStatement<B>, f_force_wrap: impl Fn(&B) -> HNode) -> HNode {
+        fn fmt_else(seq: &mut Vec<HNode>) {
+            seq.push(HNode::Space);
+            seq.push(token(TT::Else));
+            seq.push(HNode::Space);
+        }
+
+        fn fmt_pair<B>(
+            slf: &Context,
+            f_force_wrap: impl Fn(&B) -> HNode,
+            seq: &mut Vec<HNode>,
+            pair: &IfCondBlockPair<B>,
+        ) {
+            let &IfCondBlockPair {
+                span: _,
+                span_if: _,
+                cond,
+                ref block,
+            } = pair;
+            seq.push(token(TT::If));
+            seq.push(HNode::Space);
+            seq.push(surrounded_group_indent(TT::OpenR, slf.fmt_expr(cond), TT::CloseR));
+            seq.push(HNode::Space);
+            seq.push(f_force_wrap(block));
+        }
+
+        let IfStatement {
+            span: _,
+            initial_if,
+            else_ifs,
+            final_else,
+        } = stmt;
+
+        let mut seq = vec![];
+        fmt_pair(self, &f_force_wrap, &mut seq, initial_if);
+        for else_if in else_ifs {
+            fmt_else(&mut seq);
+            fmt_pair(self, &f_force_wrap, &mut seq, else_if);
+        }
+        if let Some(final_else) = final_else {
+            fmt_else(&mut seq);
+            seq.push(f_force_wrap(final_else));
+        }
+
+        seq.push(HNode::AlwaysNewline);
+        HNode::Sequence(seq)
+    }
+
+    fn fmt_for<S>(&self, stmt: &ForStatement<S>, f: impl Fn(&Block<S>) -> HNode) -> HNode {
         todo!()
     }
 
@@ -411,7 +467,7 @@ impl Context<'_> {
                     ref statements,
                     expression,
                 } = expr;
-                self.fmt_block(statements, Some(expression), false)
+                self.fmt_block_ext(statements, Some(expression), false)
             }
             &ExpressionKind::Id(id) => self.fmt_general_id(id),
             ExpressionKind::IntLiteral(literal) => {
@@ -627,7 +683,7 @@ fn fmt_block_impl<T>(
 ) -> HNode {
     let mut seq = vec![HNode::WrapNewline];
     if force_wrap {
-        todo!()
+        seq.push(HNode::ForceWrap);
     }
 
     for (stmt, last) in statements.iter().with_last() {
@@ -671,10 +727,6 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
     }
 
     group_indent_seq(nodes)
-}
-
-fn fmt_if<B>(stmt: &IfStatement<B>, f: impl Fn(&B, bool) -> HNode) -> HNode {
-    todo!()
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {

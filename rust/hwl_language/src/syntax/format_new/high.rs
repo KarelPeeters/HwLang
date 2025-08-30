@@ -10,21 +10,17 @@ use hwl_util::swriteln;
 #[derive(Debug)]
 pub enum HNode {
     Space,
-
     AlwaysToken(TT),
     WrapComma,
-
     AlwaysNewline,
     WrapNewline,
-
-    // TODO we don't really need a distinction between these, right?
+    ForceWrap,
+    // TODO we don't really need a distinction between these wrapping nodes, right?
     AlwaysIndent(Box<HNode>),
     WrapIndent(Box<HNode>),
-
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     Fill(Vec<HNode>),
-
     PreserveBlankLines,
 }
 
@@ -74,6 +70,7 @@ impl HNode {
                 child.tree_string_impl(f, indent + 1);
             }
             HNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            HNode::ForceWrap => swriteln!(f, "ForceWrap"),
             HNode::WrapIndent(child) => {
                 swriteln!(f, "WrapIndent");
                 child.tree_string_impl(f, indent + 1);
@@ -268,7 +265,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
                 LNode::Sequence(seq)
             }
-
+            HNode::ForceWrap => LNode::ForceWrap,
             HNode::AlwaysIndent(inner) => {
                 let mut seq = vec![self.map(prev_space, *inner)?];
                 self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
@@ -319,6 +316,7 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
     match node {
         LNode::Space => Some(true),
         LNode::AlwaysStr(_) | LNode::WrapStr(_) | LNode::AlwaysNewline | LNode::WrapNewline => Some(false),
+        LNode::ForceWrap => None,
         LNode::AlwaysIndent(inner) => node_ends_with_space(inner),
         LNode::WrapIndent(inner) => node_ends_with_space(inner),
         LNode::Sequence(seq) => seq_ends_with_space(seq),

@@ -13,6 +13,7 @@ const DEFAULT_ASSERT_MSG = "assertion failed";
 
 // TODO report the call location, not the body of this function
 // TODO include elaboration stack trace in all errors
+// TODO add "todo()" function, similar to Rust's macro
 pub fn assert(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
     __builtin("fn", "assert", cond, msg);
 }
