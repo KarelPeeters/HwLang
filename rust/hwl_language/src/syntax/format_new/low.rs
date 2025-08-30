@@ -27,8 +27,11 @@ pub enum LNode<'s> {
 
     /// Indent the inner node.
     AlwaysIndent(Box<LNode<'s>>),
-    /// Indent the inner node if the containing group is wrapping, if not do nothing.
+    /// Indent the inner node if the containing group is wrapping, if not just emit the inner node as-is.
     WrapIndent(Box<LNode<'s>>),
+    /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
+    /// Nodes that come after this node are indented normally again.
+    Dedent(Box<LNode<'s>>),
 
     /// A sequence of nodes to be emitted in order.
     /// Children can each individually decide to wrap or not,
@@ -158,6 +161,10 @@ impl<'s> LNode<'s> {
                 swriteln!(f, "WrapIndent");
                 child.debug_str_impl(f, indent + 1);
             }
+            LNode::Dedent(child) => {
+                swriteln!(f, "Dedent");
+                child.debug_str_impl(f, indent + 1);
+            }
             LNode::Sequence(children) => {
                 swriteln!(f, "Sequence");
                 for child in children {
@@ -195,6 +202,7 @@ impl<'s> LNode<'s> {
             // just simplify children
             LNode::AlwaysIndent(child) => LNode::AlwaysIndent(Box::new(child.simplify())),
             LNode::WrapIndent(child) => LNode::WrapIndent(Box::new(child.simplify())),
+            LNode::Dedent(child) => LNode::Dedent(Box::new(child.simplify())),
             LNode::Group(child) => LNode::Group(Box::new(child.simplify())),
             LNode::Fill(children) => LNode::Fill(children.into_iter().map(LNode::simplify).collect()),
             // trivial cases
@@ -243,6 +251,14 @@ impl StringBuilderContext<'_> {
         self.state.indent += 1;
         let r = f(self);
         self.state.indent -= 1;
+        r
+    }
+
+    fn dedent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let prev_indent = self.state.indent;
+        self.state.indent = 0;
+        let r = f(self);
+        self.state.indent = prev_indent;
         r
     }
 
@@ -323,6 +339,9 @@ impl StringBuilderContext<'_> {
                 } else {
                     self.write_node::<W>(child)?;
                 }
+            }
+            LNode::Dedent(child) => {
+                self.dedent(|ctx| ctx.write_node::<W>(child))?;
             }
             LNode::Sequence(children) => {
                 self.write_sequence::<W>(children)?;

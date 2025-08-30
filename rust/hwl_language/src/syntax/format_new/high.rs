@@ -137,6 +137,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         let mut first_comment = true;
 
         while let Some(token) = self.peek_token() {
+            // filtering
             if token.ty.category() != TC::Comment {
                 break;
             }
@@ -145,30 +146,38 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 break;
             }
 
+            // preserve newlines
             if !first_comment {
                 self.preserve_blank_lines(seq);
             }
             first_comment = false;
 
+            // copy over string
             let _ = self.pop_token().unwrap();
-            let token_str = &self.source[token.span.range_bytes()];
+            let comment_str = &self.source[token.span.range_bytes()];
+            let mut seq_inner = vec![LNode::AlwaysStr(comment_str)];
 
+            // add suffix
             match token.ty {
                 TT::LineComment => {
-                    seq.push(LNode::Space);
-                    seq.push(LNode::AlwaysStr(token_str));
-                    seq.push(LNode::AlwaysNewline);
+                    seq_inner.push(LNode::AlwaysNewline);
                 }
                 TT::BlockComment => {
-                    seq.push(LNode::Space);
-                    seq.push(LNode::AlwaysStr(token_str));
-
                     if prev_space {
-                        seq.push(LNode::Space);
+                        seq_inner.push(LNode::Space);
                     }
                 }
-                _ => break,
-            }
+                _ => unreachable!(),
+            };
+
+            // dedent or prefix space
+            let token_node = if token_span.start.col_0 == 0 {
+                LNode::Dedent(Box::new(LNode::Sequence(seq_inner)))
+            } else {
+                seq_inner.insert(0, LNode::Space);
+                LNode::Sequence(seq_inner)
+            };
+            seq.push(token_node);
         }
     }
 
@@ -323,6 +332,7 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         LNode::ForceWrap => None,
         LNode::AlwaysIndent(inner) => node_ends_with_space(inner),
         LNode::WrapIndent(inner) => node_ends_with_space(inner),
+        LNode::Dedent(inner) => node_ends_with_space(inner),
         LNode::Sequence(seq) => seq_ends_with_space(seq),
         LNode::Group(inner) => node_ends_with_space(inner),
         LNode::Fill(children) => fill_ends_with_space(children),

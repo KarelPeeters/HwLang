@@ -2,6 +2,6 @@ module test_module ports() {
     const a = false;
 
     // test
-    if (false) {
-    }
+//    if (false) {
+//    }
 }
