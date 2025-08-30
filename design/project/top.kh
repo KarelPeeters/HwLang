@@ -1,7 +1,16 @@
 module test_module ports() {
-    const a = false;
+    for (i: longlonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglong in 0..18) {
+    }
 
-    // test
-//    if (false) {
-//    }
+    for (i: uint in 0..18) {
+    }
+
+    for (
+        i
+        : uint
+        in 0..18
+    ) {
+    }
 }
+
+const longlonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglong: bool = false;

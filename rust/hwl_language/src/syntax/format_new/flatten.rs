@@ -408,7 +408,7 @@ impl Context<'_> {
             } = pair;
             seq.push(token(TT::If));
             seq.push(HNode::Space);
-            seq.push(surrounded_group_indent(TT::OpenR, slf.fmt_expr(cond), TT::CloseR));
+            seq.push(surrounded_group_indent(SurroundKind::Round, slf.fmt_expr(cond)));
             seq.push(HNode::Space);
             seq.push(f_force_wrap(block));
         }
@@ -436,7 +436,40 @@ impl Context<'_> {
     }
 
     fn fmt_for<S>(&self, stmt: &ForStatement<S>, f: impl Fn(&Block<S>) -> HNode) -> HNode {
-        todo!()
+        let &ForStatement {
+            span_keyword: _,
+            index,
+            index_ty,
+            iter,
+            ref body,
+        } = stmt;
+
+        let mut seq = vec![self.fmt_maybe_id(index)];
+        if let Some(index_ty) = index_ty {
+            seq.push(group_indent_seq(vec![
+                HNode::WrapNewline,
+                token(TT::Colon),
+                HNode::Space,
+                self.fmt_expr(index_ty),
+            ]))
+        }
+
+        seq.push(group_indent_seq(vec![
+            HNode::WrapNewline,
+            HNode::Space,
+            token(TT::In),
+            HNode::Space,
+            self.fmt_expr(iter),
+        ]));
+
+        HNode::Sequence(vec![
+            token(TT::For),
+            HNode::Space,
+            surrounded_group_indent(SurroundKind::Round, HNode::Sequence(seq)),
+            HNode::Space,
+            f(body),
+            HNode::AlwaysNewline,
+        ])
     }
 
     fn fmt_domain(&self, domain: DomainKind<Expression>) -> HNode {
@@ -461,7 +494,7 @@ impl Context<'_> {
             ExpressionKind::Type => token(TT::Type),
             ExpressionKind::TypeFunction => token(TT::Fn),
             ExpressionKind::Builtin => token(TT::Builtin),
-            &ExpressionKind::Wrapped(inner) => surrounded_group_indent(TT::OpenR, self.fmt_expr(inner), TT::CloseR),
+            &ExpressionKind::Wrapped(inner) => surrounded_group_indent(SurroundKind::Round, self.fmt_expr(inner)),
             ExpressionKind::Block(expr) => {
                 let &BlockExpression {
                     ref statements,
@@ -495,9 +528,8 @@ impl Context<'_> {
                     [] => HNode::Sequence(vec![token(TT::OpenR), token(TT::CloseR)]),
                     // force trailing comma for single-element tuple
                     &[element] => surrounded_group_indent(
-                        TT::OpenR,
+                        SurroundKind::Round,
                         HNode::Sequence(vec![self.fmt_expr(element), token(TT::Comma)]),
-                        TT::CloseR,
                     ),
                     // general case
                     elements => {
@@ -554,7 +586,7 @@ impl Context<'_> {
                     self.fmt_expr(iter),
                 ];
 
-                surrounded_group_indent(TT::OpenS, HNode::Sequence(seq), TT::CloseS)
+                surrounded_group_indent(SurroundKind::Square, HNode::Sequence(seq))
             }
             &ExpressionKind::UnaryOp(op, inner) => HNode::Sequence(vec![token(op.inner.token()), self.fmt_expr(inner)]),
             &ExpressionKind::BinaryOp(op, left, right) => {
@@ -765,7 +797,19 @@ fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
     HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
 }
 
-fn surrounded_group_indent(before: TT, inner: HNode, after: TT) -> HNode {
+enum SurroundKind {
+    Round,
+    Square,
+    Curly,
+}
+
+fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
+    let (before, after) = match surround {
+        SurroundKind::Round => (TT::OpenR, TT::CloseR),
+        SurroundKind::Square => (TT::OpenS, TT::CloseS),
+        SurroundKind::Curly => (TT::OpenC, TT::CloseC),
+    };
+
     HNode::Group(Box::new(HNode::Sequence(vec![
         token(before),
         HNode::WrapIndent(Box::new(HNode::Sequence(vec![
