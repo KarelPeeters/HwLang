@@ -213,12 +213,18 @@ impl Context<'_> {
 
     fn fmt_expr(&self, expr: Expression) -> HNode {
         match &self.arena_expressions[expr.inner] {
-            ExpressionKind::Dummy => todo!(),
-            ExpressionKind::Undefined => todo!(),
-            ExpressionKind::Type => todo!(),
-            ExpressionKind::TypeFunction => todo!(),
-            ExpressionKind::Wrapped(_) => todo!(),
-            ExpressionKind::Block(_) => todo!(),
+            ExpressionKind::Dummy => HNode::AlwaysToken(TT::Underscore),
+            ExpressionKind::Undefined => HNode::AlwaysToken(TT::Undefined),
+            ExpressionKind::Type => HNode::AlwaysToken(TT::Type),
+            ExpressionKind::TypeFunction => HNode::AlwaysToken(TT::Function),
+            ExpressionKind::Wrapped(inner) => HNode::Sequence(vec![
+                HNode::AlwaysToken(TT::OpenR),
+                self.fmt_expr(*inner),
+                HNode::AlwaysToken(TT::CloseR),
+            ]),
+            ExpressionKind::Block(expr) => {
+                todo!()
+            }
             &ExpressionKind::Id(id) => self.fmt_general_id(id),
             ExpressionKind::IntLiteral(literal) => {
                 let tt = match literal {
@@ -228,12 +234,19 @@ impl Context<'_> {
                 };
                 HNode::AlwaysToken(tt)
             }
-            ExpressionKind::BoolLiteral(_) => todo!(),
-            ExpressionKind::StringLiteral(_) => todo!(),
+            &ExpressionKind::BoolLiteral(value) => {
+                let tt = if value { TT::True } else { TT::False };
+                HNode::AlwaysToken(tt)
+            }
+            ExpressionKind::StringLiteral(pieces) => {
+                todo!()
+            }
             ExpressionKind::ArrayLiteral(elements) => {
-                let node_elements = fmt_comma_list(elements, |elem| match elem {
-                    &ArrayLiteralElement::Single(elem) => self.fmt_expr(elem),
-                    ArrayLiteralElement::Spread(_, _) => todo!(),
+                let node_elements = fmt_comma_list(elements, |&elem| match elem {
+                    ArrayLiteralElement::Single(elem) => self.fmt_expr(elem),
+                    ArrayLiteralElement::Spread(_span, elem) => {
+                        HNode::Sequence(vec![HNode::AlwaysToken(TT::Star), self.fmt_expr(elem)])
+                    }
                 });
                 HNode::Sequence(vec![
                     HNode::AlwaysToken(TT::OpenS),
@@ -241,7 +254,22 @@ impl Context<'_> {
                     HNode::AlwaysToken(TT::CloseS),
                 ])
             }
-            ExpressionKind::TupleLiteral(_) => todo!(),
+            ExpressionKind::TupleLiteral(elements) => {
+                let seq = match elements.as_slice() {
+                    [] => vec![HNode::AlwaysToken(TT::OpenR), HNode::AlwaysToken(TT::CloseR)],
+                    // TODO allow breaking?
+                    &[element] => vec![
+                        HNode::AlwaysToken(TT::OpenR),
+                        self.fmt_expr(element),
+                        HNode::AlwaysToken(TT::Comma),
+                        HNode::AlwaysToken(TT::CloseR),
+                    ],
+                    elements => {
+                        todo!()
+                    }
+                };
+                HNode::Sequence(seq)
+            }
             ExpressionKind::RangeLiteral(_) => todo!(),
             ExpressionKind::ArrayComprehension(_) => todo!(),
             ExpressionKind::UnaryOp(_, _) => todo!(),
