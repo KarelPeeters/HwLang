@@ -228,6 +228,7 @@ impl Context<'_> {
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),
             ExpressionKind::TypeFunction => token(TT::Fn),
+            ExpressionKind::Builtin => token(TT::Builtin),
             &ExpressionKind::Wrapped(inner) => surrounded_group_indent(TT::OpenR, self.fmt_expr(inner), TT::CloseR),
             ExpressionKind::Block(expr) => {
                 let &BlockExpression {
@@ -399,7 +400,6 @@ impl Context<'_> {
 
                 HNode::Sequence(vec![node_target, node_args])
             }
-            ExpressionKind::Builtin(builtin) => todo!(),
             ExpressionKind::UnsafeValueWithDomain(_, _) => todo!(),
             ExpressionKind::RegisterDelay(_) => todo!(),
         }

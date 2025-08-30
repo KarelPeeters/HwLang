@@ -14,12 +14,13 @@ use std::sync::Arc;
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Type {
-    // Higher order type, containing other types (including type itself!).
-    Type,
     // Lattice top type (including type!)
     Any,
     // Lattice bottom type
     Undefined,
+    // Higher order type, containing other types (including type itself!).
+    Type,
+
     Bool,
     String,
     Int(IncRange<BigInt>),
@@ -33,6 +34,7 @@ pub enum Type {
     Module,
     Interface,
     InterfaceView,
+    Builtin,
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
@@ -148,6 +150,7 @@ impl Type {
             (Type::Module, Type::Module) => Type::Module,
             (Type::Interface, Type::Interface) => Type::Interface,
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
+            (Type::Builtin, Type::Builtin) => Type::Builtin,
 
             (Type::Int(a), Type::Int(b)) => {
                 let IncRange {
@@ -223,7 +226,7 @@ impl Type {
                 }
             }
 
-            // simple mismatches
+            // simple mismatches (we list all of them out manually here to force exhaustiveness checking)
             (
                 Type::Type
                 | Type::Bool
@@ -233,24 +236,13 @@ impl Type {
                 | Type::Module
                 | Type::Interface
                 | Type::InterfaceView
+                | Type::Builtin
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _)
                 | Type::Struct(_)
                 | Type::Enum(_),
-                Type::Type
-                | Type::Bool
-                | Type::String
-                | Type::Range
-                | Type::Function
-                | Type::Module
-                | Type::Interface
-                | Type::InterfaceView
-                | Type::Int(_)
-                | Type::Tuple(_)
-                | Type::Array(_, _)
-                | Type::Struct(_)
-                | Type::Enum(_),
+                _,
             ) => Type::Any,
         }
     }
@@ -297,7 +289,8 @@ impl Type {
             | Type::Function
             | Type::Module
             | Type::Interface
-            | Type::InterfaceView => Err(NonHardwareType),
+            | Type::InterfaceView
+            | Type::Builtin => Err(NonHardwareType),
         }
     }
 
@@ -335,6 +328,7 @@ impl Type {
             Type::Module => "module".to_string(),
             Type::Interface => "interface".to_string(),
             Type::InterfaceView => "interface_view".to_string(),
+            Type::Builtin => "builtin".to_string(),
         }
     }
 }

@@ -479,7 +479,7 @@ macro_rules! declare_tokens {
             $($c_token:ident($c_cat:expr),)*
         }
         fixed {
-            $($f_token:ident($f_string:literal, $f_cat:expr),)*
+            $($f_token:ident($f_string:expr, $f_cat:expr),)*
         }
     ) => {
         use TokenCategory as TC;
@@ -532,6 +532,10 @@ impl TokenCategory {
         self as usize
     }
 }
+
+// these have dedicated constants so we can refer to them in diagnostics
+pub const TOKEN_STR_BUILTIN: &str = "__builtin";
+pub const TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN: &str = "unsafe_value_with_domain";
 
 // TODO rename tokens to match the literal string better
 declare_tokens! {
@@ -593,8 +597,8 @@ declare_tokens! {
 
         // builtins
         // TODO separate category?
-        Builtin("__builtin", TC::Keyword),
-        UnsafeValueWithDomain("unsafe_value_with_domain", TC::Keyword),
+        Builtin(TOKEN_STR_BUILTIN, TC::Keyword),
+        UnsafeValueWithDomain(TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN, TC::Keyword),
         IdFromStr("id_from_str", TC::Keyword),
 
         // misc symbols

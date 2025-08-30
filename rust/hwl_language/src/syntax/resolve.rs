@@ -1217,11 +1217,6 @@ impl ResolveContext<'_> {
                     self.visit_expression(scope, value)?;
                 }
             }
-            ExpressionKind::Builtin(args) => {
-                for &arg in &args.inner {
-                    self.visit_expression(scope, arg)?;
-                }
-            }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 self.visit_expression(scope, value)?;
                 self.visit_domain(scope, domain.inner)?;
@@ -1240,6 +1235,7 @@ impl ResolveContext<'_> {
             | ExpressionKind::Undefined
             | ExpressionKind::Type
             | ExpressionKind::TypeFunction
+            | ExpressionKind::Builtin
             | ExpressionKind::IntLiteral(_)
             | ExpressionKind::BoolLiteral(_) => {}
         }

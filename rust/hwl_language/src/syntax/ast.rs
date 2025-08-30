@@ -618,6 +618,7 @@ pub enum ExpressionKind {
     Undefined,
     Type,
     TypeFunction,
+    Builtin,
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Expression),
@@ -646,8 +647,6 @@ pub enum ExpressionKind {
 
     // Calls
     Call(Expression, Args),
-    // TODO make this just use the call ast node, this causes redundancy everywhere
-    Builtin(Spanned<Vec<Expression>>),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
 }

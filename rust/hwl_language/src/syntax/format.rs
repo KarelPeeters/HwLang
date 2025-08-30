@@ -1678,6 +1678,7 @@ impl FormatContext<'_> {
             ExpressionKind::Undefined => self.push(TT::Undef)?,
             ExpressionKind::Type => self.push(TT::Type)?,
             ExpressionKind::TypeFunction => self.push(TT::Fn)?,
+            ExpressionKind::Builtin => self.push(TT::Builtin)?,
             ExpressionKind::Wrapped(inner) => {
                 self.push(TT::OpenR)?;
                 self.format_expr(*inner, allow_wrap)?;
@@ -1873,12 +1874,6 @@ impl FormatContext<'_> {
                 // TODO allow wrapping target?
                 self.format_expr(target, false)?;
                 self.format_args(args, allow_wrap)?;
-            }
-            ExpressionKind::Builtin(args) => {
-                self.push(TT::Builtin)?;
-                self.push(TT::OpenR)?;
-                self.format_comma_list_copy(&args.inner, allow_wrap, Self::format_expr)?;
-                self.push(TT::CloseR)?;
             }
             &ExpressionKind::UnsafeValueWithDomain(inner, domain) => {
                 self.push(TT::UnsafeValueWithDomain)?;

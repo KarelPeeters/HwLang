@@ -5,6 +5,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
 use itertools::Itertools;
@@ -78,7 +79,10 @@ impl CompileItemContext<'_, '_> {
                 .footer(Level::Info, format!("crossing due to {required_reason}"))
                 .footer(
                     Level::Help,
-                    "to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`",
+                    format!(
+                        "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
+                        TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
+                    ),
                 )
                 .finish();
             diags.report(diag)

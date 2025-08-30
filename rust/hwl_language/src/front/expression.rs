@@ -34,7 +34,7 @@ use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
-use crate::syntax::token::apply_string_literal_escapes;
+use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{Never, ResultDoubleExt, ResultNeverExt, result_pair};
@@ -174,6 +174,8 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ExpressionKind::Undefined => Value::Compile(CompileValue::Undefined),
             ExpressionKind::Type => Value::Compile(CompileValue::Type(Type::Type)),
+            ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
+            ExpressionKind::Builtin => Value::Compile(CompileValue::Builtin),
             &ExpressionKind::Wrapped(inner) => {
                 return self.eval_expression_inner(scope, flow, expected_ty, inner);
             }
@@ -233,7 +235,6 @@ impl<'a> CompileItemContext<'a, '_> {
                     result.map_hardware(HardwareValueWithImplications::simple_version),
                 ));
             }
-            ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::IntLiteral(pattern) => {
                 let value = match *pattern {
                     IntLiteral::Binary(raw) => {
@@ -618,6 +619,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // check that the target is a function
                 let target_inner = match target.inner {
+                    CompileValue::Builtin => {
+                        return self
+                            .eval_builtin(flow, expr.span, target.span, args?)
+                            .map(|v| ValueInner::Value(ValueWithImplications::simple(v)));
+                    }
                     CompileValue::Type(Type::Int(range)) => {
                         // handle integer calls here
                         let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
@@ -644,7 +650,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
                 .flatten_err()?
             }
-            ExpressionKind::Builtin(args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
 
@@ -1268,18 +1273,34 @@ impl<'a> CompileItemContext<'a, '_> {
     // TODO replace builtin+import+prelude with keywords?
     fn eval_builtin(
         &mut self,
-        scope: &Scope,
         flow: &mut impl Flow,
         expr_span: Span,
-        args: &Spanned<Vec<Expression>>,
+        target_span: Span,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         // evaluate args
-        let args_eval = args
-            .inner
-            .iter()
-            .map(|&arg| Ok(self.eval_expression(scope, flow, &Type::Any, arg)?.inner))
+        // TODO delay arg evaluation so we can do weird things like use certain args as a domain?
+        let Args {
+            span: _,
+            inner: args_inner,
+        } = args;
+        let args_eval = args_inner
+            .into_iter()
+            .map(|arg| {
+                let Arg { span: _, name, value } = arg;
+                if let Some(name) = name {
+                    let diag = Diagnostic::new(format!("{TOKEN_STR_BUILTIN} does not support named arguments"))
+                        .snippet(expr_span)
+                        .add_error(name.span, "tried to pass named argument here")
+                        .add_info(target_span, format!("calling {TOKEN_STR_BUILTIN} here"))
+                        .finish()
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+                Ok(value.inner)
+            })
             .try_collect_all_vec()?;
 
         if let (Some(Value::Compile(CompileValue::String(a0))), Some(Value::Compile(CompileValue::String(a1)))) =
