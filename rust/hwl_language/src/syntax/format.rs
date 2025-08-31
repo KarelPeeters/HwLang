@@ -812,7 +812,8 @@ impl FormatContext<'_> {
                             let &PortConnection { id, expr } = &conn.inner;
                             slf.format_id(id)?;
                             slf.push(TT::Eq)?;
-                            slf.format_expr(expr, false)?;
+                            // TODO this is wrong, but this whole file is obsolete anyway
+                            slf.format_expr(expr.expr(), false)?;
                             if !last {
                                 slf.push(TT::Comma)?;
                                 slf.push_space();
@@ -829,7 +830,7 @@ impl FormatContext<'_> {
                                 let &PortConnection { id, expr } = &conn.inner;
                                 slf.format_id(id)?;
                                 slf.push(TT::Eq)?;
-                                slf.format_expr(expr, true)?;
+                                slf.format_expr(expr.expr(), true)?;
                                 slf.push(TT::Comma)?;
                                 slf.push_newline()?;
                             }

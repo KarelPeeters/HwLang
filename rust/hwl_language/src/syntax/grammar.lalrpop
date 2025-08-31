@@ -275,10 +275,14 @@ InstancePortConnections: Vec<Spanned<PortConnection>> = {
 // TODO find a way to avoid having to create a fake expression for the value here
 PortConnection: PortConnection = {
     <id:Id> <expr:("=" <Expr>)?> => {
-        let expr = expr.unwrap_or_else(|| {
-            let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
-            Spanned::new(id.span, arena_expr.push(kind))
-        });
+        let expr = match expr {
+            None => {
+                let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
+                let expr = Spanned::new(id.span, arena_expr.push(kind));
+                PortConnectionExpression::FakeId(expr)
+            },
+            Some(expr) => PortConnectionExpression::Real(expr),
+        };
         PortConnection { id, expr }
     }
 }

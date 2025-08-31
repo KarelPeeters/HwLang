@@ -1446,6 +1446,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             id: ref connection_id,
             expr: value_expr,
         } = &connection.inner;
+        let value_expr = value_expr.expr();
+
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
         // double-check id match

@@ -251,6 +251,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::WrapComma => {
                 // TODO skip comments (_if_ the next non-comment token is a comma?)
+                // TODO force wrap if there was a trailing comma in the source?
                 if let Some(token) = self.peek_token()
                     && token.ty == TT::Comma
                 {

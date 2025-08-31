@@ -1079,7 +1079,7 @@ impl ResolveContext<'_> {
                         let &PortConnection { id, expr } = &conn.inner;
                         // TODO try resolving port name, needs type info
                         let _ = id;
-                        self.visit_expression(scope, expr)?;
+                        self.visit_expression(scope, expr.expr())?;
                     }
                 }
 

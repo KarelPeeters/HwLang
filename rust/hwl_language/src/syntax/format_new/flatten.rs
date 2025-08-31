@@ -4,11 +4,11 @@ use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
     Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
     GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
-    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModulePortBlock,
-    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker,
-    RegisterDelay, SyncDomain, VariableDeclaration, Visibility, WireDeclaration, WireDeclarationDomainTyKind,
-    WireDeclarationKind,
+    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
+    ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind,
+    ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression,
+    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, SyncDomain,
+    VariableDeclaration, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -496,7 +496,47 @@ impl Context<'_> {
                     HNode::AlwaysNewline,
                 ])
             }
-            ModuleStatementKind::Instance(_) => todo!(),
+            ModuleStatementKind::Instance(instance) => {
+                let &ModuleInstance {
+                    name,
+                    span_keyword: _,
+                    module,
+                    ref port_connections,
+                } = instance;
+
+                let mut seq = vec![token(TT::Instance)];
+                if let Some(name) = name {
+                    seq.push(HNode::Space);
+                    seq.push(self.fmt_id(name));
+                    seq.push(HNode::Space);
+                    seq.push(token(TT::Eq));
+                }
+
+                seq.push(HNode::Space);
+                seq.push(self.fmt_expr(module));
+
+                seq.push(token(TT::Ports));
+                seq.push(fmt_comma_list(
+                    SurroundKind::Round,
+                    &port_connections.inner,
+                    |connection| {
+                        // TODO if id and expression match, collapse them automatically
+                        let PortConnection { id, expr } = connection.inner;
+
+                        let node_id = self.fmt_id(id);
+                        match expr {
+                            PortConnectionExpression::FakeId(_) => node_id,
+                            PortConnectionExpression::Real(expr) => {
+                                HNode::Sequence(vec![node_id, token(TT::Eq), self.fmt_expr(expr)])
+                            }
+                        }
+                    },
+                ));
+
+                seq.push(token(TT::Semi));
+                seq.push(HNode::AlwaysNewline);
+                HNode::Sequence(seq)
+            }
         }
     }
 
@@ -694,10 +734,9 @@ impl Context<'_> {
             ExpressionKind::StringLiteral(pieces) => {
                 todo!()
             }
-            ExpressionKind::ArrayLiteral(elements) => {
-                let node_elements = fmt_comma_list(elements, |&elem| self.fmt_array_literal_element(elem));
-                HNode::Sequence(vec![token(TT::OpenS), node_elements, token(TT::CloseS)])
-            }
+            ExpressionKind::ArrayLiteral(elements) => fmt_comma_list(SurroundKind::Square, elements, |&elem| {
+                self.fmt_array_literal_element(elem)
+            }),
             ExpressionKind::TupleLiteral(elements) => {
                 match elements.as_slice() {
                     // don't allow breaking for empty tuple
@@ -708,10 +747,7 @@ impl Context<'_> {
                         HNode::Sequence(vec![self.fmt_expr(element), token(TT::Comma)]),
                     ),
                     // general case
-                    elements => {
-                        let node_elements = fmt_comma_list(elements, |&elem| self.fmt_expr(elem));
-                        HNode::Sequence(vec![token(TT::OpenR), node_elements, token(TT::CloseR)])
-                    }
+                    elements => fmt_comma_list(SurroundKind::Round, elements, |&elem| self.fmt_expr(elem)),
                 }
             }
             &ExpressionKind::RangeLiteral(expr) => {
@@ -776,22 +812,14 @@ impl Context<'_> {
                 wrapping_binary_op(node_left, node_right)
             }
             &ExpressionKind::ArrayType(ref lengths, base) => {
-                let node_lengths = fmt_comma_list(&lengths.inner, |&len| self.fmt_array_literal_element(len));
-                HNode::Sequence(vec![
-                    token(TT::OpenS),
-                    node_lengths,
-                    token(TT::CloseS),
-                    self.fmt_expr(base),
-                ])
+                let node_lengths = fmt_comma_list(SurroundKind::Square, &lengths.inner, |&len| {
+                    self.fmt_array_literal_element(len)
+                });
+                HNode::Sequence(vec![node_lengths, self.fmt_expr(base)])
             }
             &ExpressionKind::ArrayIndex(base, ref indices) => {
-                let node_indices = fmt_comma_list(&indices.inner, |&index| self.fmt_expr(index));
-                HNode::Sequence(vec![
-                    self.fmt_expr(base),
-                    token(TT::OpenS),
-                    node_indices,
-                    token(TT::CloseS),
-                ])
+                let node_indices = fmt_comma_list(SurroundKind::Square, &indices.inner, |&index| self.fmt_expr(index));
+                HNode::Sequence(vec![self.fmt_expr(base), node_indices])
             }
             ExpressionKind::DotIndex(_, _) => {
                 // repeated dot indices should wrap together
@@ -918,6 +946,7 @@ fn fmt_block_impl<T>(
     ])))
 }
 
+// TODO add surround here too to get this fully uniform with the other builders
 fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
     // TODO variant that always wraps if there is any item, for eg. module ports? or not, maybe it's more elegant if we don't
     let ExtraList { span: _, items } = list;
@@ -942,12 +971,10 @@ fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
-    let node_arg_list = fmt_comma_list(args, f);
-    let node_args = HNode::Sequence(vec![token(TT::OpenR), node_arg_list, token(TT::CloseR)]);
-    HNode::Sequence(vec![target, node_args])
+    HNode::Sequence(vec![target, fmt_comma_list(SurroundKind::Round, args, f)])
 }
 
-fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
+fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
     let mut nodes = vec![];
     nodes.push(HNode::WrapNewline);
     for (item, last) in items.iter().with_last() {
@@ -956,7 +983,7 @@ fn fmt_comma_list<T>(items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
         nodes.push(HNode::WrapNewline);
         nodes.push(HNode::PreserveBlankLines { last });
     }
-    group_indent_seq(nodes)
+    surrounded_group_indent(surround, HNode::Sequence(nodes))
 }
 
 fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
@@ -1003,19 +1030,8 @@ fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
     HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
 }
 
-enum SurroundKind {
-    Round,
-    Square,
-    Curly,
-}
-
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
-    let (before, after) = match surround {
-        SurroundKind::Round => (TT::OpenR, TT::CloseR),
-        SurroundKind::Square => (TT::OpenS, TT::CloseS),
-        SurroundKind::Curly => (TT::OpenC, TT::CloseC),
-    };
-
+    let (before, after) = surround.before_after();
     HNode::Group(Box::new(HNode::Sequence(vec![
         token(before),
         HNode::WrapIndent(Box::new(HNode::Sequence(vec![
@@ -1029,6 +1045,22 @@ fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
 
 fn token(tt: TT) -> HNode {
     HNode::AlwaysToken(tt)
+}
+
+enum SurroundKind {
+    Round,
+    Square,
+    Curly,
+}
+
+impl SurroundKind {
+    pub fn before_after(self) -> (TT, TT) {
+        match self {
+            SurroundKind::Round => (TT::OpenR, TT::CloseR),
+            SurroundKind::Square => (TT::OpenS, TT::CloseS),
+            SurroundKind::Curly => (TT::OpenC, TT::CloseC),
+        }
+    }
 }
 
 trait FormatVisibility: Copy {

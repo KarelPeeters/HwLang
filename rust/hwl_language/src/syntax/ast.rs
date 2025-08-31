@@ -599,10 +599,26 @@ pub struct ModuleInstance {
     pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
+// TODO find a way to avoid this expression representation weirdness
 #[derive(Debug, Clone)]
 pub struct PortConnection {
     pub id: Identifier,
-    pub expr: Expression,
+    pub expr: PortConnectionExpression,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PortConnectionExpression {
+    FakeId(Expression),
+    Real(Expression),
+}
+
+impl PortConnectionExpression {
+    pub fn expr(&self) -> Expression {
+        match *self {
+            PortConnectionExpression::FakeId(expr) => expr,
+            PortConnectionExpression::Real(expr) => expr,
+        }
+    }
 }
 
 // TODO we're using Box<Spanned<ExpressionKind>> a lot, but maybe

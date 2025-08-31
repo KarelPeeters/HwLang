@@ -38,6 +38,7 @@ module test_module(WIDTH: uint) ports(
     }
 
     instance some_sub_module ports(data=intermediate, enable=true);
+    instance derp = some_sub_module ports(data=intermediate, enable=true);
 
     {}
 }
