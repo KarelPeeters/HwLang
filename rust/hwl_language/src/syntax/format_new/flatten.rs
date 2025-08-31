@@ -540,6 +540,7 @@ impl Context<'_> {
                 seq.push(HNode::Space);
                 seq.push(self.fmt_expr(module));
 
+                seq.push(HNode::Space);
                 seq.push(token(TT::Ports));
                 seq.push(fmt_comma_list(
                     SurroundKind::Round,
