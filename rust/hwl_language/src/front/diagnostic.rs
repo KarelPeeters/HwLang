@@ -401,3 +401,13 @@ pub trait DiagnosticAddable: Sized {
 pub fn compare_level(left: Level, right: Level) -> Ordering {
     (left as u8).cmp(&(right as u8)).reverse()
 }
+
+pub fn diags_to_debug_string(source: &SourceDatabase, diags: Vec<Diagnostic>) -> String {
+    let mut s = String::new();
+    let settings = DiagnosticStringSettings::default();
+    for diag in diags {
+        s.push_str(&diag.to_string(source, settings));
+        s.push('\n');
+    }
+    s
+}

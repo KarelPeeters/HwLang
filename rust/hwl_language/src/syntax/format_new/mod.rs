@@ -86,15 +86,17 @@ fn format_single(
     // println!("{}", root_node.tree_string());
 
     let root_node = lower_nodes(old_string, old_offsets, &old_tokens, root_node).map_err(|e| {
-        let (span, got) = match e.index {
-            None => (Span::empty_at(source.full_span(file).end()), "end of file"),
+        let msg_slot;
+        let (span, msg_source) = match e.index {
+            None => (Span::empty_at(source.full_span(file).end()), "reached end end of file"),
             Some(index) => {
                 let source_token = &old_tokens[index.0];
-                (source_token.span, source_token.ty.diagnostic_string())
+                msg_slot = format!("has `{}`", source_token.ty.diagnostic_string());
+                (source_token.span, msg_slot.as_str())
             }
         };
         let expected_str = e.expected.diagnostic_string();
-        let reason = format!("formatter token mismatch, expected `{expected_str}` got `{got}`");
+        let reason = format!("formatter token mismatch: source {msg_source} but formatter emitted `{expected_str}`");
         diags.report_internal_error(span, reason)
     })?;
 
@@ -135,7 +137,10 @@ fn check_format_output_matches(
             match new_token {
                 None => {
                     let diag = Diagnostic::new_internal_error("formatting missing output token")
-                        .add_error(old_token.span, format!("expected `{:?}`", old_token.ty))
+                        .add_error(
+                            old_token.span,
+                            format!("expected `{}`", old_token.ty.diagnostic_string()),
+                        )
                         .add_error(Span::empty_at(source.full_span(new_file).end()), "reached end of file")
                         .finish();
                     return Err(diags.report(diag));
@@ -150,8 +155,8 @@ fn check_format_output_matches(
                             break;
                         } else {
                             let reason = format!(
-                                "formatting output token content mismatch for token type {:?}",
-                                old_token.ty
+                                "formatting output token content mismatch for token type `{}`",
+                                old_token.ty.diagnostic_string()
                             );
                             let diag = Diagnostic::new_internal_error(reason)
                                 .add_error(old_token.span, format!("expected `{old_token_str}`"))
@@ -161,15 +166,18 @@ fn check_format_output_matches(
                         }
                     } else if old_token.ty == TokenType::Comma {
                         // comma that was removed
-                        continue;
+                        break;
                     } else if new_token.ty == TokenType::Comma {
                         // comma that was added
                         new_tokens_iter.next().unwrap();
                         continue;
                     } else {
                         let diag = Diagnostic::new_internal_error("formatting output token type mismatch")
-                            .add_error(old_token.span, format!("expected `{:?}`", old_token.ty))
-                            .add_error(new_token.span, format!("got `{:?}`", new_token.ty))
+                            .add_error(
+                                old_token.span,
+                                format!("expected `{}`", old_token.ty.diagnostic_string()),
+                            )
+                            .add_error(new_token.span, format!("got `{}`", new_token.ty.diagnostic_string()))
                             .finish();
                         return Err(diags.report(diag));
                     }

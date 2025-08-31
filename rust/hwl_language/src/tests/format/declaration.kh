@@ -1,0 +1,25 @@
+interface empty {}
+
+interface only_views {
+    interface view {}
+    interface view {}
+}
+
+interface only_ports {
+    x: bool,
+    y: bool,
+}
+
+interface both {
+    x: bool,
+    y: bool,
+
+    interface input {
+        x: in,
+        y: out,
+    }
+    interface output {
+        x: out,
+        y: in,
+    }
+}

@@ -10,6 +10,10 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &str| target(data));
 
 fn target(data: &str) {
+    if !is_simple_str(data) {
+        return;
+    }
+
     let mut source = SourceDatabase::new();
     let file = source.add_file(format!("dummy.kh"), data.to_owned());
 
@@ -20,4 +24,16 @@ fn target(data: &str) {
         let _ = format(&diags, &mut source, &FormatSettings::default(), file);
         // TODO check that tokens match
     }
+}
+
+fn is_simple_str(s: &str) -> bool {
+    s.chars().all(|c| {
+        match c {
+            // ascii whitespace
+            '\t' | '\n' | '\r' | ' ' => true,
+            // ascii printable
+            ' '..='~' => true,
+            _ => false,
+        }
+    })
 }

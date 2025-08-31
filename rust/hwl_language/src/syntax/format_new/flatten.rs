@@ -1081,7 +1081,6 @@ fn fmt_extra_list_inner<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNo
     for (item, last) in items.iter().with_last() {
         match item {
             ExtraItem::Inner(item) => {
-                println!("fmt_extra_item inner");
                 seq.push(f(item));
                 seq.push(comma_nodes(last));
                 if !last {
