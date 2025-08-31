@@ -7,6 +7,7 @@ use hwl_util::swriteln;
 // TODO doc
 // TODO rename "always" variants to just their base name, it's pretty verbose
 // TODO add special "preserve blank lines" node?
+#[must_use]
 #[derive(Debug)]
 pub enum HNode {
     Space,
@@ -116,7 +117,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     }
 
     fn pop_token(&mut self) -> Option<SourceTokenIndex> {
-        if self.next_source_index <= self.source_tokens.len() {
+        if self.next_source_index < self.source_tokens.len() {
             let token_index = SourceTokenIndex(self.next_source_index);
             self.next_source_index += 1;
             Some(token_index)

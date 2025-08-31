@@ -158,6 +158,7 @@ pub struct ItemDefInterface {
     pub params: Option<Parameters>,
     pub span_body: Span,
     pub port_types: ExtraList<(Identifier, Expression)>,
+    // TODO this should be an ExtraList too
     pub views: Vec<InterfaceView>,
 }
 

@@ -1,53 +1,75 @@
-module test_module(WIDTH: uint) ports(
-    clk: in clock,
-    rst: in async bool,
-    data_in: in sync(clk, rst) uint(WIDTH),
-    data_out: out sync(clk, rst) uint(WIDTH),
-
-    derp: in async bool,
-    test: out async bool,
-) {
-    reg out test_marker=42;
-    wire intermediate: sync(clk, rst) uint(WIDTH);
-
-    wire derp = false;
-    reg counter: sync(clk, rst) uint = 0;
-
-    if (WIDTH > 8) {
-        wire extra_signal: sync(clk, rst) bool;
-    }
-
-    for (i in [0, 1, 2]) {
-        wire data_bit: sync(clk, rst) bool;
-    }
-
-    comb {
-        val x = false;
-        intermediate = data_in + 1;
-        print(1);
-
-        print(2);
-    }
-
-    clocked(clk, async rst) {
-        counter += 1;
-        if (counter > 10) {
-            counter = 0;
-        }
-        data_out = intermediate;
-    }
-
-    instance some_sub_module ports(data=intermediate, enable=true);
-    instance derp = some_sub_module ports(data=intermediate, enable=true);
-
-    {}
+interface foo {
+    interface master {}
+    interface slave {}
 }
 
+interface foo {}
 
-type b = bool;
-type f(n: uint) = int(0..2**n);
+interface foo {
+    // handshake
+    ready: bool,
+    valid: bool,
+    // data
+    data: uint(8),
 
-const {
-    print(8);
-    const a = false;
+
+    interface master {
+        ready: out,
+        valid: in,
+    }
+    interface slave {}
 }
+
+//fn foo(long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long: uint, y: uint) {}
+
+//// TODO respect newline
+////    also for extra list
+//interface my_interface {
+//    const WIDTH = 8;
+//    type data_type = uint(WIDTH);
+//    data: data_type,
+//    valid: bool,
+//    ready: bool,
+//    if (WIDTH > 4) {
+//        extra_signal: bool,
+//    }
+//    interface master {
+//        data: out,
+//        valid: out,
+//        ready: in,
+//        if (WIDTH > 4) {
+//            extra_signal: out,
+//        }
+//    }
+//    interface slave {
+//        data: in,
+//        valid: in,
+//        ready: out,
+//        if (WIDTH > 4) {
+//            extra_signal: in,
+//        }
+//    }
+//}
+//
+//pub interface bus_interface(WIDTH: uint, very_long_parameter_name_that_will_cause_wrapping: bool) {
+//    const ADDR_WIDTH = WIDTH;
+//    type addr_type = uint(ADDR_WIDTH);
+//    addr: addr_type,
+//    data: uint(32),
+//    enable: bool,
+//    if (very_long_parameter_name_that_will_cause_wrapping) {
+//        debug_signal: bool,
+//    }
+//    interface master {
+//        addr: out,
+//        data: out,
+//        enable: out,
+//        if (very_long_parameter_name_that_will_cause_wrapping) {
+//            debug_signal: out,
+//        }
+//    }
+//}
+
+
+
+// TODO comma after interface definition should not add extra newline

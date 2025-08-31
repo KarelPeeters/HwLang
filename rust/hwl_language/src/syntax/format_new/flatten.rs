@@ -3,13 +3,13 @@ use crate::syntax::ast::{
     BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind,
     DotIndexKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
-    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
-    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier,
-    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
-    PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
-    WireDeclarationDomainTyKind, WireDeclarationKind,
+    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral,
+    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchStatement,
+    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration,
+    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -69,7 +69,7 @@ impl Context<'_> {
                         None,
                     )
                 }
-                Item::Interface(_) => todo!(),
+                Item::Interface(decl) => self.fmt_interface_decl(decl),
             };
             nodes.push(item_node);
 
@@ -105,7 +105,7 @@ impl Context<'_> {
                 let mut nodes_fill = vec![];
                 for (entry, last) in entries.iter().with_last() {
                     let mut seq = vec![self.fmt_import_entry(entry)];
-                    push_comma_nodes(last, &mut seq);
+                    seq.push(comma_nodes(last));
                     nodes_fill.push(HNode::Sequence(seq));
                 }
 
@@ -150,7 +150,7 @@ impl Context<'_> {
                         if let Some(params) = params {
                             seq.push(self.fmt_parameters(params));
                         }
-                        push_wrapping_assign(&mut seq, self.fmt_expr(body));
+                        seq.push(wrapping_assign(self.fmt_expr(body)));
 
                         seq.push(token(TT::Semi));
                         seq.push(HNode::AlwaysNewline);
@@ -241,9 +241,10 @@ impl Context<'_> {
 
         seq.push(HNode::Space);
         seq.push(token(TT::Ports));
-        seq.push(token(TT::OpenR));
-        seq.push(fmt_extra_list(ports, &|port| self.fmt_module_port_item(port)));
-        seq.push(token(TT::CloseR));
+        seq.push(fmt_extra_list(SurroundKind::Round, ports, &|port| {
+            let node_item = self.fmt_module_port_item(port);
+            HNode::Sequence(vec![HNode::ForceWrap, node_item])
+        }));
 
         if let Some(body) = body {
             let Block { span: _, statements } = body;
@@ -257,13 +258,91 @@ impl Context<'_> {
         HNode::Sequence(seq)
     }
 
+    fn fmt_interface_decl(&self, decl: &ItemDefInterface) -> HNode {
+        let &ItemDefInterface {
+            span: _,
+            vis,
+            id,
+            ref params,
+            span_body: _,
+            ref port_types,
+            ref views,
+        } = decl;
+
+        let mut seq = vec![];
+        if let Some(vis) = vis.token() {
+            seq.push(token(vis));
+            seq.push(HNode::Space);
+        }
+        seq.push(token(TT::Interface));
+        seq.push(HNode::Space);
+        seq.push(self.fmt_maybe_id(id));
+        if let Some(params) = params {
+            seq.push(self.fmt_parameters(params));
+        }
+
+        let body_node = {
+            let mut body_seq = vec![];
+            body_seq.push(fmt_extra_list_inner(port_types, &|&(port_id, port_ty)| {
+                HNode::Sequence(vec![
+                    HNode::ForceWrap,
+                    self.fmt_id(port_id),
+                    wrapping_type(self.fmt_expr(port_ty)),
+                ])
+            }));
+
+            if !port_types.items.is_empty() && !views.is_empty() {
+                body_seq.push(HNode::AlwaysNewline);
+                body_seq.push(HNode::PreserveBlankLines { last: false });
+            }
+
+            for (view, last) in views.iter().with_last() {
+                body_seq.push(self.fmt_interface_view_decl(view));
+                if !last {
+                    body_seq.push(HNode::AlwaysNewline);
+                }
+                body_seq.push(HNode::PreserveBlankLines { last });
+            }
+
+            surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(body_seq))
+        };
+
+        seq.push(HNode::Space);
+        seq.push(body_node);
+        seq.push(HNode::AlwaysNewline);
+        HNode::Sequence(seq)
+    }
+
+    fn fmt_interface_view_decl(&self, view: &InterfaceView) -> HNode {
+        let &InterfaceView {
+            span: _,
+            id: view_id,
+            ref port_dirs,
+        } = view;
+
+        let token_ports = fmt_extra_list(SurroundKind::Curly, port_dirs, &|&(port_id, port_dir)| {
+            HNode::Sequence(vec![
+                HNode::ForceWrap,
+                self.fmt_id(port_id),
+                token(TT::Colon),
+                HNode::Space,
+                token(port_dir.inner.token()),
+            ])
+        });
+
+        HNode::Sequence(vec![
+            HNode::ForceWrap,
+            token(TT::Interface),
+            HNode::Space,
+            self.fmt_maybe_id(view_id),
+            HNode::Space,
+            token_ports,
+        ])
+    }
+
     fn fmt_parameters(&self, params: &Parameters) -> HNode {
         let Parameters { span: _, items } = params;
-        HNode::Sequence(vec![
-            token(TT::OpenR),
-            fmt_extra_list(items, &|p| self.fmt_parameter(p)),
-            token(TT::CloseR),
-        ])
+        fmt_extra_list(SurroundKind::Round, items, &|p| self.fmt_parameter(p))
     }
 
     fn fmt_parameter(&self, param: &Parameter) -> HNode {
@@ -275,9 +354,9 @@ impl Context<'_> {
         } = param;
 
         let mut seq = vec![self.fmt_id(id)];
-        push_wrapping_type(&mut seq, self.fmt_expr(ty));
+        seq.push(wrapping_type(self.fmt_expr(ty)));
         if let Some(default) = default {
-            push_wrapping_assign(&mut seq, self.fmt_expr(default));
+            seq.push(wrapping_assign(self.fmt_expr(default)));
         }
         HNode::Sequence(seq)
     }
@@ -314,14 +393,14 @@ impl Context<'_> {
                 };
 
                 let mut seq = vec![self.fmt_id(id)];
-                push_wrapping_type(&mut seq, node_kind);
+                seq.push(wrapping_type(node_kind));
                 HNode::Sequence(seq)
             }
             ModulePortItem::Block(block) => {
                 let ModulePortBlock { span: _, domain, ports } = block;
 
                 let node_domain = self.fmt_domain(domain.inner);
-                let node_ports = fmt_extra_list(ports, &|port| {
+                let node_ports = fmt_extra_list(SurroundKind::Curly, ports, &|port| {
                     let &ModulePortInBlock { span: _, id, kind } = port;
                     let node_kind = match kind {
                         ModulePortInBlockKind::Port { direction, ty } => {
@@ -332,18 +411,12 @@ impl Context<'_> {
                             interface,
                         } => HNode::Sequence(vec![token(TT::Interface), HNode::Space, self.fmt_expr(interface)]),
                     };
-                    let mut seq = vec![self.fmt_id(id)];
-                    push_wrapping_type(&mut seq, node_kind);
+                    let mut seq = vec![HNode::ForceWrap, self.fmt_id(id)];
+                    seq.push(wrapping_type(node_kind));
                     HNode::Sequence(seq)
                 });
 
-                HNode::Sequence(vec![
-                    node_domain,
-                    HNode::Space,
-                    token(TT::OpenC),
-                    node_ports,
-                    token(TT::CloseC),
-                ])
+                HNode::Sequence(vec![node_domain, HNode::Space, node_ports])
             }
         }
     }
@@ -402,9 +475,9 @@ impl Context<'_> {
                     sync_ty_seq.push(HNode::Space);
                 }
                 sync_ty_seq.push(self.fmt_expr(ty));
-                push_wrapping_type(&mut seq, HNode::Sequence(sync_ty_seq));
+                seq.push(wrapping_type(HNode::Sequence(sync_ty_seq)));
 
-                push_wrapping_assign(&mut seq, self.fmt_expr(init));
+                seq.push(wrapping_assign(self.fmt_expr(init)));
 
                 seq.push(token(TT::Semi));
                 seq.push(HNode::AlwaysNewline);
@@ -455,10 +528,10 @@ impl Context<'_> {
                         };
 
                         if let Some(domain_ty_node) = domain_ty_node {
-                            push_wrapping_type(&mut seq, domain_ty_node);
+                            seq.push(wrapping_type(domain_ty_node));
                         }
                         if let Some((_span, value)) = assign_span_and_value {
-                            push_wrapping_assign(&mut seq, self.fmt_expr(value));
+                            seq.push(wrapping_assign(self.fmt_expr(value)));
                         }
                     }
                     WireDeclarationKind::Interface { .. } => todo!(),
@@ -588,15 +661,13 @@ impl Context<'_> {
                     value,
                 } = stmt;
 
-                let mut seq = vec![self.fmt_expr(target)];
-                push_wrapping_assign_op(
-                    &mut seq,
-                    op.inner.map_or(TT::Eq, AssignBinaryOp::token),
-                    self.fmt_expr(value),
-                );
-                seq.push(token(TT::Semi));
-                seq.push(HNode::AlwaysNewline);
-                HNode::Sequence(seq)
+                let op_token = op.inner.map_or(TT::Eq, AssignBinaryOp::token);
+                HNode::Sequence(vec![
+                    self.fmt_expr(target),
+                    wrapping_assign_op(op_token, self.fmt_expr(value)),
+                    token(TT::Semi),
+                    HNode::AlwaysNewline,
+                ])
             }
             &BlockStatementKind::Expression(expr) => {
                 HNode::Sequence(vec![self.fmt_expr(expr), token(TT::Semi), HNode::AlwaysNewline])
@@ -640,10 +711,10 @@ impl Context<'_> {
         seq.push(HNode::Space);
         seq.push(self.fmt_maybe_id(id));
         if let Some(ty) = ty {
-            push_wrapping_type(&mut seq, self.fmt_expr(ty));
+            seq.push(wrapping_type(self.fmt_expr(ty)));
         }
         if let Some(value) = value {
-            push_wrapping_assign(&mut seq, self.fmt_expr(value));
+            seq.push(wrapping_assign(self.fmt_expr(value)));
         }
         seq.push(token(TT::Semi));
         seq.push(HNode::AlwaysNewline);
@@ -713,7 +784,7 @@ impl Context<'_> {
 
         let mut seq = vec![self.fmt_maybe_id(index)];
         if let Some(index_ty) = index_ty {
-            push_wrapping_type(&mut seq, self.fmt_expr(index_ty));
+            seq.push(wrapping_type(self.fmt_expr(index_ty)));
         }
 
         seq.push(group_indent_seq(vec![
@@ -782,7 +853,19 @@ impl Context<'_> {
                 token(tt)
             }
             ExpressionKind::StringLiteral(pieces) => {
-                todo!()
+                let mut seq = vec![token(TT::StringStart)];
+                for piece in pieces {
+                    match piece {
+                        StringPiece::Literal { span: _ } => seq.push(token(TT::StringMiddle)),
+                        &StringPiece::Substitute(expr) => {
+                            seq.push(token(TT::StringSubStart));
+                            seq.push(self.fmt_expr(expr));
+                            seq.push(token(TT::StringSubEnd));
+                        }
+                    }
+                }
+                seq.push(token(TT::StringEnd));
+                HNode::Sequence(seq)
             }
             ExpressionKind::ArrayLiteral(elements) => fmt_comma_list(SurroundKind::Square, elements, |&elem| {
                 self.fmt_array_literal_element(elem)
@@ -973,7 +1056,11 @@ fn fmt_block_impl<T>(
     }
 
     if let Some(final_expression) = final_expression {
-        todo!()
+        seq.push(HNode::Space);
+        seq.push(final_expression);
+        seq.push(HNode::WrapNewline);
+        seq.push(HNode::Space);
+        seq.push(HNode::PreserveBlankLines { last: true });
     }
 
     HNode::Group(Box::new(HNode::Sequence(vec![
@@ -983,28 +1070,30 @@ fn fmt_block_impl<T>(
     ])))
 }
 
-// TODO add surround here too to get this fully uniform with the other builders
-fn fmt_extra_list<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
-    // TODO variant that always wraps if there is any item, for eg. module ports? or not, maybe it's more elegant if we don't
+fn fmt_extra_list<T>(surround: SurroundKind, list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
+    surrounded_group_indent(surround, fmt_extra_list_inner(list, f))
+}
+
+fn fmt_extra_list_inner<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
     let ExtraList { span: _, items } = list;
 
-    let mut nodes = vec![];
-    nodes.push(HNode::WrapNewline);
-
+    let mut seq = vec![];
     for (item, last) in items.iter().with_last() {
         match item {
             ExtraItem::Inner(item) => {
-                nodes.push(f(item));
-                push_comma_nodes(last, &mut nodes);
-                nodes.push(HNode::WrapNewline);
+                println!("fmt_extra_item inner");
+                seq.push(f(item));
+                seq.push(comma_nodes(last));
+                if !last {
+                    seq.push(HNode::WrapNewline);
+                }
             }
             ExtraItem::Declaration(_) => todo!(),
             ExtraItem::If(_) => todo!(),
         }
-        nodes.push(HNode::PreserveBlankLines { last });
+        seq.push(HNode::PreserveBlankLines { last });
     }
-
-    group_indent_seq(nodes)
+    HNode::Sequence(seq)
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
@@ -1012,47 +1101,48 @@ fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
 }
 
 fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
-    let mut nodes = vec![];
-    nodes.push(HNode::WrapNewline);
+    let mut seq = vec![];
+    seq.push(HNode::WrapNewline);
+
     for (item, last) in items.iter().with_last() {
-        nodes.push(f(item));
-        push_comma_nodes(last, &mut nodes);
-        nodes.push(HNode::WrapNewline);
-        nodes.push(HNode::PreserveBlankLines { last });
+        seq.push(f(item));
+        seq.push(comma_nodes(last));
+        seq.push(HNode::WrapNewline);
+        seq.push(HNode::PreserveBlankLines { last });
     }
-    surrounded_group_indent(surround, HNode::Sequence(nodes))
+
+    let (before, after) = surround.before_after();
+    HNode::Group(Box::new(HNode::Sequence(vec![
+        token(before),
+        HNode::WrapIndent(Box::new(HNode::Sequence(seq))),
+        token(after),
+    ])))
 }
 
-fn push_comma_nodes(last: bool, seq: &mut Vec<HNode>) {
+fn comma_nodes(last: bool) -> HNode {
     if !last {
-        seq.push(token(TT::Comma));
-        seq.push(HNode::Space);
+        HNode::Sequence(vec![token(TT::Comma), HNode::Space])
     } else {
-        seq.push(HNode::WrapComma);
+        HNode::WrapComma
     }
 }
 
-fn push_wrapping_type(seq: &mut Vec<HNode>, ty: HNode) {
-    seq.push(group_indent_seq(vec![
-        HNode::WrapNewline,
-        token(TT::Colon),
-        HNode::Space,
-    ]));
-    seq.push(ty);
+fn wrapping_type(ty: HNode) -> HNode {
+    HNode::Sequence(vec![
+        group_indent_seq(vec![HNode::WrapNewline, token(TT::Colon), HNode::Space]),
+        ty,
+    ])
 }
 
-fn push_wrapping_assign(seq: &mut Vec<HNode>, value: HNode) {
-    push_wrapping_assign_op(seq, TT::Eq, value);
+fn wrapping_assign(value: HNode) -> HNode {
+    wrapping_assign_op(TT::Eq, value)
 }
 
-fn push_wrapping_assign_op(seq: &mut Vec<HNode>, op: TT, value: HNode) {
-    seq.push(group_indent_seq(vec![
-        HNode::WrapNewline,
-        HNode::Space,
-        token(op),
-        HNode::Space,
-    ]));
-    seq.push(value);
+fn wrapping_assign_op(op: TT, value: HNode) -> HNode {
+    HNode::Sequence(vec![
+        group_indent_seq(vec![HNode::WrapNewline, HNode::Space, token(op), HNode::Space]),
+        value,
+    ])
 }
 
 fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> HNode {

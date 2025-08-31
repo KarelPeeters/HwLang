@@ -138,6 +138,8 @@ impl WrapMaybe for WrapYes {
 }
 
 impl<'s> LNode<'s> {
+    pub const EMPTY: LNode<'static> = LNode::Sequence(vec![]);
+
     pub fn debug_str(&self) -> String {
         let mut f = String::new();
         self.debug_str_impl(&mut f, 0);
@@ -187,6 +189,16 @@ impl<'s> LNode<'s> {
     // TODO instead of creating a messy tree and then simplifying it,
     //   avoid creating it in the first place by adding some convenient sequence builder
     pub fn simplify(self) -> LNode<'s> {
+        fn simplify_container<'s>(f: impl FnOnce(Box<LNode<'s>>) -> LNode<'s>, mut child: Box<LNode<'s>>) -> LNode<'s> {
+            *child = child.simplify();
+            if let LNode::Sequence(inner) = &*child
+                && inner.is_empty()
+            {
+                return LNode::EMPTY;
+            }
+            f(child)
+        }
+
         match self {
             // actual simplification
             LNode::Sequence(children) => {
@@ -200,11 +212,17 @@ impl<'s> LNode<'s> {
                 result.single().unwrap_or_else(LNode::Sequence)
             }
             // just simplify children
-            LNode::AlwaysIndent(child) => LNode::AlwaysIndent(Box::new(child.simplify())),
-            LNode::WrapIndent(child) => LNode::WrapIndent(Box::new(child.simplify())),
-            LNode::Dedent(child) => LNode::Dedent(Box::new(child.simplify())),
-            LNode::Group(child) => LNode::Group(Box::new(child.simplify())),
-            LNode::Fill(children) => LNode::Fill(children.into_iter().map(LNode::simplify).collect()),
+            LNode::AlwaysIndent(child) => simplify_container(LNode::AlwaysIndent, child),
+            LNode::WrapIndent(child) => simplify_container(LNode::WrapIndent, child),
+            LNode::Dedent(child) => simplify_container(LNode::Dedent, child),
+            LNode::Group(child) => simplify_container(LNode::Group, child),
+            LNode::Fill(children) => {
+                if children.is_empty() {
+                    LNode::EMPTY
+                } else {
+                    LNode::Fill(children.into_iter().map(LNode::simplify).collect())
+                }
+            }
             // trivial cases
             LNode::Space => LNode::Space,
             LNode::AlwaysStr(s) => LNode::AlwaysStr(s),
