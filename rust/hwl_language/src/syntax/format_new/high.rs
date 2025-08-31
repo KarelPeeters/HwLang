@@ -47,6 +47,8 @@ pub fn lower_nodes<'s>(
 }
 
 impl HNode {
+    pub const EMPTY: HNode = HNode::Sequence(vec![]);
+
     pub fn tree_string(&self) -> String {
         let mut f = String::new();
         self.tree_string_impl(&mut f, 0);

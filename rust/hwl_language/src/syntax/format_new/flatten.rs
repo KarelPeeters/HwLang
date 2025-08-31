@@ -1,5 +1,5 @@
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, Block,
+    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp, Block,
     BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
     Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
@@ -7,7 +7,7 @@ use crate::syntax::ast::{
     ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
     ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind,
     ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression,
-    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, SyncDomain,
+    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, SyncDomain, TypeDeclaration,
     VariableDeclaration, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
@@ -138,7 +138,23 @@ impl Context<'_> {
                 let CommonDeclarationNamed { vis, kind } = decl;
                 let node_vis = vis.token();
                 let node_kind = match kind {
-                    CommonDeclarationNamedKind::Type(_) => todo!(),
+                    CommonDeclarationNamedKind::Type(decl) => {
+                        let &TypeDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            body,
+                        } = decl;
+                        let mut seq = vec![token(TT::Type), HNode::Space, self.fmt_maybe_id(id)];
+                        if let Some(params) = params {
+                            seq.push(self.fmt_parameters(params));
+                        }
+                        push_wrapping_assign(&mut seq, self.fmt_expr(body));
+
+                        seq.push(token(TT::Semi));
+                        seq.push(HNode::AlwaysNewline);
+                        HNode::Sequence(seq)
+                    }
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
                         self.fmt_variable_decl(TT::Const, id, ty, Some(value))
@@ -750,33 +766,23 @@ impl Context<'_> {
                     elements => fmt_comma_list(SurroundKind::Round, elements, |&elem| self.fmt_expr(elem)),
                 }
             }
-            &ExpressionKind::RangeLiteral(expr) => {
-                let mut seq = vec![];
-                match expr {
-                    RangeLiteral::ExclusiveEnd { op_span: _, start, end } => {
-                        if let Some(start) = start {
-                            seq.push(self.fmt_expr(start));
-                        }
-                        seq.push(token(TT::DotDot));
-                        if let Some(end) = end {
-                            seq.push(self.fmt_expr(end));
-                        }
-                    }
-                    RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
-                        if let Some(start) = start {
-                            seq.push(self.fmt_expr(start));
-                        }
-                        seq.push(token(TT::DotDotEq));
-                        seq.push(self.fmt_expr(end));
-                    }
-                    RangeLiteral::Length { op_span: _, start, len } => {
-                        seq.push(self.fmt_expr(start));
-                        seq.push(token(TT::PlusDotDot));
-                        seq.push(self.fmt_expr(len));
-                    }
-                }
-                HNode::Sequence(seq)
-            }
+            &ExpressionKind::RangeLiteral(expr) => match expr {
+                RangeLiteral::ExclusiveEnd { op_span: _, start, end } => wrapping_binary_op(
+                    token(TT::DotDot),
+                    start.map(|e| self.fmt_expr(e)),
+                    end.map(|e| self.fmt_expr(e)),
+                ),
+                RangeLiteral::InclusiveEnd { op_span: _, start, end } => wrapping_binary_op(
+                    token(TT::DotDotEq),
+                    start.map(|e| self.fmt_expr(e)),
+                    Some(self.fmt_expr(end)),
+                ),
+                RangeLiteral::Length { op_span: _, start, len } => wrapping_binary_op(
+                    token(TT::PlusDotDot),
+                    Some(self.fmt_expr(start)),
+                    Some(self.fmt_expr(len)),
+                ),
+            },
             ExpressionKind::ArrayComprehension(expr) => {
                 let &ArrayComprehension {
                     body,
@@ -802,14 +808,11 @@ impl Context<'_> {
             }
             &ExpressionKind::UnaryOp(op, inner) => HNode::Sequence(vec![token(op.inner.token()), self.fmt_expr(inner)]),
             &ExpressionKind::BinaryOp(op, left, right) => {
-                let node_left = self.fmt_expr(left);
-                let node_right = HNode::Sequence(vec![
-                    HNode::Space,
-                    token(op.inner.token()),
-                    HNode::Space,
-                    self.fmt_expr(right),
-                ]);
-                wrapping_binary_op(node_left, node_right)
+                let node_op = match op.inner {
+                    BinaryOp::Pow => token(op.inner.token()),
+                    _ => HNode::Sequence(vec![HNode::Space, token(op.inner.token()), HNode::Space]),
+                };
+                wrapping_binary_op(node_op, Some(self.fmt_expr(left)), Some(self.fmt_expr(right)))
             }
             &ExpressionKind::ArrayType(ref lengths, base) => {
                 let node_lengths = fmt_comma_list(SurroundKind::Square, &lengths.inner, |&len| {
@@ -848,7 +851,7 @@ impl Context<'_> {
                 }
                 let node_indices = HNode::Sequence(seq);
 
-                wrapping_binary_op(node_base, node_indices)
+                wrapping_binary_op(HNode::EMPTY, Some(node_base), Some(node_indices))
             }
             &ExpressionKind::Call(target, ref args) => {
                 let Args { span: _, inner: args } = args;
@@ -1018,12 +1021,25 @@ fn push_wrapping_assign_op(seq: &mut Vec<HNode>, op: TT, value: HNode) {
     seq.push(value);
 }
 
-fn wrapping_binary_op(left: HNode, right: HNode) -> HNode {
-    HNode::Group(Box::new(HNode::Sequence(vec![
-        left,
-        HNode::WrapNewline,
-        HNode::WrapIndent(Box::new(right)),
-    ])))
+fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> HNode {
+    match (left, right) {
+        (Some(left), Some(right)) => HNode::Group(Box::new(HNode::Sequence(vec![
+            left,
+            HNode::WrapNewline,
+            HNode::WrapIndent(Box::new(HNode::Sequence(vec![op, right]))),
+        ]))),
+        (left, right) => {
+            let mut seq = vec![];
+            if let Some(left) = left {
+                seq.push(left);
+            }
+            seq.push(op);
+            if let Some(right) = right {
+                seq.push(right);
+            }
+            HNode::Sequence(seq)
+        }
+    }
 }
 
 fn group_indent_seq(nodes: Vec<HNode>) -> HNode {

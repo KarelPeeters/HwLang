@@ -42,3 +42,7 @@ module test_module(WIDTH: uint) ports(
 
     {}
 }
+
+
+type b = bool;
+type f(n: uint) = int(0..2**n);
