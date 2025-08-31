@@ -23,7 +23,7 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let settings = FormatSettings::default();
 
     let diags = Diagnostics::new();
-    let result = format(&diags, &source, file, &settings);
+    let result = format(&diags, &mut source, &settings, file);
 
     match result {
         Ok(result) => {

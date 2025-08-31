@@ -78,7 +78,11 @@ impl Diagnostics {
 
     // TODO rename to "report_bug"
     pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> DiagError {
-        self.report(Diagnostic::new_internal_error(span, reason).finish())
+        self.report(
+            Diagnostic::new_internal_error(reason)
+                .add_error(span, "caused here")
+                .finish(),
+        )
     }
 
     // TODO sort diagnostics by location, for a better user experience?
@@ -177,9 +181,8 @@ impl Diagnostic {
         Diagnostic::new(title).add_error(span, label).finish()
     }
 
-    pub fn new_internal_error(span: Span, reason: impl Into<String>) -> DiagnosticBuilder {
-        let mut diag =
-            Diagnostic::new(format!("internal compiler error: '{}'", reason.into())).add_error(span, "caused here");
+    pub fn new_internal_error(reason: impl Into<String>) -> DiagnosticBuilder {
+        let mut diag = Diagnostic::new(format!("internal compiler error: '{}'", reason.into()));
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
         diag
     }
