@@ -1,12 +1,14 @@
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, Block, BlockExpression, BlockStatement,
+    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, Block,
+    BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
     Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
     GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
     ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModulePortBlock,
     ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
     ModuleStatementKind, Parameter, Parameters, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker,
-    RegisterDelay, SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    RegisterDelay, SyncDomain, VariableDeclaration, Visibility, WireDeclaration, WireDeclarationDomainTyKind,
+    WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -139,18 +141,7 @@ impl Context<'_> {
                     CommonDeclarationNamedKind::Type(_) => todo!(),
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-
-                        let mut seq = vec![];
-                        seq.push(token(TT::Const));
-                        seq.push(HNode::Space);
-                        seq.push(self.fmt_maybe_id(id));
-                        if let Some(ty) = ty {
-                            push_wrapping_type(&mut seq, self.fmt_expr(ty));
-                        }
-                        push_wrapping_assign(&mut seq, self.fmt_expr(value));
-                        seq.push(token(TT::Semi));
-                        seq.push(HNode::AlwaysNewline);
-                        HNode::Sequence(seq)
+                        self.fmt_variable_decl(TT::Const, id, ty, Some(value))
                     }
                     CommonDeclarationNamedKind::Struct(_) => todo!(),
                     CommonDeclarationNamedKind::Enum(_) => todo!(),
@@ -468,14 +459,113 @@ impl Context<'_> {
                     HNode::AlwaysNewline,
                 ])
             }
-            ModuleStatementKind::CombinatorialBlock(_) => todo!(),
-            ModuleStatementKind::ClockedBlock(_) => todo!(),
+            ModuleStatementKind::CombinatorialBlock(block) => {
+                let CombinatorialBlock { span_keyword: _, block } = block;
+                HNode::Sequence(vec![
+                    token(TT::Comb),
+                    HNode::Space,
+                    self.fmt_block(block, false),
+                    HNode::AlwaysNewline,
+                ])
+            }
+            ModuleStatementKind::ClockedBlock(block) => {
+                let &ClockedBlock {
+                    span_keyword: _,
+                    span_domain: _,
+                    clock,
+                    reset,
+                    ref block,
+                } = block;
+
+                let args: &[_] = match reset {
+                    None => &[Either::Left(clock)],
+                    Some(reset) => &[Either::Left(clock), Either::Right(reset)],
+                };
+                let node_domain = fmt_call(token(TT::Clocked), args, |&arg| match arg {
+                    Either::Left(clock) => self.fmt_expr(clock),
+                    Either::Right(reset) => {
+                        let ClockedBlockReset { kind, signal } = reset.inner;
+                        HNode::Sequence(vec![token(kind.inner.token()), HNode::Space, self.fmt_expr(signal)])
+                    }
+                });
+
+                HNode::Sequence(vec![
+                    node_domain,
+                    HNode::Space,
+                    self.fmt_block(block, false),
+                    HNode::AlwaysNewline,
+                ])
+            }
             ModuleStatementKind::Instance(_) => todo!(),
         }
     }
 
     fn fmt_block_statement(&self, stmt: &BlockStatement) -> HNode {
-        todo!()
+        match &stmt.inner {
+            BlockStatementKind::CommonDeclaration(_) => todo!(),
+            BlockStatementKind::VariableDeclaration(decl) => {
+                let &VariableDeclaration {
+                    span: _,
+                    mutable,
+                    id,
+                    ty,
+                    init,
+                } = decl;
+                let kind = if mutable { TT::Var } else { TT::Val };
+                self.fmt_variable_decl(kind, id, ty, init)
+            }
+            BlockStatementKind::Assignment(stmt) => {
+                let &Assignment {
+                    span: _,
+                    op,
+                    target,
+                    value,
+                } = stmt;
+
+                let mut seq = vec![self.fmt_expr(target)];
+                push_wrapping_assign_op(
+                    &mut seq,
+                    op.inner.map_or(TT::Eq, AssignBinaryOp::token),
+                    self.fmt_expr(value),
+                );
+                seq.push(token(TT::Semi));
+                seq.push(HNode::AlwaysNewline);
+                HNode::Sequence(seq)
+            }
+            &BlockStatementKind::Expression(expr) => {
+                HNode::Sequence(vec![self.fmt_expr(expr), token(TT::Semi), HNode::AlwaysNewline])
+            }
+            BlockStatementKind::Block(_) => todo!(),
+            BlockStatementKind::If(stmt) => self.fmt_if(stmt, |block| self.fmt_block(block, true)),
+            BlockStatementKind::Match(_) => todo!(),
+            BlockStatementKind::For(_) => todo!(),
+            BlockStatementKind::While(_) => todo!(),
+            BlockStatementKind::Return(_) => todo!(),
+            BlockStatementKind::Break(_) => todo!(),
+            BlockStatementKind::Continue(_) => todo!(),
+        }
+    }
+
+    fn fmt_variable_decl(
+        &self,
+        kind: TT,
+        id: MaybeIdentifier,
+        ty: Option<Expression>,
+        value: Option<Expression>,
+    ) -> HNode {
+        let mut seq = vec![];
+        seq.push(token(kind));
+        seq.push(HNode::Space);
+        seq.push(self.fmt_maybe_id(id));
+        if let Some(ty) = ty {
+            push_wrapping_type(&mut seq, self.fmt_expr(ty));
+        }
+        if let Some(value) = value {
+            push_wrapping_assign(&mut seq, self.fmt_expr(value));
+        }
+        seq.push(token(TT::Semi));
+        seq.push(HNode::AlwaysNewline);
+        HNode::Sequence(seq)
     }
 
     fn fmt_if<B>(&self, stmt: &IfStatement<B>, f_force_wrap: impl Fn(&B) -> HNode) -> HNode {
@@ -888,10 +978,14 @@ fn push_wrapping_type(seq: &mut Vec<HNode>, ty: HNode) {
 }
 
 fn push_wrapping_assign(seq: &mut Vec<HNode>, value: HNode) {
+    push_wrapping_assign_op(seq, TT::Eq, value);
+}
+
+fn push_wrapping_assign_op(seq: &mut Vec<HNode>, op: TT, value: HNode) {
     seq.push(group_indent_seq(vec![
         HNode::WrapNewline,
         HNode::Space,
-        token(TT::Eq),
+        token(op),
         HNode::Space,
     ]));
     seq.push(value);

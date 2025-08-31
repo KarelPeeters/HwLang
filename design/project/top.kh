@@ -22,20 +22,22 @@ module test_module(WIDTH: uint) ports(
     }
 
     comb {
+        val x = false;
         intermediate = data_in + 1;
         print(1);
 
         print(2);
     }
-//
-//    clocked(clk, async rst) {
-//        counter += 1;
-//        if (counter > 10) {
-//            counter = 0;
-//        }
-//        data_out = intermediate;
-//    }
-//
-//    instance some_sub_module ports(data=intermediate, enable=true);
-//    {}
+
+    clocked(clk, async rst) {
+        counter += 1;
+        if (counter > 10) {
+            counter = 0;
+        }
+        data_out = intermediate;
+    }
+
+    instance some_sub_module ports(data=intermediate, enable=true);
+
+    {}
 }
