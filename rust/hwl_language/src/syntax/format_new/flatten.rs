@@ -1,14 +1,15 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp, Block,
     BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
-    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, DomainKind, DotIndexKind,
-    Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
+    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind,
+    DotIndexKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
     GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, Item,
-    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
-    ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind,
-    ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression,
-    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, SyncDomain, TypeDeclaration,
-    VariableDeclaration, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier,
+    ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
+    PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
+    ReturnStatement, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
+    WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -197,7 +198,15 @@ impl Context<'_> {
                     Some(token_vis) => HNode::Sequence(vec![token(token_vis), node_kind]),
                 }
             }
-            CommonDeclaration::ConstBlock(_) => todo!(),
+            CommonDeclaration::ConstBlock(block) => {
+                let ConstBlock { span_keyword: _, block } = block;
+                HNode::Sequence(vec![
+                    token(TT::Const),
+                    HNode::Space,
+                    self.fmt_block(block, false),
+                    HNode::AlwaysNewline,
+                ])
+            }
         }
     }
 
@@ -558,7 +567,7 @@ impl Context<'_> {
 
     fn fmt_block_statement(&self, stmt: &BlockStatement) -> HNode {
         match &stmt.inner {
-            BlockStatementKind::CommonDeclaration(_) => todo!(),
+            BlockStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
             BlockStatementKind::VariableDeclaration(decl) => {
                 let &VariableDeclaration {
                     span: _,
@@ -591,14 +600,30 @@ impl Context<'_> {
             &BlockStatementKind::Expression(expr) => {
                 HNode::Sequence(vec![self.fmt_expr(expr), token(TT::Semi), HNode::AlwaysNewline])
             }
-            BlockStatementKind::Block(_) => todo!(),
+            BlockStatementKind::Block(block) => {
+                HNode::Sequence(vec![self.fmt_block(block, false), HNode::AlwaysNewline])
+            }
             BlockStatementKind::If(stmt) => self.fmt_if(stmt, |block| self.fmt_block(block, true)),
-            BlockStatementKind::Match(_) => todo!(),
-            BlockStatementKind::For(_) => todo!(),
-            BlockStatementKind::While(_) => todo!(),
-            BlockStatementKind::Return(_) => todo!(),
-            BlockStatementKind::Break(_) => todo!(),
-            BlockStatementKind::Continue(_) => todo!(),
+            BlockStatementKind::Match(stmt) => self.fmt_match(stmt, |block| self.fmt_block(block, false)),
+            BlockStatementKind::For(stmt) => self.fmt_for(stmt, |block| self.fmt_block(block, false)),
+            BlockStatementKind::While(stmt) => self.fmt_while(stmt),
+            BlockStatementKind::Return(stmt) => {
+                let &ReturnStatement { span_return: _, value } = stmt;
+                let mut seq = vec![token(TT::Return)];
+                if let Some(value) = value {
+                    seq.push(HNode::Space);
+                    seq.push(self.fmt_expr(value));
+                }
+                seq.push(token(TT::Semi));
+                seq.push(HNode::AlwaysNewline);
+                HNode::Sequence(seq)
+            }
+            BlockStatementKind::Break { span: _ } => {
+                HNode::Sequence(vec![token(TT::Break), token(TT::Semi), HNode::AlwaysNewline])
+            }
+            BlockStatementKind::Continue { span: _ } => {
+                HNode::Sequence(vec![token(TT::Break), token(TT::Semi), HNode::AlwaysNewline])
+            }
         }
     }
 
@@ -672,6 +697,10 @@ impl Context<'_> {
         HNode::Sequence(seq)
     }
 
+    fn fmt_match<B>(&self, stmt: &MatchStatement<B>, f: impl Fn(&B) -> HNode) -> HNode {
+        todo!()
+    }
+
     fn fmt_for<S>(&self, stmt: &ForStatement<S>, f: impl Fn(&Block<S>) -> HNode) -> HNode {
         let &ForStatement {
             span_keyword: _,
@@ -702,6 +731,10 @@ impl Context<'_> {
             f(body),
             HNode::AlwaysNewline,
         ])
+    }
+
+    fn fmt_while(&self, stmt: &WhileStatement) -> HNode {
+        todo!()
     }
 
     fn fmt_domain(&self, domain: DomainKind<Expression>) -> HNode {
@@ -737,9 +770,9 @@ impl Context<'_> {
             &ExpressionKind::Id(id) => self.fmt_general_id(id),
             ExpressionKind::IntLiteral(literal) => {
                 let tt = match literal {
-                    IntLiteral::Binary(_span) => TT::IntLiteralBinary,
-                    IntLiteral::Decimal(_span) => TT::IntLiteralDecimal,
-                    IntLiteral::Hexadecimal(_span) => TT::IntLiteralHexadecimal,
+                    IntLiteral::Binary { span: _ } => TT::IntLiteralBinary,
+                    IntLiteral::Decimal { span: _ } => TT::IntLiteralDecimal,
+                    IntLiteral::Hexadecimal { span: _ } => TT::IntLiteralHexadecimal,
                 };
                 token(tt)
             }
@@ -839,7 +872,7 @@ impl Context<'_> {
                 for (index, last) in indices.into_iter().with_last() {
                     let node_index = match index {
                         DotIndexKind::Id(id) => self.fmt_id(id),
-                        DotIndexKind::Int(_span) => token(TT::IntLiteralDecimal),
+                        DotIndexKind::Int { span: _ } => token(TT::IntLiteralDecimal),
                     };
 
                     seq.push(token(TT::Dot));
@@ -894,7 +927,7 @@ impl Context<'_> {
 
     fn fmt_maybe_general_id(&self, id: MaybeGeneralIdentifier) -> HNode {
         match id {
-            MaybeGeneralIdentifier::Dummy(_span) => token(TT::Underscore),
+            MaybeGeneralIdentifier::Dummy { span: _ } => token(TT::Underscore),
             MaybeGeneralIdentifier::Identifier(id) => self.fmt_general_id(id),
         }
     }
@@ -910,7 +943,7 @@ impl Context<'_> {
 
     fn fmt_maybe_id(&self, id: MaybeIdentifier) -> HNode {
         match id {
-            MaybeIdentifier::Dummy(_span) => token(TT::Underscore),
+            MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
             MaybeIdentifier::Identifier(id) => self.fmt_id(id),
         }
     }
@@ -1087,7 +1120,7 @@ impl FormatVisibility for Visibility {
     fn token(self) -> Option<TT> {
         match self {
             Visibility::Private => None,
-            Visibility::Public(_span) => Some(TT::Pub),
+            Visibility::Public { span: _ } => Some(TT::Pub),
         }
     }
 }

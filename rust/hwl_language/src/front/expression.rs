@@ -87,7 +87,7 @@ impl<'a> CompileItemContext<'a, '_> {
         id: MaybeIdentifier<GeneralIdentifier>,
     ) -> DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>> {
         match id {
-            MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
+            MaybeIdentifier::Dummy { span } => Ok(MaybeIdentifier::Dummy { span }),
             MaybeIdentifier::Identifier(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 Ok(MaybeIdentifier::Identifier(id))
@@ -236,21 +236,23 @@ impl<'a> CompileItemContext<'a, '_> {
                 ));
             }
             ExpressionKind::IntLiteral(pattern) => {
+                // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
+                //   the risk of divergence is huge
                 let value = match *pattern {
-                    IntLiteral::Binary(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Binary { span } => {
+                        let raw = source.span_str(span);
                         let clean = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&clean, 2)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Decimal(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Decimal { span } => {
+                        let raw = source.span_str(span);
                         let clean = raw.replace('_', "");
                         BigUint::from_str_radix(&clean, 10)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Hexadecimal(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Hexadecimal { span } => {
+                        let raw = source.span_str(span);
                         let s_hex = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&s_hex, 16)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
@@ -264,7 +266,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 for &piece in pieces {
                     match piece {
-                        StringPiece::Literal(span) => {
+                        StringPiece::Literal { span } => {
                             let raw = source.span_str(span);
                             let escaped = apply_string_literal_escapes(raw);
                             s.push_str(escaped.as_ref());
@@ -534,7 +536,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 DotIndexKind::Id(index) => {
                     return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
                 }
-                DotIndexKind::Int(index_span) => {
+                DotIndexKind::Int { span: index_span } => {
                     let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
                     let index = source.span_str(index_span);
 
@@ -1609,7 +1611,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             }
                         }
                     }
-                    DotIndexKind::Int(_) => {
+                    DotIndexKind::Int { span: _ } => {
                         return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
                     }
                 }

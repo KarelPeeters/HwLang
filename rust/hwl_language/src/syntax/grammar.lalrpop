@@ -324,8 +324,8 @@ BlockStatementKind: BlockStatementKind = {
     // control flow terminators
     <span_return:Span<"return">> <value:Expr?> ";"
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),
-    <span:Span<"break">> ";" => BlockStatementKind::Break(span),
-    <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
+    <span:Span<"break">> ";" => BlockStatementKind::Break { span },
+    <span:Span<"continue">> ";" => BlockStatementKind::Continue { span },
 }
 
 IfStatement<B>: IfStatement<B> = {
@@ -376,7 +376,7 @@ MatchPattern: MatchPattern = {
 
 MaybeValId: MaybeIdentifier = {
     "val" <MaybeId> => <>,
-    Span<"_"> => MaybeIdentifier::Dummy(<>),
+    Span<"_"> => MaybeIdentifier::Dummy { span: <> },
 }
 
 ForStatement<S>: ForStatement<S> = {
@@ -756,7 +756,7 @@ ExprLevelDot<allow_block>: ExpressionKind = {
 
 DotIndexKind: DotIndexKind = {
     <index:Id> => DotIndexKind::Id(index),
-    <index:Span<TokenIntLiteralDecimal>> => DotIndexKind::Int(index),
+    <index:Span<TokenIntLiteralDecimal>> => DotIndexKind::Int { span: index },
 }
 
 // TODO allow "if" here
@@ -798,17 +798,17 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     "undef" => ExpressionKind::Undefined,
     "__builtin" => ExpressionKind::Builtin,
     <span:Span<TokenIntLiteralBinary>>
-        => ExpressionKind::IntLiteral(IntLiteral::Binary(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Binary { span }),
     <span:Span<TokenIntLiteralDecimal>>
-        => ExpressionKind::IntLiteral(IntLiteral::Decimal(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Decimal { span }),
     <span:Span<TokenIntLiteralHexadecimal>>
-        => ExpressionKind::IntLiteral(IntLiteral::Hexadecimal(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Hexadecimal { span }),
     TokenStringStart <StringPiece*> TokenStringEnd
         => ExpressionKind::StringLiteral(<>),
 }
 
 StringPiece: StringPiece = {
-    Span<TokenStringMiddle> => StringPiece::Literal(<>),
+    Span<TokenStringMiddle> => StringPiece::Literal { span: <> },
     TokenStringSubStart <Expr> TokenStringSubEnd => StringPiece::Substitute(<>),
 }
 
@@ -835,13 +835,13 @@ MaybeId = MaybeIdImpl<Id>;
 MaybeGeneralId = MaybeIdImpl<GeneralId>;
 
 MaybeIdImpl<I>: MaybeIdentifier<I> = {
-    <span:Span<"_">> => MaybeIdentifier::Dummy(span),
+    <span:Span<"_">> => MaybeIdentifier::Dummy { span },
     I => MaybeIdentifier::Identifier(<>),
 }
 
 #[inline]
 Vis: Visibility = {
-    <span:Span<"pub">> => Visibility::Public(span),
+    <span:Span<"pub">> => Visibility::Public { span },
     => Visibility::Private,
 }
 

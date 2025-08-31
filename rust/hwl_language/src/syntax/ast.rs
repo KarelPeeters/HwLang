@@ -18,7 +18,7 @@ pub type ArenaExpressions = Arena<ExpressionKindIndex, ExpressionKind>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility<S = Span> {
-    Public(S),
+    Public { span: S },
     Private,
 }
 
@@ -386,8 +386,8 @@ pub enum BlockStatementKind {
 
     // control flow terminators
     Return(ReturnStatement),
-    Break(Span),
-    Continue(Span),
+    Break { span: Span },
+    Continue { span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -670,12 +670,12 @@ pub enum ExpressionKind {
 #[derive(Debug, Copy, Clone)]
 pub enum DotIndexKind {
     Id(Identifier),
-    Int(Span),
+    Int { span: Span },
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum StringPiece {
-    Literal(Span),
+    Literal { span: Span },
     Substitute(Expression),
 }
 
@@ -784,11 +784,11 @@ pub struct SyncExpression {
 #[derive(Debug, Clone)]
 pub enum IntLiteral {
     // 0b[01_]+
-    Binary(Span),
+    Binary { span: Span },
     // [0-9_]+
-    Decimal(Span),
+    Decimal { span: Span },
     // 0x[0-9a-fA-F_]+
-    Hexadecimal(Span),
+    Hexadecimal { span: Span },
 }
 
 // TODO rename back to Identifier?
@@ -806,7 +806,7 @@ pub enum GeneralIdentifier {
 
 #[derive(Debug, Copy, Clone)]
 pub enum MaybeIdentifier<I = Identifier> {
-    Dummy(Span),
+    Dummy { span: Span },
     Identifier(I),
 }
 
@@ -896,14 +896,14 @@ impl Identifier {
 impl<I> MaybeIdentifier<I> {
     pub fn map_id<J>(self, f: impl FnOnce(I) -> J) -> MaybeIdentifier<J> {
         match self {
-            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(f(id)),
         }
     }
 
     pub fn as_ref(&self) -> MaybeIdentifier<&I> {
         match self {
-            &MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            &MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id),
         }
     }
@@ -912,7 +912,7 @@ impl<I> MaybeIdentifier<I> {
 impl MaybeIdentifier<Identifier> {
     pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
         match self {
-            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => {
                 MaybeIdentifier::Identifier(Spanned::new(id.span, source.span_str(id.span)))
             }
@@ -921,7 +921,7 @@ impl MaybeIdentifier<Identifier> {
 
     pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
         match self {
-            MaybeIdentifier::Dummy(span) => Spanned::new(span, None),
+            MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
             MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(source.span_str(id.span).to_owned())),
         }
     }
@@ -930,14 +930,14 @@ impl MaybeIdentifier<Identifier> {
 impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
     pub fn diagnostic_str(&self) -> &str {
         match self {
-            MaybeIdentifier::Dummy(_) => "_",
+            MaybeIdentifier::Dummy { span: _ } => "_",
             MaybeIdentifier::Identifier(id) => id.inner.as_ref(),
         }
     }
 
     pub fn spanned_string(&self) -> Spanned<Option<String>> {
         match self {
-            MaybeIdentifier::Dummy(span) => Spanned::new(*span, None),
+            &MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
             MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.inner.as_ref().to_owned())),
         }
     }
@@ -1138,7 +1138,7 @@ impl<V> HasSpan for ArrayLiteralElement<Box<Spanned<V>>> {
 impl<T> HasSpan for MaybeIdentifier<Spanned<T>> {
     fn span(&self) -> Span {
         match self {
-            &MaybeIdentifier::Dummy(span) => span,
+            &MaybeIdentifier::Dummy { span } => span,
             MaybeIdentifier::Identifier(id) => id.span,
         }
     }
@@ -1147,7 +1147,7 @@ impl<T> HasSpan for MaybeIdentifier<Spanned<T>> {
 impl HasSpan for MaybeIdentifier<Identifier> {
     fn span(&self) -> Span {
         match self {
-            MaybeIdentifier::Dummy(span) => *span,
+            &MaybeIdentifier::Dummy { span } => span,
             MaybeIdentifier::Identifier(id) => id.span,
         }
     }
@@ -1165,7 +1165,7 @@ impl HasSpan for GeneralIdentifier {
 impl HasSpan for MaybeIdentifier<GeneralIdentifier> {
     fn span(&self) -> Span {
         match self {
-            MaybeIdentifier::Dummy(span) => *span,
+            MaybeIdentifier::Dummy { span } => *span,
             MaybeIdentifier::Identifier(id) => id.span(),
         }
     }

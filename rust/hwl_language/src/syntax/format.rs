@@ -1659,12 +1659,12 @@ impl FormatContext<'_> {
                 self.push(TT::Semi)?;
                 self.push_newline()?;
             }
-            &BlockStatementKind::Break(_span) => {
+            &BlockStatementKind::Break { span: _ } => {
                 self.push(TT::Break)?;
                 self.push(TT::Semi)?;
                 self.push_newline()?;
             }
-            &BlockStatementKind::Continue(_span) => {
+            &BlockStatementKind::Continue { span: _ } => {
                 self.push(TT::Continue)?;
                 self.push(TT::Semi)?;
                 self.push_newline()?;
@@ -1701,9 +1701,9 @@ impl FormatContext<'_> {
             }
             &ExpressionKind::Id(id) => self.format_general_id(id)?,
             ExpressionKind::IntLiteral(lit) => match *lit {
-                IntLiteral::Binary(_span) => self.push(TT::IntLiteralBinary)?,
-                IntLiteral::Decimal(_span) => self.push(TT::IntLiteralDecimal)?,
-                IntLiteral::Hexadecimal(_span) => self.push(TT::IntLiteralHexadecimal)?,
+                IntLiteral::Binary { span: _ } => self.push(TT::IntLiteralBinary)?,
+                IntLiteral::Decimal { span: _ } => self.push(TT::IntLiteralDecimal)?,
+                IntLiteral::Hexadecimal { span: _ } => self.push(TT::IntLiteralHexadecimal)?,
             },
             &ExpressionKind::BoolLiteral(bool) => match bool {
                 false => self.push(TT::False)?,
@@ -1717,7 +1717,7 @@ impl FormatContext<'_> {
                 let mut any_sub = false;
                 for piece in pieces {
                     match piece {
-                        StringPiece::Literal(_span) => self.push(TT::StringMiddle)?,
+                        StringPiece::Literal { span: _ } => self.push(TT::StringMiddle)?,
                         &StringPiece::Substitute(expr) => {
                             any_sub = true;
                             self.push(TT::StringSubStart)?;
@@ -1734,7 +1734,7 @@ impl FormatContext<'_> {
 
                     for piece in pieces {
                         match piece {
-                            StringPiece::Literal(_span) => self.push(TT::StringMiddle)?,
+                            StringPiece::Literal { span: _ } => self.push(TT::StringMiddle)?,
                             &StringPiece::Substitute(expr) => {
                                 self.push(TT::StringSubStart)?;
                                 self.indent_newline(|slf| slf.format_expr(expr, true))?;
@@ -1907,7 +1907,7 @@ impl FormatContext<'_> {
     fn format_dot_index_kind(&mut self, index: DotIndexKind) -> DiagResult {
         match index {
             DotIndexKind::Id(index) => self.format_id(index),
-            DotIndexKind::Int(_span) => self.push(TT::IntLiteralDecimal),
+            DotIndexKind::Int { span: _ } => self.push(TT::IntLiteralDecimal),
         }
     }
 
@@ -2065,14 +2065,14 @@ impl FormatContext<'_> {
 
     fn format_maybe_general_id(&mut self, id: MaybeGeneralIdentifier) -> DiagResult {
         match id {
-            MaybeIdentifier::Dummy(_span) => self.push(TT::Underscore),
+            MaybeIdentifier::Dummy { span: _ } => self.push(TT::Underscore),
             MaybeIdentifier::Identifier(id) => self.format_general_id(id),
         }
     }
 
     fn format_maybe_id(&mut self, id: MaybeIdentifier) -> DiagResult {
         match id {
-            MaybeIdentifier::Dummy(_span) => self.push(TT::Underscore),
+            MaybeIdentifier::Dummy { span: _ } => self.push(TT::Underscore),
             MaybeIdentifier::Identifier(id) => self.format_id(id),
         }
     }
@@ -2090,7 +2090,7 @@ trait FormatVisibility {
 impl FormatVisibility for Visibility {
     fn format_visibility(c: &mut FormatContext, vis: &Visibility) -> DiagResult {
         match *vis {
-            Visibility::Public(_span) => {
+            Visibility::Public { span: _ } => {
                 c.push(TT::Pub)?;
                 c.push_space();
             }

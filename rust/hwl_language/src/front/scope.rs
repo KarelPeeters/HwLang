@@ -220,7 +220,7 @@ impl<'p> Scope<'p> {
         entry: DiagResult<ScopedEntry>,
     ) {
         let id = match id {
-            Ok(MaybeIdentifier::Dummy(_)) => return,
+            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
             Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
             Err(e) => Err(e),
         };

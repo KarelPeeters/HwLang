@@ -305,8 +305,8 @@ impl CompileItemContext<'_, '_> {
 
                     BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
                 }
-                &BlockStatementKind::Break(span) => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
-                &BlockStatementKind::Continue(span) => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
+                &BlockStatementKind::Break { span } => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
+                &BlockStatementKind::Continue { span } => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
             };
 
             match stmt_end {

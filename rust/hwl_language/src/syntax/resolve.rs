@@ -162,7 +162,7 @@ impl<'p> DeclScope<'p> {
 
     fn maybe_declare(&mut self, source: &SourceDatabase, cond: Conditional, id: MaybeIdentifier) {
         match id {
-            MaybeIdentifier::Dummy(_) => {}
+            MaybeIdentifier::Dummy { span: _ } => {}
             MaybeIdentifier::Identifier(id) => {
                 self.declare(source, cond, id);
             }
@@ -839,7 +839,7 @@ impl ResolveContext<'_> {
                     self.visit_expression(scope, value)?;
                 }
             }
-            BlockStatementKind::Break(_span) | BlockStatementKind::Continue(_span) => {}
+            BlockStatementKind::Break { span: _ } | BlockStatementKind::Continue { span: _ } => {}
         }
 
         Ok(())
@@ -909,7 +909,7 @@ impl ResolveContext<'_> {
                         init: _,
                     } = decl;
                     match vis {
-                        Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
                     }
                 }
@@ -921,7 +921,7 @@ impl ResolveContext<'_> {
                         kind: _,
                     } = decl;
                     match vis {
-                        Visibility::Public(_) => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.declare_maybe_general(scope_body, cond, id),
                         Visibility::Private => {}
                     }
                 }
@@ -968,7 +968,7 @@ impl ResolveContext<'_> {
 
                     self.visit_maybe_general(scope, id)?;
                     match vis {
-                        Visibility::Public(_) => {}
+                        Visibility::Public { span: _ } => {}
                         Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
                     }
                 }
@@ -1015,7 +1015,7 @@ impl ResolveContext<'_> {
 
                     self.visit_maybe_general(scope, id)?;
                     match vis {
-                        Visibility::Public(_) => {}
+                        Visibility::Public { span: _ } => {}
                         Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
                     }
                 }
@@ -1130,7 +1130,7 @@ impl ResolveContext<'_> {
             ExpressionKind::StringLiteral(pieces) => {
                 for piece in pieces {
                     match piece {
-                        StringPiece::Literal(_span) => {}
+                        StringPiece::Literal { span: _ } => {}
                         &StringPiece::Substitute(expr) => {
                             self.visit_expression(scope, expr)?;
                         }
@@ -1245,7 +1245,7 @@ impl ResolveContext<'_> {
 
     fn visit_maybe_general(&self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> FindDefinitionResult {
         match id {
-            MaybeGeneralIdentifier::Dummy(_span) => {}
+            MaybeGeneralIdentifier::Dummy { span: _ } => {}
             MaybeGeneralIdentifier::Identifier(id) => match id {
                 GeneralIdentifier::Simple(_id) => {}
                 GeneralIdentifier::FromString(_span, expr) => {
@@ -1259,7 +1259,7 @@ impl ResolveContext<'_> {
 
     fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
         match id {
-            MaybeGeneralIdentifier::Dummy(_) => {}
+            MaybeGeneralIdentifier::Dummy { span: _ } => {}
             MaybeGeneralIdentifier::Identifier(id) => {
                 let id = self.eval_general(id);
                 scope.declare_impl(cond, id.map_inner(|id| id.into_owned()));
@@ -1299,8 +1299,8 @@ impl ResolveContext<'_> {
 
                         for piece in pieces {
                             match piece {
-                                &StringPiece::Literal(s) => {
-                                    let literal = apply_string_literal_escapes(self.source.span_str(s));
+                                &StringPiece::Literal { span: literal_span } => {
+                                    let literal = apply_string_literal_escapes(self.source.span_str(literal_span));
                                     pattern.push_str(&regex::escape(literal.as_ref()));
                                 }
                                 StringPiece::Substitute(_expr) => {

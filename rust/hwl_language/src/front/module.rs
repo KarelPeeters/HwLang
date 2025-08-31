@@ -879,7 +879,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
 
                     match &decl.vis {
-                        Visibility::Public(_) => {
+                        Visibility::Public { span: _ } => {
                             pub_declarations.push((id.clone(), entry.clone()));
                         }
                         Visibility::Private => {}
@@ -907,7 +907,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
 
                     match &decl.vis {
-                        Visibility::Public(_) => {
+                        Visibility::Public { span: _ } => {
                             pub_declarations.push((id.clone(), entry.clone()));
                         }
                         Visibility::Private => {}

@@ -475,7 +475,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         if let Ok(ScopedEntry::Item(source_item)) = source_value {
                             let decl_info = parsed[source_item].info().declaration.unwrap();
                             match decl_info.vis {
-                                Visibility::Public(_) => {}
+                                Visibility::Public { span: _ } => {}
                                 Visibility::Private => {
                                     let err = Diagnostic::new(format!("cannot access identifier `{}`", id.str(source)))
                                         .add_info(decl_info.id.span(), "identifier declared here")
