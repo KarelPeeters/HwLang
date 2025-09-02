@@ -15,14 +15,21 @@ fn target(data: &str) {
     }
 
     let mut source = SourceDatabase::new();
-    let file = source.add_file(format!("dummy.kh"), data.to_owned());
+    let file = source.add_file("dummy.kh".to_owned(), data.to_owned());
 
     let ast = parse_file_content(file, &source[file].content);
 
     if ast.is_ok() {
+        // check that formatting works
         let diags = Diagnostics::new();
-        let _ = format(&diags, &mut source, &FormatSettings::default(), file);
-        // TODO check that tokens match
+        let result =
+            format(&diags, &mut source, &FormatSettings::default(), file).expect("internal error during formatting");
+
+        // check that formatting is idempotent
+        let file2 = source.add_file("dummy2.kh".to_owned(), result.clone());
+        let result2 = format(&diags, &mut source, &FormatSettings::default(), file2)
+            .expect("internal error during second formatting");
+        assert_eq!(result, result2, "formatting is not idempotent");
     }
 }
 

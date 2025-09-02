@@ -4,7 +4,7 @@ use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::flatten::ast_to_node;
 use crate::syntax::format_new::high::lower_nodes;
 use crate::syntax::format_new::low::node_to_string;
-use crate::syntax::pos::{Pos, Span};
+use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
 use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
@@ -33,7 +33,7 @@ pub fn format(
     // check that output parses to the same tokens and ast
     let new_file = source.add_file(
         format!("{} (after formatting)", source[file].debug_info_path),
-        result_first.new_string,
+        result_first.new_string.clone(),
     );
     check_format_output_matches(
         diags,
@@ -44,14 +44,7 @@ pub fn format(
         new_file,
     )?;
 
-    // check that output is stable, formatting should be idempotent
-    let result_second = format_single(diags, source, settings, new_file)?;
-    check_string_match(&source[new_file].content, &result_second.new_string).map_err(|byte| {
-        let span = Span::empty_at(Pos { file: new_file, byte });
-        diags.report_internal_error(span, "non-idempotent formatting")
-    })?;
-
-    Ok(result_second.new_string)
+    Ok(result_first.new_string)
 }
 
 struct FormatResult {
@@ -75,15 +68,10 @@ fn format_single(
     old_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
     let old_ast = parse_file_content(file, old_string).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
-    // println!("Source tokens:");
-    // for token in &source_tokens {
-    //     println!("    {token:?}");
-    // }
-
     let root_node = ast_to_node(&old_ast);
 
-    // println!("HNode tree:");
-    // println!("{}", root_node.tree_string());
+    println!("HNode tree:");
+    println!("{}", root_node.tree_string());
 
     let root_node = lower_nodes(old_string, old_offsets, &old_tokens, root_node).map_err(|e| {
         let msg_slot;
@@ -103,10 +91,10 @@ fn format_single(
     // println!("LNode tree:");
     // println!("{}", root_node.debug_str());
 
-    // println!("LNode tree simplified:");
+    println!("LNode tree simplified:");
     // TODO fuzz test whether this ever changes anything
     let root_node = root_node.simplify();
-    // println!("{}", root_node.debug_str());
+    println!("{}", root_node.debug_str());
 
     let new_string = node_to_string(settings, old_string, &old_tokens, &root_node);
     Ok(FormatResult {
@@ -200,24 +188,4 @@ fn check_format_output_matches(
     }
 
     Ok(())
-}
-
-fn check_string_match(first: &str, second: &str) -> Result<(), usize> {
-    let mut curr_byte = 0;
-    let mut first_chars = first.chars();
-    let mut second_chars = second.chars();
-
-    loop {
-        match (first_chars.next(), second_chars.next()) {
-            (None, None) => return Ok(()),
-            (Some(a), Some(b)) => {
-                if a == b {
-                    curr_byte += a.len_utf8();
-                } else {
-                    return Err(curr_byte);
-                }
-            }
-            _ => return Err(curr_byte),
-        }
-    }
 }
