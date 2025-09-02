@@ -20,6 +20,7 @@ pub enum HNode {
     // TODO we don't really need a distinction between these wrapping nodes, right?
     AlwaysIndent(Box<HNode>),
     WrapIndent(Box<HNode>),
+    Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     Fill(Vec<HNode>),
@@ -79,6 +80,10 @@ impl HNode {
             }
             HNode::WrapIndent(child) => {
                 swriteln!(f, "WrapIndent");
+                child.tree_string_impl(f, indent + 1);
+            }
+            HNode::Dedent(child) => {
+                swriteln!(f, "Dedent");
                 child.tree_string_impl(f, indent + 1);
             }
             HNode::Sequence(children) => {
@@ -291,6 +296,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
                 LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
             }
+            HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, *inner)?)),
             HNode::Sequence(children) => {
                 let mut seq = vec![];
                 for child in children {

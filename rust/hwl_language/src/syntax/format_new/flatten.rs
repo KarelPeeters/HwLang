@@ -276,7 +276,7 @@ impl Context<'_> {
 
                 match node_vis {
                     None => node_kind,
-                    Some(token_vis) => HNode::Sequence(vec![token(token_vis), node_kind]),
+                    Some(token_vis) => HNode::Sequence(vec![token(token_vis), HNode::Space, node_kind]),
                 }
             }
             CommonDeclaration::ConstBlock(block) => {
@@ -989,18 +989,25 @@ impl Context<'_> {
                 token(tt)
             }
             ExpressionKind::StringLiteral(pieces) => {
+                // dedent all nodes that could follow StringMiddle to avoid any indentation sneaking into the string
                 let mut seq = vec![token(TT::StringStart)];
                 for piece in pieces {
                     match piece {
-                        StringPiece::Literal { span: _ } => seq.push(token(TT::StringMiddle)),
+                        StringPiece::Literal { span: _ } => {
+                            seq.push(HNode::Dedent(Box::new(token(TT::StringMiddle))));
+                        }
                         &StringPiece::Substitute(expr) => {
-                            seq.push(token(TT::StringSubStart));
-                            seq.push(self.fmt_expr(expr));
+                            seq.push(HNode::Dedent(Box::new(token(TT::StringSubStart))));
+                            seq.push(group_indent_seq(vec![
+                                HNode::WrapNewline,
+                                self.fmt_expr(expr),
+                                HNode::WrapNewline,
+                            ]));
                             seq.push(token(TT::StringSubEnd));
                         }
                     }
                 }
-                seq.push(token(TT::StringEnd));
+                seq.push(HNode::Dedent(Box::new(token(TT::StringEnd))));
                 HNode::Sequence(seq)
             }
             ExpressionKind::ArrayLiteral(elements) => fmt_comma_list(SurroundKind::Square, elements, |&elem| {

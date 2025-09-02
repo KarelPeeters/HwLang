@@ -58,6 +58,18 @@ fn preserve_mixed_comments() {
 
 #[test]
 fn correct_dot_order() {
-    let src = "const c = a.2.b;";
+    let src = "const c = a.2.b;\n";
+    assert_format_stable(src);
+}
+
+#[test]
+fn pub_const() {
+    let src = "pub const c = false;\n";
+    assert_format_stable(src);
+}
+
+#[test]
+fn string_end_on_new_line_indented() {
+    let src = "const {\n    \"test\n\";\n}\n";
     assert_format_stable(src);
 }
