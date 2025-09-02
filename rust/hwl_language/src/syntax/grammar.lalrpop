@@ -375,7 +375,8 @@ MatchPattern: MatchPattern = {
 }
 
 MaybeValId: MaybeIdentifier = {
-    "val" <MaybeId> => <>,
+    // extra val token to distinguish from ids used in expressions
+    "val" <Id> => MaybeIdentifier::Identifier(<>),
     Span<"_"> => MaybeIdentifier::Dummy { span: <> },
 }
 

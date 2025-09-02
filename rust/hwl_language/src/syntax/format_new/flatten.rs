@@ -5,12 +5,12 @@ use crate::syntax::ast::{
     DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
     ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry,
     ImportFinalKind, IntLiteral, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
-    ItemImport, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock,
-    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
-    RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration,
-    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
-    WireDeclarationDomainTyKind, WireDeclarationKind,
+    ItemImport, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
+    ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind,
+    ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression,
+    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece,
+    StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement,
+    WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -27,7 +27,6 @@ pub fn ast_to_node(file: &FileContent) -> HNode {
     ctx.fmt_file_items(items)
 }
 
-// TODO if this stays this single field, maybe we don't need this struct at all?
 struct Context<'a> {
     arena_expressions: &'a ArenaExpressions,
 }
@@ -134,6 +133,45 @@ impl Context<'_> {
         HNode::Sequence(nodes)
     }
 
+    fn fmt_extra_list<T>(
+        &self,
+        surround: SurroundKind,
+        force_wrap: bool,
+        list: &ExtraList<T>,
+        f: &impl Fn(&T) -> HNode,
+    ) -> HNode {
+        surrounded_group_indent(surround, self.fmt_extra_list_inner(force_wrap, list, f))
+    }
+
+    fn fmt_extra_list_inner<T>(&self, force_wrap: bool, list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
+        let ExtraList { span: _, items } = list;
+
+        let mut seq = vec![];
+        if force_wrap && !items.is_empty() {
+            seq.push(HNode::ForceWrap);
+        }
+
+        for (item, last) in items.iter().with_last() {
+            match item {
+                ExtraItem::Inner(item) => {
+                    seq.push(f(item));
+                    seq.push(comma_nodes(last));
+                    if !last {
+                        seq.push(HNode::WrapNewline);
+                    }
+                }
+                ExtraItem::Declaration(decl) => {
+                    seq.push(self.fmt_common_decl(decl));
+                }
+                ExtraItem::If(stmt) => {
+                    seq.push(self.fmt_if(stmt, |inner| self.fmt_extra_list(SurroundKind::Curly, true, inner, f)))
+                }
+            }
+            seq.push(HNode::PreserveBlankLines { last });
+        }
+        HNode::Sequence(seq)
+    }
+
     fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
         match decl {
             CommonDeclaration::Named(decl) => {
@@ -175,7 +213,7 @@ impl Context<'_> {
                             seq.push(self.fmt_parameters(params));
                         }
                         seq.push(HNode::Space);
-                        seq.push(fmt_extra_list(SurroundKind::Curly, fields, &|field| {
+                        seq.push(self.fmt_extra_list(SurroundKind::Curly, true, fields, &|field| {
                             let &StructField { span, id, ty } = field;
                             HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))])
                         }));
@@ -194,7 +232,7 @@ impl Context<'_> {
                             seq.push(self.fmt_parameters(params));
                         }
                         seq.push(HNode::Space);
-                        seq.push(fmt_extra_list(SurroundKind::Curly, variants, &|variant| {
+                        seq.push(self.fmt_extra_list(SurroundKind::Curly, true, variants, &|variant| {
                             let &EnumVariant { span: _, id, content } = variant;
 
                             let node_id = self.fmt_id(id);
@@ -229,7 +267,7 @@ impl Context<'_> {
                         }
 
                         nodes.push(HNode::Space);
-                        nodes.push(self.fmt_block(body, false));
+                        nodes.push(self.fmt_block(body));
                         nodes.push(HNode::AlwaysNewline);
 
                         HNode::Sequence(nodes)
@@ -246,7 +284,7 @@ impl Context<'_> {
                 HNode::Sequence(vec![
                     token(TT::Const),
                     HNode::Space,
-                    self.fmt_block(block, false),
+                    self.fmt_block(block),
                     HNode::AlwaysNewline,
                 ])
             }
@@ -284,14 +322,13 @@ impl Context<'_> {
 
         seq.push(HNode::Space);
         seq.push(token(TT::Ports));
-        seq.push(fmt_extra_list(SurroundKind::Round, ports, &|port| {
-            let node_item = self.fmt_module_port_item(port);
-            HNode::Sequence(vec![HNode::ForceWrap, node_item])
+        seq.push(self.fmt_extra_list(SurroundKind::Round, true, ports, &|port| {
+            self.fmt_module_port_item(port)
         }));
 
         if let Some(body) = body {
             let Block { span: _, statements } = body;
-            let node_block = fmt_block_impl(statements, None, false, |stmt| self.fmt_module_statement(stmt));
+            let node_block = fmt_block_impl(statements, None, |stmt| self.fmt_module_statement(stmt));
 
             seq.push(HNode::Space);
             seq.push(node_block);
@@ -326,12 +363,8 @@ impl Context<'_> {
 
         let body_node = {
             let mut body_seq = vec![];
-            body_seq.push(fmt_extra_list_inner(port_types, &|&(port_id, port_ty)| {
-                HNode::Sequence(vec![
-                    HNode::ForceWrap,
-                    self.fmt_id(port_id),
-                    wrapping_type(self.fmt_expr(port_ty)),
-                ])
+            body_seq.push(self.fmt_extra_list_inner(true, port_types, &|&(port_id, port_ty)| {
+                HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
             }));
 
             if !port_types.items.is_empty() && !views.is_empty() {
@@ -363,9 +396,8 @@ impl Context<'_> {
             ref port_dirs,
         } = view;
 
-        let token_ports = fmt_extra_list(SurroundKind::Curly, port_dirs, &|&(port_id, port_dir)| {
+        let token_ports = self.fmt_extra_list(SurroundKind::Curly, true, port_dirs, &|&(port_id, port_dir)| {
             HNode::Sequence(vec![
-                HNode::ForceWrap,
                 self.fmt_id(port_id),
                 token(TT::Colon),
                 HNode::Space,
@@ -385,7 +417,7 @@ impl Context<'_> {
 
     fn fmt_parameters(&self, params: &Parameters) -> HNode {
         let Parameters { span: _, items } = params;
-        fmt_extra_list(SurroundKind::Round, items, &|p| self.fmt_parameter(p))
+        self.fmt_extra_list(SurroundKind::Round, false, items, &|p| self.fmt_parameter(p))
     }
 
     fn fmt_parameter(&self, param: &Parameter) -> HNode {
@@ -443,7 +475,7 @@ impl Context<'_> {
                 let ModulePortBlock { span: _, domain, ports } = block;
 
                 let node_domain = self.fmt_domain(domain.inner);
-                let node_ports = fmt_extra_list(SurroundKind::Curly, ports, &|port| {
+                let node_ports = self.fmt_extra_list(SurroundKind::Curly, true, ports, &|port| {
                     let &ModulePortInBlock { span: _, id, kind } = port;
                     let node_kind = match kind {
                         ModulePortInBlockKind::Port { direction, ty } => {
@@ -454,9 +486,7 @@ impl Context<'_> {
                             interface,
                         } => HNode::Sequence(vec![token(TT::Interface), HNode::Space, self.fmt_expr(interface)]),
                     };
-                    let mut seq = vec![HNode::ForceWrap, self.fmt_id(id)];
-                    seq.push(wrapping_type(node_kind));
-                    HNode::Sequence(seq)
+                    HNode::Sequence(vec![self.fmt_id(id), wrapping_type(node_kind)])
                 });
 
                 HNode::Sequence(vec![node_domain, HNode::Space, node_ports])
@@ -464,35 +494,30 @@ impl Context<'_> {
         }
     }
 
-    fn fmt_module_block(&self, block: &Block<ModuleStatement>, force_wrap: bool) -> HNode {
+    fn fmt_module_block(&self, block: &Block<ModuleStatement>) -> HNode {
         let Block { span: _, statements } = block;
-        fmt_block_impl(statements, None, force_wrap, |stmt| self.fmt_module_statement(stmt))
+        fmt_block_impl(statements, None, |stmt| self.fmt_module_statement(stmt))
     }
 
-    fn fmt_block(&self, block: &Block<BlockStatement>, force_wrap: bool) -> HNode {
+    fn fmt_block(&self, block: &Block<BlockStatement>) -> HNode {
         let Block { span: _, statements } = block;
-        self.fmt_block_ext(statements, None, force_wrap)
+        self.fmt_block_ext(statements, None)
     }
 
-    fn fmt_block_ext(
-        &self,
-        statements: &[BlockStatement],
-        final_expression: Option<Expression>,
-        force_wrap: bool,
-    ) -> HNode {
+    fn fmt_block_ext(&self, statements: &[BlockStatement], final_expression: Option<Expression>) -> HNode {
         let node_final_expression = final_expression.map(|expr| self.fmt_expr(expr));
         let f = |stmt: &BlockStatement| self.fmt_block_statement(stmt);
-        fmt_block_impl(statements, node_final_expression, force_wrap, f)
+        fmt_block_impl(statements, node_final_expression, f)
     }
 
     fn fmt_module_statement(&self, stmt: &ModuleStatement) -> HNode {
         match &stmt.inner {
             ModuleStatementKind::Block(block) => {
-                let node_block = self.fmt_module_block(block, false);
+                let node_block = self.fmt_module_block(block);
                 HNode::Sequence(vec![node_block, HNode::AlwaysNewline])
             }
-            ModuleStatementKind::If(stmt) => self.fmt_if(stmt, |b| self.fmt_module_block(b, true)),
-            ModuleStatementKind::For(stmt) => self.fmt_for(stmt, |b| self.fmt_module_block(b, false)),
+            ModuleStatementKind::If(stmt) => self.fmt_if(stmt, |b| self.fmt_module_block(b)),
+            ModuleStatementKind::For(stmt) => self.fmt_for(stmt, |b| self.fmt_module_block(b)),
             ModuleStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
             ModuleStatementKind::RegDeclaration(decl) => {
                 let &RegDeclaration {
@@ -549,7 +574,6 @@ impl Context<'_> {
                         domain_ty,
                         assign_span_and_value,
                     } => {
-                        // TODO wrapping, similar to the type of constants or variables
                         let domain_ty_node = match domain_ty {
                             WireDeclarationDomainTyKind::Clock { span_clock: _ } => Some(token(TT::Clock)),
                             WireDeclarationDomainTyKind::Normal { domain, ty } => {
@@ -620,7 +644,7 @@ impl Context<'_> {
                 HNode::Sequence(vec![
                     token(TT::Comb),
                     HNode::Space,
-                    self.fmt_block(block, false),
+                    self.fmt_block(block),
                     HNode::AlwaysNewline,
                 ])
             }
@@ -648,7 +672,7 @@ impl Context<'_> {
                 HNode::Sequence(vec![
                     node_domain,
                     HNode::Space,
-                    self.fmt_block(block, false),
+                    self.fmt_block(block),
                     HNode::AlwaysNewline,
                 ])
             }
@@ -730,12 +754,10 @@ impl Context<'_> {
             &BlockStatementKind::Expression(expr) => {
                 HNode::Sequence(vec![self.fmt_expr(expr), token(TT::Semi), HNode::AlwaysNewline])
             }
-            BlockStatementKind::Block(block) => {
-                HNode::Sequence(vec![self.fmt_block(block, false), HNode::AlwaysNewline])
-            }
-            BlockStatementKind::If(stmt) => self.fmt_if(stmt, |block| self.fmt_block(block, true)),
-            BlockStatementKind::Match(stmt) => self.fmt_match(stmt, |block| self.fmt_block(block, false)),
-            BlockStatementKind::For(stmt) => self.fmt_for(stmt, |block| self.fmt_block(block, false)),
+            BlockStatementKind::Block(block) => HNode::Sequence(vec![self.fmt_block(block), HNode::AlwaysNewline]),
+            BlockStatementKind::If(stmt) => self.fmt_if(stmt, |block| self.fmt_block(block)),
+            BlockStatementKind::Match(stmt) => self.fmt_match(stmt, |block| self.fmt_block(block)),
+            BlockStatementKind::For(stmt) => self.fmt_for(stmt, |block| self.fmt_block(block)),
             BlockStatementKind::While(stmt) => self.fmt_while(stmt),
             BlockStatementKind::Return(stmt) => {
                 let &ReturnStatement { span_return: _, value } = stmt;
@@ -779,19 +801,14 @@ impl Context<'_> {
         HNode::Sequence(seq)
     }
 
-    fn fmt_if<B>(&self, stmt: &IfStatement<B>, f_force_wrap: impl Fn(&B) -> HNode) -> HNode {
+    fn fmt_if<B>(&self, stmt: &IfStatement<B>, f: impl Fn(&B) -> HNode) -> HNode {
         fn fmt_else(seq: &mut Vec<HNode>) {
             seq.push(HNode::Space);
             seq.push(token(TT::Else));
             seq.push(HNode::Space);
         }
 
-        fn fmt_pair<B>(
-            slf: &Context,
-            f_force_wrap: impl Fn(&B) -> HNode,
-            seq: &mut Vec<HNode>,
-            pair: &IfCondBlockPair<B>,
-        ) {
+        fn fmt_pair<B>(slf: &Context, f: impl Fn(&B) -> HNode, seq: &mut Vec<HNode>, pair: &IfCondBlockPair<B>) {
             let &IfCondBlockPair {
                 span: _,
                 span_if: _,
@@ -802,7 +819,7 @@ impl Context<'_> {
             seq.push(HNode::Space);
             seq.push(surrounded_group_indent(SurroundKind::Round, slf.fmt_expr(cond)));
             seq.push(HNode::Space);
-            seq.push(f_force_wrap(block));
+            seq.push(f(block));
         }
 
         let IfStatement {
@@ -813,14 +830,14 @@ impl Context<'_> {
         } = stmt;
 
         let mut seq = vec![];
-        fmt_pair(self, &f_force_wrap, &mut seq, initial_if);
+        fmt_pair(self, &f, &mut seq, initial_if);
         for else_if in else_ifs {
             fmt_else(&mut seq);
-            fmt_pair(self, &f_force_wrap, &mut seq, else_if);
+            fmt_pair(self, &f, &mut seq, else_if);
         }
         if let Some(final_else) = final_else {
             fmt_else(&mut seq);
-            seq.push(f_force_wrap(final_else));
+            seq.push(f(final_else));
         }
 
         seq.push(HNode::AlwaysNewline);
@@ -828,7 +845,55 @@ impl Context<'_> {
     }
 
     fn fmt_match<B>(&self, stmt: &MatchStatement<B>, f: impl Fn(&B) -> HNode) -> HNode {
-        todo!()
+        let &MatchStatement {
+            target,
+            span_branches: _,
+            ref branches,
+        } = stmt;
+
+        let mut seq_branches = vec![];
+        for (branch, last) in branches.iter().with_last() {
+            let MatchBranch { pattern, block } = branch;
+
+            let pattern_node = match pattern.inner {
+                MatchPattern::Wildcard => token(TT::Underscore),
+                MatchPattern::Val(id) => HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)]),
+                MatchPattern::Equal(value) => self.fmt_expr(value),
+                MatchPattern::In(value) => HNode::Sequence(vec![token(TT::In), HNode::Space, self.fmt_expr(value)]),
+                MatchPattern::EnumVariant(variant, content) => {
+                    // TODO check that fuzzing would find a missing `val`
+                    let variant_node = HNode::Sequence(vec![token(TT::Dot), self.fmt_id(variant)]);
+                    match content {
+                        None => variant_node,
+                        Some(content) => fmt_call(variant_node, &[content], |&e| match e {
+                            MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
+                            MaybeIdentifier::Identifier(id) => {
+                                HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)])
+                            }
+                        }),
+                    }
+                }
+            };
+
+            seq_branches.push(pattern_node);
+            seq_branches.push(HNode::Space);
+            seq_branches.push(token(TT::DoubleArrow));
+            seq_branches.push(HNode::Space);
+            seq_branches.push(f(block));
+            seq_branches.push(HNode::AlwaysNewline);
+            if !last {
+                seq_branches.push(HNode::PreserveBlankLines { last: false });
+            }
+        }
+
+        HNode::Sequence(vec![
+            token(TT::Match),
+            HNode::Space,
+            surrounded_group_indent(SurroundKind::Round, self.fmt_expr(target)),
+            HNode::Space,
+            surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(seq_branches)),
+            HNode::AlwaysNewline,
+        ])
     }
 
     fn fmt_for<S>(&self, stmt: &ForStatement<S>, f: impl Fn(&Block<S>) -> HNode) -> HNode {
@@ -864,7 +929,20 @@ impl Context<'_> {
     }
 
     fn fmt_while(&self, stmt: &WhileStatement) -> HNode {
-        todo!()
+        let &WhileStatement {
+            span_keyword: _,
+            cond,
+            ref body,
+        } = stmt;
+
+        HNode::Sequence(vec![
+            token(TT::While),
+            HNode::Space,
+            surrounded_group_indent(SurroundKind::Round, self.fmt_expr(cond)),
+            HNode::Space,
+            self.fmt_block(body),
+            HNode::AlwaysNewline,
+        ])
     }
 
     fn fmt_domain(&self, domain: DomainKind<Expression>) -> HNode {
@@ -895,7 +973,7 @@ impl Context<'_> {
                     ref statements,
                     expression,
                 } = expr;
-                self.fmt_block_ext(statements, Some(expression), false)
+                self.fmt_block_ext(statements, Some(expression))
             }
             &ExpressionKind::Id(id) => self.fmt_general_id(id),
             ExpressionKind::IntLiteral(literal) => {
@@ -1096,16 +1174,8 @@ impl Context<'_> {
     }
 }
 
-fn fmt_block_impl<T>(
-    statements: &[T],
-    final_expression: Option<HNode>,
-    force_wrap: bool,
-    f: impl Fn(&T) -> HNode,
-) -> HNode {
+fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl Fn(&T) -> HNode) -> HNode {
     let mut seq = vec![HNode::WrapNewline];
-    if force_wrap {
-        seq.push(HNode::ForceWrap);
-    }
 
     for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
@@ -1126,31 +1196,6 @@ fn fmt_block_impl<T>(
         HNode::WrapIndent(Box::new(HNode::Sequence(seq))),
         token(TT::CloseC),
     ])))
-}
-
-fn fmt_extra_list<T>(surround: SurroundKind, list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
-    surrounded_group_indent(surround, fmt_extra_list_inner(list, f))
-}
-
-fn fmt_extra_list_inner<T>(list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
-    let ExtraList { span: _, items } = list;
-
-    let mut seq = vec![];
-    for (item, last) in items.iter().with_last() {
-        match item {
-            ExtraItem::Inner(item) => {
-                seq.push(f(item));
-                seq.push(comma_nodes(last));
-                if !last {
-                    seq.push(HNode::WrapNewline);
-                }
-            }
-            ExtraItem::Declaration(_) => todo!(),
-            ExtraItem::If(_) => todo!(),
-        }
-        seq.push(HNode::PreserveBlankLines { last });
-    }
-    HNode::Sequence(seq)
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {

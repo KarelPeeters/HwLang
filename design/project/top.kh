@@ -1,9 +1,10 @@
 struct Foo {
+    const c = false;
     x: uint,
     y: uint,
-//    if (false) {
+    if (false) {
         z: uint,
-//    }
+    }
 }
 
 enum foo {
@@ -16,4 +17,24 @@ enum foo {
 
 module foo ports() {
     wire w: async interface test;
+}
+
+
+const {
+    if (false) {} else {}
+
+    match (x) {
+        5 => {
+            print("hey");
+        }
+
+        .Foo => {}
+        .Foo(val x) => {}
+        .Foo(_) => {}
+        _ => {}
+        in 0..7 => {}
+        val x => {}
+    }
+
+    while (false) {}
 }
