@@ -17,10 +17,14 @@ pub enum LNode<'s> {
     /// Emit the given string if the containing group is wrapping.
     WrapStr(&'s str),
 
-    /// Emit a newline. This forces any containing groups to wrap.
+    /// Ensure there is a newline here. This forces any containing groups to wrap.
+    /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
     AlwaysNewline,
-    /// Emit a newline if the containing group is wrapping.
+    /// Ensure there is a newline here, if the the containing group is wrapping.
+    /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
     WrapNewline,
+    /// Ensure there is a full blank like here (= two newlines).
+    AlwaysBlankLine,
 
     /// Force the enclosing group to wrap, without emitting anything itself.
     ForceWrap,
@@ -154,6 +158,7 @@ impl<'s> LNode<'s> {
             LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
             LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
             LNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNode::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
             LNode::ForceWrap => swriteln!(f, "ForceWrap"),
             LNode::AlwaysIndent(child) => {
                 swriteln!(f, "AlwaysIndent");
@@ -200,7 +205,7 @@ impl<'s> LNode<'s> {
         }
 
         match self {
-            // actual simplification
+            // flatten sequences
             LNode::Sequence(children) => {
                 let mut result = Vec::with_capacity(children.len());
                 for c in children {
@@ -211,7 +216,7 @@ impl<'s> LNode<'s> {
                 }
                 result.single().unwrap_or_else(LNode::Sequence)
             }
-            // just simplify children
+            // simplify children
             LNode::AlwaysIndent(child) => simplify_container(LNode::AlwaysIndent, child),
             LNode::WrapIndent(child) => simplify_container(LNode::WrapIndent, child),
             LNode::Dedent(child) => simplify_container(LNode::Dedent, child),
@@ -229,6 +234,7 @@ impl<'s> LNode<'s> {
             LNode::WrapStr(s) => LNode::WrapStr(s),
             LNode::AlwaysNewline => LNode::AlwaysNewline,
             LNode::WrapNewline => LNode::WrapNewline,
+            LNode::AlwaysBlankLine => LNode::AlwaysBlankLine,
             LNode::ForceWrap => LNode::ForceWrap,
         }
     }
@@ -338,10 +344,32 @@ impl StringBuilderContext<'_> {
                 }
             }
             LNode::AlwaysNewline => {
-                self.write_newline::<W>()?;
+                W::require_wrapping()?;
+
+                // only add a newline if there isn't one already to avoid duplicates
+                if !self.result.ends_with(&self.settings.newline_str) {
+                    self.write_newline::<W>()?;
+                }
             }
             LNode::WrapNewline => {
-                if W::is_wrapping() {
+                // only add a newline if wrapping and there isn't one already to avoid duplicates
+                if W::is_wrapping() && !self.result.ends_with(&self.settings.newline_str) {
+                    self.write_newline::<W>()?;
+                }
+            }
+            LNode::AlwaysBlankLine => {
+                W::require_wrapping()?;
+
+                // count ending newlines
+                let mut left: &str = &self.result;
+                let mut newline_count = 0;
+                while let Some(before) = left.strip_suffix(&self.settings.newline_str) {
+                    newline_count += 1;
+                    left = before;
+                }
+
+                // ensure at least two newlines
+                for _ in newline_count..2 {
                     self.write_newline::<W>()?;
                 }
             }

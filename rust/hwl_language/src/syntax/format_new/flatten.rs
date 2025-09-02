@@ -292,7 +292,7 @@ impl Context<'_> {
             }));
 
             if !port_types.items.is_empty() && !views.is_empty() {
-                body_seq.push(HNode::AlwaysNewline);
+                body_seq.push(HNode::AlwaysBlankLine);
                 body_seq.push(HNode::PreserveBlankLines { last: false });
             }
 

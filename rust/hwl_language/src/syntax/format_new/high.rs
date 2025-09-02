@@ -15,6 +15,7 @@ pub enum HNode {
     WrapComma,
     AlwaysNewline,
     WrapNewline,
+    AlwaysBlankLine,
     ForceWrap,
     // TODO we don't really need a distinction between these wrapping nodes, right?
     AlwaysIndent(Box<HNode>),
@@ -22,6 +23,7 @@ pub enum HNode {
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     Fill(Vec<HNode>),
+    // TODO should this be before or after the "alwaysnewline"?
     PreserveBlankLines { last: bool },
 }
 
@@ -68,12 +70,13 @@ impl HNode {
             HNode::AlwaysToken(ty) => swriteln!(f, "AlwaysToken({ty:?})"),
             HNode::WrapComma => swriteln!(f, "WrapComma"),
             HNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
+            HNode::AlwaysBlankLine => swriteln!(f, "BlankLine"),
+            HNode::WrapNewline => swriteln!(f, "WrapNewline"),
+            HNode::ForceWrap => swriteln!(f, "ForceWrap"),
             HNode::AlwaysIndent(child) => {
                 swriteln!(f, "AlwaysIndent");
                 child.tree_string_impl(f, indent + 1);
             }
-            HNode::WrapNewline => swriteln!(f, "WrapNewline"),
-            HNode::ForceWrap => swriteln!(f, "ForceWrap"),
             HNode::WrapIndent(child) => {
                 swriteln!(f, "WrapIndent");
                 child.tree_string_impl(f, indent + 1);
@@ -140,10 +143,12 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         let mut first_comment = true;
 
         while let Some(token) = self.peek_token() {
-            // filtering
-            if token.ty.category() != TC::Comment {
-                break;
-            }
+            // check whether we should include this comment
+            let is_line_comment = match token.ty {
+                TT::LineComment => true,
+                TT::BlockComment => false,
+                _ => break,
+            };
             let token_span = self.offsets.expand_span(token.span);
             if !filter(token_span) {
                 break;
@@ -155,32 +160,23 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             first_comment = false;
 
-            // copy over string
             let _ = self.pop_token().unwrap();
+
+            // add the comment nodes, de-dented if necessary
             let comment_str = &self.source[token.span.range_bytes()];
-            let mut seq_inner = vec![LNode::AlwaysStr(comment_str)];
-
-            // add suffix
-            match token.ty {
-                TT::LineComment => {
-                    seq_inner.push(LNode::AlwaysNewline);
-                }
-                TT::BlockComment => {
-                    if prev_space {
-                        seq_inner.push(LNode::Space);
-                    }
-                }
-                _ => unreachable!(),
-            };
-
-            // dedent or prefix space
-            let token_node = if token_span.start.col_0 == 0 {
-                LNode::Dedent(Box::new(LNode::Sequence(seq_inner)))
+            let node_comment = LNode::Sequence(vec![LNode::Space, LNode::AlwaysStr(comment_str)]);
+            if token_span.start.col_0 == 0 {
+                seq.push(LNode::Dedent(Box::new(node_comment)))
             } else {
-                seq_inner.insert(0, LNode::Space);
-                LNode::Sequence(seq_inner)
-            };
-            seq.push(token_node);
+                seq.push(node_comment);
+            }
+
+            // add a suffix if necessary
+            if is_line_comment {
+                seq.push(LNode::AlwaysNewline);
+            } else if prev_space {
+                seq.push(LNode::Space);
+            }
         }
     }
 
@@ -214,7 +210,11 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let prev_end = self.offsets.expand_pos(prev.span.end());
             let next_start = self.offsets.expand_pos(next.span.start());
 
-            if next_start.line_0 > prev_end.line_0 + 1 {
+            let delta = next_start.line_0 - prev_end.line_0;
+
+            if delta > 1 {
+                seq.push(LNode::AlwaysBlankLine);
+            } else if delta > 0 {
                 seq.push(LNode::AlwaysNewline);
             }
         }
@@ -265,17 +265,19 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             HNode::AlwaysNewline => {
                 let mut seq = vec![];
                 self.collect_comments_on_prev_line(prev_space, &mut seq);
-                if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
-                    seq.push(LNode::AlwaysNewline);
-                }
+                seq.push(LNode::AlwaysNewline);
                 LNode::Sequence(seq)
             }
             HNode::WrapNewline => {
                 let mut seq = vec![];
                 self.collect_comments_on_prev_line(prev_space, &mut seq);
-                if !matches!(seq.last(), Some(LNode::AlwaysNewline)) {
-                    seq.push(LNode::WrapNewline);
-                }
+                seq.push(LNode::WrapNewline);
+                LNode::Sequence(seq)
+            }
+            HNode::AlwaysBlankLine => {
+                let mut seq = vec![];
+                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                seq.push(LNode::AlwaysBlankLine);
                 LNode::Sequence(seq)
             }
             HNode::ForceWrap => LNode::ForceWrap,
@@ -332,7 +334,11 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 fn node_ends_with_space(node: &LNode) -> Option<bool> {
     match node {
         LNode::Space => Some(true),
-        LNode::AlwaysStr(_) | LNode::WrapStr(_) | LNode::AlwaysNewline | LNode::WrapNewline => Some(false),
+        LNode::AlwaysStr(_)
+        | LNode::WrapStr(_)
+        | LNode::AlwaysNewline
+        | LNode::WrapNewline
+        | LNode::AlwaysBlankLine => Some(false),
         LNode::ForceWrap => None,
         LNode::AlwaysIndent(inner) => node_ends_with_space(inner),
         LNode::WrapIndent(inner) => node_ends_with_space(inner),
