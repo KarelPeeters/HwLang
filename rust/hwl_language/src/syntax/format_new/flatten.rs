@@ -944,16 +944,16 @@ impl Context<'_> {
             ExpressionKind::DotIndex(_, _) => {
                 // repeated dot indices should wrap together
                 let mut base = expr;
-                let mut indices = vec![];
+                let mut indices_rev = vec![];
                 while let &ExpressionKind::DotIndex(curr_base, curr_index) = &self.arena_expressions[base.inner] {
                     base = curr_base;
-                    indices.push(curr_index);
+                    indices_rev.push(curr_index);
                 }
 
                 let node_base = self.fmt_expr(base);
 
                 let mut seq = vec![];
-                for (index, last) in indices.into_iter().with_last() {
+                for (index, last) in indices_rev.into_iter().rev().with_last() {
                     let node_index = match index {
                         DotIndexKind::Id(id) => self.fmt_id(id),
                         DotIndexKind::Int { span: _ } => token(TT::IntLiteralDecimal),

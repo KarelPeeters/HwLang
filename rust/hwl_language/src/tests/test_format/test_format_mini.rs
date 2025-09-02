@@ -55,3 +55,9 @@ fn preserve_mixed_comments() {
     let src = "// a\n//b\n/**/\n//c\n\n/*d*/\n\n//e\n";
     assert_format_stable(src);
 }
+
+#[test]
+fn correct_dot_order() {
+    let src = "const c = a.2.b;";
+    assert_format_stable(src);
+}
