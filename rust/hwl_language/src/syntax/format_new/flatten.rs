@@ -2,14 +2,15 @@ use crate::syntax::ast::{
     ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp, Block,
     BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind,
-    DotIndexKind, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
-    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral,
-    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchStatement,
-    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration,
-    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
+    ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry,
+    ImportFinalKind, IntLiteral, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
+    ItemImport, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock,
+    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
+    RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration,
+    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
+    WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -160,8 +161,50 @@ impl Context<'_> {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
                         self.fmt_variable_decl(TT::Const, id, ty, Some(value))
                     }
-                    CommonDeclarationNamedKind::Struct(_) => todo!(),
-                    CommonDeclarationNamedKind::Enum(_) => todo!(),
+                    CommonDeclarationNamedKind::Struct(decl) => {
+                        let &StructDeclaration {
+                            span: _,
+                            span_body: _,
+                            id,
+                            ref params,
+                            ref fields,
+                        } = decl;
+
+                        let mut seq = vec![token(TT::Struct), HNode::Space, self.fmt_maybe_id(id)];
+                        if let Some(params) = params {
+                            seq.push(self.fmt_parameters(params));
+                        }
+                        seq.push(HNode::Space);
+                        seq.push(fmt_extra_list(SurroundKind::Curly, fields, &|field| {
+                            let &StructField { span, id, ty } = field;
+                            HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))])
+                        }));
+                        HNode::Sequence(seq)
+                    }
+                    CommonDeclarationNamedKind::Enum(decl) => {
+                        let &EnumDeclaration {
+                            span: _,
+                            id,
+                            ref params,
+                            ref variants,
+                        } = decl;
+
+                        let mut seq = vec![token(TT::Enum), HNode::Space, self.fmt_maybe_id(id)];
+                        if let Some(params) = params {
+                            seq.push(self.fmt_parameters(params));
+                        }
+                        seq.push(HNode::Space);
+                        seq.push(fmt_extra_list(SurroundKind::Curly, variants, &|variant| {
+                            let &EnumVariant { span: _, id, content } = variant;
+
+                            let node_id = self.fmt_id(id);
+                            match content {
+                                None => node_id,
+                                Some(content) => fmt_call(node_id, &[content], |&e| self.fmt_expr(e)),
+                            }
+                        }));
+                        HNode::Sequence(seq)
+                    }
                     CommonDeclarationNamedKind::Function(decl) => {
                         let &FunctionDeclaration {
                             span: _,
@@ -534,7 +577,22 @@ impl Context<'_> {
                             seq.push(wrapping_assign(self.fmt_expr(value)));
                         }
                     }
-                    WireDeclarationKind::Interface { .. } => todo!(),
+                    WireDeclarationKind::Interface {
+                        domain,
+                        span_keyword: _,
+                        interface,
+                    } => {
+                        let mut domain_interface_seq = vec![];
+                        if let Some(domain) = domain {
+                            domain_interface_seq.push(self.fmt_domain(domain.inner));
+                            domain_interface_seq.push(HNode::Space);
+                        }
+                        domain_interface_seq.push(token(TT::Interface));
+                        domain_interface_seq.push(HNode::Space);
+                        domain_interface_seq.push(self.fmt_expr(interface));
+
+                        seq.push(wrapping_type(HNode::Sequence(domain_interface_seq)))
+                    }
                 };
 
                 seq.push(token(TT::Semi));
