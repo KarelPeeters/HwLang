@@ -85,3 +85,9 @@ fn mix_comma_comment_end() {
     let src = "enum Foo {\n    C // c\n    ,\n}\n";
     assert_format_stable(src);
 }
+
+#[test]
+fn mix_comma_comment_multiple() {
+    let src = "enum Foo {\n    A // a\n    // b\n    ,\n}\n";
+    assert_format_stable(src);
+}

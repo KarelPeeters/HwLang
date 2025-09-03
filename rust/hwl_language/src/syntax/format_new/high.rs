@@ -261,14 +261,28 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::Sequence(seq)
             }
             HNode::WrapComma => {
-                // TODO skip comments (_if_ the next non-comment token is a comma?)
-                // TODO force wrap if there was a trailing comma in the source?
+                // TODO force wrap if there was a trailing comma in the source, like Black?
+
+                // if we will encounter a comma, collect comments before it
+                let mut seq = vec![];
+                if let Some(token) = self.find_next_non_comment_token()
+                    && self.source_tokens[token.0].ty == TT::Comma
+                {
+                    self.collect_comments_all(prev_space, &mut seq);
+                }
+
+                // always add a comma token to the output
+                seq.push(LNode::WrapStr(","));
+
+                // if there is a comma, pop it and collect comments after it
                 if let Some(token) = self.peek_token()
                     && token.ty == TT::Comma
                 {
                     let _ = self.pop_token();
+                    self.collect_comments_on_prev_line(prev_space, &mut seq);
                 }
-                LNode::WrapStr(",")
+
+                LNode::Sequence(seq)
             }
             HNode::AlwaysNewline => {
                 let mut seq = vec![];
