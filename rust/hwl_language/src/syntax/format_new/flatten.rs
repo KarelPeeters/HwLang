@@ -217,6 +217,7 @@ impl Context<'_> {
                             let &StructField { span, id, ty } = field;
                             HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))])
                         }));
+                        seq.push(HNode::AlwaysNewline);
                         HNode::Sequence(seq)
                     }
                     CommonDeclarationNamedKind::Enum(decl) => {
@@ -241,6 +242,7 @@ impl Context<'_> {
                                 Some(content) => fmt_call(node_id, &[content], |&e| self.fmt_expr(e)),
                             }
                         }));
+                        seq.push(HNode::AlwaysNewline);
                         HNode::Sequence(seq)
                     }
                     CommonDeclarationNamedKind::Function(decl) => {
@@ -774,7 +776,7 @@ impl Context<'_> {
                 HNode::Sequence(vec![token(TT::Break), token(TT::Semi), HNode::AlwaysNewline])
             }
             BlockStatementKind::Continue { span: _ } => {
-                HNode::Sequence(vec![token(TT::Break), token(TT::Semi), HNode::AlwaysNewline])
+                HNode::Sequence(vec![token(TT::Continue), token(TT::Semi), HNode::AlwaysNewline])
             }
         }
     }
