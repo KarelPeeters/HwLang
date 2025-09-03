@@ -227,7 +227,7 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::RegOutPortMarker(decl)
     },
     // combinatorial block
-    <span_keyword:Span<"comb">> <end_keyword:@R> <block:Block<BlockStatement>> => {
+    <span_keyword:Span<"comb">> <block:Block<BlockStatement>> => {
         let inner = CombinatorialBlock {
             block,
             span_keyword,
@@ -237,8 +237,8 @@ ModuleStatementKind: ModuleStatementKind = {
     // clocked block
     // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
     //   registers declared inside of the block do still inherit their clock/reset from the block though
-    <span_keyword:Span<"clocked">> <start_domain:@L> <end_keyword:@R> "("
-        <clock:Expr> <reset:("," <Spanned<ClockedBlockReset>>)?>
+    <span_keyword:Span<"clocked">> <start_domain:@L> "("
+        <clock:Expr> <reset:("," <Spanned<ClockedBlockReset>>)?> ","?
     ")" <end_domain:@R> <block:Block<BlockStatement>>
     => {
         let inner = ClockedBlock {
@@ -558,7 +558,7 @@ AsyncOrSyncDomain: DomainKind<Expression> = {
 }
 
 SyncDomain: SyncDomain<Expression> = {
-    "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ")" => SyncDomain { clock, reset },
+    "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ","? ")" => SyncDomain { clock, reset },
 }
 
 // expressions
@@ -739,11 +739,11 @@ ExprLevelCall<allow_block>: ExpressionKind = {
         => ExpressionKind::Call(target, args),
 
     // builtins
-    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ")"
+    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")"
         => ExpressionKind::UnsafeValueWithDomain(value, domain),
 
     // reg expression
-    <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ")"
+    <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ","? ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 
     ExprLevelDot<allow_block>,
@@ -829,7 +829,7 @@ GeneralId: GeneralIdentifier = {
 }
 
 GeneralIdFromString: Expression = {
-    "id_from_str" "(" <Expr> ")",
+    "id_from_str" "(" <Expr> ","? ")",
 }
 
 MaybeId = MaybeIdImpl<Id>;
