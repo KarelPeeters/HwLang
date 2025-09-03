@@ -91,3 +91,11 @@ fn mix_comma_comment_multiple() {
     let src = "enum Foo {\n    A // a\n    // b\n    ,\n}\n";
     assert_format_stable(src);
 }
+
+#[test]
+fn enum_content_wrap() {
+    let long_identifier = "a".repeat(120);
+    let src = format!("enum Foo {{\n    A(\n        {long_identifier}\n    ),\n}}\n");
+    println!("{}", src);
+    assert_format_stable(&src);
+}

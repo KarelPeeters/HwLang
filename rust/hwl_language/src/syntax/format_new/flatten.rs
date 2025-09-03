@@ -239,7 +239,10 @@ impl Context<'_> {
                             let node_id = self.fmt_id(id);
                             match content {
                                 None => node_id,
-                                Some(content) => fmt_call(node_id, &[content], |&e| self.fmt_expr(e)),
+                                Some(content) => HNode::Sequence(vec![
+                                    node_id,
+                                    surrounded_group_indent(SurroundKind::Round, self.fmt_expr(content)),
+                                ]),
                             }
                         }));
                         seq.push(HNode::AlwaysNewline);
@@ -864,15 +867,21 @@ impl Context<'_> {
                 MatchPattern::In(value) => HNode::Sequence(vec![token(TT::In), HNode::Space, self.fmt_expr(value)]),
                 MatchPattern::EnumVariant(variant, content) => {
                     // TODO check that fuzzing would find a missing `val`
-                    let variant_node = HNode::Sequence(vec![token(TT::Dot), self.fmt_id(variant)]);
+                    let node_variant = HNode::Sequence(vec![token(TT::Dot), self.fmt_id(variant)]);
                     match content {
-                        None => variant_node,
-                        Some(content) => fmt_call(variant_node, &[content], |&e| match e {
-                            MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
-                            MaybeIdentifier::Identifier(id) => {
-                                HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)])
-                            }
-                        }),
+                        None => node_variant,
+                        Some(content) => {
+                            let node_content = match content {
+                                MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
+                                MaybeIdentifier::Identifier(id) => {
+                                    HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)])
+                                }
+                            };
+                            HNode::Sequence(vec![
+                                node_variant,
+                                surrounded_group_indent(SurroundKind::Round, node_content),
+                            ])
+                        }
                     }
                 }
             };
