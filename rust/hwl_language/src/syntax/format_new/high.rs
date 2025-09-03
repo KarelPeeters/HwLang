@@ -255,6 +255,9 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
+
+                self.collect_comments_on_prev_line(prev_space, &mut seq);
+
                 LNode::Sequence(seq)
             }
             HNode::WrapComma => {

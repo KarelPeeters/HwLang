@@ -73,3 +73,15 @@ fn string_end_on_new_line_indented() {
     let src = "const {\n    \"test\n\";\n}\n";
     assert_format_stable(src);
 }
+
+#[test]
+fn mix_comma_comment() {
+    let src = "enum Foo {\n    A,\n    B, // b\n    C // c\n    ,\n    /*d0*/D /*d1*/, // d2\n    E,\n    // end\n}\n";
+    assert_format_stable(src);
+}
+
+#[test]
+fn mix_comma_comment_end() {
+    let src = "enum Foo {\n    C // c\n    ,\n}\n";
+    assert_format_stable(src);
+}

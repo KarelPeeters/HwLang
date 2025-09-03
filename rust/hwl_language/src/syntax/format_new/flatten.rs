@@ -1184,7 +1184,7 @@ impl Context<'_> {
 }
 
 fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl Fn(&T) -> HNode) -> HNode {
-    let mut seq = vec![HNode::WrapNewline];
+    let mut seq = vec![];
 
     for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
@@ -1200,11 +1200,7 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
         seq.push(HNode::PreserveBlankLines { last: true });
     }
 
-    HNode::Group(Box::new(HNode::Sequence(vec![
-        token(TT::OpenC),
-        HNode::WrapIndent(Box::new(HNode::Sequence(seq))),
-        token(TT::CloseC),
-    ])))
+    surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(seq))
 }
 
 fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
@@ -1213,7 +1209,6 @@ fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
 
 fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
     let mut seq = vec![];
-    seq.push(HNode::WrapNewline);
 
     for (item, last) in items.iter().with_last() {
         seq.push(f(item));
@@ -1222,12 +1217,7 @@ fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNod
         seq.push(HNode::PreserveBlankLines { last });
     }
 
-    let (before, after) = surround.before_after();
-    HNode::Group(Box::new(HNode::Sequence(vec![
-        token(before),
-        HNode::WrapIndent(Box::new(HNode::Sequence(seq))),
-        token(after),
-    ])))
+    surrounded_group_indent(surround, HNode::Sequence(seq))
 }
 
 fn comma_nodes(last: bool) -> HNode {
@@ -1282,16 +1272,13 @@ fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
 }
 
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
+    let group_seq = vec![HNode::WrapNewline, inner, HNode::WrapNewline];
+    let group = HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(group_seq)))));
+
+    // the before/after tokens should not be part of the group,
+    //   since then trailing line comments after `after` would force the entire group to wrap
     let (before, after) = surround.before_after();
-    HNode::Group(Box::new(HNode::Sequence(vec![
-        token(before),
-        HNode::WrapIndent(Box::new(HNode::Sequence(vec![
-            HNode::WrapNewline,
-            inner,
-            HNode::WrapNewline,
-        ]))),
-        token(after),
-    ])))
+    HNode::Sequence(vec![token(before), group, token(after)])
 }
 
 fn token(tt: TT) -> HNode {
