@@ -133,17 +133,22 @@ impl Context<'_> {
         HNode::Sequence(nodes)
     }
 
-    fn fmt_extra_list<T>(
+    fn fmt_extra_list<T, N: Into<HNodeAndComma>>(
         &self,
         surround: SurroundKind,
         force_wrap: bool,
         list: &ExtraList<T>,
-        f: &impl Fn(&T) -> HNode,
+        f: &impl Fn(&T) -> N,
     ) -> HNode {
         surrounded_group_indent(surround, self.fmt_extra_list_inner(force_wrap, list, f))
     }
 
-    fn fmt_extra_list_inner<T>(&self, force_wrap: bool, list: &ExtraList<T>, f: &impl Fn(&T) -> HNode) -> HNode {
+    fn fmt_extra_list_inner<T, N: Into<HNodeAndComma>>(
+        &self,
+        force_wrap: bool,
+        list: &ExtraList<T>,
+        f: &impl Fn(&T) -> N,
+    ) -> HNode {
         let ExtraList { span: _, items } = list;
 
         let mut seq = vec![];
@@ -154,8 +159,13 @@ impl Context<'_> {
         for (item, last) in items.iter().with_last() {
             match item {
                 ExtraItem::Inner(item) => {
-                    seq.push(f(item));
-                    seq.push(comma_nodes(last));
+                    let HNodeAndComma { node, comma } = N::into(f(item));
+                    seq.push(node);
+                    if comma {
+                        seq.push(comma_nodes(last));
+                    } else {
+                        seq.push(HNode::ForceWrap);
+                    }
                     if !last {
                         seq.push(HNode::WrapNewline);
                     }
@@ -441,7 +451,7 @@ impl Context<'_> {
         HNode::Sequence(seq)
     }
 
-    fn fmt_module_port_item(&self, item: &ModulePortItem) -> HNode {
+    fn fmt_module_port_item(&self, item: &ModulePortItem) -> HNodeAndComma {
         match item {
             ModulePortItem::Single(single) => {
                 let &ModulePortSingle { span: _, id, ref kind } = single;
@@ -472,9 +482,8 @@ impl Context<'_> {
                     ]),
                 };
 
-                let mut seq = vec![self.fmt_id(id)];
-                seq.push(wrapping_type(node_kind));
-                HNode::Sequence(seq)
+                let node = HNode::Sequence(vec![self.fmt_id(id), wrapping_type(node_kind)]);
+                HNodeAndComma { node, comma: true }
             }
             ModulePortItem::Block(block) => {
                 let ModulePortBlock { span: _, domain, ports } = block;
@@ -494,7 +503,8 @@ impl Context<'_> {
                     HNode::Sequence(vec![self.fmt_id(id), wrapping_type(node_kind)])
                 });
 
-                HNode::Sequence(vec![node_domain, HNode::Space, node_ports])
+                let node = HNode::Sequence(vec![node_domain, HNode::Space, node_ports]);
+                HNodeAndComma { node, comma: false }
             }
         }
     }
@@ -1326,5 +1336,16 @@ impl FormatVisibility for Visibility {
 impl FormatVisibility for () {
     fn token(self) -> Option<TT> {
         None
+    }
+}
+
+struct HNodeAndComma {
+    node: HNode,
+    comma: bool,
+}
+
+impl From<HNode> for HNodeAndComma {
+    fn from(node: HNode) -> Self {
+        Self { node, comma: true }
     }
 }

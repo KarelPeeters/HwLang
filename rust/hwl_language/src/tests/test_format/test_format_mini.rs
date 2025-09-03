@@ -99,3 +99,9 @@ fn enum_content_wrap() {
     println!("{}", src);
     assert_format_stable(&src);
 }
+
+#[test]
+fn port_block() {
+    let src = "module foo ports(\n    async {}\n) {}\n";
+    assert_format_stable(src);
+}
