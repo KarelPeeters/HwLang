@@ -1215,6 +1215,9 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
         seq.push(final_expression);
         seq.push(HNode::WrapNewline);
         seq.push(HNode::Space);
+    }
+
+    if statements.is_empty() {
         seq.push(HNode::PreserveBlankLines { last: true });
     }
 

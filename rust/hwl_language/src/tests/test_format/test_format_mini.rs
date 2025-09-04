@@ -111,3 +111,10 @@ fn idempotent_comments_in_import() {
     let src = "import a.\n//\n\n//\nb;\n";
     assert_formatted(src);
 }
+
+#[test]
+fn idempotent_block_comment_newlines() {
+    let src = "const {\n/* \n*/\n\n/*\n*/\n}\n";
+    let expected = "const {\n/* \n*/\n\n/*\n*/\n}\n";
+    assert_formats_to(src, expected);
+}
